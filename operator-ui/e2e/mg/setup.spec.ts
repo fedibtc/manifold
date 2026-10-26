@@ -81,7 +81,8 @@ test('should hold setup at the authorization step until one is observed', async 
   await page.getByRole('button', { name: 'Reveal phrase' }).click();
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
-  await expect(page.getByText(/Waiting for approval/i)).toBeVisible();
+  await expect(page.getByText(/Not checked yet/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
 });
 
@@ -122,6 +123,7 @@ test('should recover a fleet and stop at the authorization step while it waits',
   await page.getByRole('button', { name: 'Continue' }).click();
 
   await expect(page.getByRole('heading', { name: 'Approve your host' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
 });
 
 test('should not offer setup to a fleet that is already running', async ({ page }) => {

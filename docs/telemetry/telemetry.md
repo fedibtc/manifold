@@ -163,3 +163,7 @@ authorizes a target or enables a metric family.
    invite per federation, so
    a deployment-owned Observer can follow the federations whose MGs report
    telemetry. The push-gateway adapter delivers no invites.
+8. **Seat reports** — the collector keeps each MG's latest journaled seat
+   capacity and seat readiness, with its free seats, release version and
+   uptime scores, and its private listener returns them to consumers admitted
+   to that listener.

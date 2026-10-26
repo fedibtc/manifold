@@ -5033,7 +5033,17 @@ fn mg_error(index: usize, message: impl Into<String>) -> FaError {
     }
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    // This controls formation/admission timestamps only, not driver leases or timers.
+    pub(crate) static TEST_NOW_SECS: std::sync::Arc<std::sync::atomic::AtomicU64>;
+}
+
 pub(crate) fn now_secs() -> FaResult<u64> {
+    #[cfg(test)]
+    if let Ok(now) = TEST_NOW_SECS.try_with(|now| now.load(std::sync::atomic::Ordering::SeqCst)) {
+        return Ok(now);
+    }
     Ok(fedimint_core::time::duration_since_epoch().as_secs())
 }
 
@@ -5060,7 +5070,7 @@ pub(crate) fn restored_formation_id(fa_id: FaId, invite: &InviteCode) -> FaResul
     )))
 }
 
-fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {
+pub(crate) fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {
     let parsed = FedimintInviteCode::from_str(&invite.0).map_err(|error| {
         FaError::InvalidManifoldGuardians(format!(
             "Manifold Guardian returned an invalid federation invite: {error}"

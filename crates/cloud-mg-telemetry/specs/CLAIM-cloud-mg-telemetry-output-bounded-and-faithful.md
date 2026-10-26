@@ -8,7 +8,11 @@ HTTP responses, private HTTP output, logs, traces, errors, archive paths and
 metric names or labels expose no collector-held capability, Holder envelope,
 endpoint, invite, cursor, incarnation, or raw rejected input, except that the
 private listener's federation export returns a canonical invite for each
-federation of an active, unexpired target's current seats that stored one. The collector does
+federation of an active, unexpired target's current seats that stored one. The
+private listener's seat report exports return only fields decoded from an
+active, unexpired target's latest valid `seat capacity` and `seat readiness
+check completed` MG-journal safe events, as `ARCH-cloud-mg-telemetry` defines
+them, observed no later than their reception. The collector does
 not inject that held material into archive bytes; those bytes are the exact
 upstream-approved safe-event payload and may contain fields approved at the
 source. These surfaces neither merge distinct MG identities, accept unbounded

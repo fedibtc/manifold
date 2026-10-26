@@ -31,7 +31,12 @@ the public registration route. The same private listener also serves
 `GET /v1/federations`, which returns full invite codes; like `/metrics` it has
 no application-layer authentication, so every caller admitted to the private
 listener, Prometheus scrapers and health probes included, is trusted with every
-exported invite.
+exported invite. The private listener also serves `GET /v1/seat-capacity`
+and `GET /v1/seat-readiness`. They return the target's public key, collector
+times and fields decoded from the MG's own safe events, and no invite,
+capability, endpoint or journal position. The collector checks those fields for
+bounds and checks that the seat counts agree with each other; it cannot verify
+that they are true.
 
 ## Image publishing credentials
 

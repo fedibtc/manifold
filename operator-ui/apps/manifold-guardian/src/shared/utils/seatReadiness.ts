@@ -1,4 +1,4 @@
-import type { ReadinessOutcome, ReadinessReport } from '@operator-ui/types';
+import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
 export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'uptime';
@@ -42,3 +42,15 @@ export const passed = (outcome: ReadinessOutcome): boolean =>
 
 export const failedChecks = (report: ReadinessReport): ReadinessCheck[] =>
   CHECKS.filter((check) => !passed(report[check]));
+
+/** The uptime windows the gate compares, shortest first. */
+export const UPTIME_WINDOWS: readonly (keyof UptimePermille)[] = ['1d', '7d', '30d'];
+
+export const uptimeLabels: Record<keyof UptimePermille, string> = {
+  '1d': 'Last day',
+  '7d': 'Last 7 days',
+  '30d': 'Last 30 days'
+};
+
+/** A per-mille figure as the percent the gate compares, e.g. 899 → "89.9%". */
+export const formatPermille = (permille: number): string => `${(permille / 10).toFixed(1)}%`;

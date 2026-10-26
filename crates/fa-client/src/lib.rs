@@ -7,6 +7,7 @@ mod backup_worker;
 mod db;
 mod decommission;
 mod discovery;
+mod eligibility;
 mod error;
 mod formation;
 mod guardian_fee_ppm;
@@ -36,6 +37,7 @@ pub use discovery::{
     MG_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, MG_DISCOVERY_TIMEOUT, MgCandidateRequirements,
     MgDiscovery, MgDiscoveryOptions, MgRegistryQuery, RejectedAdvertisement,
 };
+pub use eligibility::{ReplacementCandidate, ReplacementCheck, ReplacementReason};
 pub use error::{
     AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
     MgOperation, SelectionReauthorizationReason,

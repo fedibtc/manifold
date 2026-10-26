@@ -70,7 +70,12 @@ const READY: MockState['seatReadiness'] = {
   relay: 'pass',
   discovery: 'pass',
   bitcoin: 'pass',
-  uptime: 'pass'
+  uptime: 'pass',
+  uptime_comparison: {
+    scores: { '1d': 1000, '7d': 998, '30d': 991 },
+    minimums: { '1d': 700, '7d': 900, '30d': 930 },
+    wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
+  }
 };
 
 const fees = (overrides: Partial<MockGuardianFees> = {}): MockGuardianFees => ({
@@ -204,7 +209,7 @@ const builders = {
     price: null,
     // A host that has never onboarded has admitted no setup-payment publication,
     // so there is no latest release to compare against yet.
-    onboarding: onboarding(undefined, version({ latest: null }))
+    onboarding: onboarding({ state: 'checking' }, version({ latest: null }))
   }),
   'awaiting-authorization': () => ({
     ...base(),
@@ -446,7 +451,15 @@ const builders = {
     price: null,
     onboarding: authorized,
     readyForNewSeats: false,
-    seatReadiness: { ...READY, uptime: 'uptime_7d_low' }
+    seatReadiness: {
+      ...READY,
+      uptime: 'uptime_7d_low',
+      uptime_comparison: {
+        scores: { '1d': 887, '7d': 899, '30d': 935 },
+        minimums: { '1d': 700, '7d': 900, '30d': 930 },
+        wait_secs: { '1d': 0, '7d': 3000, '30d': 0 }
+      }
+    }
   }),
   // The state a fleet is actually in before its first payout: revenue on both
   // sides and nowhere to send it. Every sweep refuses until a destination is

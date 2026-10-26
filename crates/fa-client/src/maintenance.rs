@@ -667,7 +667,7 @@ where
         Ok(outcomes)
     }
 
-    async fn maintenance_authority(
+    pub(crate) async fn maintenance_authority(
         &self,
         fa_id: FaId,
     ) -> FaResult<crate::formation::PostFormedAuthority> {

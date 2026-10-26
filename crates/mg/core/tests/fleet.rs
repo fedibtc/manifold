@@ -2,7 +2,7 @@ use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_NAME_META_FIELD_KEY,
     FederationName, FederationSize, FormationSeatBinding, GetQuoteRequest, GuardianCode,
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatHealth, ServiceStatus,
+    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatCapacityEvent, SeatHealth, ServiceStatus,
 };
 use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
@@ -847,35 +847,41 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
     fleet.shutdown().await;
 }
 
-/// Records the fields of every `seat capacity` event.
-#[derive(Clone, Default)]
-struct SeatCapacityEvents(Arc<std::sync::Mutex<Vec<std::collections::BTreeMap<String, String>>>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SeatCapacityEvents {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct Fields(std::collections::BTreeMap<String, String>);
-        impl tracing::field::Visit for Fields {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                self.0.insert(field.name().to_owned(), format!("{value:?}"));
-            }
-        }
-        let mut fields = Fields(Default::default());
-        event.record(&mut fields);
-        if fields.0.get("message").map(String::as_str) == Some("seat capacity") {
-            self.0.lock().unwrap().push(fields.0);
-        }
-    }
+/// The `seat capacity` records of the safe journal in `directory`, oldest
+/// first.
+fn journaled_seat_capacity(directory: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut segments = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .collect::<Vec<_>>();
+    segments.sort();
+    segments
+        .iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .filter(|record| record["fields"]["message"] == SEAT_CAPACITY_EVENT)
+        .collect()
 }
 
-/// Every advertisement cycle shares the seat capacity, also when it
+/// Every advertisement cycle journals the seat capacity, also when it
 /// publishes nothing.
 #[tokio::test]
 async fn advertisement_cycle_shares_seat_capacity() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let events = SeatCapacityEvents::default();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(events.clone()));
+    let journal = TempDir::new().unwrap();
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(safe_tracing::layer(journal.path()).unwrap()),
+    );
     let temp = TempDir::new().unwrap();
     let fleet = Arc::new(
         open_fleet(config(&temp, 3, 31_660).await, Arc::new(NoWallet))
@@ -904,27 +910,47 @@ async fn advertisement_cycle_shares_seat_capacity() {
     fleet.set_max_seats(Some(1)).await.unwrap();
     assert!(host.advertisement().await.is_none());
 
-    let shared = |max: &str, available: &str, accepting: &str| {
-        std::collections::BTreeMap::from(
-            [
-                ("message", "seat capacity"),
-                ("safe_to_share", "true"),
-                ("mg_version", concat!("\"", env!("CARGO_PKG_VERSION"), "\"")),
-                ("max_seats", max),
-                // Until the first memory sample the limit assumes 4 seats.
-                ("memory_max_seats", "4"),
-                ("policy_max_seats", "2"),
-                ("available_seats", available),
-                ("accepting_seats", accepting),
-            ]
-            .map(|(name, value)| (name.to_owned(), value.to_owned())),
-        )
-    };
-    assert_eq!(
-        *events.0.lock().unwrap(),
-        [shared("3", "1", "true"), shared("1", "0", "false")]
-    );
     fleet.shutdown().await;
+    // Dropping the subscriber flushes the journal.
+    drop(guard);
+
+    let records = journaled_seat_capacity(journal.path());
+    for record in &records {
+        // The collector keeps only records whose timestamp parses as RFC 3339.
+        humantime::parse_rfc3339(record["timestamp"].as_str().unwrap()).unwrap();
+    }
+    let fields = records
+        .iter()
+        .map(|record| record["fields"].clone())
+        .collect::<Vec<_>>();
+    let shared = |max: u32, available: u32, accepting: bool| {
+        serde_json::json!({
+            "message": SEAT_CAPACITY_EVENT,
+            "safe_to_share": true,
+            "mg_version": env!("CARGO_PKG_VERSION"),
+            "max_seats": max,
+            // Until the first memory sample the limit assumes 4 seats.
+            "memory_max_seats": 4,
+            "policy_max_seats": 2,
+            "available_seats": available,
+            "accepting_seats": accepting,
+        })
+    };
+    assert_eq!(fields, [shared(3, 1, true), shared(1, 0, false)]);
+    // The journaled fields decode as the telemetry collector reads them.
+    let decoded = fields
+        .into_iter()
+        .map(|fields| serde_json::from_value::<SeatCapacityEvent>(fields).unwrap())
+        .collect::<Vec<_>>();
+    let capacity = |max_seats, available_seats, accepting_seats| SeatCapacityEvent {
+        available_seats,
+        accepting_seats,
+        max_seats: Some(max_seats),
+        memory_max_seats: Some(4),
+        policy_max_seats: Some(2),
+        mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+    };
+    assert_eq!(decoded, [capacity(3, 1, true), capacity(1, 0, false)]);
 }
 
 /// A readiness report whose Bitcoin check passes or fails.
@@ -939,6 +965,7 @@ fn readiness(ready: bool) -> ReadinessReport {
             ReadinessOutcome::BitcoinSyncing
         },
         uptime: ReadinessOutcome::Pass,
+        uptime_comparison: None,
     }
 }
 

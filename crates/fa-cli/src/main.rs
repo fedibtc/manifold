@@ -127,6 +127,8 @@ enum Command {
     Liquidity(LiquidityArgs),
     /// Maintain consensus metadata and configure guardian fees after formation.
     Maintenance(MaintenanceArgs),
+    /// Check which formed guardians qualify for replacement and why.
+    ReplacementCandidates,
     /// Join and directly fund the Fedimint wallet later supplied to formation.
     PaymentWallet(PaymentWalletArgs),
     /// Ask every MG to decommission this formation's seat (testing only).
@@ -1255,6 +1257,26 @@ async fn run(
             let selection = query.preview_mg_selection(&request, options).await?;
             output.selection_preview(&selection, format)?;
         }
+        Command::ReplacementCandidates => {
+            let endpoint = bind_iroh_endpoint().await?;
+            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let client = open_client_with_fee_account_provider(
+                &args.state_dir,
+                identity,
+                CliPayments::unavailable(),
+                &setup_payment,
+                None,
+                CliMgConnector::new(endpoint),
+                peer_badge_verifier
+                    .clone()
+                    .expect("replacement checks construct a verifier"),
+                profile.clone(),
+                CliFaFeeAccountProvider::unavailable(),
+            )
+            .await?;
+            let check = client.check_replacement_candidates().await?;
+            output.replacement_candidates(&check, format)?;
+        }
         Command::Maintenance(_) => {
             let operation = maintenance_preflight
                 .expect("maintenance input is validated before FA state or network access");
@@ -1825,6 +1847,15 @@ impl CliConsensusReader {
 }
 
 impl FederationConsensusReader for CliConsensusReader {
+    async fn read_guardian_reports(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
+        fedi_decentralized_federation_preview::read_guardian_reports(&self.connectors, invite_code)
+            .await
+            .map_err(|error| FederationConsensusError::new(error.to_string()))
+    }
+
     async fn read_consensus(
         &self,
         invite_code: &InviteCode,
@@ -2026,6 +2057,7 @@ impl WalletRootSecret {
             | Command::Status
             | Command::Discover(_)
             | Command::Preview(_)
+            | Command::ReplacementCandidates
             | Command::Maintenance(_)
             | Command::Liquidity(_)
             | Command::Decommission => {
@@ -4364,5 +4396,17 @@ guardian_fee_pmm = 100
             map_reservation_error(binding),
             FaPaymentError::new("exact aggregate payment is not ready"),
         );
+    }
+}
+
+#[cfg(test)]
+mod replacement_command_tests {
+    use super::*;
+
+    #[test]
+    fn replacement_candidates_command_requires_no_wallet_secret() {
+        let args = AppArgs::try_parse_from(["fa-cli", "replacement-candidates"]).unwrap();
+        assert!(matches!(args.command, Command::ReplacementCandidates));
+        assert!(WalletRootSecret::read_for(&args).unwrap().is_none());
     }
 }

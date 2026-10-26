@@ -85,9 +85,10 @@ const POST_FORMATION_TIMEOUT: Duration = Duration::from_secs(600);
 /// Formation, confirmed Nostr archive publication, mnemonic restore, and
 /// restored guardian catch-up against the six surviving peers.
 const FLEET_RESTORE_TIMEOUT: Duration = Duration::from_secs(420);
-/// Mining the initial 101 regtest blocks can be slow in network-isolated Nix
-/// builders once all seven guardian processes are running.
+/// Bound individual regtest wallet and confirmation-mining commands.
 const BITCOIN_CLI_TIMEOUT: Duration = Duration::from_secs(60);
+/// Defe pre-funds this wallet before handing out an exclusive Bitcoin lease.
+const MINER_WALLET: &str = "default";
 const MINT_V2_REPLAY_TIMEOUT: Duration = Duration::from_secs(90);
 /// The paid run adds wallet joins, an on-chain deposit past the regtest
 /// finality delay, key-locked ecash payments, and a second formation.
@@ -1124,17 +1125,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
 
     let temp = mg_e2e_temp_dir()?;
     let bitcoin_cli = BitcoinCli::new(&bitcoin_cli_bin, bitcoind)?;
-    bitcoin_cli
-        .run(None, &["createwallet", "fee-e2e-miner"])
-        .await?;
-    let miner_address = bitcoin_cli
-        .run(Some("fee-e2e-miner"), &["getnewaddress"])
-        .await?
-        .trim()
-        .to_owned();
-    bitcoin_cli
-        .run(None, &["generatetoaddress", "101", &miner_address])
-        .await?;
+    let miner_address = bitcoin_cli.funded_miner_address().await?;
     let state_dir = temp.join("fi-state");
     #[cfg(target_os = "linux")]
     {
@@ -1399,7 +1390,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         .context("payment-wallet deposit-address returns an address")?;
     bitcoin_cli
         .run(
-            Some("fee-e2e-miner"),
+            Some(MINER_WALLET),
             &["sendtoaddress", deposit_address, "0.001"],
         )
         .await?;
@@ -2393,7 +2384,7 @@ async fn fund_gateway_federation_wallet(
         .as_str()
         .context("gateway ecash pegin returns an address")?;
     bitcoin_cli
-        .run(Some("fee-e2e-miner"), &["sendtoaddress", address, "0.001"])
+        .run(Some(MINER_WALLET), &["sendtoaddress", address, "0.001"])
         .await?;
     bitcoin_cli
         .run(None, &["generatetoaddress", "7", miner_address])
@@ -3429,20 +3420,10 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     let temp = mg_e2e_temp_dir()?;
     eprintln!("paid E2E data dir: {}", temp.display());
 
-    // Mature the FA's regtest funds before starting seven daemons and make
-    // height 1 available for the clients' chain-id check.
+    // The exclusive Defe node already has 101 blocks and mature wallet funds.
+    // Reuse them rather than creating another wallet and mining 101 more blocks.
     let bitcoin_cli = BitcoinCli::new(&bitcoin_cli_bin, bitcoind)?;
-    bitcoin_cli
-        .run(None, &["createwallet", "e2e-miner"])
-        .await?;
-    let miner_address = bitcoin_cli
-        .run(Some("e2e-miner"), &["getnewaddress"])
-        .await?
-        .trim()
-        .to_owned();
-    bitcoin_cli
-        .run(None, &["generatetoaddress", "101", &miner_address])
-        .await?;
+    let miner_address = bitcoin_cli.funded_miner_address().await?;
 
     // max-seats 2: seat 1 forms the payment federation, seat 2 the paid one.
     // A port grid disjoint from the free test's, in case both run at once.
@@ -3589,7 +3570,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         .to_owned();
     bitcoin_cli
         .run(
-            Some("e2e-miner"),
+            Some(MINER_WALLET),
             &["sendtoaddress", &deposit_address, "0.001"],
         )
         .await?;
@@ -4916,6 +4897,28 @@ struct BitcoinCli<'a> {
 impl<'a> BitcoinCli<'a> {
     fn new(bin: &'a Path, bitcoind: &'a defe_api::BitcoindInfo) -> anyhow::Result<Self> {
         Ok(Self { bin, bitcoind })
+    }
+
+    /// Use the mature funds Defe creates for this fixture's exclusive node.
+    async fn funded_miner_address(&self) -> anyhow::Result<String> {
+        // Both callers hold exclusive leases: every fixture has its own node,
+        // data directory and default wallet, so coin selection cannot overlap
+        // with another test. Defe mines 101 blocks before returning the lease.
+        let balance = self.run(Some(MINER_WALLET), &["getbalance"]).await?;
+        let balance = fedimint_core::bitcoin::Amount::from_str_in(
+            balance.trim(),
+            fedimint_core::bitcoin::Denomination::Bitcoin,
+        )
+        .context("parse exclusive Defe wallet's spendable balance")?;
+        anyhow::ensure!(
+            balance >= fedimint_core::bitcoin::Amount::from_sat(100_000_000),
+            "exclusive Defe wallet must have mature funds before fixture startup"
+        );
+        Ok(self
+            .run(Some(MINER_WALLET), &["getnewaddress"])
+            .await?
+            .trim()
+            .to_owned())
     }
 
     async fn run(&self, wallet: Option<&str>, args: &[&str]) -> anyhow::Result<String> {

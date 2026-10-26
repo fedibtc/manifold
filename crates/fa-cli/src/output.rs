@@ -182,6 +182,31 @@ impl CliOutput<'static> {
 }
 
 impl<'a> CliOutput<'a> {
+    pub(crate) fn replacement_candidates(
+        &mut self,
+        check: &fa_client::ReplacementCheck,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        match format {
+            OutputFormat::Json => writeln!(self.stdout, "{}", serde_json::to_string(check)?)?,
+            OutputFormat::Human => {
+                writeln!(
+                    self.stdout,
+                    "Replacement candidates: {}",
+                    check.candidates.len()
+                )?;
+                for candidate in &check.candidates {
+                    writeln!(
+                        self.stdout,
+                        "Seat {}: {:?}",
+                        candidate.seat_index, candidate.reasons
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Connects output to the supplied stdout and stderr streams.
     fn new(stdout: impl Write + 'a, stderr: impl Write + 'a) -> Self {
         Self {

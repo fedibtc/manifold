@@ -127,6 +127,10 @@ replacement ordering as the new shared high-water mark.
   apply no uptime gate. Consumers older than unknown field admission reject
   a publication that sets it, so Fedi sets it only after those consumers have
   upgraded;
+- `max_guardian_offline_secs`, a positive integer duration in seconds after
+  which a guardian may qualify for replacement. Optional: absent means 86,400
+  seconds (24 hours). FA replacement checks share this publication with the
+  MG admission gate and reuse `min_uptime_percent.7d` and `.30d` for scores;
 - `support_nostr_pubkey`, the Fedi support key MG operators chat with
   ([SPEC-mg-support-chat](../crates/mg/specs/SPEC-mg-support-chat.md)),
   as a Nostr public key. Optional: absent means the MG uses the key its
