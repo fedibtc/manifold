@@ -135,7 +135,9 @@ pub struct TransferSeatRequest {
 /// The source has stopped its guardian between consensus sessions,
 /// durably recorded `Transferred`, and published `Transferred` in the seat's
 /// backup before it answers. Until its guardian reaches that boundary it
-/// refuses the request as a `running` seat, and the destination retries.
+/// refuses the request with
+/// [`crate::ManifoldGuardianError::AwaitingSessionEnd`], and the destination
+/// retries.
 /// Repeats return the same guardian.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct TransferSeatResponse {

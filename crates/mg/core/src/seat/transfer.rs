@@ -1,29 +1,25 @@
 //! Source retirement/export/removal effects belong to the seat owner.
 //! Relay confirmation belongs to the fleet caller, outside this command queue.
 //!
-//! The source never stops its guardian in the middle of a consensus session.
-//! The destination starts the guardian with an empty database and joins the
-//! federation's current session at round 0 with the same key; had this host
-//! already signed units in that session, peers would see equivocation and
-//! count the guardian as a forker until the session ends. The handover
-//! therefore asks fedimintd to exit once its current session completes, and
-//! commits the fence only after the stopped guardian's database proves that
-//! it exited between sessions (SPEC-guardian-transfer).
+//! A source hands its guardian over only after fedimintd exits with
+//! [`SESSION_BOUNDARY_EXIT_CODE`]: its last session completed and no later
+//! one began, so the destination starts in a session this key never signed.
+//! `TransferSeat` asks for that exit and answers `AwaitingSessionEnd` until
+//! the child-exit handler has written the fence; the destination retries.
 
-use std::time::Duration;
-
-use fedi_decentralized_service_manifold_guardian::{
-    SeatTransferGrant, ServiceStatus, SignedRequest, Timestamp,
-};
+use fedi_decentralized_service_manifold_guardian::{SeatTransferGrant, SignedRequest, Timestamp};
 use secp256k1::Keypair;
-use tokio::time::Instant;
 
 use super::{ProcessSlot, Seat, SeatCommand, SeatLoop, SeatVerbError};
 use crate::backup::{SeatPublication, seat_publication_plan};
+use crate::bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE;
 use crate::fedimint_api::FedimintApiError;
 use crate::seat_process::{effective_iroh_api_key, effective_iroh_p2p_key};
 use crate::transfer_native::TransferMaterial;
 use crate::transfer_state::{ImportedKeys, OutgoingTransfer, TransferPhase};
+
+/// Bound on asking the local fedimintd; the destination's retry asks again.
+const SHUTDOWN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Seat {
     pub(crate) async fn retire_for_transfer(
@@ -146,24 +142,77 @@ impl SeatLoop {
                 TransferMaterial::read(&self.data_dir, self.exported_keys())
                     .await
                     .map_err(SeatVerbError::internal)?;
-                // The guardian keeps running until its session ends. The
-                // destination's retry collects the guardian once the handover
-                // has committed the fence.
-                if self.handover.is_none() {
-                    tracing::info!(
-                        safe_to_share = true,
-                        seat_id = %self.facts.seat_id,
-                        "guardian transfer requested; stopping between sessions"
-                    );
-                    self.handover = Some(Handover::new());
-                    self.handover_at = Some(Instant::now());
-                }
-                return Err(SeatVerbError::WrongState {
-                    status: ServiceStatus::Running,
-                });
+                // Stopping the guardian now could leave units of the
+                // running session that the destination would contradict.
+                // The fence is written when the guardian exits at the
+                // session boundary; until then every retry asks again, which
+                // also covers a guardian restarted after a crash.
+                self.request_shutdown_after_current_session().await;
+                return Err(SeatVerbError::AwaitingSessionEnd);
             }
         }
         self.transfer_publication().await
+    }
+
+    async fn request_shutdown_after_current_session(&self) {
+        if !matches!(self.child, ProcessSlot::Configured { .. }) {
+            // Down or restarting: the retry after the respawn asks.
+            return;
+        }
+        let failure_kind = match tokio::time::timeout(
+            SHUTDOWN_REQUEST_TIMEOUT,
+            self.client().shutdown_after_current_session(),
+        )
+        .await
+        {
+            Ok(Ok(())) => return,
+            Ok(Err(FedimintApiError::Unreachable(_))) => "unreachable",
+            Ok(Err(FedimintApiError::Rejected { .. })) => "rejected",
+            Ok(Err(FedimintApiError::InvalidResponse { .. })) => "invalid_response",
+            Err(_) => "timeout",
+        };
+        tracing::warn!(
+            safe_to_share = true,
+            seat_id = %self.facts.seat_id,
+            failure_kind,
+            "guardian transfer could not ask fedimintd to stop after its current session"
+        );
+    }
+
+    /// Called for every observed child exit. Returns whether the guardian
+    /// was handed over, in which case it must never run here again; the
+    /// written fence blocks the respawn.
+    ///
+    /// Only fedimintd's scheduled-shutdown path exits with
+    /// [`SESSION_BOUNDARY_EXIT_CODE`], and only `TransferSeat` schedules that
+    /// shutdown. Every other exit, such as a crash, a panic, a session
+    /// timeout, or a kill by the watchdog or the operator, restarts the
+    /// guardian from its own database, which continues its session rather
+    /// than forking it, and the destination's next retry asks again.
+    pub(super) async fn commit_session_boundary_exit(&mut self, exit_code: Option<i32>) -> bool {
+        if exit_code != Some(SESSION_BOUNDARY_EXIT_CODE) {
+            return false;
+        }
+        match self.db.retire_for_transfer(&self.facts.seat_id).await {
+            Ok(true) => {
+                self.mirror_outgoing(OutgoingTransfer::Stopped);
+                tracing::info!(
+                    safe_to_share = true,
+                    seat_id = %self.facts.seat_id,
+                    "guardian transfer source stopped between sessions"
+                );
+                true
+            }
+            // The seat no longer qualifies, for example after a
+            // decommission; nothing was handed over.
+            Ok(false) => false,
+            Err(error) => {
+                // Restarting continues the guardian's own session, which is
+                // safe; the destination's retry asks for the exit again.
+                tracing::warn!(seat_id = %self.facts.seat_id, %error, "failed to record guardian transfer stop");
+                false
+            }
+        }
     }
 
     pub(super) async fn export_transfer(
@@ -254,216 +303,5 @@ impl SeatLoop {
         }
         self.mirror_outgoing(OutgoingTransfer::Removed);
         Ok(false)
-    }
-}
-
-/// How often a waiting handover retries its request, reports, and retries a
-/// failed fence commit.
-const HANDOVER_POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// Bound on the local shutdown request made from the seat queue.
-const HANDOVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-/// Interval of the operator-visible event while the handover waits.
-const HANDOVER_REPORT_INTERVAL: Duration = Duration::from_secs(60);
-
-/// The source half of a transfer before its fence. In memory only: a daemon
-/// restart forgets it together with fedimintd's own schedule, and the
-/// destination's next `TransferSeat` starts it again.
-pub(super) struct Handover {
-    stage: HandoverStage,
-    requested_at: Instant,
-    reported_at: Instant,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HandoverStage {
-    /// No running child holds the request: none was made yet, or the child
-    /// it was made with exited and took it along.
-    Requested,
-    /// The running child accepted the request and exits once its current
-    /// session completes.
-    Scheduled,
-    /// The stopped guardian's database proves that it exited between
-    /// sessions. It never runs again; only the fence commit may be pending.
-    Confirmed,
-}
-
-impl HandoverStage {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Requested => "requested",
-            Self::Scheduled => "scheduled",
-            Self::Confirmed => "confirmed",
-        }
-    }
-}
-
-impl Handover {
-    pub(super) fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            stage: HandoverStage::Requested,
-            requested_at: now,
-            reported_at: now,
-        }
-    }
-
-    /// The guardian completed its last session here and must never start
-    /// another.
-    pub(super) fn is_confirmed(&self) -> bool {
-        self.stage == HandoverStage::Confirmed
-    }
-}
-
-fn handover_failure_kind(error: &FedimintApiError) -> &'static str {
-    match error {
-        FedimintApiError::Unreachable(_) => "unreachable",
-        FedimintApiError::Rejected { .. } => "rejected",
-        FedimintApiError::InvalidResponse { .. } => "invalid_response",
-    }
-}
-
-impl SeatLoop {
-    pub(super) async fn handover_tick(&mut self) {
-        let Some(stage) = self.handover.as_ref().map(|handover| handover.stage) else {
-            return;
-        };
-        match stage {
-            HandoverStage::Requested => match self.child {
-                ProcessSlot::Configured { .. } => self.request_child_shutdown().await,
-                // A guardian that is already down may have stopped between
-                // sessions; then it hands over without running again.
-                // Otherwise the pending respawn runs it, and the next tick
-                // asks again.
-                ProcessSlot::Empty => self.confirm_stopped_guardian().await,
-                _ => {}
-            },
-            HandoverStage::Scheduled => {}
-            HandoverStage::Confirmed => self.commit_handover().await,
-        }
-        self.report_handover_wait();
-        if self.handover.is_some() {
-            self.handover_at = Some(Instant::now() + HANDOVER_POLL_INTERVAL);
-        }
-    }
-
-    async fn request_child_shutdown(&mut self) {
-        let result = tokio::time::timeout(
-            HANDOVER_REQUEST_TIMEOUT,
-            self.client().shutdown_after_current_session(),
-        )
-        .await;
-        let failure_kind = match result {
-            Ok(Ok(())) => {
-                if let Some(handover) = self.handover.as_mut() {
-                    handover.stage = HandoverStage::Scheduled;
-                }
-                tracing::info!(
-                    safe_to_share = true,
-                    seat_id = %self.facts.seat_id,
-                    "guardian transfer asked fedimintd to stop after its current session"
-                );
-                return;
-            }
-            Ok(Err(error)) => handover_failure_kind(&error),
-            Err(_) => "timeout",
-        };
-        tracing::warn!(
-            safe_to_share = true,
-            seat_id = %self.facts.seat_id,
-            failure_kind,
-            "guardian transfer could not ask fedimintd to stop after its current session"
-        );
-    }
-
-    /// The handover waits as long as the federation does not end the
-    /// session, for example with too many peers offline. Say so instead of
-    /// waiting silently, and never fall back to a mid-session stop.
-    fn report_handover_wait(&mut self) {
-        let Some(handover) = self.handover.as_mut() else {
-            return;
-        };
-        if handover.reported_at.elapsed() < HANDOVER_REPORT_INTERVAL {
-            return;
-        }
-        handover.reported_at = Instant::now();
-        tracing::warn!(
-            safe_to_share = true,
-            seat_id = %self.facts.seat_id,
-            stage = handover.stage.name(),
-            waited_secs = handover.requested_at.elapsed().as_secs(),
-            "guardian transfer still waiting for the source to stop between sessions"
-        );
-    }
-
-    /// The child is gone, by its own exit or a stop. Returns whether the
-    /// handover owns that exit, in which case the child must not respawn.
-    pub(super) async fn handover_child_gone(&mut self) -> bool {
-        if self.handover.is_none() {
-            return false;
-        }
-        self.confirm_stopped_guardian().await;
-        match self.handover.as_mut() {
-            None => true,
-            Some(handover) if handover.is_confirmed() => true,
-            Some(handover) => {
-                // Stopped inside a session: a crash. The respawned child
-                // resumes that session from its own database, which is no
-                // fork, and is asked again.
-                tracing::warn!(
-                    safe_to_share = true,
-                    seat_id = %self.facts.seat_id,
-                    "guardian transfer source stopped inside a session; restarting it and asking again"
-                );
-                handover.stage = HandoverStage::Requested;
-                false
-            }
-        }
-    }
-
-    /// Requires a proved-empty process slot: no fedimintd owns the database.
-    async fn confirm_stopped_guardian(&mut self) {
-        match crate::guardian_db::stopped_between_sessions(&self.data_dir).await {
-            Ok(true) => {
-                if let Some(handover) = self.handover.as_mut() {
-                    handover.stage = HandoverStage::Confirmed;
-                }
-                self.respawn_at = None;
-                self.commit_handover().await;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "failed to read the stopped guardian database");
-            }
-        }
-    }
-
-    /// Commit the fence for a guardian proved stopped between sessions. A
-    /// failed commit keeps the handover confirmed, which refuses every
-    /// spawn, and retries on the next tick.
-    async fn commit_handover(&mut self) {
-        match self.db.retire_for_transfer(&self.facts.seat_id).await {
-            Ok(true) => {
-                self.handover = None;
-                self.handover_at = None;
-                self.mirror_outgoing(OutgoingTransfer::Stopped);
-                tracing::info!(
-                    safe_to_share = true,
-                    seat_id = %self.facts.seat_id,
-                    "guardian transfer source stopped between sessions"
-                );
-            }
-            Ok(false) => {
-                // The seat no longer qualifies for retirement, for example
-                // after a decommission. Nothing was handed over, so ordinary
-                // supervision applies again.
-                self.handover = None;
-                self.handover_at = None;
-                self.schedule_respawn();
-            }
-            Err(error) => {
-                tracing::warn!(seat_id = %self.facts.seat_id, %error, "failed to record guardian transfer stop");
-                self.handover_at = Some(Instant::now() + HANDOVER_POLL_INTERVAL);
-            }
-        }
     }
 }

@@ -286,7 +286,9 @@ impl From<fedi_decentralized_service_manifold_guardian::ManifoldGuardianError> f
             E::UnsupportedVersion => Self::UnsupportedVersion,
             E::UnsupportedFederationSize => Self::UnsupportedFederationSize,
             E::Unauthorized => Self::Unauthorized,
-            E::SeatUnavailable => Self::SeatUnavailable,
+            // Only a transfer source answers this, and only to its
+            // destination MG; for an FA it is a retryable unavailable seat.
+            E::SeatUnavailable | E::AwaitingSessionEnd => Self::SeatUnavailable,
             E::FederationIsRunning => Self::FederationIsRunning,
             E::MetaKeyRefused => Self::MetaKeyRefused,
             E::MetaValueInvalid => Self::MetaValueInvalid,

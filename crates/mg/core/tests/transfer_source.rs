@@ -37,27 +37,16 @@ impl Source {
         self.spawner.child(&self.grant.source_seat_id).await
     }
 
-    /// The destination's pull while the guardian still runs: refused as a
-    /// running seat, which the destination retries.
-    async fn pull_refused_while_running(&self) {
+    /// The destination's pull before the guardian has stopped at a session
+    /// boundary: refused as awaiting the session end, which the destination
+    /// retries.
+    async fn pull_awaits_session_end(&self) {
         assert!(matches!(
             self.fleet
                 .transfer_seat(self.pull(), Duration::from_secs(5))
                 .await,
-            Err(SeatVerbError::WrongState {
-                status: ServiceStatus::Running
-            })
+            Err(SeatVerbError::AwaitingSessionEnd)
         ));
-    }
-
-    /// The live child once it has accepted `requests` shutdown requests.
-    async fn asked_child(&self, requests: usize) -> FakeSeatChildHandle {
-        let child = self.child().await;
-        eventually("the MG asks fedimintd to stop after its session", || {
-            child.state().shutdown_after_current_session.len() >= requests
-        })
-        .await;
-        child
     }
 
     async fn wait_for_stopped(&self) {
@@ -68,14 +57,14 @@ impl Source {
             ),
         )
         .await
-        .expect("the handover commits the fence");
+        .expect("the boundary exit commits the fence");
     }
 
     /// The whole source handover of a running guardian, at a session
     /// boundary.
     async fn hand_over(&self) {
-        self.pull_refused_while_running().await;
-        self.asked_child(1).await.stop_between_sessions().await;
+        self.pull_awaits_session_end().await;
+        self.child().await.stop_at_session_boundary();
         self.wait_for_stopped().await;
     }
 }
@@ -676,18 +665,16 @@ async fn removal_wins_over_a_delayed_export_after_its_publication_wait() {
 }
 
 // Session-boundary handover (SPEC-guardian-transfer step 3). The fake child
-// stands in for fedimintd's process and API; the database it leaves behind
-// is a real one, so the MG's proof reads what fedimintd would write.
+// stands in for fedimintd's process and API.
 
 /// The guardian keeps running, and the destination receives nothing, until
-/// it stops between sessions; it is then never started again.
+/// fedimintd exits at the session boundary; it is then never started again.
 #[tokio::test]
-async fn source_runs_its_guardian_until_it_stops_between_sessions_and_never_restarts_it() {
+async fn source_runs_its_guardian_until_its_boundary_exit_and_never_restarts_it() {
     let s = running_source(33_000).await;
-    for _ in 0..3 {
-        s.pull_refused_while_running().await;
-    }
-    let child = s.asked_child(1).await;
+    s.pull_awaits_session_end().await;
+    s.pull_awaits_session_end().await;
+    let child = s.child().await;
     let api_auth = s
         .fleet
         .identity
@@ -695,22 +682,15 @@ async fn source_runs_its_guardian_until_it_stops_between_sessions_and_never_rest
         .api_auth;
     assert_eq!(
         child.state().shutdown_after_current_session,
-        vec![Some(api_auth)],
-        "one authenticated request, however often the destination pulls"
+        vec![Some(api_auth.clone()), Some(api_auth)],
+        "every pull asks again; fedimintd keeps the earliest boundary"
     );
     assert_eq!(s.outgoing().await, None);
     assert_eq!(s.spawner.spawn_count(), 1, "the guardian was not stopped");
-    assert!(matches!(
-        s.seat.report().await.unwrap(),
-        SeatReport::Active {
-            phase: SeatPhase::Running { .. },
-            ..
-        }
-    ));
 
-    child.stop_between_sessions().await;
+    child.stop_at_session_boundary();
     s.wait_for_stopped().await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     s.seat.watchdog_tick_for_test().await;
     assert_eq!(
         s.spawner.spawn_count(),
@@ -726,157 +706,74 @@ async fn source_runs_its_guardian_until_it_stops_between_sessions_and_never_rest
     s.fleet.shutdown().await;
 }
 
-/// fedimintd dies inside the session, taking its in-memory schedule along.
-/// The respawned guardian resumes that session from its own database, which
-/// is no fork, and the MG asks it again.
+/// Any other exit is a crash, including fedimintd's ordinary shutdown code:
+/// the guardian restarts from its own database, which continues its session
+/// rather than forking it, and the next pull asks the new process.
 #[tokio::test]
-async fn guardian_crash_inside_the_session_respawns_and_asks_again() {
+async fn any_other_exit_respawns_and_the_next_pull_asks_again() {
     let s = running_source(33_012).await;
-    s.pull_refused_while_running().await;
-    s.asked_child(1).await.crash_inside_session().await;
-    eventually("the crashed guardian respawns", || {
-        s.spawner.spawn_count() == 2
+    for (n, code) in [1, 255, 101].into_iter().enumerate() {
+        s.pull_awaits_session_end().await;
+        s.child().await.exit(code);
+        eventually("the guardian respawns", || s.spawner.spawn_count() == n + 2).await;
+        assert_eq!(s.outgoing().await, None, "exit code {code}");
+    }
+    s.pull_awaits_session_end().await;
+    let child = s.child().await;
+    assert_eq!(child.state().shutdown_after_current_session.len(), 1);
+    child.stop_at_session_boundary();
+    s.wait_for_stopped().await;
+    assert_eq!(s.spawner.spawn_count(), 4);
+    s.fleet.shutdown().await;
+}
+
+/// A boundary exit hands over only a seat that still qualifies; a
+/// decommissioned one restarts as any other exit would.
+#[tokio::test]
+async fn boundary_exit_of_a_decommissioned_seat_is_no_handover() {
+    let s = running_source(33_024).await;
+    s.pull_awaits_session_end().await;
+    s.fleet
+        .db
+        .decommission_seat(&s.grant.source_seat_id)
+        .await
+        .unwrap();
+    s.child().await.stop_at_session_boundary();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(s.outgoing().await, None);
+    s.fleet.shutdown().await;
+}
+
+/// The pull arrives while the source guardian is down. Nothing is asked and
+/// nothing handed over; the restarted guardian is asked on the next pull.
+#[tokio::test]
+async fn pull_while_the_guardian_is_down_waits_for_its_restart() {
+    let s = running_source_with_backoff(33_072, Duration::from_secs(2)).await;
+    s.child().await.exit(1);
+    eventually("the MG sees the guardian down", || {
+        s.seat.child_slot_empty_for_test()
     })
     .await;
+    s.pull_awaits_session_end().await;
     assert_eq!(s.outgoing().await, None);
-    s.pull_refused_while_running().await;
-    s.asked_child(1).await.stop_between_sessions().await;
-    s.wait_for_stopped().await;
-    assert_eq!(s.spawner.spawn_count(), 2);
-    s.fleet.shutdown().await;
-}
-
-/// An exit that leaves no readable database proves nothing and counts as a
-/// crash.
-#[tokio::test]
-async fn exit_without_a_readable_database_counts_as_a_crash() {
-    let s = running_source(33_024).await;
-    s.pull_refused_while_running().await;
-    s.asked_child(1).await.exit_without_database();
-    eventually("the guardian respawns", || s.spawner.spawn_count() == 2).await;
-    assert_eq!(s.outgoing().await, None);
-    s.fleet.shutdown().await;
-}
-
-/// The handover lives in memory: a daemon restart forgets it with the
-/// child's schedule, the guardian simply runs on, and the destination's
-/// next pull starts the handover again.
-#[tokio::test]
-async fn mg_restart_while_waiting_forgets_the_handover_until_the_next_pull() {
-    let mut s = running_source(33_036).await;
-    s.pull_refused_while_running().await;
-    s.asked_child(1).await;
-    s.fleet.shutdown().await;
-    let reopened = Fleet::open_with_wallet(
-        s.fleet.db.clone(),
-        s.fleet.config.clone(),
-        async |_| Ok(Arc::new(NoWallet) as _),
-        async |_| Ok(s.sink.clone() as _),
-    )
-    .await
-    .unwrap();
-    s.seat = reopened.seat_by_id(&s.grant.source_seat_id).unwrap();
-    s.fleet = Arc::new(reopened);
-    eventually("the guardian starts again", || s.spawner.spawn_count() == 2).await;
-    let child = s.child().await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
-    assert!(child.state().shutdown_after_current_session.is_empty());
-    assert_eq!(s.outgoing().await, None);
+    eventually("the guardian restarts", || s.spawner.spawn_count() == 2).await;
     s.hand_over().await;
     assert_eq!(s.spawner.spawn_count(), 2);
     s.fleet.shutdown().await;
 }
 
-/// Too many peers are offline for the session to end. The handover waits
-/// with the guardian running and never falls back to a mid-session stop;
-/// once the session ends, it completes.
+/// The connection between the MG and its child is cut when the MG asks. The
+/// guardian keeps running and the next pull asks again.
 #[tokio::test]
-async fn session_that_cannot_end_keeps_the_guardian_running_until_it_does() {
-    let s = running_source(33_048).await;
-    s.pull_refused_while_running().await;
-    let child = s.asked_child(1).await;
-    tokio::time::sleep(Duration::from_secs(11)).await;
-    s.pull_refused_while_running().await;
-    assert_eq!(s.outgoing().await, None);
-    assert_eq!(s.spawner.spawn_count(), 1);
-    assert_eq!(
-        child.state().shutdown_after_current_session.len(),
-        1,
-        "an accepted request is not repeated"
-    );
-    child.stop_between_sessions().await;
-    s.wait_for_stopped().await;
-    s.fleet.shutdown().await;
-}
-
-/// The pull arrives while the source guardian is down between sessions, as
-/// after an earlier scheduled stop. Its database proves it, so it hands over
-/// without ever running again.
-#[tokio::test]
-async fn pull_while_the_guardian_is_down_between_sessions_hands_over_at_once() {
-    let s = running_source_with_backoff(33_060, Duration::from_secs(600)).await;
-    s.child().await.stop_between_sessions().await;
-    eventually("the MG sees the guardian down", || {
-        s.seat.child_slot_empty_for_test()
-    })
-    .await;
-    s.pull_refused_while_running().await;
-    s.wait_for_stopped().await;
-    assert_eq!(s.spawner.spawn_count(), 1);
-    s.fleet
-        .transfer_seat(s.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
-    s.fleet.shutdown().await;
-}
-
-/// The pull arrives while the source guardian is down inside a session. It
-/// restarts as usual and hands over once that session ends.
-#[tokio::test]
-async fn pull_while_the_guardian_is_down_inside_a_session_waits_for_its_restart() {
-    let s = running_source_with_backoff(33_072, Duration::from_secs(3)).await;
-    s.child().await.crash_inside_session().await;
-    eventually("the MG sees the guardian down", || {
-        s.seat.child_slot_empty_for_test()
-    })
-    .await;
-    s.pull_refused_while_running().await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(s.outgoing().await, None);
-    eventually("the guardian restarts", || s.spawner.spawn_count() == 2).await;
-    s.asked_child(1).await.stop_between_sessions().await;
-    s.wait_for_stopped().await;
-    s.fleet.shutdown().await;
-}
-
-/// The connection between the MG and its child is cut when the MG asks. It
-/// asks again until the request lands; the guardian keeps running.
-#[tokio::test]
-async fn request_retries_while_the_local_api_is_cut() {
+async fn pull_while_the_local_api_is_cut_asks_again_on_the_next_pull() {
     let s = running_source(33_084).await;
     let child = s.child().await;
     child.modify_state(|state| state.api_cut = true);
-    s.pull_refused_while_running().await;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    s.pull_awaits_session_end().await;
     assert!(child.state().shutdown_after_current_session.is_empty());
-    assert_eq!(s.outgoing().await, None);
     child.modify_state(|state| state.api_cut = false);
-    s.asked_child(1).await.stop_between_sessions().await;
-    s.wait_for_stopped().await;
-    assert_eq!(s.spawner.spawn_count(), 1);
-    s.fleet.shutdown().await;
-}
-
-/// A cut after the request landed does not matter: the proof comes from the
-/// stopped database, not from the API.
-#[tokio::test]
-async fn api_cut_after_the_request_still_hands_over_at_the_boundary() {
-    let s = running_source(33_096).await;
-    s.pull_refused_while_running().await;
-    let child = s.asked_child(1).await;
-    child.modify_state(|state| state.api_cut = true);
-    child.stop_between_sessions().await;
-    s.wait_for_stopped().await;
+    s.hand_over().await;
+    assert_eq!(child.state().shutdown_after_current_session.len(), 1);
     assert_eq!(s.spawner.spawn_count(), 1);
     s.fleet.shutdown().await;
 }

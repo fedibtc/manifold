@@ -14,3 +14,8 @@
 /// ([`seat_process`](crate::seat_process)); the binary must consult it before
 /// parsing its own CLI, because fedimintd owns the argv.
 pub const ARGV0: &str = "fedimintd";
+
+/// fedimintd's exit code after a scheduled shutdown took effect at a session
+/// boundary (`fedimintd::SESSION_BOUNDARY_EXIT_CODE`, which the composition
+/// root asserts equal).
+pub const SESSION_BOUNDARY_EXIT_CODE: i32 = 3;

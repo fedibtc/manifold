@@ -37,8 +37,8 @@ online once. The FA does not have to be online at the same time.
    that the FA owns the source seat, and that the grant names this seat and
    its federation. It then stops its guardian between consensus sessions,
    never inside one (see *Session boundary*). Until then it refuses
-   `TransferSeat` as a `running` seat, and the destination retries. Once the
-   guardian has stopped between sessions, the source durably records
+   `TransferSeat` with `AwaitingSessionEnd`, and the destination retries.
+   Once the guardian has stopped between sessions, the source durably records
    `Transferred` and publishes it in the seat's backup before it answers. A source that cannot publish does
    not answer yet. It then returns the guardian's three config files and its
    two Iroh secrets in plain form; the Iroh connection between the two MGs
@@ -66,7 +66,7 @@ online once. The FA does not have to be online at the same time.
 - The source stops before it hands the guardian over, and the destination
   cannot start without it. At most one host runs the guardian unless the FA
   grants the same seat to two destinations.
-- The source hands over only a guardian proved stopped between sessions, so
+- The source hands over only a guardian that exited at a session boundary, so
   the moved key never signs units in a session that the source has already
   signed units in.
 - The grant is the only authority. Possession of a grant gives no access to
@@ -96,28 +96,26 @@ federation's fault budget, so a few transfers in one session can halt the
 federation. The source therefore hands over only a guardian that stopped
 between sessions:
 
-- It asks its fedimintd, through the bundled fedimintd's
-  `shutdown_after_current_session` admin endpoint, to exit once the session
-  it is running completes, without starting another.
-- It records `Transferred` only when the stopped guardian's own database
-  holds no AlephBFT units of an unfinished session. fedimintd saves each
-  unit before it broadcasts it and removes them when it commits a session,
-  so this proves the key signed nothing in any session the guardian did not
-  complete, however the process ended.
-- Any other exit is a crash: the guardian restarts from its own database,
-  which is no fork, and the source asks again. The request lives only in the
-  fedimintd process and in the MG's memory, so a restart of either forgets it
-  and the next `TransferSeat` starts again.
-- Once the stopped database proves the boundary, the source never starts the
-  guardian again, even before `Transferred` is recorded.
+- On every `TransferSeat` it asks its running fedimintd, through the bundled
+  fedimintd's `shutdown_after_current_session` admin endpoint, to exit once
+  the session it is running completes, without starting another. The
+  request is idempotent, and it lives only in the fedimintd process.
+- fedimintd exits with a dedicated session-boundary exit code only on that
+  path: its last session completed and no later one began. On that exit the
+  source records `Transferred`, which also keeps the supervisor from ever
+  starting the guardian again.
+- Any other exit is a crash, including a session timeout, a panic, and a
+  kill by the watchdog or the operator. The guardian restarts from its own
+  database, which continues its session rather than forking it, and the
+  destination's next `TransferSeat` asks the new process.
 
 The wait costs up to one session plus the minute fedimintd waits after its
-last session for peers to finish it. A source whose guardian is already down
-between sessions hands it over without starting it; one that went down
-inside a session starts it as usual and waits for that session to end. While
-the federation cannot end the session, for example with too many peers
-offline, the source keeps the guardian running, refuses `TransferSeat`, and
-logs that it is waiting. It never falls back to a mid-session stop.
+last session for peers to finish it. A source whose guardian is down when
+`TransferSeat` arrives asks nothing; the guardian restarts as usual and a
+later retry asks it. While the federation cannot end the session, for
+example with too many peers offline, the guardian keeps running and the
+source keeps answering `AwaitingSessionEnd`. It never falls back to a
+mid-session stop.
 
 ## Backup and restore
 

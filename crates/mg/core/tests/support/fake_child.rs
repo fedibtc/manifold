@@ -82,7 +82,6 @@ pub(crate) struct FakeSeatChildHandle {
     state: Arc<Mutex<FakeApiState>>,
     exit: watch::Sender<Option<ObservedSeatExit>>,
     seat_id: SeatId,
-    data_dir: PathBuf,
 }
 
 /// The registry's view of the live child of one seat.
@@ -90,7 +89,6 @@ struct FakeChildEntry {
     generation: u64,
     state: Weak<Mutex<FakeApiState>>,
     exit: watch::Sender<Option<ObservedSeatExit>>,
-    data_dir: PathBuf,
 }
 
 impl FakeChildEntry {
@@ -99,7 +97,6 @@ impl FakeChildEntry {
             state: self.state.upgrade()?,
             exit: self.exit.clone(),
             seat_id: seat_id.clone(),
-            data_dir: self.data_dir.clone(),
         })
     }
 }
@@ -298,27 +295,14 @@ impl FakeSeatChildHandle {
         update(&mut self.state.lock().unwrap());
     }
 
-    /// fedimintd exits between sessions, as after its scheduled shutdown:
-    /// its database holds no units of an unfinished session.
-    pub(crate) async fn stop_between_sessions(&self) {
-        write_guardian_db(&self.data_dir, false).await;
-        self.exit(255);
-    }
-
-    /// fedimintd dies inside a session, for example on a consensus session
-    /// timeout: its database holds the session's saved units.
-    pub(crate) async fn crash_inside_session(&self) {
-        write_guardian_db(&self.data_dir, true).await;
-        self.exit(1);
-    }
-
-    /// fedimintd exits before it ever wrote its database.
-    pub(crate) fn exit_without_database(&self) {
-        self.exit(1);
+    /// fedimintd exits as its scheduled shutdown takes effect at a session
+    /// boundary.
+    pub(crate) fn stop_at_session_boundary(&self) {
+        self.exit(crate::bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE);
     }
 
     /// The process exits on its own; the MG sees only the exit status.
-    fn exit(&self, status_code: i32) {
+    pub(crate) fn exit(&self, status_code: i32) {
         self.exit.send_replace(Some(ObservedSeatExit {
             seat_id: self.seat_id.clone(),
             status_code: Some(status_code),
@@ -565,7 +549,6 @@ impl FakeSeatProcessSpawner {
                 generation,
                 state: Arc::downgrade(&api_state),
                 exit: exit.clone(),
-                data_dir: data_dir.clone(),
             },
         );
         let stop_data_dir = data_dir.clone();
@@ -758,29 +741,4 @@ pub(crate) async fn write_fake_fedimintd(dir: &std::path::Path, body: &str) -> P
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();
     path
-}
-
-/// Write the guardian database a stopped fedimintd leaves behind: with the
-/// AlephBFT units it saved inside an unfinished session, or with none.
-pub(crate) async fn write_guardian_db(data_dir: &std::path::Path, in_session: bool) {
-    use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped as _};
-    use fedimint_server::consensus::db::{AlephUnitsKey, AlephUnitsPrefix};
-
-    let path = data_dir.join(fedimint_server::config::io::DB_FILE);
-    tokio::task::spawn_blocking(move || {
-        let raw = fedimint_rocksdb::RocksDb::build(&path)
-            .open_blocking()
-            .unwrap();
-        let db = Database::new(raw, Default::default());
-        futures::executor::block_on(async {
-            let mut dbtx = db.begin_transaction().await;
-            dbtx.remove_by_prefix(&AlephUnitsPrefix).await;
-            if in_session {
-                dbtx.insert_entry(&AlephUnitsKey(0), &vec![1u8; 8]).await;
-            }
-            dbtx.commit_tx().await;
-        });
-    })
-    .await
-    .unwrap();
 }

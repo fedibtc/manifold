@@ -97,9 +97,9 @@ It never acquires the transfer-removal exception implicitly.
 The transfer implementation serializes retirement, export and removal in the
 seat owner ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)). Retirement
 asks the child to exit once its current consensus session completes and
-commits its permanent fence, which releases capacity, only when the stopped
-child's database proves it exited between sessions; any other exit leaves no
-fence, the child restarts, and the handover asks again. Export requires that fence. It waits
+commits its permanent fence, which releases capacity, only when the child
+exits with fedimintd's session-boundary exit code; any other exit leaves no
+fence, the child restarts, and the destination's retry asks again. Export requires that fence. It waits
 outside the seat queue for the exact retired-source recovery document, then
 rechecks the fence, grant and document before releasing material. An older
 archive publication is insufficient.

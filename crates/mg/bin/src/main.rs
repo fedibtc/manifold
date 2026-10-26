@@ -682,6 +682,11 @@ fn with_operator_ui(router: axum::Router) -> axum::Router {
     router
 }
 
+// Core recognises the bundled fedimintd's session-boundary exit without
+// depending on fedimintd.
+const _: () =
+    assert!(bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE == fedimintd::SESSION_BOUNDARY_EXIT_CODE);
+
 /// Whether this process was spawned as the bundled `fedimintd`. Must be
 /// consulted before the daemon parses its own CLI: fedimintd owns the argv.
 fn is_bundled_fedimintd() -> bool {

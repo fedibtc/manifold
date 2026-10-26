@@ -217,6 +217,7 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
     match err {
         SeatVerbError::UnknownSeat => ManifoldGuardianError::UnknownSeat,
         SeatVerbError::SeatUnavailable => ManifoldGuardianError::SeatUnavailable,
+        SeatVerbError::AwaitingSessionEnd => ManifoldGuardianError::AwaitingSessionEnd,
         SeatVerbError::FederationIsRunning => ManifoldGuardianError::FederationIsRunning,
         SeatVerbError::WrongState { status } => ManifoldGuardianError::WrongState { status },
         SeatVerbError::InvalidDkgInput(reason) => ManifoldGuardianError::InvalidDkgInput(reason),
@@ -248,6 +249,7 @@ fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
         ManifoldGuardianError::Unauthorized => "unauthorized",
         ManifoldGuardianError::WrongState { .. } => "wrong_state",
         ManifoldGuardianError::SeatUnavailable => "seat_unavailable",
+        ManifoldGuardianError::AwaitingSessionEnd => "awaiting_session_end",
         ManifoldGuardianError::FederationIsRunning => "federation_is_running",
         ManifoldGuardianError::InvalidDkgInput(_) => "invalid_dkg_input",
         ManifoldGuardianError::MetaKeyRefused => "meta_key_refused",
