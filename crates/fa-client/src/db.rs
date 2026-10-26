@@ -3425,7 +3425,6 @@ impl FaStore {
             .ok_or_else(|| FaError::InvalidIntent("formation lease bound is too large".to_owned()))
     }
 
-    /// Renew the lease only while the database still recognizes this owner.
     /// Put a backed-up transfer's destination in place of a restored seat,
     /// after consensus showed that the transfer moved the guardian there.
     pub(crate) async fn adopt_transferred_seat(
@@ -3560,6 +3559,7 @@ impl FaStore {
         Ok(())
     }
 
+    /// Renew the lease only while the database still recognizes this owner.
     pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
