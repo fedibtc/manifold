@@ -310,8 +310,8 @@ its recovery premises).
 
 On a destination, one fleet-owned transfer supervisor resumes each durable
 incoming transfer still waiting for its source, at startup and on every seat
-transition, independently of FA availability; it also reports a lapsed grant
-to the seat. Network and native validation work is bounded and runs outside
+transition, independently of FA availability, and keeps retrying until the
+source answers. Network and native validation work is bounded and runs outside
 the seat queue; installation, child lifecycle, and cleanup effects return
 through that queue. Cancellation drains native work before cleanup or shutdown
 releases the data-root lock.

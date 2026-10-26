@@ -18,10 +18,6 @@ pub(super) enum ImportCommand {
         callback: Option<ValidatedDkgCompletionCallback>,
         reply: oneshot::Sender<Result<IncomingTransfer, SeatVerbError>>,
     },
-    Expire {
-        generation: u64,
-        reply: oneshot::Sender<Result<(), SeatVerbError>>,
-    },
     Install {
         generation: u64,
         binding: TransferMove,
@@ -46,11 +42,6 @@ impl Seat {
             })
         })
         .await
-    }
-
-    pub(crate) async fn expire_transfer(&self, generation: u64) -> Result<(), SeatVerbError> {
-        self.verb_request(|reply| SeatCommand::Import(ImportCommand::Expire { generation, reply }))
-            .await
     }
 
     pub(crate) async fn install_transfer(
@@ -81,9 +72,6 @@ impl SeatLoop {
                 reply,
             } => {
                 let _ = reply.send(self.admit_transfer(&grant, service_key, callback).await);
-            }
-            ImportCommand::Expire { generation, reply } => {
-                let _ = reply.send(self.expire_transfer(generation).await);
             }
             ImportCommand::Install {
                 generation,
@@ -143,24 +131,6 @@ impl SeatLoop {
             self.stop_child().await.map_err(SeatVerbError::internal)?;
         }
         Ok(record)
-    }
-
-    /// Expiry is derived from the grant; this only stops the runtime from
-    /// reporting a poll that can no longer happen.
-    async fn expire_transfer(&mut self, generation: u64) -> Result<(), SeatVerbError> {
-        self.check_import_allowed()?;
-        let expired = self
-            .db
-            .incoming_transfer(&self.facts.seat_id)
-            .await
-            .map_err(SeatVerbError::internal)?
-            .is_some_and(|record| {
-                record.generation == generation && record.phase() == TransferPhase::Expired
-            });
-        if expired {
-            self.mirror_incoming(TransferPhase::Expired);
-        }
-        Ok(())
     }
 
     async fn current_import(&self, generation: u64) -> Result<IncomingTransfer, SeatVerbError> {

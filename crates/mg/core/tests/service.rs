@@ -638,7 +638,6 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     );
     let transfer = SeatTransferGrant {
         ts: now(),
-        expires_at: Timestamp(now().0 + 3600),
         fa_id: attacker_id,
         federation_id: fedi_decentralized_service_manifold_guardian::FederationId("test".into()),
         source: fedi_decentralized_service_manifold_guardian::Locator::new(
@@ -896,7 +895,6 @@ async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
     ));
     let transfer = SeatTransferGrant {
         ts: Timestamp(0),
-        expires_at: Timestamp(1),
         fa_id,
         federation_id: fedi_decentralized_service_manifold_guardian::FederationId("test".into()),
         source: fedi_decentralized_service_manifold_guardian::Locator::new(

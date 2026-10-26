@@ -23,7 +23,7 @@ fn locator() -> Locator {
     )
 }
 
-fn grant(expires_after: u64) -> SeatTransferGrant {
+fn grant() -> SeatTransferGrant {
     let key = fa_key();
     SeatTransferGrant {
         ts: Timestamp(ISSUED),
@@ -38,7 +38,6 @@ fn grant(expires_after: u64) -> SeatTransferGrant {
             .x_only_public_key()
             .0,
         destination_seat_id: SeatId::from(QuoteId([2; 32])),
-        expires_at: Timestamp(ISSUED + expires_after),
     }
 }
 
@@ -50,21 +49,17 @@ fn verify_at(grant: &SeatTransferGrant, now: u64) -> Result<SeatTransferGrant, A
 }
 
 #[test]
-fn grant_outlives_the_one_hour_request_window_until_expiry() {
-    let grant = grant(14 * DAY);
+fn grant_never_expires() {
+    let grant = grant();
 
-    // An ordinary request would be stale here; a grant is still valid.
+    // An ordinary request would be stale after one hour; a grant stays valid.
     assert_eq!(verify_at(&grant, ISSUED + 2 * 60 * 60).unwrap(), grant);
-    assert_eq!(verify_at(&grant, ISSUED + 14 * DAY).unwrap(), grant);
-    assert!(matches!(
-        verify_at(&grant, ISSUED + 14 * DAY + 1),
-        Err(AuthError::Stale)
-    ));
+    assert_eq!(verify_at(&grant, ISSUED + 10 * 365 * DAY).unwrap(), grant);
 }
 
 #[test]
 fn grant_keeps_the_usual_clock_allowance_before_issue() {
-    let grant = grant(DAY);
+    let grant = grant();
 
     assert!(verify_at(&grant, ISSUED - FA_REQUEST_FRESHNESS_WINDOW_SECS).is_ok());
     assert!(matches!(
@@ -74,17 +69,8 @@ fn grant_keeps_the_usual_clock_allowance_before_issue() {
 }
 
 #[test]
-fn grant_longer_than_the_maximum_lifetime_is_never_valid() {
-    assert!(verify_at(&grant(SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS), ISSUED).is_ok());
-    assert!(matches!(
-        verify_at(&grant(SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS + 1), ISSUED),
-        Err(AuthError::Stale)
-    ));
-}
-
-#[test]
 fn grant_signature_does_not_verify_as_another_verb() {
-    let envelope = SignedRequest::create(&grant(DAY), &fa_key()).unwrap();
+    let envelope = SignedRequest::create(&grant(), &fa_key()).unwrap();
     let as_remove: SignedRequest<crate::RemoveSeatRequest> =
         serde_json::from_value(serde_json::to_value(&envelope).unwrap()).unwrap();
 
@@ -102,7 +88,7 @@ fn transfer_request(key: &Keypair) -> TransferSeatRequest {
     TransferSeatRequest {
         ts: Timestamp(ISSUED),
         destination_service_pubkey: key.x_only_public_key().0,
-        grant: SignedRequest::create(&grant(DAY), &fa_key()).unwrap(),
+        grant: SignedRequest::create(&grant(), &fa_key()).unwrap(),
     }
 }
 
