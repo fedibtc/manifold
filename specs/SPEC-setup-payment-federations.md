@@ -140,9 +140,12 @@ replacement ordering as the new shared high-water mark.
   enough consumers have upgraded;
 - `seat_memory_budget_mib`, the RAM in MiB that each MG reserves per seat when
   it computes its memory seat limit, from 256 to 16,384. Optional: absent
-  means 1,229 (about 1.2 GiB); and
+  means 1,229 (about 1.2 GiB);
 - `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
-  Optional: absent means 12.
+  Optional: absent means 12; and
+- `mg_release`, the threshold-signed static binaries of `fman_version` that
+  MGs install automatically ([MG release](#mg-release)). Optional: absent,
+  no MG updates itself.
 
 Neither seat field changes the operator's own maximum. Each MG sells up to
 the lowest of the operator maximum and its runtime limits
@@ -187,7 +190,11 @@ Admission performs all of these checks before the set influences policy:
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` outside 256 to 16,384 or a
     `max_seats_per_mg` above 256;
-13. reject a `min_uptime_percent` window above 100, which no MG can reach.
+13. reject a `min_uptime_percent` window above 100, which no MG can reach;
+14. reject an `mg_release` with no binaries or more than 8, more than 16
+    signatures, an empty binary or one over 1 GiB, or a download URL that is
+    not a normalized, credential-free HTTP(S) URL of at most 2,048 bytes.
+    Admission does not check release signatures; the MG does.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
@@ -199,6 +206,56 @@ and whether the running version is lower. An equal or newer local version is
 accepted, which permits staged rollouts and development builds ahead of the
 publication. This is a cheap rollout signal for operator consumers, not a
 daemon kill switch.
+
+## MG release
+
+`mg_release` carries the release that `fman_version` names:
+
+```json5
+{
+  source_commit: "<40 lowercase hex: the git commit it is built from>",
+  binaries: {
+    // Keyed by Rust's `std::env::consts::ARCH`.
+    x86_64: { sha256: "<64 lowercase hex>", size: 143241128, url: "https://..." },
+    aarch64: { sha256: "...", size: 0, url: "..." },
+  },
+  signatures: [{ signer: "<hex public key>", signature: "<BIP-340 hex>" }],
+}
+```
+
+Each binary is the reproducible, statically linked `fleet-manager` built
+with `nix build .#fleet-manager-static`, so it runs from any data root without
+the image's Nix closure. Each release signer rebuilds it and signs the SHA-256
+of this text, in which binaries appear in key order and each line ends in
+`\n`:
+
+```text
+manifold-mg-release/v1
+environment=<development|staging|production>
+version=<fman_version>
+commit=<source_commit>
+binary=<arch> <sha256> <size> <url>
+```
+
+The digest binds the environment and the version, so a signature cannot
+authorize another environment or release. `setup-payment-publisher
+sign-mg-release` produces one signature, and `publish` refuses a release that
+lacks the threshold of the Production profile's signers. The publisher key
+only transports the release; it cannot authorize one.
+
+An MG installs the release only when all of these hold: the environment
+profile pins release signers
+([SPEC-manifold-environment](../crates/manifold-environment/specs/SPEC-manifold-environment.md));
+`fman_version` is above the running version; at least the threshold of
+distinct pinned signers signed the digest; the release has a binary for the
+MG's CPU; and the MG owner has not turned automatic updates off. It then waits
+a random delay below 15 minutes (5 seconds in development) so that the
+guardians of one federation do not restart together, downloads the binary,
+checks its size and hash, and stages it under `releases/` in the data root.
+The daemon stops gracefully and `exec`s the staged binary in the same process.
+At every start, the binary first runs a staged release that is newer than
+itself and still has its hash. A platform update that ships a newer binary
+therefore wins, and updates only move forward: no rollback exists.
 
 ## Replacement and durable state
 

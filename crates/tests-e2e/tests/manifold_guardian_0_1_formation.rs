@@ -199,6 +199,7 @@ async fn run_manifold_guardian_formation() -> anyhow::Result<()> {
             relay_urls: &nostr_relay.url,
             holder_relay_url: &nostr_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         None,
     )
@@ -321,6 +322,7 @@ async fn run_multi_relay_liveness() -> anyhow::Result<()> {
             relay_urls: &relay_urls,
             holder_relay_url: &live_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         None,
     )
@@ -413,6 +415,7 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
         relay_urls: &nostr_relay.url,
         holder_relay_url: &nostr_relay.url,
         setup_payment_publisher: &setup_payment_publisher,
+        mg_release_signers: None,
     };
 
     let temp = mg_e2e_temp_dir()?;
@@ -643,6 +646,7 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         relay_urls: &nostr_relay.url,
         holder_relay_url: &nostr_relay.url,
         setup_payment_publisher: &setup_payment_publisher,
+        mg_release_signers: None,
     };
 
     let temp = mg_e2e_temp_dir()?;
@@ -871,6 +875,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
             relay_urls: &nostr_relay.url,
             holder_relay_url: &nostr_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         None,
     )
@@ -1155,6 +1160,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
             relay_urls: &nostr_relay.url,
             holder_relay_url: &nostr_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         None,
     )
@@ -2622,6 +2628,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
             relay_urls: &nostr_relay.url,
             holder_relay_url: &nostr_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         Some(callback_server.origin()),
     )
@@ -3459,6 +3466,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
             relay_urls: &nostr_relay.url,
             holder_relay_url: &nostr_relay.url,
             setup_payment_publisher: &setup_payment_publisher,
+            mg_release_signers: None,
         }),
         None,
     )
@@ -4251,6 +4259,9 @@ struct NostrEnv<'a> {
     /// The one relay the test Holder issuer publishes the authorization to.
     holder_relay_url: &'a str,
     setup_payment_publisher: &'a str,
+    /// `MANIFOLD_DEV_MG_RELEASE_SIGNERS`: the t-of-n release signers whose
+    /// signatures enable automatic updates, when the test exercises them.
+    mg_release_signers: Option<&'a str>,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -4317,6 +4328,12 @@ fn spawn_manifold_guardian(
                 fedi_decentralized_manifold_environment::DEV_SETUP_PAYMENT_PUBLISHER_ENV,
                 nostr.setup_payment_publisher,
             );
+        if let Some(signers) = nostr.mg_release_signers {
+            command.env(
+                fedi_decentralized_manifold_environment::DEV_MG_RELEASE_SIGNERS_ENV,
+                signers,
+            );
+        }
     }
     if let Some(origin) = push_gateway_origin {
         command
@@ -4981,4 +4998,379 @@ fn binary_on_path(binary_name: &str) -> Option<PathBuf> {
 
 fn exe_name(binary_name: &str) -> String {
     format!("{binary_name}{}", env::consts::EXE_SUFFIX)
+}
+
+/// The newer static `fleet-manager` that the auto-update test publishes.
+const AUTO_UPDATE_TO_BIN_ENV: &str = "MG_AUTO_UPDATE_TO_BIN";
+/// The `fman_version` of [`AUTO_UPDATE_TO_BIN_ENV`]'s binary.
+const AUTO_UPDATE_TO_VERSION_ENV: &str = "MG_AUTO_UPDATE_TO_VERSION";
+const AUTO_UPDATE_GUARDIAN_COUNT: usize = GUARDIAN_COUNT;
+const AUTO_UPDATE_PORT_BASE: u16 = 62_000;
+
+/// Release qualification for automatic updates: seven MGs running the current
+/// binary host a formed federation, a threshold-signed release appears in the
+/// setup-payment publication, and every MG replaces itself in place (same
+/// PID) with the downloaded binary while the federation keeps reaching
+/// consensus. A restart of the old binary goes straight to the staged one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "release qualification: scripts/test-mg-auto-update.sh supplies a newer static binary"]
+async fn mg_auto_updates_a_formed_federation_under_defe() {
+    tokio::time::timeout(Duration::from_secs(900), run_auto_update())
+        .await
+        .expect("MG auto-update E2E timed out")
+        .expect("MG auto-update E2E failed");
+}
+
+async fn run_auto_update() -> anyhow::Result<()> {
+    let old_bin = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")?;
+    let new_bin = PathBuf::from(
+        env::var_os(AUTO_UPDATE_TO_BIN_ENV)
+            .with_context(|| format!("{AUTO_UPDATE_TO_BIN_ENV} names the release to publish"))?,
+    );
+    let new_version = env::var(AUTO_UPDATE_TO_VERSION_ENV)
+        .with_context(|| format!("{AUTO_UPDATE_TO_VERSION_ENV} names the release version"))?;
+    let fa_cli_bin = locate_binary(FA_CLI_BIN_ENV, "fa-cli")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let new_bytes: &'static [u8] = std::fs::read(&new_bin)?.leak();
+    let new_sha256 = hex::encode(Sha256::digest(new_bytes));
+
+    let mut defe = AsyncDefeClient::connect_from_env()
+        .await
+        .context("connect to defe from env")?;
+    let bitcoind_lease = defe.request_bitcoind(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::Bitcoind(bitcoind) = &bitcoind_lease.descriptor else {
+        anyhow::bail!("expected bitcoind descriptor");
+    };
+    let nostr_relay_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
+        anyhow::bail!("expected Nostr relay descriptor");
+    };
+    let setup_payment_keys =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?;
+    let setup_payment_publisher = setup_payment_keys.public_key().to_string();
+    let release_keys: Vec<NostrKeys> = (0..3).map(|_| NostrKeys::generate()).collect();
+    let release_signers = format!(
+        "2:{}",
+        release_keys
+            .iter()
+            .map(|keys| keys.public_key().to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let temp = mg_e2e_temp_dir()?;
+    eprintln!("MG auto-update data dir: {}", temp.display());
+    let iroh_overrides =
+        local_iroh_overrides_for_grid(AUTO_UPDATE_PORT_BASE, 1, AUTO_UPDATE_GUARDIAN_COUNT);
+    let nostr = NostrEnv {
+        relay_urls: &nostr_relay.url,
+        holder_relay_url: &nostr_relay.url,
+        setup_payment_publisher: &setup_payment_publisher,
+        mg_release_signers: Some(&release_signers),
+    };
+    let (mut daemons, locators) = start_daemons(
+        &old_bin,
+        &temp,
+        bitcoind,
+        1,
+        AUTO_UPDATE_PORT_BASE,
+        Some(&iroh_overrides),
+        AUTO_UPDATE_GUARDIAN_COUNT,
+        Some(nostr),
+        None,
+    )
+    .await;
+    offer_free_seats(&old_bin, &temp, AUTO_UPDATE_GUARDIAN_COUNT).await?;
+    let invite_code = run_fa_cli(
+        &fa_cli_bin,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&locators),
+        FaCliInvocation {
+            extra_args: &[],
+            resume_args: None,
+            wallet_secret: None,
+            output: FaCliOutput::Human,
+            seat_price_msats: 0,
+        },
+        Some(&iroh_overrides),
+        AUTO_UPDATE_GUARDIAN_COUNT,
+        FA_CLI_TIMEOUT,
+    )
+    .await?;
+    let fedimint_cli = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("fedimint-cli-client"),
+        iroh_overrides: &iroh_overrides,
+    };
+    fedimint_cli
+        .run(
+            &["join-federation", invite_code.trim()],
+            FEDIMINT_CLI_JOIN_TIMEOUT,
+        )
+        .await?;
+    wait_for_seat_bindings_consensus(&fedimint_cli, AUTO_UPDATE_GUARDIAN_COUNT).await?;
+
+    let pids: Vec<u32> = daemons
+        .iter()
+        .map(|daemon| daemon.id().context("MG is running"))
+        .collect::<anyhow::Result<_>>()?;
+    let old_exe = old_bin.canonicalize()?;
+    for &pid in &pids {
+        anyhow::ensure!(
+            process_exe(pid)? == old_exe,
+            "MG {pid} starts on the old binary"
+        );
+    }
+    let old_version = manifold_guardian_admin(&old_bin, &temp.join("mg-0"), &["onboarding"])
+        .await?["fman_version"]["current"]
+        .as_str()
+        .context("onboarding reports the running version")?
+        .to_owned();
+    anyhow::ensure!(
+        old_version != new_version,
+        "the release must be a newer version"
+    );
+
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let server = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/fleet-manager", server.local_addr()?);
+    tokio::spawn(serve_release_binary(server, new_bytes, downloads.clone()));
+    let mut release = serde_json::json!({
+        "source_commit": "0000000000000000000000000000000000000000",
+        "binaries": {
+            std::env::consts::ARCH: {
+                "sha256": new_sha256,
+                "size": new_bytes.len(),
+                "url": url,
+            }
+        },
+        "signatures": [],
+    });
+    let publisher = NostrRelayClient::connect(
+        &nostr_relay.url,
+        setup_payment_keys.clone(),
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("connect setup-payment publisher to relay: {err}"))?;
+    let publish = |release: &serde_json::Value, created_at: u64| {
+        EventBuilder::new(
+            Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+            serde_json::json!({
+                "version": 1,
+                "fman_version": new_version,
+                "federations": [],
+                "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
+                "mg_release": release,
+            })
+            .to_string(),
+        )
+        .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
+        .custom_created_at(nostr_sdk::Timestamp::from_secs(created_at))
+    };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+    // Control: one of the three signers is below the 2-of-3 threshold. No MG
+    // may download or restart, for longer than the development delay.
+    release["signatures"] =
+        serde_json::json!([sign_release(&release, &new_version, &release_keys[0])?]);
+    publisher
+        .publish_event(publish(&release, now))
+        .await
+        .map_err(|err| anyhow::anyhow!("publish under-signed release: {err}"))?;
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    anyhow::ensure!(
+        downloads.load(Ordering::SeqCst) == 0,
+        "an under-signed release was downloaded"
+    );
+    for &pid in &pids {
+        anyhow::ensure!(
+            process_exe(pid)? == old_exe,
+            "MG {pid} ran an under-signed release"
+        );
+    }
+
+    // The last MG's owner turned automatic updates off.
+    let opted_out = AUTO_UPDATE_GUARDIAN_COUNT - 1;
+    let opted_out_dir = temp.join(format!("mg-{opted_out}"));
+    manifold_guardian_admin(&old_bin, &opted_out_dir, &["auto-update", "set", "off"]).await?;
+
+    eprintln!("publishing a 2-of-3 signed release {new_version}");
+    release["signatures"] = serde_json::json!([
+        sign_release(&release, &new_version, &release_keys[0])?,
+        sign_release(&release, &new_version, &release_keys[2])?,
+    ]);
+    publisher
+        .publish_event(publish(&release, now + 1))
+        .await
+        .map_err(|err| anyhow::anyhow!("publish signed release: {err}"))?;
+    let sessions_before = session_count(&fedimint_cli).await?;
+    let wait_for_update = |index: usize| {
+        let pid = pids[index];
+        let staged = temp.join(format!("mg-{index}/releases/{new_sha256}"));
+        let dir = temp.join(format!("mg-{index}"));
+        let old_bin = old_bin.clone();
+        let new_version = new_version.clone();
+        async move {
+            wait_until(Duration::from_secs(120), || async {
+                Ok(process_exe(pid).ok() == Some(staged.clone()))
+            })
+            .await
+            .with_context(|| format!("MG {index} did not exec the staged release in place"))?;
+            wait_until(Duration::from_secs(60), || async {
+                Ok(manifold_guardian_admin(&old_bin, &dir, &["onboarding"])
+                    .await
+                    .is_ok_and(|status| status["fman_version"]["current"] == new_version.as_str()))
+            })
+            .await
+            .with_context(|| format!("MG {index} does not report {new_version}"))?;
+            eprintln!("MG {index} (PID {pid}) now runs {new_version}");
+            anyhow::Ok(())
+        }
+    };
+    for index in 0..opted_out {
+        wait_for_update(index).await?;
+    }
+    anyhow::ensure!(
+        downloads.load(Ordering::SeqCst) == opted_out,
+        "only the MGs with automatic updates on download the release"
+    );
+    anyhow::ensure!(
+        process_exe(pids[opted_out])? == old_exe,
+        "an MG with automatic updates off keeps its binary"
+    );
+    // Turning updates back on installs the release that is already published.
+    manifold_guardian_admin(&old_bin, &opted_out_dir, &["auto-update", "set", "on"]).await?;
+    wait_for_update(opted_out).await?;
+    anyhow::ensure!(
+        downloads.load(Ordering::SeqCst) == AUTO_UPDATE_GUARDIAN_COUNT,
+        "each MG downloads the release exactly once, got {}",
+        downloads.load(Ordering::SeqCst)
+    );
+    wait_for_more_sessions(&fedimint_cli, sessions_before).await?;
+
+    // A container restart starts the platform's old binary again. It must
+    // exec the staged release before it opens anything.
+    eprintln!("restarting MG 0 from the old binary");
+    let first = daemons.remove(0);
+    shutdown_daemons(vec![first]).await?;
+    let mut restarted = spawn_manifold_guardian(
+        &old_bin,
+        &temp.join("mg-0"),
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        AUTO_UPDATE_PORT_BASE,
+        Some(&iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    read_locator(&mut restarted, 0).await?;
+    let restarted_pid = restarted.id().context("restarted MG is running")?;
+    anyhow::ensure!(
+        process_exe(restarted_pid)? == temp.join(format!("mg-0/releases/{new_sha256}")),
+        "a restart of the old binary runs the staged release"
+    );
+    daemons.insert(0, restarted);
+    let sessions_after_restart = session_count(&fedimint_cli).await?;
+    wait_for_more_sessions(&fedimint_cli, sessions_after_restart).await?;
+    anyhow::ensure!(
+        downloads.load(Ordering::SeqCst) == AUTO_UPDATE_GUARDIAN_COUNT,
+        "a restart does not download the release again"
+    );
+
+    shutdown_daemons(daemons).await?;
+    defe.release(bitcoind_lease.handle_id).await?;
+    std::fs::remove_dir_all(&temp)?;
+    Ok(())
+}
+
+fn sign_release(
+    release: &serde_json::Value,
+    version: &str,
+    keys: &NostrKeys,
+) -> anyhow::Result<serde_json::Value> {
+    let release: fedi_decentralized_domain::MgRelease = serde_json::from_value(release.clone())?;
+    let signature = release.sign("development", &version.parse()?, keys);
+    Ok(serde_json::to_value(signature)?)
+}
+
+/// Answer every HTTP request with the release binary and count them.
+async fn serve_release_binary(
+    listener: TcpListener,
+    bytes: &'static [u8],
+    downloads: Arc<AtomicUsize>,
+) {
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let downloads = downloads.clone();
+        tokio::spawn(async move {
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            downloads.fetch_add(1, Ordering::SeqCst);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.write_all(bytes).await;
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_exe(pid: u32) -> anyhow::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).with_context(|| format!("read exe of PID {pid}"))
+}
+
+async fn wait_until<F, Fut>(timeout: Duration, mut condition: F) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<bool>>,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            if condition().await? {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("condition not reached within {timeout:?}"))?
+}
+
+async fn session_count(fedimint_cli: &FedimintCli<'_>) -> anyhow::Result<u64> {
+    let value = fedimint_cli
+        .run_json(&["dev", "session-count"], Duration::from_secs(30))
+        .await?;
+    value
+        .as_u64()
+        .or_else(|| value["count"].as_u64())
+        .with_context(|| format!("session count in {value}"))
+}
+
+/// Consensus is live: the federation closes two more sessions, which needs a
+/// threshold of guardians, every one of them now running the new release.
+async fn wait_for_more_sessions(fedimint_cli: &FedimintCli<'_>, before: u64) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let mut last = before;
+    while last < before + 2 {
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "consensus stalled at {last} sessions (from {before})"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        last = session_count(fedimint_cli).await.unwrap_or(last);
+    }
+    eprintln!("consensus advanced from {before} to {last} sessions");
+    Ok(())
 }

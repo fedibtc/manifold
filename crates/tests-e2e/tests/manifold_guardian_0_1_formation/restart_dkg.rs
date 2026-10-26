@@ -41,6 +41,7 @@ async fn run_restart() -> anyhow::Result<()> {
             relay_urls: &relay.url,
             holder_relay_url: &relay.url,
             setup_payment_publisher: &publisher,
+            mg_release_signers: None,
         }),
         None,
     )

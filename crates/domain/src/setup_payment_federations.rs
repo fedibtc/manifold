@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 
+use crate::mg_release::{MgRelease, MgReleaseError};
 use crate::{FederationId, InviteCode, ProtocolV1, Url};
 
 /// Maximum UTF-8 size of one public Fedimint invite.
@@ -183,6 +184,11 @@ pub struct SetupPaymentFederationsContent {
     /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
+
+    /// Threshold-signed binaries of `fman_version` that MGs install
+    /// automatically. Optional on the wire: absent, MGs do not update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mg_release: Option<MgRelease>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -200,6 +206,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
+    mg_release: Option<MgRelease>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -255,6 +262,11 @@ impl AdmittedSetupPaymentFederations {
         {
             return Err(SetupPaymentFederationsContentError::MinUptimeTooHigh);
         }
+        if let Some(release) = &content.mg_release {
+            release
+                .validate()
+                .map_err(SetupPaymentFederationsContentError::InvalidMgRelease)?;
+        }
 
         let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
             .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
@@ -299,6 +311,7 @@ impl AdmittedSetupPaymentFederations {
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
+            mg_release: content.mg_release,
         })
     }
 
@@ -372,6 +385,13 @@ impl AdmittedSetupPaymentFederations {
             .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB)
     }
 
+    /// Return the threshold-signed binaries of [`Self::mg_version`], if
+    /// published. Admission checked their format, not their signatures.
+    #[must_use]
+    pub fn mg_release(&self) -> Option<&MgRelease> {
+        self.mg_release.as_ref()
+    }
+
     /// Return how many seats one MG may host.
     #[must_use]
     pub fn max_seats_per_mg(&self) -> u32 {
@@ -421,11 +441,17 @@ pub enum SetupPaymentFederationsContentError {
     MinUptimeTooHigh,
     /// An absence limit must allow a positive amount of time.
     ZeroOfflineDuration,
+
+    /// The published MG release is out of bounds or malformed.
+    InvalidMgRelease(MgReleaseError),
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let message = match self {
+            Self::InvalidMgRelease(error) => {
+                return write!(formatter, "setup-payment federation set: {error}");
+            }
             Self::ContentTooLarge => "setup-payment federation content is too large",
             Self::MalformedContent => "setup-payment federation content is malformed",
             Self::TooManyFederations => "setup-payment federation set has too many entries",

@@ -452,3 +452,31 @@ fn ensure_local_defe_relay(relay: &RelayUrl) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn publication_refuses_an_mg_release_without_pinned_signers() {
+    let mut content = content_with_invites(vec![public_invite(1)]);
+    validate_content_for_publication(&content, false).unwrap();
+    let mut release: MgRelease = serde_json::from_value(serde_json::json!({
+        "source_commit": "0123456789abcdef0123456789abcdef01234567",
+        "binaries": {
+            "x86_64": {
+                "sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+                "size": 1000,
+                "url": "https://example.com/fleet-manager"
+            }
+        },
+        "signatures": []
+    }))
+    .unwrap();
+    let signature = release.sign("production", &content.mg_version, &test_keys());
+    release.signatures.push(signature);
+    content.mg_release = Some(release);
+
+    // Production pins no release signers yet, so no signature suffices.
+    let error = validate_content_for_publication(&content, false).unwrap_err();
+    assert!(
+        error.to_string().contains("pins no MG release signers"),
+        "{error:#}"
+    );
+}

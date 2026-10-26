@@ -16,6 +16,7 @@ mod memory_report;
 mod operator_ui;
 mod push_callback;
 mod seat_readiness;
+mod self_update;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -182,14 +183,32 @@ fn main() -> anyhow::Result<()> {
     if let Err(error) = file_limit::raise() {
         eprintln!("could not raise open-file limit; continuing with existing limit: {error}");
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let exit = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .build()?
-        .block_on(run())
+        .block_on(run())?;
+    match exit {
+        ServeExit::Stopped => Ok(()),
+        // The runtime, and with it every task and socket, is gone: replace
+        // this process with the release the updater staged.
+        ServeExit::Update { releases } => match self_update::staged_binary(&releases)? {
+            Some(binary) => Err(anyhow::Error::new(self_update::exec(&binary))
+                .context(format!("exec staged MG release {}", binary.display()))),
+            None => anyhow::bail!("the staged MG release is no longer newer than this binary"),
+        },
+    }
 }
 
-async fn run() -> anyhow::Result<()> {
+/// How a daemon run ended.
+enum ServeExit {
+    /// Stopped by a signal or a fatal condition handled by the caller.
+    Stopped,
+    /// Stopped gracefully to run a newer staged release.
+    Update { releases: self_update::Releases },
+}
+
+async fn run() -> anyhow::Result<ServeExit> {
     // Before this CLI is parsed: fedimintd owns the argv it was spawned with.
     if is_bundled_fedimintd() {
         let safe_event_layer = std::env::var_os(mg_core::seat_process::SAFE_EVENT_DIR_ENV)
@@ -209,7 +228,26 @@ async fn run() -> anyhow::Result<()> {
     fedimint_core::rustls::install_crypto_provider().await;
     let args = Args::parse();
     match args {
-        Args::Serve(args) => serve(*args).await,
+        Args::Serve(args) => {
+            run_staged_release(&self_update::Releases::new(&args.data_dir));
+            serve(*args).await
+        }
+    }
+}
+
+/// Replace this process with a newer staged release, before the daemon opens
+/// anything. On any failure, keep running this binary.
+fn run_staged_release(releases: &self_update::Releases) {
+    match self_update::staged_binary(releases) {
+        Ok(Some(binary)) => {
+            eprintln!("starting the staged MG release {}", binary.display());
+            let error = self_update::exec(&binary);
+            eprintln!("could not start the staged MG release; running this binary: {error}");
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("ignoring the staged MG release; running this binary: {error:#}");
+        }
     }
 }
 
@@ -301,7 +339,7 @@ fn admin_http_config(args: &ServeArgs) -> anyhow::Result<Option<(SocketAddr, Adm
     }
 }
 
-async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+async fn serve(args: ServeArgs) -> anyhow::Result<ServeExit> {
     let manifold_environment = args
         .manifold_environment
         .profile()
@@ -329,6 +367,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
     memory_report::spawn("mg");
+    let releases = self_update::Releases::new(&args.data_dir);
+    releases.prune();
+    let release_signers = manifold_environment.mg_release_signers().cloned();
+    let environment = manifold_environment.environment();
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
         manifold_profile_revision = manifold_environment.profile_revision(),
@@ -450,7 +492,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .await?
         {
-            return Ok(());
+            return Ok(ServeExit::Stopped);
         }
     }
 
@@ -609,15 +651,36 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         "Manifold Guardian serving FA and capability-scoped telemetry Iroh RPC; press Ctrl-C to stop"
     );
 
+    // Without pinned release signers this environment never updates itself.
+    let updater = release_signers.map(|signers| {
+        self_update::Updater {
+            releases: releases.clone(),
+            environment,
+            signers,
+            max_delay: self_update::max_delay(environment),
+            policy: nostr.subscribe_setup_payment_federations(),
+            enabled: fleet.subscribe_auto_update_enabled(),
+        }
+        .run()
+    });
+    let update_staged = async {
+        match updater {
+            Some(updater) => updater.await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(update_staged);
+
     // The readiness worker loops until aborted, so it only ends by panicking.
     // Its verdict would then stay in force unchecked; stop the daemon instead
     // so the supervisor restarts it.
-    let readiness_stopped = tokio::select! {
+    let stopped = tokio::select! {
         result = &mut shutdown => {
             result?;
-            None
+            Stopped::Signal
         }
-        result = &mut seat_readiness => Some(result),
+        result = &mut seat_readiness => Stopped::Readiness(result),
+        () = &mut update_staged => Stopped::Update,
     };
     seat_readiness.abort();
     runtime_seat_limits.abort();
@@ -629,10 +692,20 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let join_shutdown = join_reconciler.shutdown().await;
     fleet.shutdown().await;
     join_shutdown?;
-    if let Some(result) = readiness_stopped {
-        anyhow::bail!("seat readiness worker stopped: {result:?}");
+    match stopped {
+        Stopped::Signal => Ok(ServeExit::Stopped),
+        Stopped::Readiness(result) => {
+            anyhow::bail!("seat readiness worker stopped: {result:?}")
+        }
+        Stopped::Update => Ok(ServeExit::Update { releases }),
     }
-    Ok(())
+}
+
+/// Why the serving phase ended.
+enum Stopped {
+    Signal,
+    Readiness(Result<(), tokio::task::JoinError>),
+    Update,
 }
 
 /// Supervisors stop services with SIGTERM; an interactive operator uses

@@ -29,6 +29,11 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   ([SPEC-mg-support-chat](../../mg/specs/SPEC-mg-support-chat.md));
   development and staging use known-secret placeholders and production has
   none yet;
+- the MG release signers, a t-of-n set of public keys whose threshold of
+  signatures authorizes an automatic MG update
+  ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md#mg-release));
+  no environment pins signers yet, so only a development override enables
+  updates;
 - the Bitcoin network on which the environment forms federations;
 - an optional typed public default Esplora URL; and
 - for development and staging only, the committed complete `IssuerSecretKeys`
@@ -45,8 +50,8 @@ The profile exposes `profile_revision()`, currently `9`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
 Fee account, Bitcoin network, or default Esplora mapping must increment the
-shared revision. The Fedi support key is outside the revision: only the MG
-reads it, so a mixed rollout cannot disagree about anything that another
+shared revision. The Fedi support key and the MG release signers are outside
+the revision: only the MG reads them, so a mixed rollout cannot disagree about anything that another
 component checks.
 Operators must roll out such a change across
 independently released FA, MG, FLIP, push-gateway telemetry, and cloud MG
@@ -125,11 +130,12 @@ between differing signed lists.
 The profile value is the only resolution source outside development.
 `profile()` resolves development-only overrides inside this crate: in the
 Development profile, `MANIFOLD_DEV_NOSTR_RELAYS` (whitespace- or
-comma-separated relay URLs) and `MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER` (a
-Nostr public key) replace the built-in defaults, letting local harnesses point
+comma-separated relay URLs), `MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER` (a
+Nostr public key), and `MANIFOLD_DEV_MG_RELEASE_SIGNERS`
+(`<threshold>:<key>,<key>,...`) replace the built-in defaults, letting local harnesses point
 components at leased test relays and test publisher keys without any
 per-binary CLI surface. In Staging and Production, `profile()` fails when
-either variable is set rather than silently ignoring or honoring it — no
+any of them is set rather than silently ignoring or honoring it — no
 deployed binary can have its relay routing or trust root redirected through
 the environment. The Fedi app likewise consumes the profile default only —
 end-user devices carry no trust-root override surface, the same rule that
