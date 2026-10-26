@@ -84,6 +84,10 @@ pub enum SeatVerbError {
     /// boundary; retryable.
     #[error("guardian stops after its current session")]
     AwaitingSessionEnd,
+    /// A transfer source's guardian has stopped, but the relays do not yet
+    /// confirm a backup recording that; retryable.
+    #[error("guardian transfer awaits its backup")]
+    AwaitingBackup,
     /// Formation and cancellation are unavailable after the seat is formed.
     #[error("the seat's federation is running")]
     FederationIsRunning,
@@ -135,6 +139,7 @@ fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
         SeatVerbError::UnknownSeat => "unknown_seat",
         SeatVerbError::SeatUnavailable => "seat_unavailable",
         SeatVerbError::AwaitingSessionEnd => "awaiting_session_end",
+        SeatVerbError::AwaitingBackup => "awaiting_backup",
         SeatVerbError::FederationIsRunning => "federation_is_running",
         SeatVerbError::WrongState { .. } => "wrong_state",
         SeatVerbError::InvalidDkgInput(_) => "invalid_dkg_input",
@@ -421,19 +426,11 @@ enum SeatCommand {
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
     Import(import::ImportCommand),
-    RetireForTransfer {
+    TransferOut {
         grant: fedi_decentralized_service_manifold_guardian::SignedRequest<
             fedi_decentralized_service_manifold_guardian::SeatTransferGrant,
         >,
         service_key: secp256k1::Keypair,
-        reply: oneshot::Sender<Result<crate::backup::SeatPublication, SeatVerbError>>,
-    },
-    ExportTransfer {
-        grant: fedi_decentralized_service_manifold_guardian::SignedRequest<
-            fedi_decentralized_service_manifold_guardian::SeatTransferGrant,
-        >,
-        service_key: secp256k1::Keypair,
-        expected: crate::backup::SeatPublication,
         reply: oneshot::Sender<Result<crate::transfer_native::TransferMaterial, SeatVerbError>>,
     },
     RemoveTransferred {
@@ -1197,20 +1194,12 @@ impl SeatLoop {
                     let _ = reply.send(self.replace_seat_binding(expected_base, &binding).await);
                 }
                 SeatCommand::Import(command) => self.handle_import_command(command).await,
-                SeatCommand::RetireForTransfer {
+                SeatCommand::TransferOut {
                     grant,
                     service_key,
                     reply,
                 } => {
-                    let _ = reply.send(self.retire_for_transfer(&grant, &service_key).await);
-                }
-                SeatCommand::ExportTransfer {
-                    grant,
-                    service_key,
-                    expected,
-                    reply,
-                } => {
-                    let _ = reply.send(self.export_transfer(&grant, &service_key, &expected).await);
+                    let _ = reply.send(self.transfer_out(&grant, &service_key).await);
                 }
                 SeatCommand::RemoveTransferred { reply } => {
                     let _ = reply.send(self.remove_transferred().await);

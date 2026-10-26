@@ -4368,10 +4368,6 @@ impl crate::backup::BackupSink for FakeBackupSink {
     fn format_version(&self) -> u32 {
         1
     }
-
-    fn supports_transfer_barrier(&self) -> bool {
-        true
-    }
 }
 
 /// Write the config files fedimintd leaves behind once DKG completes.

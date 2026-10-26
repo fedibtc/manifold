@@ -99,10 +99,9 @@ seat owner ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)). Retirement
 asks the child to exit once its current consensus session completes and
 commits its permanent fence, which releases capacity, only when the child
 exits with fedimintd's session-boundary exit code; any other exit leaves no
-fence, the child restarts, and the destination's retry asks again. Export requires that fence. It waits
-outside the seat queue for the exact retired-source recovery document, then
-rechecks the fence, grant and document before releasing material. An older
-archive publication is insufficient.
+fence, the child restarts, and the destination's retry asks again. Export
+requires that fence and a relay-confirmed seat backup that records it; until
+then the source answers "not yet" without waiting.
 
 `RemoveSeat` deletes the final guardian data directory and the known
 guardian-transfer work subtree of a `Transferred` seat, then commits the

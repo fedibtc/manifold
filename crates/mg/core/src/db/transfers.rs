@@ -185,13 +185,7 @@ impl Db {
                 .fetch_optional(self.pool())
                 .await?;
         phase
-            .map(|phase| {
-                Ok(match phase.as_str() {
-                    "stopped" => OutgoingTransfer::Stopped,
-                    "removed" => OutgoingTransfer::Removed,
-                    _ => return Err(corrupt(seat_id)),
-                })
-            })
+            .map(|phase| OutgoingTransfer::from_db_str(&phase).ok_or_else(|| corrupt(seat_id)))
             .transpose()
     }
 

@@ -218,6 +218,7 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
         SeatVerbError::UnknownSeat => ManifoldGuardianError::UnknownSeat,
         SeatVerbError::SeatUnavailable => ManifoldGuardianError::SeatUnavailable,
         SeatVerbError::AwaitingSessionEnd => ManifoldGuardianError::AwaitingSessionEnd,
+        SeatVerbError::AwaitingBackup => ManifoldGuardianError::AwaitingBackup,
         SeatVerbError::FederationIsRunning => ManifoldGuardianError::FederationIsRunning,
         SeatVerbError::WrongState { status } => ManifoldGuardianError::WrongState { status },
         SeatVerbError::InvalidDkgInput(reason) => ManifoldGuardianError::InvalidDkgInput(reason),
@@ -250,6 +251,7 @@ fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
         ManifoldGuardianError::WrongState { .. } => "wrong_state",
         ManifoldGuardianError::SeatUnavailable => "seat_unavailable",
         ManifoldGuardianError::AwaitingSessionEnd => "awaiting_session_end",
+        ManifoldGuardianError::AwaitingBackup => "awaiting_backup",
         ManifoldGuardianError::FederationIsRunning => "federation_is_running",
         ManifoldGuardianError::InvalidDkgInput(_) => "invalid_dkg_input",
         ManifoldGuardianError::MetaKeyRefused => "meta_key_refused",
@@ -922,7 +924,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             ManifoldGuardianError::Unauthorized
         })?;
         self.fleet
-            .transfer_seat(request, std::time::Duration::from_secs(20))
+            .transfer_seat(request)
             .await
             .map_err(|err| map_seat_error("transfer_seat", err))
     }

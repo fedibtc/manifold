@@ -158,10 +158,10 @@ tombstones no longer carry imported secrets. Old archive slices may remain on th
 relay; only the known coordinates belonging to an authenticated removal
 tombstone are ignored, including gaps. Unclaimed events remain fatal.
 
-The source's export awaits a confirmation of the exact retired-source document
-digest, archive reference, and envelope version from the single ordered backup
-publisher.
-Discarding sinks cannot satisfy this barrier. This proves local read-back
+The source exports a transferred guardian only after the single ordered backup
+publisher has confirmed, under the current envelope version, a seat document
+that records the transfer fence; the confirmed record keeps that fence
+(`confirmed_outgoing`). This proves local read-back
 publication only; it does **not** establish freshness against later hostile
 replay. Recovery assumes the configured relay returns the latest published
 state and operators never restart stale local snapshots. Transfers are enabled

@@ -1,7 +1,7 @@
 use super::*;
 use crate::transfer_state::OutgoingTransfer;
 use fedi_decentralized_service_manifold_guardian::{
-    Locator, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest,
+    Locator, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest, TransferSeatResponse,
 };
 
 struct Source {
@@ -42,11 +42,26 @@ impl Source {
     /// retries.
     async fn pull_awaits_session_end(&self) {
         assert!(matches!(
-            self.fleet
-                .transfer_seat(self.pull(), Duration::from_secs(5))
-                .await,
+            self.fleet.transfer_seat(self.pull()).await,
             Err(SeatVerbError::AwaitingSessionEnd)
         ));
+    }
+
+    /// The destination's retries once the guardian has stopped: refused
+    /// until the relays confirm a backup that records the stop.
+    async fn pull_after_backup(&self) -> TransferSeatResponse {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match self.fleet.transfer_seat(self.pull()).await {
+                    Err(SeatVerbError::AwaitingBackup) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    response => return response.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the relays confirm the stopped seat")
     }
 
     async fn wait_for_stopped(&self) {
@@ -309,34 +324,21 @@ async fn source_with(
 }
 
 #[tokio::test]
-async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive() {
+async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     let source = running_source(31_237).await;
     let spawner = source.spawner.clone();
-    // Confirm the ordinary archive first. That confirmation cannot stand in
-    // for a retired-source document when the relay subsequently goes offline.
-    let original = crate::backup::seat_publication_plan(
-        &source.fleet.db,
-        &source.fleet.config.process,
-        source.seat.facts(),
-        None,
-    )
-    .await
-    .unwrap();
-    source
-        .fleet
-        .backup
-        .confirm_transfer_publication(&source.fleet.db, &original, Duration::from_secs(5))
-        .await
-        .unwrap();
+    // A confirmed backup of the running seat does not stand in for one that
+    // records the stop.
+    eventually("the running seat's backup is confirmed", || {
+        !source.sink.published().is_empty()
+    })
+    .await;
     source.sink.fails.store(true, Ordering::SeqCst);
     source.hand_over().await;
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        source.fleet.transfer_seat(source.pull()).await,
+        Err(SeatVerbError::AwaitingBackup)
+    ));
     assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
     assert_eq!(source.fleet.db.active_seat_count().await.unwrap(), 0);
     assert!(matches!(
@@ -370,11 +372,7 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
             .is_err()
     );
     source.sink.fails.store(false, Ordering::SeqCst);
-    let response = source
-        .fleet
-        .transfer_seat(source.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
+    let response = source.pull_after_backup().await;
     let opened = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
     let source_keys = source
         .fleet
@@ -388,10 +386,6 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     assert_eq!(
         opened.keys.iroh_p2p.to_bytes(),
         source_keys.iroh_p2p.to_bytes()
-    );
-    assert_eq!(
-        Some(opened.archive.digest()),
-        original.archive_digest().map(str::to_owned)
     );
     assert!(source.sink.published().iter().any(|document| {
         document
@@ -407,7 +401,7 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     assert!(matches!(
         source
             .fleet
-            .transfer_seat(pull_as(source.signed(), &other), Duration::from_secs(5))
+            .transfer_seat(pull_as(source.signed(), &other))
             .await,
         Err(SeatVerbError::TransferGrantMismatch)
     ));
@@ -416,10 +410,10 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     grant.destination_seat_id = SeatId::from(QuoteId([152; 32]));
     let response = source
         .fleet
-        .transfer_seat(
-            pull_as(SignedRequest::create(&grant, &source.fa).unwrap(), &other),
-            Duration::from_secs(5),
-        )
+        .transfer_seat(pull_as(
+            SignedRequest::create(&grant, &source.fa).unwrap(),
+            &other,
+        ))
         .await
         .unwrap();
     let again = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
@@ -432,11 +426,7 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
 async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
     let source = running_source(33_100).await;
     source.hand_over().await;
-    source
-        .fleet
-        .transfer_seat(source.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
+    source.pull_after_backup().await;
     let process = &source.fleet.config.process;
     let seat_no = source.seat.facts().seat_no;
     let seat_dir = crate::seat_process::seat_dir(process, seat_no);
@@ -468,13 +458,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
             .unwrap(),
         Some(OutgoingTransfer::Removed)
     );
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     assert!(
         source
             .fleet
@@ -536,13 +520,10 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
         assert!(
             source
                 .fleet
-                .transfer_seat(
-                    pull_as(
-                        SignedRequest::create(&grant, &source.fa).unwrap(),
-                        &source.destination,
-                    ),
-                    Duration::from_millis(40),
-                )
+                .transfer_seat(pull_as(
+                    SignedRequest::create(&grant, &source.fa).unwrap(),
+                    &source.destination,
+                ))
                 .await
                 .is_err()
         );
@@ -563,13 +544,7 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     )
     .await
     .unwrap();
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     assert_eq!(
         source
             .fleet
@@ -588,13 +563,7 @@ async fn unproved_source_exit_forbids_export_and_removal() {
         FakeDkgStep::FailStop,
     ]]]));
     let source = source(31_273, spawner.clone()).await;
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     // No proven exit, no fence: the seat still counts, the guardian is still
     // this host's, and nothing can be exported or removed.
     assert_eq!(
@@ -618,49 +587,7 @@ async fn unproved_source_exit_forbids_export_and_removal() {
     let spawns = spawner.spawn_count();
     source.seat.watchdog_tick_for_test().await;
     assert_eq!(spawner.spawn_count(), spawns);
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
-    source.fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn removal_wins_over_a_delayed_export_after_its_publication_wait() {
-    let source = running_source(31_285).await;
-    source.hand_over().await;
-    let key = source.fleet.identity.derive_service_signing_key();
-    let expected = source
-        .seat
-        .retire_for_transfer(source.signed(), key)
-        .await
-        .unwrap();
-    source
-        .fleet
-        .backup
-        .confirm_transfer_publication(&source.fleet.db, &expected, Duration::from_secs(5))
-        .await
-        .unwrap();
-    assert!(
-        !source
-            .fleet
-            .remove_transferred_seat(&source.seat)
-            .await
-            .unwrap()
-    );
-    // The export's relay wait finished before the removal; its command
-    // rechecks the durable fence and finds nothing left to export.
-    assert!(
-        source
-            .seat
-            .export_transfer(source.signed(), key, expected)
-            .await
-            .is_err()
-    );
-    assert!(!seat_data_dir(&source.fleet.config.process, source.seat.facts().seat_no).exists());
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     source.fleet.shutdown().await;
 }
 
@@ -697,11 +624,7 @@ async fn source_runs_its_guardian_until_its_boundary_exit_and_never_restarts_it(
         1,
         "the supervisor never restarts the source after its boundary exit"
     );
-    let response = s
-        .fleet
-        .transfer_seat(s.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
+    let response = s.pull_after_backup().await;
     crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
     s.fleet.shutdown().await;
 }

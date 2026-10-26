@@ -66,69 +66,6 @@ impl BackupSink for SwitchableSink {
     fn format_version(&self) -> u32 {
         1
     }
-
-    fn supports_transfer_barrier(&self) -> bool {
-        true
-    }
-}
-
-#[tokio::test]
-async fn transfer_barrier_requires_the_exact_confirmed_document() {
-    let temp = TempDir::new().unwrap();
-    let db = test_db(&temp).await;
-    let process = test_process(&temp);
-    let facts = create_seat(&db, 1).await;
-    let sink = SwitchableSink::new();
-    let worker = BackupWorker::new(sink.clone(), Duration::from_millis(10));
-    let old = seat_publication_plan(&db, &process, &facts, None)
-        .await
-        .unwrap();
-    worker.spawn(db.clone(), process.clone());
-    worker
-        .confirm_transfer_publication(&db, &old, Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    // An old confirmation does not authorize a document never published.
-    let mut changed = old;
-    changed.document.decommissioned_at_ms = Some(123);
-    assert!(
-        worker
-            .confirm_transfer_publication(&db, &changed, Duration::from_millis(40))
-            .await
-            .is_err()
-    );
-    assert!(
-        sink.documents
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|document| document.decommissioned_at_ms.is_none())
-    );
-}
-
-#[tokio::test]
-async fn discard_sink_cannot_authorize_transfer_even_with_a_matching_record() {
-    let temp = TempDir::new().unwrap();
-    let db = test_db(&temp).await;
-    let process = test_process(&temp);
-    let facts = create_seat(&db, 1).await;
-    let plan = seat_publication_plan(&db, &process, &facts, None)
-        .await
-        .unwrap();
-    db.record_backup_publication(&facts.seat_id, &plan.doc_sha256(), None, 0)
-        .await
-        .unwrap();
-    let worker = BackupWorker::new(
-        Arc::new(crate::backup::DiscardBackupSink),
-        Duration::from_millis(10),
-    );
-    assert!(
-        worker
-            .confirm_transfer_publication(&db, &plan, Duration::from_secs(5))
-            .await
-            .is_err()
-    );
 }
 
 fn test_facts(seat: u8) -> SeatFacts {
@@ -529,7 +466,7 @@ async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
     let db = test_db(&temp).await;
     let facts = create_seat(&db, 11).await;
 
-    db.record_backup_publication(&facts.seat_id, "doc-hash", Some("archive-digest"), 1)
+    db.record_backup_publication(&facts.seat_id, "doc-hash", Some("archive-digest"), None, 1)
         .await
         .unwrap();
     assert!(
@@ -548,22 +485,30 @@ async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
 
     // A publication record represents the exact document reference. Removal
     // tombstones can intentionally drop it even within the same version.
-    db.record_backup_publication(&facts.seat_id, "doc-hash-2", None, 1)
+    db.record_backup_publication(
+        &facts.seat_id,
+        "doc-hash-2",
+        None,
+        Some(crate::transfer_state::OutgoingTransfer::Removed),
+        1,
+    )
+    .await
+    .unwrap();
+    let record = db
+        .backup_publication(&facts.seat_id, 1)
         .await
+        .unwrap()
         .unwrap();
+    assert_eq!(record.archive_digest.as_deref(), None);
     assert_eq!(
-        db.backup_publication(&facts.seat_id, 1)
-            .await
-            .unwrap()
-            .unwrap()
-            .archive_digest
-            .as_deref(),
-        None
+        record.confirmed_outgoing,
+        Some(crate::transfer_state::OutgoingTransfer::Removed),
+        "the record keeps the fence its document carries"
     );
 
     // New version: the confirmed archive is laid out under rules the new
     // version's restore does not read, so the digest is taken as given — absent.
-    db.record_backup_publication(&facts.seat_id, "doc-hash-2", None, 2)
+    db.record_backup_publication(&facts.seat_id, "doc-hash-2", None, None, 2)
         .await
         .unwrap();
     let record = db

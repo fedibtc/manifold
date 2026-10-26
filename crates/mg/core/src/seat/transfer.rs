@@ -1,17 +1,23 @@
-//! Source retirement/export/removal effects belong to the seat owner.
-//! Relay confirmation belongs to the fleet caller, outside this command queue.
+//! The source side of a guardian transfer, owned by the seat loop.
 //!
-//! A source hands its guardian over only after fedimintd exits with
-//! [`SESSION_BOUNDARY_EXIT_CODE`]: its last session completed and no later
-//! one began, so the destination starts in a session this key never signed.
-//! `TransferSeat` asks for that exit and answers `AwaitingSessionEnd` until
-//! the child-exit handler has written the fence; the destination retries.
+//! The destination retries `TransferSeat` until it gets the guardian. Each
+//! call answers from durable state and never waits:
+//!
+//! 1. No fence: ask fedimintd to stop after its current session and answer
+//!    `AwaitingSessionEnd`. When it exits with [`SESSION_BOUNDARY_EXIT_CODE`],
+//!    its last session completed and no later one began, so the destination
+//!    starts in a session this key never signed. That exit writes the fence,
+//!    which also keeps the guardian from starting here again.
+//! 2. Fence `stopped`, but the relays do not yet confirm a backup recording
+//!    it: wake the backup worker and answer `AwaitingBackup`. Until then a
+//!    restore from the relays could start the guardian here again.
+//! 3. Confirmed: read the guardian's config files and Iroh secrets and
+//!    return them.
 
 use fedi_decentralized_service_manifold_guardian::{SeatTransferGrant, SignedRequest, Timestamp};
 use secp256k1::Keypair;
 
 use super::{ProcessSlot, Seat, SeatCommand, SeatLoop, SeatVerbError};
-use crate::backup::{SeatPublication, seat_publication_plan};
 use crate::bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE;
 use crate::fedimint_api::FedimintApiError;
 use crate::seat_process::{effective_iroh_api_key, effective_iroh_p2p_key};
@@ -22,29 +28,14 @@ use crate::transfer_state::{ImportedKeys, OutgoingTransfer, TransferPhase};
 const SHUTDOWN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Seat {
-    pub(crate) async fn retire_for_transfer(
+    pub(crate) async fn transfer_out(
         &self,
         grant: SignedRequest<SeatTransferGrant>,
         service_key: Keypair,
-    ) -> Result<SeatPublication, SeatVerbError> {
-        self.verb_request(|reply| SeatCommand::RetireForTransfer {
-            grant,
-            service_key,
-            reply,
-        })
-        .await
-    }
-
-    pub(crate) async fn export_transfer(
-        &self,
-        grant: SignedRequest<SeatTransferGrant>,
-        service_key: Keypair,
-        expected: SeatPublication,
     ) -> Result<TransferMaterial, SeatVerbError> {
-        self.verb_request(|reply| SeatCommand::ExportTransfer {
+        self.verb_request(|reply| SeatCommand::TransferOut {
             grant,
             service_key,
-            expected,
             reply,
         })
         .await
@@ -106,17 +97,11 @@ impl SeatLoop {
         }
     }
 
-    pub(super) async fn transfer_publication(&self) -> Result<SeatPublication, SeatVerbError> {
-        seat_publication_plan(&self.db, &self.process, &self.facts, None)
-            .await
-            .map_err(SeatVerbError::internal)
-    }
-
-    pub(super) async fn retire_for_transfer(
+    pub(super) async fn transfer_out(
         &mut self,
         grant: &SignedRequest<SeatTransferGrant>,
         service_key: &Keypair,
-    ) -> Result<SeatPublication, SeatVerbError> {
+    ) -> Result<TransferMaterial, SeatVerbError> {
         self.check_source_grant(grant, service_key)?;
         let outgoing = self
             .db
@@ -124,34 +109,36 @@ impl SeatLoop {
             .await
             .map_err(SeatVerbError::internal)?;
         match outgoing {
+            None => {
+                self.request_shutdown_after_current_session().await;
+                return Err(SeatVerbError::AwaitingSessionEnd);
+            }
             Some(OutgoingTransfer::Removed) => {
                 return Err(SeatVerbError::WrongState {
-                    status: self
-                        .state
-                        .borrow()
-                        .transfer_phase
-                        .expect("outgoing state mirrored")
+                    status: TransferPhase::Outgoing(OutgoingTransfer::Removed)
                         .service_status()
                         .expect("outgoing has status"),
                 });
             }
             Some(OutgoingTransfer::Stopped) => {}
-            None => {
-                // Immutable archive availability/size is a precondition, not a
-                // reason to stop a running guardian and then discover failure.
-                TransferMaterial::read(&self.data_dir, self.exported_keys())
-                    .await
-                    .map_err(SeatVerbError::internal)?;
-                // Stopping the guardian now could leave units of the
-                // running session that the destination would contradict.
-                // The fence is written when the guardian exits at the
-                // session boundary; until then every retry asks again, which
-                // also covers a guardian restarted after a crash.
-                self.request_shutdown_after_current_session().await;
-                return Err(SeatVerbError::AwaitingSessionEnd);
-            }
         }
-        self.transfer_publication().await
+        let confirmed = self
+            .db
+            .backup_publication(&self.facts.seat_id, self.backup.format_version())
+            .await
+            .map_err(SeatVerbError::internal)?
+            .and_then(|record| record.confirmed_outgoing);
+        if confirmed != Some(OutgoingTransfer::Stopped) {
+            self.backup.mark();
+            return Err(SeatVerbError::AwaitingBackup);
+        }
+        let material = TransferMaterial::read(&self.data_dir, self.exported_keys())
+            .await
+            .map_err(SeatVerbError::internal)?;
+        // The grant may have expired during the reads. Removal cannot win
+        // between this check and the reply: both run in this queue.
+        self.check_source_grant(grant, service_key)?;
+        Ok(material)
     }
 
     async fn request_shutdown_after_current_session(&self) {
@@ -213,60 +200,6 @@ impl SeatLoop {
                 false
             }
         }
-    }
-
-    pub(super) async fn export_transfer(
-        &mut self,
-        signed: &SignedRequest<SeatTransferGrant>,
-        service_key: &Keypair,
-        expected: &SeatPublication,
-    ) -> Result<TransferMaterial, SeatVerbError> {
-        self.check_source_grant(signed, service_key)?;
-        // `Stopped` is recorded only after this seat proved its child's exit,
-        // and no child starts under an outgoing fence. Never export while the
-        // guardian may run.
-        if self.state.borrow().transfer_phase
-            != Some(TransferPhase::Outgoing(OutgoingTransfer::Stopped))
-        {
-            return Err(SeatVerbError::SeatUnavailable);
-        }
-        self.require_current_publication(expected).await?;
-        let material = TransferMaterial::read(&self.data_dir, self.exported_keys())
-            .await
-            .map_err(SeatVerbError::internal)?;
-        if expected.archive_digest() != Some(material.archive.digest().as_str()) {
-            return Err(SeatVerbError::SeatUnavailable);
-        }
-        // Recheck expiry after disk/DB awaits, inside the queue: removal cannot
-        // win its permanent fence between this check and export.
-        self.check_source_grant(signed, service_key)?;
-        Ok(material)
-    }
-
-    pub(super) async fn require_current_publication(
-        &self,
-        expected: &SeatPublication,
-    ) -> Result<(), SeatVerbError> {
-        let current = self.transfer_publication().await?;
-        if current.doc_sha256() != expected.doc_sha256()
-            || current.archive_digest() != expected.archive_digest()
-        {
-            return Err(SeatVerbError::SeatUnavailable);
-        }
-        // The fleet caller already waited. Verify that exact confirmation is
-        // still present without doing network I/O inside the seat owner.
-        let confirmed = self
-            .db
-            .backup_publication(&self.facts.seat_id, self.backup.format_version())
-            .await
-            .map_err(SeatVerbError::internal)?;
-        if !confirmed.is_some_and(|record| {
-            record.doc_sha256 == expected.doc_sha256()
-                && record.archive_digest.as_deref() == expected.archive_digest()
-        }) {
-            return Err(SeatVerbError::SeatUnavailable);
-        }
-        Ok(())
     }
 
     /// Delete only the guardian material of a stopped, exported source seat.

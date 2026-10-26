@@ -587,11 +587,24 @@ async fn install_accepts_and_starts_the_imported_guardian_without_a_backup_barri
         "same-move replay keeps imported child"
     );
     d.sink.fails.store(false, Ordering::SeqCst);
-    d.fleet
-        .backup
-        .confirm_transfer_publication(&d.fleet.db, &d.publication().await, Duration::from_secs(5))
-        .await
-        .expect("the imported seat's backup follows once the relay recovers");
+    let expected = d.publication().await.doc_sha256();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while d
+            .fleet
+            .db
+            .backup_publication(
+                &d.grant.destination_seat_id,
+                d.fleet.backup.format_version(),
+            )
+            .await
+            .unwrap()
+            .is_none_or(|record| record.doc_sha256 != expected)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the imported seat's backup follows once the relay recovers");
     d.fleet.shutdown().await;
 }
 

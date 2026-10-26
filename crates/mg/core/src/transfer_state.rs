@@ -163,6 +163,24 @@ pub enum OutgoingTransfer {
     Removed,
 }
 
+impl OutgoingTransfer {
+    /// The value stored for this fence in the database.
+    pub(crate) fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Removed => "removed",
+        }
+    }
+
+    pub(crate) fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "stopped" => Some(Self::Stopped),
+            "removed" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+}
+
 /// In-memory projection loaded before any possible guardian spawn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransferPhase {

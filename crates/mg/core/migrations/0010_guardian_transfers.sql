@@ -46,3 +46,10 @@ BEFORE UPDATE ON dkg_inputs
 WHEN EXISTS (SELECT 1 FROM seat_transfer_in WHERE quote_id = NEW.quote_id)
   OR EXISTS (SELECT 1 FROM seat_transfer_out WHERE quote_id = NEW.quote_id)
 BEGIN SELECT RAISE(ABORT, 'transfer seat cannot enter DKG'); END;
+
+-- The transfer fence carried by the seat's last relay-confirmed document
+-- (its `transfer.outgoing`). A source releases the guardian's material only
+-- once this reads 'stopped', so a restore from the relays never starts the
+-- moved guardian again.
+ALTER TABLE seat_backup_publications
+ADD COLUMN confirmed_outgoing TEXT CHECK (confirmed_outgoing IN ('stopped', 'removed'));

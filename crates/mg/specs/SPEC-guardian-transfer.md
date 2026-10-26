@@ -35,15 +35,19 @@ online once. The FA does not have to be online at the same time.
 3. The destination signs `TransferSeat` with the service key the grant names
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
-   its federation. It then stops its guardian between consensus sessions,
-   never inside one (see *Session boundary*). Until then it refuses
-   `TransferSeat` with `AwaitingSessionEnd`, and the destination retries.
-   Once the guardian has stopped between sessions, the source durably records
-   `Transferred` and publishes it in the seat's backup before it answers. A source that cannot publish does
-   not answer yet. It then returns the guardian's three config files and its
-   two Iroh secrets in plain form; the Iroh connection between the two MGs
-   keeps them confidential. A `Transferred` seat never starts again, and it
-   answers every later valid grant for the seat with the same guardian.
+   its federation. Each call answers from durable state and never waits;
+   the destination retries until it gets the guardian:
+   - While the guardian runs, the source asks it to stop between consensus
+     sessions, never inside one (see *Session boundary*), and answers
+     `AwaitingSessionEnd`. The stop durably records `Transferred`, and a
+     `Transferred` seat never starts again.
+   - Until the relays confirm a seat backup that records `Transferred`, it
+     wakes the backup worker and answers `AwaitingBackup`. A restore from
+     the relays therefore never starts the moved guardian again.
+   - Then it returns the guardian's three config files and its two Iroh
+     secrets in plain form; the Iroh connection between the two MGs keeps
+     them confidential. It answers every later valid grant for the seat with
+     the same guardian.
 4. The destination validates the guardian against the grant, durably
    stores it, and starts it. From then on the seat is a formed seat that
    reports `Running`: the grant's expiry no longer applies, its backup
