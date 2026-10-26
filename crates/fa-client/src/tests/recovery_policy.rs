@@ -1029,7 +1029,11 @@ async fn mixed_replacement_wave_with_clock(clock: Arc<AtomicU64>) {
         .hang_funding_on_call
         .store(next_funding_call, Ordering::SeqCst);
     let funding_started = payment_state.funding_started.notified();
-    let replacement_valid_until = crate::formation::now_secs().unwrap() + 1;
+    // The FA store checks admission freshness against its real-time lease
+    // clock, not the task-local test clock, so a validity of one second ran
+    // out whenever the wall clock crossed a second during the wave. Five
+    // seconds outlasts the wave; the test clock still expires it below.
+    let replacement_valid_until = crate::formation::now_secs().unwrap() + 5;
     let approval = MgReplacementApproval {
         requirements,
         verifier_provenance: test_peer_badge_verifier().provenance(),
