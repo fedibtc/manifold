@@ -380,7 +380,6 @@ impl SeatBackupDocument {
         }
     }
 
-    /// Validate shape before restore touches files or commits fleet facts.
     /// The transfer fence this document records.
     pub(crate) fn outgoing_transfer(&self) -> Option<crate::transfer_state::OutgoingTransfer> {
         let outgoing = self.transfer.as_ref()?.outgoing.as_ref()?;
@@ -391,6 +390,7 @@ impl SeatBackupDocument {
         })
     }
 
+    /// Validate shape before restore touches files or commits fleet facts.
     pub(crate) fn validate_transfer(&self) -> anyhow::Result<()> {
         let Some(transfer) = &self.transfer else {
             return Ok(());

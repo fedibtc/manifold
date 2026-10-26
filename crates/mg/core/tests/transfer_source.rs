@@ -662,7 +662,7 @@ async fn boundary_exit_of_a_decommissioned_seat_is_no_handover() {
         .await
         .unwrap();
     s.child().await.stop_at_session_boundary();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    eventually("the guardian respawns", || s.spawner.spawn_count() == 2).await;
     assert_eq!(s.outgoing().await, None);
     s.fleet.shutdown().await;
 }
