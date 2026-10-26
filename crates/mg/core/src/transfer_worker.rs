@@ -42,7 +42,7 @@ type Seats = Arc<RwLock<HashMap<SeatId, Arc<Seat>>>>;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Work {
-    Incoming(u64),
+    Incoming,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -284,8 +284,7 @@ impl Jobs {
             return Ok(None);
         }
         Ok(self.db.incoming_transfer(id).await?.and_then(|incoming| {
-            (incoming.phase() == TransferPhase::Waiting)
-                .then_some(Work::Incoming(incoming.generation))
+            (incoming.phase() == TransferPhase::Waiting).then_some(Work::Incoming)
         }))
     }
 
@@ -322,8 +321,8 @@ impl Jobs {
             {
                 // Keep this job registered, with no retry timer. Another
                 // seat's transitions and JoinSet completions cannot restart
-                // immutable local failures. Same-seat replay/operator action
-                // or generation cancellation can wake it.
+                // immutable local failures. Same-seat replay, operator action
+                // or cancellation can wake it.
                 tokio::select! {
                     biased;
                     _ = cancelled(&mut cancel) => return,
@@ -348,16 +347,12 @@ impl Jobs {
         work: Work,
         cancel: &mut watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
-        let Work::Incoming(generation) = work;
+        let Work::Incoming = work;
         let record = self
             .db
             .incoming_transfer(&seat.facts().seat_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("transfer disappeared"))?;
-        anyhow::ensure!(
-            record.generation == generation,
-            "transfer generation changed"
-        );
         let IncomingState::Waiting { grant } = record.state else {
             return Ok(());
         };
@@ -391,7 +386,7 @@ impl Jobs {
         .map_err(|_| anyhow::anyhow!("source guardian material is invalid"))?;
         drop(permit);
         anyhow::ensure!(!*cancel.borrow(), "transfer cancelled");
-        seat.install_transfer(generation, record.binding, guardian)
+        seat.install_transfer(record.binding, guardian)
             .await
             .map_err(owner_failure)?;
         self.advertisement.notify_one();

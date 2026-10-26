@@ -60,12 +60,11 @@ async fn a_waiting_seat_stays_bound_to_its_move() {
     let first = db.admit_transfer(&signed, None).await.unwrap().unwrap();
 
     // The FA signs the same move again, for example after a restore. It is a
-    // replay: the stored grant and the generation stay.
+    // replay: the stored grant stays.
     grant.ts.0 += 1;
     let again = SignedRequest::create(&grant, &key(7)).unwrap();
     assert_ne!(again, signed);
     let replay = db.admit_transfer(&again, None).await.unwrap().unwrap();
-    assert_eq!(replay.generation, first.generation);
     assert!(matches!(
         &replay.state,
         IncomingState::Waiting { grant } if grant == &signed
@@ -101,7 +100,6 @@ async fn a_waiting_seat_stays_bound_to_its_move() {
     assert!(
         db.accept_transfer(
             &grant.destination_seat_id,
-            first.generation,
             &first.binding,
             &keys(),
             &InviteCode("test".into())
@@ -126,7 +124,6 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
     assert!(
         db.accept_transfer(
             &grant.destination_seat_id,
-            first.generation,
             &first.binding,
             &keys(),
             &InviteCode("test".into())
@@ -152,14 +149,14 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
     );
     grant.ts.0 += 1;
     let renewal = SignedRequest::create(&grant, &key(7)).unwrap();
-    assert_eq!(
+    assert!(matches!(
         db.admit_transfer(&renewal, None)
             .await
             .unwrap()
             .unwrap()
-            .generation,
-        first.generation
-    );
+            .state,
+        IncomingState::Imported(_)
+    ));
     grant.source_seat_id = SeatId::from(QuoteId([3; 32]));
     assert!(
         db.admit_transfer(&SignedRequest::create(&grant, &key(7)).unwrap(), None)
@@ -246,7 +243,6 @@ async fn transfer_admission_cannot_race_dkg_or_revive_decommission() {
     assert!(
         !db.accept_transfer(
             &grant.destination_seat_id,
-            1,
             &TransferMove::from(&grant),
             &keys(),
             &InviteCode("test".into())

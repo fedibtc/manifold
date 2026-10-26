@@ -602,7 +602,6 @@ async fn a_publication_never_straddles_an_import_acceptance() {
         assert!(
             db.accept_transfer(
                 &facts.seat_id,
-                waiting.generation,
                 &waiting.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[41; 32], &[42; 32]),
                 &invite,

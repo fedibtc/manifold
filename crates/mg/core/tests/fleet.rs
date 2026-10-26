@@ -860,7 +860,6 @@ async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_materi
             .db
             .accept_transfer(
                 &seat_id,
-                admission.generation,
                 &admission.binding,
                 &package.keys,
                 &validated.invite,

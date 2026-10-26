@@ -47,8 +47,6 @@ impl From<&SeatTransferGrant> for TransferMove {
 /// crash cannot leave an acceptance promise without its guardian.
 #[derive(Clone)]
 pub(crate) struct IncomingTransfer {
-    /// Incremented on each new polling attempt to reject delayed worker replies.
-    pub(crate) generation: u64,
     /// Stable provenance retained after the live grant is discarded.
     pub(crate) binding: TransferMove,
     /// Confidential, non-authorizing commitment to the first callback choice.

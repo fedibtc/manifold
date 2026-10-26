@@ -5,7 +5,6 @@
 -- and in the backup.
 CREATE TABLE seat_transfer_in (
     quote_id BLOB PRIMARY KEY NOT NULL REFERENCES seats (quote_id),
-    generation INTEGER NOT NULL CHECK (generation > 0),
     state TEXT NOT NULL CHECK (state IN ('waiting', 'imported')),
     binding TEXT NOT NULL,
     callback_commitment BLOB CHECK (callback_commitment IS NULL OR length(callback_commitment) = 32),

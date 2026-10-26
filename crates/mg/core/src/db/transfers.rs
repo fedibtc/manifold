@@ -1,4 +1,4 @@
-//! Transactional transfer admission, generation checks and permanent retirement.
+//! Transactional transfer admission, acceptance and permanent retirement.
 //!
 //! The seat loop serializes process effects. These transactions additionally
 //! fence restart and callback choice across crashes. Acceptance is
@@ -25,7 +25,6 @@ fn corrupt(seat_id: &SeatId) -> DbError {
 }
 
 type IncomingRow = (
-    i64,
     String,
     String,
     Option<Vec<u8>>,
@@ -35,11 +34,7 @@ type IncomingRow = (
 );
 
 fn decode(seat_id: &SeatId, row: IncomingRow) -> Result<IncomingTransfer, DbError> {
-    let (generation, state, binding, callback_commitment, grant, iroh_api_sk, iroh_p2p_sk) = row;
-    let generation = u64::try_from(generation)
-        .ok()
-        .filter(|generation| *generation > 0)
-        .ok_or_else(|| corrupt(seat_id))?;
+    let (state, binding, callback_commitment, grant, iroh_api_sk, iroh_p2p_sk) = row;
     let binding = serde_json::from_str(&binding).map_err(|_| corrupt(seat_id))?;
     let callback_commitment = callback_commitment
         .map(|bytes| <[u8; 32]>::try_from(bytes).map_err(|_| corrupt(seat_id)))
@@ -58,7 +53,6 @@ fn decode(seat_id: &SeatId, row: IncomingRow) -> Result<IncomingTransfer, DbErro
         _ => return Err(corrupt(seat_id)),
     };
     Ok(IncomingTransfer {
-        generation,
         binding,
         callback_commitment,
         state,
@@ -66,7 +60,7 @@ fn decode(seat_id: &SeatId, row: IncomingRow) -> Result<IncomingTransfer, DbErro
 }
 
 const INCOMING_COLUMNS: &str =
-    "generation, state, binding, callback_commitment, grant, iroh_api_sk, iroh_p2p_sk";
+    "state, binding, callback_commitment, grant, iroh_api_sk, iroh_p2p_sk";
 
 pub(super) async fn incoming(
     conn: &mut SqliteConnection,
@@ -109,14 +103,12 @@ pub(super) async fn save(
         IncomingState::Imported(keys) => ("imported", None, Some(keys)),
     };
     sqlx::query(&format!(
-        "INSERT INTO seat_transfer_in (quote_id, {INCOMING_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(quote_id) DO UPDATE SET generation = excluded.generation, \
-         state = excluded.state, binding = excluded.binding, \
+        "INSERT INTO seat_transfer_in (quote_id, {INCOMING_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(quote_id) DO UPDATE SET state = excluded.state, binding = excluded.binding, \
          callback_commitment = excluded.callback_commitment, grant = excluded.grant, \
          iroh_api_sk = excluded.iroh_api_sk, iroh_p2p_sk = excluded.iroh_p2p_sk"
     ))
     .bind(seat_id.as_bytes().as_slice())
-    .bind(i64::try_from(record.generation).map_err(|_| corrupt(seat_id))?)
     .bind(state)
     .bind(serde_json::to_string(&record.binding).expect("transfer binding serializes"))
     .bind(record.callback_commitment.map(|bytes| bytes.to_vec()))
@@ -212,7 +204,7 @@ impl Db {
     ///
     /// `None` refuses the lifecycle transition. A grant for the same move,
     /// also one the FA signed again, is a replay: it does not replace the
-    /// stored grant, material, generation or callback.
+    /// stored grant, material or callback.
     pub(crate) async fn admit_transfer(
         &self,
         grant: &SignedRequest<SeatTransferGrant>,
@@ -282,7 +274,6 @@ impl Db {
             return Ok(None);
         }
         let record = IncomingTransfer {
-            generation: 1,
             binding,
             callback_commitment,
             state: IncomingState::Waiting {
@@ -299,12 +290,12 @@ impl Db {
     /// the seat data directory, together with the formed row. The seat is
     /// formed from here on; its backup follows like any formed seat's.
     ///
-    /// Recheck the generation inside the committing write transaction, so a
-    /// late response cannot install into another admission.
+    /// Recheck the move inside the committing write transaction. A seat stays
+    /// bound to one move, so a late response of that move installs the same
+    /// guardian.
     pub(crate) async fn accept_transfer(
         &self,
         seat_id: &SeatId,
-        generation: u64,
         binding: &TransferMove,
         keys: &ImportedKeys,
         invite_code: &InviteCode,
@@ -316,10 +307,7 @@ impl Db {
         let IncomingState::Waiting { .. } = &record.state else {
             return Ok(false);
         };
-        if record.generation != generation
-            || &record.binding != binding
-            || is_retired(&mut tx, seat_id).await?
-        {
+        if &record.binding != binding || is_retired(&mut tx, seat_id).await? {
             return Ok(false);
         }
         record.state = IncomingState::Imported(keys.clone());
