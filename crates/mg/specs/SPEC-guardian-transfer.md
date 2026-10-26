@@ -73,6 +73,9 @@ online once. The FA does not have to be online at the same time.
 - The source hands over only a guardian that exited at a session boundary, so
   the moved key never signs units in a session that the source has already
   signed units in.
+- Only a validated `TransferSeat` retires a seat. A guardian that stops for
+  any other reason, including an operator's scheduled shutdown, restarts
+  and keeps its seat.
 - The grant is the only authority. Possession of a grant gives no access to
   the guardian, because the source answers only the destination the grant
   names, authenticated by its service-key signature.
@@ -104,10 +107,19 @@ between sessions:
   fedimintd's `shutdown_after_current_session` admin endpoint, to exit once
   the session it is running completes, without starting another. The
   request is idempotent, and it lives only in the fedimintd process.
-- fedimintd exits with a dedicated session-boundary exit code only on that
-  path: its last session completed and no later one began. On that exit the
-  source records `Transferred`, which also keeps the supervisor from ever
-  starting the guardian again.
+- fedimintd exits with a dedicated session-boundary exit code only when that
+  request took effect: its last session completed and no later one began.
+  A shutdown scheduled for a given session through the older `shutdown`
+  endpoint exits as before, without that code.
+- The source records `Transferred` only for that exit of a child it asked
+  on behalf of a validated `TransferSeat`. This also keeps the supervisor
+  from ever starting the guardian again. The MG remembers the request for
+  that child process only, and it remembers it even when the request failed
+  or timed out, because fedimintd may have scheduled the stop anyway.
+- The exit code alone proves no transfer: an operator with the guardian's
+  admin password can request the same stop for maintenance. The
+  session-boundary exit of a child that no `TransferSeat` asked is an
+  ordinary exit.
 - Any other exit is a crash, including a session timeout, a panic, and a
   kill by the watchdog or the operator. The guardian restarts from its own
   database, which continues its session rather than forking it, and the

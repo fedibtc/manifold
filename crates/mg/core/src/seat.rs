@@ -293,6 +293,10 @@ enum ProcessSlot {
     Configured {
         child: SeatProcess,
         client: Option<DrivenDkgClient<tokio::net::UnixStream>>,
+        /// `TransferSeat` asked this child to stop after its current
+        /// session, so its session-boundary exit hands the guardian over.
+        /// A new child starts without the request.
+        transfer_requested: bool,
     },
     /// A consuming stop failed, so exit was not proved and replacement is
     /// permanently refused for this daemon lifetime.
@@ -336,6 +340,7 @@ impl ProcessSlot {
             Self::Configured {
                 child,
                 client: Some(client),
+                ..
             } => tokio::select! {
                 biased;
                 event = client.next_event() => ProcessObservation::Driven(event),
@@ -344,6 +349,7 @@ impl ProcessSlot {
             Self::Configured {
                 child,
                 client: None,
+                ..
             } => ProcessObservation::Exited(child.wait().await),
             Self::Empty | Self::ExitUnproven => unreachable!("live child guard"),
         }
@@ -1360,11 +1366,15 @@ impl SeatLoop {
     async fn handle_child_exit(&mut self, exit: Result<ObservedSeatExit, SeatProcessError>) {
         let slot = std::mem::replace(&mut self.child, ProcessSlot::Empty);
         self.set_process_slot(ProcessSlot::Empty);
-        let mut client = match slot {
+        let (mut client, transfer_requested) = match slot {
             ProcessSlot::Parked { client, .. } | ProcessSlot::DkgAcknowledged { client, .. } => {
-                Some(client)
+                (Some(client), false)
             }
-            ProcessSlot::Configured { client, .. } => client,
+            ProcessSlot::Configured {
+                client,
+                transfer_requested,
+                ..
+            } => (client, transfer_requested),
             ProcessSlot::Empty | ProcessSlot::ExitUnproven => unreachable!("live child guard"),
         };
         if let Some(mut client) = client.take() {
@@ -1400,7 +1410,7 @@ impl SeatLoop {
                 None
             }
         };
-        if self.commit_session_boundary_exit(exit_code).await {
+        if transfer_requested && self.commit_session_boundary_exit(exit_code).await {
             return;
         }
         if self
@@ -1441,6 +1451,7 @@ impl SeatLoop {
             | ProcessSlot::DkgAcknowledged { child, client } => ProcessSlot::Configured {
                 child,
                 client: Some(client),
+                transfer_requested: false,
             },
             other => other,
         };
@@ -1450,9 +1461,14 @@ impl SeatLoop {
     fn retire_control_channel(&mut self) {
         let slot = std::mem::replace(&mut self.child, ProcessSlot::Empty);
         let slot = match slot {
-            ProcessSlot::Configured { child, .. } => ProcessSlot::Configured {
+            ProcessSlot::Configured {
+                child,
+                transfer_requested,
+                ..
+            } => ProcessSlot::Configured {
                 child,
                 client: None,
+                transfer_requested,
             },
             other => other,
         };
@@ -1541,6 +1557,7 @@ impl SeatLoop {
             ChildState::AlreadyConfigured { .. } => ProcessSlot::Configured {
                 child,
                 client: Some(client),
+                transfer_requested: false,
             },
         });
         self.child_started = Some(tokio::time::Instant::now());

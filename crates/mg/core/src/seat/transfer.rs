@@ -141,11 +141,18 @@ impl SeatLoop {
         Ok(material)
     }
 
-    async fn request_shutdown_after_current_session(&self) {
-        if !matches!(self.child, ProcessSlot::Configured { .. }) {
+    async fn request_shutdown_after_current_session(&mut self) {
+        let ProcessSlot::Configured {
+            transfer_requested, ..
+        } = &mut self.child
+        else {
             // Down or restarting: the retry after the respawn asks.
             return;
-        }
+        };
+        // Recorded before asking: a request that fails or times out may still
+        // have reached fedimintd, and then this child's session-boundary exit
+        // is the transfer's.
+        *transfer_requested = true;
         let failure_kind = match tokio::time::timeout(
             SHUTDOWN_REQUEST_TIMEOUT,
             self.client().shutdown_after_current_session(),
@@ -166,16 +173,19 @@ impl SeatLoop {
         );
     }
 
-    /// Called for every observed child exit. Returns whether the guardian
-    /// was handed over, in which case it must never run here again; the
-    /// written fence blocks the respawn.
+    /// Called for an observed exit of a child that `TransferSeat` asked to
+    /// stop after its current session. Returns whether the guardian was
+    /// handed over, in which case it must never run here again; the written
+    /// fence blocks the respawn.
     ///
-    /// Only fedimintd's scheduled-shutdown path exits with
-    /// [`SESSION_BOUNDARY_EXIT_CODE`], and only `TransferSeat` schedules that
-    /// shutdown. Every other exit, such as a crash, a panic, a session
-    /// timeout, or a kill by the watchdog or the operator, restarts the
-    /// guardian from its own database, which continues its session rather
-    /// than forking it, and the destination's next retry asks again.
+    /// fedimintd exits with [`SESSION_BOUNDARY_EXIT_CODE`] only when a
+    /// `shutdown_after_current_session` request took effect at a session
+    /// boundary. An operator can send that request too, so the code alone
+    /// proves no transfer; the caller checks that this child received one.
+    /// Every other exit, such as a crash, a panic, a session timeout, or a
+    /// kill by the watchdog or the operator, restarts the guardian from its
+    /// own database, which continues its session rather than forking it, and
+    /// the destination's next retry asks again.
     pub(super) async fn commit_session_boundary_exit(&mut self, exit_code: Option<i32>) -> bool {
         if exit_code != Some(SESSION_BOUNDARY_EXIT_CODE) {
             return false;
