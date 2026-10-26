@@ -268,7 +268,7 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
-    /// Source transfer waiting for the guardian's session to end.
+    /// Source transfer waiting for the guardian to stop between sessions.
     handover: Option<transfer::Handover>,
     handover_at: Option<tokio::time::Instant>,
 }
@@ -523,6 +523,10 @@ impl Seat {
             self.state.borrow().process_slot,
             ProcessSlotPhase::ExitUnproven
         )
+    }
+    #[cfg(test)]
+    pub(crate) fn child_slot_empty_for_test(&self) -> bool {
+        matches!(self.state.borrow().process_slot, ProcessSlotPhase::Empty)
     }
     #[cfg(test)]
     pub(crate) async fn wait_for_transfer_phase_for_test(&self, phase: TransferPhase) {
@@ -1512,13 +1516,13 @@ impl SeatLoop {
                 "child replacement requires a proved empty process slot"
             )));
         }
-        // A guardian that completed its last session for a transfer would
+        // A guardian proved stopped between sessions for a transfer would
         // otherwise start the next session and sign units the destination
         // then contradicts.
         if self
             .handover
             .as_ref()
-            .is_some_and(transfer::Handover::is_closed)
+            .is_some_and(transfer::Handover::is_confirmed)
         {
             return Err(SeatVerbError::SeatUnavailable);
         }
@@ -1587,7 +1591,7 @@ impl SeatLoop {
             || self
                 .handover
                 .as_ref()
-                .is_some_and(transfer::Handover::is_closed)
+                .is_some_and(transfer::Handover::is_confirmed)
         {
             self.respawn_at = None;
             return;

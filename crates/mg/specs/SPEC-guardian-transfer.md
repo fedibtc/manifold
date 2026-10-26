@@ -35,12 +35,11 @@ online once. The FA does not have to be online at the same time.
 3. The destination signs `TransferSeat` with the service key the grant names
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
-   its federation. It then stops its guardian at the end of the consensus
-   session the guardian is running, never in the middle of one (see
-   *Session boundary*). Until then it refuses `TransferSeat` as a `running`
-   seat, and the destination retries. Once the guardian has exited at that
-   boundary, the source durably records `Transferred` and publishes it in
-   the seat's backup before it answers. A source that cannot publish does
+   its federation. It then stops its guardian between consensus sessions,
+   never inside one (see *Session boundary*). Until then it refuses
+   `TransferSeat` as a `running` seat, and the destination retries. Once the
+   guardian has stopped between sessions, the source durably records
+   `Transferred` and publishes it in the seat's backup before it answers. A source that cannot publish does
    not answer yet. It then returns the guardian's three config files and its
    two Iroh secrets in plain form; the Iroh connection between the two MGs
    keeps them confidential. A `Transferred` seat never starts again, and it
@@ -67,8 +66,9 @@ online once. The FA does not have to be online at the same time.
 - The source stops before it hands the guardian over, and the destination
   cannot start without it. At most one host runs the guardian unless the FA
   grants the same seat to two destinations.
-- The source stops only at a session boundary, so the moved key never signs
-  units in a session that the source has already signed units in.
+- The source hands over only a guardian proved stopped between sessions, so
+  the moved key never signs units in a session that the source has already
+  signed units in.
 - The grant is the only authority. Possession of a grant gives no access to
   the guardian, because the source answers only the destination the grant
   names, authenticated by its service-key signature.
@@ -93,31 +93,31 @@ consensus units in that session, peers would see two different units from
 one key, mark the guardian a forker for the rest of the session, and keep
 that evidence across restarts. Each such guardian consumes one unit of the
 federation's fault budget, so a few transfers in one session can halt the
-federation. The source therefore hands over only at a session boundary:
+federation. The source therefore hands over only a guardian that stopped
+between sessions:
 
-- It asks its fedimintd to shut down after the session it reads as running.
-  The bundled fedimintd applies a schedule for session `n` at the first
-  session boundary at or after `n`, so a request that arrives just after a
-  session ended is not lost.
-- It accepts the schedule only when a session-count read after the schedule
-  still shows that session running, so the schedule landed before the
-  session ended. Otherwise it asks again.
-- It records `Transferred` only for an exit it observed after that session
-  completed. fedimintd stays up for a minute after its last session, which
-  leaves time for that observation. Any other exit is a crash: the guardian
-  restarts from its own database, which is no fork, and the source schedules
-  it again. A schedule lives only in the fedimintd process and in the MG's
-  memory, so a restart of either forgets it and the next `TransferSeat`
-  starts again.
-- Once the guardian has completed its last session, the source never starts
-  it again, even before `Transferred` is recorded.
+- It asks its fedimintd, through the bundled fedimintd's
+  `shutdown_after_current_session` admin endpoint, to exit once the session
+  it is running completes, without starting another.
+- It records `Transferred` only when the stopped guardian's own database
+  holds no AlephBFT units of an unfinished session. fedimintd saves each
+  unit before it broadcasts it and removes them when it commits a session,
+  so this proves the key signed nothing in any session the guardian did not
+  complete, however the process ended.
+- Any other exit is a crash: the guardian restarts from its own database,
+  which is no fork, and the source asks again. The request lives only in the
+  fedimintd process and in the MG's memory, so a restart of either forgets it
+  and the next `TransferSeat` starts again.
+- Once the stopped database proves the boundary, the source never starts the
+  guardian again, even before `Transferred` is recorded.
 
-The wait costs up to one session plus fedimintd's grace minute. A source
-whose guardian is down starts it as usual and waits for the end of the
-session it then runs. While the federation cannot end the session, for
-example with too many peers offline, the source keeps the guardian running,
-refuses `TransferSeat`, and logs that it is waiting. It never falls back to
-a mid-session stop.
+The wait costs up to one session plus the minute fedimintd waits after its
+last session for peers to finish it. A source whose guardian is already down
+between sessions hands it over without starting it; one that went down
+inside a session starts it as usual and waits for that session to end. While
+the federation cannot end the session, for example with too many peers
+offline, the source keeps the guardian running, refuses `TransferSeat`, and
+logs that it is waiting. It never falls back to a mid-session stop.
 
 ## Backup and restore
 

@@ -70,31 +70,11 @@ pub(crate) struct FakeApiState {
     /// Hold invite lookup after a consensus probe, for pinning its
     /// serialization against restart.
     pub invite_gate: Option<Arc<Notify>>,
-    /// Sessions this guardian has completed; the running session has this
-    /// index. Advanced only by [`FakeSeatChildHandle::complete_session`].
-    pub session_count: u64,
-    /// fedimintd's in-memory `shutdown` schedule (at-or-after rule).
-    pub scheduled_shutdown: Option<u64>,
-    /// The session after which the schedule fired. Like fedimintd, the
-    /// child then starts no further session and only waits to exit.
-    pub stopped_after: Option<u64>,
-    /// The `auth` each shutdown request carried.
-    pub shutdown_auth: Vec<Option<String>>,
-    /// Answer `session_count` with a transport-level failure, as if the
-    /// local API connection were cut while consensus continues.
+    /// The `auth` of each `shutdown_after_current_session` request.
+    pub shutdown_after_current_session: Vec<Option<String>>,
+    /// Fail every local API request at the transport, as if the connection
+    /// between the MG and its child were cut while consensus continues.
     pub api_cut: bool,
-    /// Number of `session_count` reads answered.
-    pub session_count_calls: usize,
-    /// End the running session while the next `shutdown` request is in
-    /// flight: before the schedule lands, or just after it.
-    pub session_ends_at_next_shutdown: Option<SessionEnd>,
-}
-
-/// Where a session boundary falls relative to a `shutdown` request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SessionEnd {
-    BeforeScheduleLands,
-    AfterScheduleLands,
 }
 
 #[derive(Clone)]
@@ -102,6 +82,26 @@ pub(crate) struct FakeSeatChildHandle {
     state: Arc<Mutex<FakeApiState>>,
     exit: watch::Sender<Option<ObservedSeatExit>>,
     seat_id: SeatId,
+    data_dir: PathBuf,
+}
+
+/// The registry's view of the live child of one seat.
+struct FakeChildEntry {
+    generation: u64,
+    state: Weak<Mutex<FakeApiState>>,
+    exit: watch::Sender<Option<ObservedSeatExit>>,
+    data_dir: PathBuf,
+}
+
+impl FakeChildEntry {
+    fn handle(&self, seat_id: &SeatId) -> Option<FakeSeatChildHandle> {
+        Some(FakeSeatChildHandle {
+            state: self.state.upgrade()?,
+            exit: self.exit.clone(),
+            seat_id: seat_id.clone(),
+            data_dir: self.data_dir.clone(),
+        })
+    }
 }
 
 fn method_not_found() -> ErrorObjectOwned {
@@ -119,24 +119,6 @@ fn request_params(params: Params<'_>) -> Result<Value, ErrorObjectOwned> {
 fn request_auth(params: Params<'_>) -> Result<Option<String>, ErrorObjectOwned> {
     let request: Value = params.one()?;
     Ok(request["auth"].as_str().map(str::to_owned))
-}
-
-/// fedimintd's consensus loop at a session boundary: commit the session, then
-/// check the schedule (at-or-after rule) before starting the next one.
-fn complete_session(state: &mut FakeApiState) -> bool {
-    assert!(
-        state.stopped_after.is_none(),
-        "a guardian past its scheduled shutdown runs no further session"
-    );
-    let completed = state.session_count;
-    state.session_count += 1;
-    if state
-        .scheduled_shutdown
-        .is_some_and(|scheduled| scheduled <= completed)
-    {
-        state.stopped_after = Some(completed);
-    }
-    state.stopped_after.is_some()
 }
 
 struct FakeApiServer {
@@ -217,7 +199,8 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
         })
         .unwrap();
     module
-        .register_method("session_count", |_params, state, _ext| {
+        .register_method("shutdown_after_current_session", |params, state, _ext| {
+            let auth = request_auth(params)?;
             let mut state = state.lock().unwrap();
             if state.api_cut {
                 return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
@@ -225,31 +208,7 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
             if !state.consensus_running {
                 return Err(method_not_found());
             }
-            state.session_count_calls += 1;
-            Ok::<_, ErrorObjectOwned>(json!(state.session_count))
-        })
-        .unwrap();
-    module
-        .register_method("shutdown", |params, state, _ext| {
-            let auth = request_auth(params.clone())?;
-            let session: Option<u64> = serde_json::from_value(request_params(params)?)
-                .map_err(|_| ErrorObjectOwned::owned(-32000, "malformed session", None::<()>))?;
-            let mut state = state.lock().unwrap();
-            if state.api_cut {
-                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
-            }
-            if !state.consensus_running {
-                return Err(method_not_found());
-            }
-            state.shutdown_auth.push(auth);
-            let end = state.session_ends_at_next_shutdown.take();
-            if end == Some(SessionEnd::BeforeScheduleLands) {
-                complete_session(&mut state);
-            }
-            state.scheduled_shutdown = session;
-            if end == Some(SessionEnd::AfterScheduleLands) {
-                complete_session(&mut state);
-            }
+            state.shutdown_after_current_session.push(auth);
             Ok::<_, ErrorObjectOwned>(Value::Null)
         })
         .unwrap();
@@ -339,16 +298,27 @@ impl FakeSeatChildHandle {
         update(&mut self.state.lock().unwrap());
     }
 
-    /// End the running session as the federation would. Returns whether the
-    /// schedule fired, after which the child runs no further session.
-    pub(crate) fn complete_session(&self) -> bool {
-        complete_session(&mut self.state.lock().unwrap())
+    /// fedimintd exits between sessions, as after its scheduled shutdown:
+    /// its database holds no units of an unfinished session.
+    pub(crate) async fn stop_between_sessions(&self) {
+        write_guardian_db(&self.data_dir, false).await;
+        self.exit(255);
     }
 
-    /// The process exits on its own: fedimintd's `process::exit(-1)` after
-    /// its scheduled shutdown, or a crash such as a consensus session
-    /// timeout. The MG sees only the exit status.
-    pub(crate) fn exit(&self, status_code: i32) {
+    /// fedimintd dies inside a session, for example on a consensus session
+    /// timeout: its database holds the session's saved units.
+    pub(crate) async fn crash_inside_session(&self) {
+        write_guardian_db(&self.data_dir, true).await;
+        self.exit(1);
+    }
+
+    /// fedimintd exits before it ever wrote its database.
+    pub(crate) fn exit_without_database(&self) {
+        self.exit(1);
+    }
+
+    /// The process exits on its own; the MG sees only the exit status.
+    fn exit(&self, status_code: i32) {
         self.exit.send_replace(Some(ObservedSeatExit {
             seat_id: self.seat_id.clone(),
             status_code: Some(status_code),
@@ -375,18 +345,7 @@ pub(super) struct FakeSeatChild {
     data_dir: PathBuf,
     api_server: FakeApiServer,
     generation: u64,
-    children: Arc<
-        Mutex<
-            HashMap<
-                SeatId,
-                (
-                    u64,
-                    Weak<Mutex<FakeApiState>>,
-                    watch::Sender<Option<ObservedSeatExit>>,
-                ),
-            >,
-        >,
-    >,
+    children: Arc<Mutex<HashMap<SeatId, FakeChildEntry>>>,
 }
 
 impl FakeSeatChild {
@@ -430,7 +389,7 @@ impl FakeSeatChild {
         let mut children = self.children.lock().unwrap();
         if children
             .get(&self.seat_id)
-            .is_some_and(|(generation, _, _)| *generation == self.generation)
+            .is_some_and(|entry| entry.generation == self.generation)
         {
             children.remove(&self.seat_id);
         }
@@ -460,18 +419,7 @@ pub struct FakeSeatProcessSpawner {
     request_count: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
-    children: Arc<
-        Mutex<
-            HashMap<
-                SeatId,
-                (
-                    u64,
-                    Weak<Mutex<FakeApiState>>,
-                    watch::Sender<Option<ObservedSeatExit>>,
-                ),
-            >,
-        >,
-    >,
+    children: Arc<Mutex<HashMap<SeatId, FakeChildEntry>>>,
 }
 
 #[cfg(test)]
@@ -501,7 +449,7 @@ impl FakeSeatProcessSpawner {
 
     /// Every spawn is a formed guardian serving consensus from its
     /// database, starting at `session_count`.
-    pub(crate) fn configured(invite_code: &str, session_count: u64) -> Self {
+    pub(crate) fn configured(invite_code: &str) -> Self {
         Self {
             default_script: Some(vec![FakeDkgStep::Message(ChildMessage::Hello {
                 proto: PROTOCOL_VERSION,
@@ -512,16 +460,10 @@ impl FakeSeatProcessSpawner {
             })]),
             spawn_state: Mutex::new(FakeApiState {
                 consensus_running: true,
-                session_count,
                 ..Default::default()
             }),
             ..Default::default()
         }
-    }
-
-    /// Change what the next spawned child starts with.
-    pub(crate) fn modify_spawn_state(&self, update: impl FnOnce(&mut FakeApiState)) {
-        update(&mut self.spawn_state.lock().unwrap());
     }
 
     /// The live child's handle, without resetting its state.
@@ -532,13 +474,9 @@ impl FakeSeatProcessSpawner {
                 .lock()
                 .unwrap()
                 .get(seat_id)
-                .and_then(|(_, state, exit)| Some((state.upgrade()?, exit.clone())));
-            if let Some((state, exit)) = child {
-                return FakeSeatChildHandle {
-                    state,
-                    exit,
-                    seat_id: seat_id.clone(),
-                };
+                .and_then(|entry| entry.handle(seat_id));
+            if let Some(child) = child {
+                return child;
             }
             tokio::task::yield_now().await;
         }
@@ -567,14 +505,10 @@ impl FakeSeatProcessSpawner {
                 .lock()
                 .unwrap()
                 .get(seat_id)
-                .and_then(|(_, state, exit)| Some((state.upgrade()?, exit.clone())));
-            if let Some((state, exit)) = child {
-                *state.lock().unwrap() = initial;
-                return FakeSeatChildHandle {
-                    state,
-                    exit,
-                    seat_id: seat_id.clone(),
-                };
+                .and_then(|entry| entry.handle(seat_id));
+            if let Some(child) = child {
+                *child.state.lock().unwrap() = initial;
+                return child;
             }
             tokio::task::yield_now().await;
         }
@@ -624,11 +558,16 @@ impl FakeSeatProcessSpawner {
         let api_state = Arc::new(Mutex::new(self.spawn_state.lock().unwrap().clone()));
         let api_server = start_api_server(ports.api(), api_state.clone()).await;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let data_dir = seat_data_dir(config, seat_no);
         self.children.lock().unwrap().insert(
             seat_id.clone(),
-            (generation, Arc::downgrade(&api_state), exit.clone()),
+            FakeChildEntry {
+                generation,
+                state: Arc::downgrade(&api_state),
+                exit: exit.clone(),
+                data_dir: data_dir.clone(),
+            },
         );
-        let data_dir = seat_data_dir(config, seat_no);
         let stop_data_dir = data_dir.clone();
         let task_api_state = api_state.clone();
         let task = tokio::spawn(async move {
@@ -819,4 +758,29 @@ pub(crate) async fn write_fake_fedimintd(dir: &std::path::Path, body: &str) -> P
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();
     path
+}
+
+/// Write the guardian database a stopped fedimintd leaves behind: with the
+/// AlephBFT units it saved inside an unfinished session, or with none.
+pub(crate) async fn write_guardian_db(data_dir: &std::path::Path, in_session: bool) {
+    use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped as _};
+    use fedimint_server::consensus::db::{AlephUnitsKey, AlephUnitsPrefix};
+
+    let path = data_dir.join(fedimint_server::config::io::DB_FILE);
+    tokio::task::spawn_blocking(move || {
+        let raw = fedimint_rocksdb::RocksDb::build(&path)
+            .open_blocking()
+            .unwrap();
+        let db = Database::new(raw, Default::default());
+        futures::executor::block_on(async {
+            let mut dbtx = db.begin_transaction().await;
+            dbtx.remove_by_prefix(&AlephUnitsPrefix).await;
+            if in_session {
+                dbtx.insert_entry(&AlephUnitsKey(0), &vec![1u8; 8]).await;
+            }
+            dbtx.commit_tx().await;
+        });
+    })
+    .await
+    .unwrap();
 }

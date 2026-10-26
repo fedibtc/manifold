@@ -132,7 +132,7 @@ pub struct TransferSeatRequest {
 
 /// The source's answer to a [`TransferSeatRequest`].
 ///
-/// The source has stopped its guardian at the end of a consensus session,
+/// The source has stopped its guardian between consensus sessions,
 /// durably recorded `Transferred`, and published `Transferred` in the seat's
 /// backup before it answers. Until its guardian reaches that boundary it
 /// refuses the request as a `running` seat, and the destination retries.

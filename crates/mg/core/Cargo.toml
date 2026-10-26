@@ -41,7 +41,9 @@ fedimint-derive-secret = { workspace = true }
 fedimint-lnv2-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-meta-common = { workspace = true }
+fedimint-rocksdb = { workspace = true }
 fedimint-server = { workspace = true }
+futures = "0.3"
 hex = "0.4"
 hkdf = "0.12"
 iroh = { workspace = true }
