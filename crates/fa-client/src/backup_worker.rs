@@ -126,20 +126,14 @@ pub(crate) fn spawn_workers(
                 let identity = (prepared.document_hash, prepared.created_at);
                 if last != Some(identity)
                     && let Ok(sealed) = keys.seal(&prepared.payload)
+                    && let Ok(event) = backup_event(&keys, &sealed, prepared.created_at)
                 {
-                    let builder =
-                        EventBuilder::new(Kind::Custom(FA_BACKUP_EVENT_KIND), sealed.content())
-                            .tags([Tag::identifier(FA_BACKUP_D_TAG)]);
-                    let builder =
-                        builder.custom_created_at(Timestamp::from_secs(prepared.created_at));
-                    if let Ok(event) = builder.sign_with_keys(keys.author()) {
-                        desired_tx.send_replace(Some(Arc::new(Desired {
-                            event,
-                            document_hash: prepared.document_hash,
-                            generation: prepared.payload.snapshot_generation,
-                        })));
-                        last = Some(identity);
-                    }
+                    desired_tx.send_replace(Some(Arc::new(Desired {
+                        event,
+                        document_hash: prepared.document_hash,
+                        generation: prepared.payload.snapshot_generation,
+                    })));
+                    last = Some(identity);
                 }
             }
             // A guardian transfer wakes the scan: its binding vote waits for
@@ -159,6 +153,18 @@ pub(crate) fn spawn_workers(
             relay_worker(store, relay, desired),
         );
     }
+}
+
+/// The signed relay event that carries `sealed`.
+pub(crate) fn backup_event(
+    keys: &FaBackupKeys,
+    sealed: &EncryptedFaBackup,
+    created_at: u64,
+) -> Result<Event, nostr_sdk::event::builder::Error> {
+    EventBuilder::new(Kind::Custom(FA_BACKUP_EVENT_KIND), sealed.content())
+        .tags([Tag::identifier(FA_BACKUP_D_TAG)])
+        .custom_created_at(Timestamp::from_secs(created_at))
+        .sign_with_keys(keys.author())
 }
 
 async fn relay_worker(
@@ -383,13 +389,23 @@ pub(crate) async fn restore_from_relays(
                 .ok()
         }
     });
+    let reads = futures::future::join_all(queries).await;
+    restore_from_reads(store, &keys, fa_id, reads, required_reads, recovery).await
+}
+
+/// Restore from the relays' answers: one entry per relay, `None` for a read
+/// that failed.
+pub(crate) async fn restore_from_reads(
+    store: &FaStore,
+    keys: &FaBackupKeys,
+    fa_id: FaId,
+    reads: Vec<Option<Vec<Event>>>,
+    required_reads: usize,
+    recovery: &RecoveryCompletedKey,
+) -> FaResult<BackupRestoreOutcome> {
     let mut best = None;
     let mut successful_reads = 0;
-    for events in futures::future::join_all(queries)
-        .await
-        .into_iter()
-        .flatten()
-    {
+    for events in reads.into_iter().flatten() {
         successful_reads += 1;
         for event in events {
             if event.pubkey != keys.public_key() || event.verify().is_err() {

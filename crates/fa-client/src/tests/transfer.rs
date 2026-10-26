@@ -806,6 +806,81 @@ async fn no_vote_leaves_before_the_relays_hold_the_transfer() {
     assert!(!mg_state.binding_votes.lock().expect("test lock").is_empty());
 }
 
+/// A restore admits a backup only after a read quorum of relays answered.
+/// One relay that still serves the backup from before the move is not
+/// enough: the backup that a publish quorum confirmed may be on the relays
+/// that failed.
+#[tokio::test]
+async fn a_restore_with_one_of_three_relays_reads_nothing() {
+    let (mg_state, client, relays, keys, published) = transfer_waiting_for_its_backup().await;
+    confirm_backup(&client, &relays[0]).await;
+    confirm_backup(&client, &relays[1]).await;
+    let with_move = keys
+        .seal(&client.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    let event = |sealed: &crate::backup::EncryptedFaBackup| {
+        crate::backup_worker::backup_event(&keys, sealed, test_now_secs()).unwrap()
+    };
+    let older = event(&published);
+    let newer = event(&with_move);
+    drop(client);
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let recovery = crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging);
+    let fa_id = TestIdentity::fa_id();
+
+    let short = crate::backup_worker::restore_from_reads(
+        &replacement.inner.store,
+        &keys,
+        fa_id,
+        vec![Some(vec![older.clone()]), None, None],
+        2,
+        &recovery,
+    )
+    .await;
+    assert!(matches!(short, Err(FaError::Registry(_))), "{short:?}");
+    assert!(!replacement.inner.store.recovery_completed(&recovery).await);
+    assert!(!matches!(
+        replacement.inner.store.load_status(fa_id).await.unwrap(),
+        FaStatus::Formed(_)
+    ));
+    assert!(replacement.guardian_transfer().await.unwrap().is_none());
+
+    // With a second answer the quorum holds, and the newer backup, which
+    // names the move, wins over the older one.
+    assert_eq!(
+        crate::backup_worker::restore_from_reads(
+            &replacement.inner.store,
+            &keys,
+            fa_id,
+            vec![Some(vec![older]), Some(vec![newer]), None],
+            2,
+            &recovery,
+        )
+        .await
+        .unwrap(),
+        crate::backup_worker::BackupRestoreOutcome::Restored
+    );
+    assert!(replacement.inner.store.recovery_completed(&recovery).await);
+    assert_eq!(
+        replacement
+            .inner
+            .store
+            .formed_federation_payload(fa_id)
+            .await
+            .unwrap()
+            .transfer
+            .map(|transfer| transfer.seat_index),
+        Some(MOVED as u16)
+    );
+}
+
 /// The relay confirmations wake a waiting transfer: it goes on as soon as
 /// the publish quorum commits, not at its next poll.
 #[tokio::test]
