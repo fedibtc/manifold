@@ -110,6 +110,13 @@ impl SeatLoop {
             .map_err(SeatVerbError::internal)?;
         match outgoing {
             None => {
+                // Preflight the export before the stop that retires this
+                // source for good: an archive that cannot be exported, such
+                // as one over the transfer size cap, must leave a working
+                // guardian running. The export below reads it again.
+                TransferMaterial::read(&self.data_dir, self.exported_keys())
+                    .await
+                    .map_err(SeatVerbError::internal)?;
                 self.request_shutdown_after_current_session().await;
                 return Err(SeatVerbError::AwaitingSessionEnd);
             }

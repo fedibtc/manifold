@@ -504,7 +504,24 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
 
 #[tokio::test]
 async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
-    let source = source(31_261, Arc::new(FakeSeatProcessSpawner::default())).await;
+    // A configured, running guardian: a valid pull would ask it to stop.
+    let source = running_source(31_261).await;
+    let child = source.child().await;
+    let untouched = |what: &str| {
+        assert!(
+            child.state().shutdown_after_current_session.is_empty(),
+            "{what}: no boundary stop was requested"
+        );
+        assert_eq!(
+            source.spawner.spawn_count(),
+            1,
+            "{what}: the guardian kept running"
+        );
+        assert!(
+            !source.seat.child_slot_empty_for_test(),
+            "{what}: the guardian kept running"
+        );
+    };
     for case in 0..4 {
         let mut grant = source.grant.clone();
         match case {
@@ -527,16 +544,11 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
                 .await
                 .is_err()
         );
-        assert_eq!(
-            source
-                .fleet
-                .db
-                .outgoing_transfer(&source.grant.source_seat_id)
-                .await
-                .unwrap(),
-            None
-        );
+        assert_eq!(source.outgoing().await, None);
+        untouched(&format!("mismatch {case}"));
     }
+    // Valid JSON whitespace alone can push a healthy guardian's archive past
+    // the transfer cap. The source refuses before it asks for the stop.
     tokio::fs::write(
         seat_data_dir(&source.fleet.config.process, source.seat.facts().seat_no)
             .join("consensus.json"),
@@ -544,16 +556,12 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     )
     .await
     .unwrap();
-    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
-    assert_eq!(
-        source
-            .fleet
-            .db
-            .outgoing_transfer(&source.grant.source_seat_id)
-            .await
-            .unwrap(),
-        None
-    );
+    assert!(matches!(
+        source.fleet.transfer_seat(source.pull()).await,
+        Err(SeatVerbError::Internal(_))
+    ));
+    assert_eq!(source.outgoing().await, None);
+    untouched("oversize archive");
     source.fleet.shutdown().await;
 }
 
