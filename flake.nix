@@ -1134,6 +1134,65 @@
         # features so the existing bundle also serves the embedded dashboards.
         ciRuntimeBins = multiBuild.ci.runtimeBins;
 
+        # Fully static release `fleet-manager` for self-update. The image binary
+        # links glibc and libstdc++ from its own Nix closure, which a binary
+        # downloaded into the data root cannot rely on; a static musl binary is
+        # one file whose sha256 signers reproduce and MG verifies.
+        mkFleetManagerStatic =
+          staticPkgs:
+          let
+            target = staticPkgs.stdenv.hostPlatform.rust.rustcTarget;
+            cc = staticPkgs.stdenv.cc;
+            prefix = cc.targetPrefix;
+            underscores = pkgs.lib.replaceStrings [ "-" ] [ "_" ] target;
+            upper = pkgs.lib.toUpper underscores;
+            libclang = pkgs.llvmPackages_18.libclang;
+            toolchain = flakeboxLib.mkFenixToolchain {
+              defaultTarget = target;
+              targets.static = _: {
+                componentTargets = [ target ];
+                args = {
+                  "CC_${underscores}" = "${cc}/bin/${prefix}cc";
+                  "CXX_${underscores}" = "${cc}/bin/${prefix}c++";
+                  "AR_${underscores}" = "${cc}/bin/${prefix}ar";
+                  "CARGO_TARGET_${upper}_LINKER" = "${cc}/bin/${prefix}cc";
+                  # Nixpkgs' static libstdc++ is not PIC, so link a static,
+                  # non-PIE binary.
+                  "CARGO_TARGET_${upper}_RUSTFLAGS" = "-C target-feature=+crt-static -C relocation-model=static";
+                  # bindgen (aws-lc-sys) parses target headers with libclang.
+                  LIBCLANG_PATH = "${libclang.lib}/lib";
+                  "BINDGEN_EXTRA_CLANG_ARGS_${underscores}" =
+                    "--target=${target} -nostdinc -isystem ${libclang.lib}/lib/clang/${pkgs.lib.versions.major libclang.version}/include -isystem ${staticPkgs.musl.dev}/include";
+                };
+              };
+            };
+            craneLib = toolchain.craneLib.overrideArgs {
+              pname = "fleet-manager-static";
+              src = buildSrc;
+              nativeBuildInputs = [
+                pkgs.cmake
+                pkgs.pkg-config
+              ];
+              dontUseCmakeConfigure = true;
+              env.JEMALLOC_SYS_WITH_LG_PAGE = "16";
+              postPatch = "${linkExternalDeps}/bin/link-external-deps .";
+              CARGO_PROFILE = "release";
+              cargoExtraArgs = "-p mg --bin fleet-manager --features mg/embedded-operator-ui";
+              doCheck = false;
+            };
+          in
+          craneLib.buildPackage {
+            cargoArtifacts = craneLib.buildDepsOnly { };
+            env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
+            env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
+          };
+        # One release binary per CPU, all buildable from an x86_64-linux host so
+        # every release signer can reproduce every published hash.
+        fleetManagerStaticBinaries = {
+          x86_64 = mkFleetManagerStatic pkgs.pkgsCross.musl64.pkgsStatic;
+          aarch64 = mkFleetManagerStatic pkgs.pkgsCross.aarch64-multiplatform-musl.pkgsStatic;
+        };
+
         # Reuse the package's runtime contract script as the image entrypoint,
         # resolving `fleet-manager` from the Nix store.
         mkFleetManagerEntrypoint =
@@ -1838,6 +1897,8 @@
           cloud-fman-telemetry = multiBuild.cloudFmanTelemetry;
           push-gateway = multiBuild.pushGateway;
           fleet-manager = multiBuild.fleetManager;
+          fleet-manager-static-x86_64 = fleetManagerStaticBinaries.x86_64;
+          fleet-manager-static-aarch64 = fleetManagerStaticBinaries.aarch64;
           fman-cli = multiBuild.fleetManager;
           setup-payment-publisher = multiBuild.setupPaymentPublisher;
           # The flake-pinned fedimint binaries, re-exposed so E2E runs can point
