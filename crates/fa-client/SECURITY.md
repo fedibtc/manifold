@@ -235,6 +235,20 @@ multiplies badge-verification work nor shrinks the effective window.
 Re-check this section when the verification order or any cap changes, or
 when the sealed selected-creation contract changes.
 
+## Guardian transfer
+
+A transfer destination approval is a public, cloneable value, so a caller
+can hand one client's approval to another. The approval names the federation
+it was previewed for, and the start refuses an approval of another
+federation, before it asks any MG, opens a transfer, or reserves a payment:
+that approval's Fedimint line, size, and exclusions describe other
+guardians. The start also checks again, against the guardians it has now,
+that the destination is no MG or badge holder that hosts or hosted a peer
+of the federation, and that it shares no service key with a current
+guardian. Re-check this when the
+approval gains or loses a field, or when the start reads guardians from a
+different source than the preview.
+
 ## Durable ordering
 
 The following ordering is part of the monetary safety boundary:

@@ -30,7 +30,7 @@ use fedi_decentralized_peer_badge_verifier::{
     PeerBadgeVerificationError, PeerBadgeVerifier, PeerBadgeVerifierProvenance,
 };
 use fedi_decentralized_service_manifold_guardian::{
-    FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
+    FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
     GetAvailabilityRequest, GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
@@ -1150,6 +1150,8 @@ pub(crate) async fn preview_mg_replacements_with(
 /// Read-only verified selection of one MG to receive a transferred guardian.
 #[derive(Debug)]
 pub struct TransferDestinationPreview {
+    /// The federation whose guardian moves onto the selected seat.
+    federation_id: FederationId,
     verifier_provenance: PeerBadgeVerifierProvenance,
     fedimintd_dkg_version: FedimintdDkgVersion,
     seat: SelectedMgSeat,
@@ -1185,6 +1187,7 @@ impl TransferDestinationPreview {
             });
         }
         Ok(TransferDestinationApproval {
+            federation_id: self.federation_id,
             verifier_provenance: self.verifier_provenance,
             fedimintd_dkg_version: self.fedimintd_dkg_version,
             advertised_price_msats: self.seat.advertised_price_msats(),
@@ -1198,6 +1201,9 @@ impl TransferDestinationPreview {
 /// Sealed, short-lived approval to buy the seat of one guardian transfer.
 #[derive(Clone, Debug)]
 pub struct TransferDestinationApproval {
+    /// The federation the preview selected for. Starting a transfer of any
+    /// other federation with this approval fails.
+    pub(crate) federation_id: FederationId,
     pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
     /// The Fedimint line the federation ran at preview time.
     pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
@@ -1246,6 +1252,7 @@ pub(crate) async fn preview_transfer_destination_with(
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
+    federation_id: FederationId,
     federation_size: FederationSize,
     fedimintd_dkg_version: FedimintdDkgVersion,
     excluded: BTreeSet<PublicKey>,
@@ -1310,6 +1317,7 @@ pub(crate) async fn preview_transfer_destination_with(
             FaError::Selection("transfer destination preview expiry overflows".to_owned())
         })?;
     Ok(TransferDestinationPreview {
+        federation_id,
         verifier_provenance,
         fedimintd_dkg_version,
         seat,

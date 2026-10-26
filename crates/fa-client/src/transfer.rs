@@ -229,6 +229,15 @@ where
         let options = options.run_options();
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
+        // The approval is checked against local state first, before any MG
+        // is asked.
+        let federation = self.transfer_federation(fa_id).await?;
+        if federation.has_custody(approval.seat.mg_id, Some(approval.seat.holder)) {
+            return Err(FaError::InvalidIntent(
+                "the destination MG or holder hosts or hosted a peer of this federation".to_owned(),
+            ));
+        }
+        let purchase = self.seat_purchase(approval, &federation, payment_federation_id)?;
         let authority = self.maintenance_authority(fa_id).await?;
         // A liquidity request commits to the current seats. Moving one now
         // would strand a request that the provider may already have accepted.
@@ -242,13 +251,6 @@ where
             .iter()
             .find(|seat| seat.index == seat_index)
             .ok_or_else(|| FaError::InvalidIntent("no guardian has this seat index".to_owned()))?;
-        let federation = self.transfer_federation(fa_id).await?;
-        if federation.has_custody(approval.seat.mg_id, Some(approval.seat.holder)) {
-            return Err(FaError::InvalidIntent(
-                "the destination MG or holder hosts or hosted a peer of this federation".to_owned(),
-            ));
-        }
-        let purchase = self.seat_purchase(approval, &federation, payment_federation_id)?;
         let transfer = StoredGuardianTransfer {
             transfer_id: FormationId(format!(
                 "{}:guardian-transfer:{}",
@@ -259,9 +261,7 @@ where
             source_mg_id: source.mg_id,
             source_locator: source.locator.clone(),
             source_seat_id: source.seat_id.clone(),
-            federation_id: FederationId(
-                crate::formation::invite_federation_id(&authority.invite_code)?.to_string(),
-            ),
+            federation_id: federation.federation_id()?,
             completion_callback,
             stage: TransferStage::Buying(purchase),
         };

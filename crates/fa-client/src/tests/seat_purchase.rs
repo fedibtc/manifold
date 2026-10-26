@@ -47,8 +47,18 @@ pub(super) async fn formed_paid_client() -> (
     (database, payments, payment_state, mg_state, client)
 }
 
+/// The id of the federation every formed test client forms.
+pub(super) fn formed_federation_id() -> FederationId {
+    FederationId(
+        formation::invite_federation_id(&test_invite(0))
+            .unwrap()
+            .to_string(),
+    )
+}
+
 pub(super) fn destination_approval(max_msats: u64) -> TransferDestinationApproval {
     TransferDestinationApproval {
+        federation_id: formed_federation_id(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         fedimintd_dkg_version: fedimintd_version().dkg_version(),
         seat: ApprovedMgSeat {
@@ -903,4 +913,124 @@ async fn a_rejected_payment_closes_the_transfer_for_another_payer() {
     );
     assert_eq!(client.guardian_transfer().await.unwrap(), None);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+}
+
+/// A preview is a public value that a caller may hand to another client.
+/// The approval names the federation it was previewed for, and another
+/// federation's transfer refuses it before it asks any MG or opens a
+/// transfer.
+#[tokio::test]
+async fn an_approval_previewed_for_another_federation_is_refused() {
+    let other = 20;
+    let (_database, _payments, _payment_state, _mg_state, previewing) = formed_paid_client().await;
+    *previewing
+        .inner
+        .ports
+        .registry
+        .advertisements
+        .lock()
+        .expect("test lock") = vec![mg_ad(other, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1)];
+    let approval = previewing
+        .preview_transfer_destination_with_verifier(
+            crate::MgDiscoveryOptions::default(),
+            &HolderVerifier(BTreeMap::new()),
+        )
+        .await
+        .unwrap()
+        .approve(PAYMENT_AMOUNT_MSATS)
+        .unwrap();
+    assert_eq!(approval.federation_id, formed_federation_id());
+    // The previewing client itself accepts it.
+    let own = previewing
+        .transfer_federation(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    previewing
+        .seat_purchase(approval.clone(), &own, Some(payment_federation_id()))
+        .unwrap();
+
+    // Another FA restored a federation with other guardians.
+    let (_database, _payments, _payment_state, mg_state, source) = formed_paid_client().await;
+    let mut backup = source.inner.store.backup_payload().await.unwrap().payload;
+    backup.federation_invite = test_invite_for_federation(0, 1);
+    let (payments, payment_state) = TestPayments::new();
+    let other_client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let status = other_client
+        .inner
+        .store
+        .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
+        .await
+        .unwrap();
+    other_client.inner.progress.send_replace(status);
+    let connects_before = mg_state.connect_calls.load(Ordering::SeqCst);
+    let readiness_before = payment_state.readiness_calls.load(Ordering::SeqCst);
+
+    let error = other_client
+        .start_guardian_transfer(
+            MOVED as u16,
+            approval,
+            Some(payment_federation_id()),
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, FaError::InvalidIntent(reason) if reason.contains("another federation")),
+        "{error:?}"
+    );
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst),
+        connects_before
+    );
+    assert_eq!(
+        payment_state.readiness_calls.load(Ordering::SeqCst),
+        readiness_before
+    );
+    assert_eq!(other_client.guardian_transfer().await.unwrap(), None);
+}
+
+/// The preview kept the destination off the guardians' service keys. The
+/// start checks again against the guardians it has now.
+#[tokio::test]
+async fn a_destination_with_a_guardian_service_key_is_refused_at_start() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    let mut approval = destination_approval(PAYMENT_AMOUNT_MSATS);
+    approval.seat.locator = Locator::new(
+        locator(DESTINATION).endpoint_addr.clone(),
+        manager_key(2).x_only_public_key().0,
+    );
+    let connects_before = mg_state.connect_calls.load(Ordering::SeqCst);
+    let readiness_before = payment_state.readiness_calls.load(Ordering::SeqCst);
+
+    let error = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            approval,
+            Some(payment_federation_id()),
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, FaError::InvalidIntent(reason) if reason.contains("service key")),
+        "{error:?}"
+    );
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst),
+        connects_before
+    );
+    assert_eq!(
+        payment_state.readiness_calls.load(Ordering::SeqCst),
+        readiness_before
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(destination_create_records(&mg_state).is_empty());
 }
