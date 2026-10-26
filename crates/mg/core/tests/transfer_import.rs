@@ -950,6 +950,66 @@ async fn accepted_import_survives_grant_expiry_but_waiting_renewal_fences_old_wo
     );
 }
 
+/// A seat loads its mirrored `Waiting` at startup while the grant is still
+/// valid; by the supervisor's first look the grant has lapsed. No job ever
+/// exists for it and nothing will notify again, so that one observation must
+/// report the expiry to the seat.
+#[tokio::test]
+async fn startup_reports_a_grant_that_lapsed_before_the_supervisor_looked() {
+    use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let source: Arc<dyn crate::transfer_source::TransferSource> =
+        Arc::new(ControlledSource(source));
+    // Production starts no supervisor, which holds the gap open: the seat
+    // observes the record, then the supervisor is started by hand.
+    let mut d = destination_in(
+        TempDir::new().unwrap(),
+        32_197,
+        source.clone(),
+        Arc::new(crate::transfer_native::tests::CoreConfigValidator),
+        ManifoldEnvironment::Production,
+        vec![FakeDkgStep::Hang],
+    )
+    .await;
+    d.grant.expires_at = Timestamp((crate::db::now_ms() / 1000) as u64 + 2);
+    d.admit().await;
+    let grant = d.grant.clone();
+    let Destination {
+        _root: root, fleet, ..
+    } = d;
+    fleet.shutdown().await;
+    drop(fleet);
+    let mut config = config(&root, 1, 32_197).await;
+    config.manifold_environment = ManifoldEnvironment::Production;
+    config.transfer_source = source;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let seat = fleet.seat_by_id(&grant.destination_seat_id).unwrap();
+    assert_eq!(
+        seat.transfer_phase(),
+        Some(TransferPhase::Waiting),
+        "the seat loaded the grant while it was valid"
+    );
+
+    let remaining = ((grant.expires_at.0 + 1) * 1000).saturating_sub(crate::db::now_ms() as u64);
+    tokio::time::sleep(Duration::from_millis(remaining + 100)).await;
+    assert_eq!(seat.transfer_phase(), Some(TransferPhase::Waiting));
+    let mut enabled = fleet.config.clone();
+    enabled.manifold_environment = ManifoldEnvironment::Staging;
+    let supervisor = crate::transfer_worker::TransferWorker::new(
+        fleet.db.clone(),
+        enabled,
+        fleet.identity.clone(),
+        fleet.seats.clone(),
+        fleet.advertisement_changed.clone(),
+        crate::transfer_worker::TransferWake::default(),
+    );
+    assert!(supervisor.is_running_for_test());
+    wait_phase(&seat, TransferPhase::Expired).await;
+    assert!(calls.try_recv().is_err(), "nothing polls a lapsed grant");
+    supervisor.shutdown().await;
+    fleet.shutdown().await;
+}
+
 /// Nothing transfer-related runs on a production MG, including work resumed
 /// from its database: its transfer worker never starts, so a stored waiting
 /// transfer neither polls the source nor survives as a job across restart.

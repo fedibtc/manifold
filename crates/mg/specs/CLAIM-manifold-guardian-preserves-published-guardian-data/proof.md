@@ -34,7 +34,7 @@ session-boundary exit is scripted, is
 `removal_only_deletes_guardian_paths_and_fences_later_exports`,
 `removal_deletes_material_at_once_and_publishes_the_tombstone_afterwards` and
 `unproved_source_exit_forbids_export_and_removal`; no native end-to-end
-transfer fixture is in this tree ([`crates/mg/testing.md`](../../../testing.md)).
+transfer fixture is in this tree ([`crates/mg/testing.md`](../../testing.md)).
 These tests do not establish completeness of the deletion inventory or close
 the pre-existing correspondence gaps below.
 
