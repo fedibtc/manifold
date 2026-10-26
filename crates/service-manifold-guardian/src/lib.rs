@@ -99,9 +99,10 @@ pub use telemetry::{
     InvalidSafeEventJournalIncarnation, ListGuardianTelemetrySeatsRequest,
     ListGuardianTelemetrySeatsResponse, ListSafeEventJournalsRequest,
     ListSafeEventJournalsResponse, MAX_GUARDIAN_METRICS_BODY_BYTES,
-    MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES, MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor,
-    SafeEventJournal, SafeEventJournalIncarnation, SafeEventJournalInfo,
-    ScrapeGuardianMetricsRequest, TelemetryCapability, TelemetryResult,
+    MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES, MAX_SAFE_EVENT_BATCH_BYTES, SEAT_CAPACITY_EVENT,
+    SEAT_READINESS_EVENT, SafeEventCursor, SafeEventJournal, SafeEventJournalIncarnation,
+    SafeEventJournalInfo, ScrapeGuardianMetricsRequest, SeatCapacityEvent, SeatReadinessEvent,
+    TelemetryCapability, TelemetryResult,
 };
 pub use transfer::{
     GuardianMaterial, GuardianMaterialTooLarge, PullSeatRequest, PullSeatResponse, RebindSeatError,

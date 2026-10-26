@@ -83,5 +83,6 @@ libc = "0.2"
 fedimint-build = { workspace = true }
 
 [dev-dependencies]
+humantime = "2.4.0"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

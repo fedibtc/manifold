@@ -966,6 +966,13 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
 
 #[tokio::test]
 async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
+    let clock = Arc::new(AtomicU64::new(test_now_secs()));
+    crate::formation::TEST_NOW_SECS
+        .scope(clock.clone(), mixed_replacement_wave_with_clock(clock))
+        .await;
+}
+
+async fn mixed_replacement_wave_with_clock(clock: Arc<AtomicU64>) {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -1022,10 +1029,7 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         .hang_funding_on_call
         .store(next_funding_call, Ordering::SeqCst);
     let funding_started = payment_state.funding_started.notified();
-    // Whole-second validity: `+ 1` left between 0 and 1 s to authorize the
-    // wave, which a loaded machine misses, and the wave then never funds.
-    // The preview still expires below, before the driver resumes.
-    let replacement_valid_until = test_now_secs() + 5;
+    let replacement_valid_until = crate::formation::now_secs().unwrap() + 1;
     let approval = MgReplacementApproval {
         requirements,
         verifier_provenance: test_peer_badge_verifier().provenance(),
@@ -1045,15 +1049,25 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         valid_until: Timestamp(replacement_valid_until),
     };
     let running = client.clone();
-    let operation = tokio::spawn(async move {
-        running
-            .apply_mg_replacements(approval, long_request_options())
-            .await
-    });
-    // The bound only catches a wave that never funds.
-    tokio::time::timeout(Duration::from_secs(30), funding_started)
-        .await
-        .expect("the paid replacement output is journaled after the mixed wave is authorized");
+    // Task-local clocks are not inherited by spawned tasks.
+    let mut operation = tokio::spawn(crate::formation::TEST_NOW_SECS.scope(
+        clock.clone(),
+        async move {
+            running
+                .apply_mg_replacements(approval, long_request_options())
+                .await
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            result = &mut operation => panic!(
+                "replacement operation completed before payment journaling: {result:?}"
+            ),
+            () = funding_started => {}
+        }
+    })
+    .await
+    .expect("the paid replacement output is journaled after the mixed wave is authorized");
 
     let interrupted = active_recovery(
         client
@@ -1100,15 +1114,16 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         "the lost wallet response precedes both replacement presentations",
     );
 
+    assert!(crate::formation::now_secs().unwrap() < replacement_valid_until);
+    // Expire the actual admission proof only after payment journaling and
+    // aggregate authorization. Driver watchdogs and leases still use real time.
+    clock.store(replacement_valid_until, Ordering::SeqCst);
+    assert_eq!(
+        crate::formation::now_secs().unwrap(),
+        replacement_valid_until
+    );
     operation.abort();
     assert!(operation.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(Duration::from_secs(6), async {
-        while test_now_secs() < replacement_valid_until {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the replacement preview expires before the driver run deadline");
     let spends_before_reopen = payment_state.create_calls.load(Ordering::SeqCst);
     let quote_calls_before_reopen = mg_state.quote_calls.load(Ordering::SeqCst);
     drop(client);

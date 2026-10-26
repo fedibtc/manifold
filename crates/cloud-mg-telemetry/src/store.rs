@@ -18,6 +18,7 @@ use crate::{
     metrics_policy::{MetricsIdentity, MetricsPolicy},
     metrics_snapshot::{MetricsSnapshot, MetricsTargetHealth},
     metrics_types::MetricsCommit,
+    mg_reports::{MgReport, Stated},
 };
 
 const MAX_METRIC_STATE_BYTES: i64 = 32 * 1024 * 1024;
@@ -33,6 +34,14 @@ pub(crate) struct ExportedFederation {
     /// Current seats that stored an invite for this federation.
     pub(crate) seats: u32,
     pub(crate) last_seen_ms: i64,
+}
+
+/// The newest report of one kind an active target journaled.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExportedMgReport<T> {
+    pub(crate) mg_pubkey: String,
+    pub(crate) observed_at_ms: i64,
+    pub(crate) report: T,
 }
 
 /// Bounded result of loading persisted snapshots for one private exposition.
@@ -1028,6 +1037,52 @@ impl Store {
         Ok(federations)
     }
 
+    /// The stored report of kind `T` per active, unexpired target, ordered by
+    /// MG public key. `now_secs` is Unix seconds; a report observed after it
+    /// is left out, and a stored row that no longer validates is skipped and
+    /// counted in a warning.
+    pub(crate) async fn mg_reports<T: MgReport>(
+        &self,
+        now_secs: i64,
+    ) -> Result<Vec<ExportedMgReport<T>>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT t.fman_pubkey,r.observed_at_ms,r.report_json
+             FROM mg_reports r JOIN targets t ON t.target_id = r.target_id
+             WHERE t.status = 'active' AND t.lease_until > ? AND r.kind = ?
+                AND r.observed_at_ms <= ?
+             ORDER BY t.fman_pubkey",
+        )
+        .bind(now_secs)
+        .bind(T::KIND.as_str())
+        .bind(now_secs.checked_mul(1000).ok_or(StoreError::Corrupt)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut reports = Vec::with_capacity(rows.len());
+        let mut skipped = 0_usize;
+        for row in rows {
+            let report_json: String = row.try_get("report_json")?;
+            if let Ok(report) = serde_json::from_str(&report_json) {
+                reports.push(ExportedMgReport {
+                    mg_pubkey: row.try_get("fman_pubkey")?,
+                    observed_at_ms: row.try_get("observed_at_ms")?,
+                    report,
+                });
+            } else {
+                skipped += 1;
+            }
+        }
+        if skipped > 0 {
+            // The message and fields are fixed or counts. They contain no MG
+            // identity and no stored value.
+            tracing::warn!(
+                kind = T::KIND.as_str(),
+                skipped,
+                "stored seat reports failed revalidation"
+            );
+        }
+        Ok(reports)
+    }
+
     /// Read one lifecycle-consistent private metrics exposition view.
     pub(crate) async fn metric_exposition(
         &self,
@@ -1693,6 +1748,17 @@ impl Store {
         .bind(expected.stream_id.as_str())
         .execute(&mut *transaction)
         .await?;
+        // Only the MG's own journal carries its seat reports.
+        if expected.journal == SafeEventJournal::Mg {
+            let received_at_ms = now.checked_mul(1000).ok_or(StoreError::Corrupt)?;
+            let reports = batch.reports();
+            if let Some(stated) = &reports.seat_capacity {
+                store_mg_report(&mut transaction, target, received_at_ms, stated).await?;
+            }
+            if let Some(stated) = &reports.seat_readiness {
+                store_mg_report(&mut transaction, target, received_at_ms, stated).await?;
+            }
+        }
         #[cfg(test)]
         if let Some(hook) = &self.commit_hook
             && !hook
@@ -1794,6 +1860,29 @@ impl Store {
         transaction.commit().await?;
         Ok(())
     }
+}
+
+/// Replace the target's report of kind `T` with `stated`, unless the stored
+/// one was observed later.
+async fn store_mg_report<T: MgReport>(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    target: &WorkTarget,
+    received_at_ms: i64,
+    stated: &Stated<T>,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO mg_reports(target_id,kind,observed_at_ms,report_json) VALUES(?,?,?,?)
+         ON CONFLICT(target_id,kind) DO UPDATE SET
+            observed_at_ms=excluded.observed_at_ms,report_json=excluded.report_json
+         WHERE excluded.observed_at_ms >= mg_reports.observed_at_ms",
+    )
+    .bind(target.target_id())
+    .bind(T::KIND.as_str())
+    .bind(stated.observed_at_ms(received_at_ms))
+    .bind(serde_json::to_string(&stated.report).map_err(|_| StoreError::Corrupt)?)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 async fn target_is_current(

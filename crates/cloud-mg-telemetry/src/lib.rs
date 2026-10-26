@@ -20,6 +20,7 @@ mod metrics_poller;
 mod metrics_snapshot;
 mod metrics_types;
 mod metrics_worker;
+mod mg_reports;
 mod server;
 mod store;
 

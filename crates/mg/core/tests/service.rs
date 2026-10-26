@@ -102,6 +102,7 @@ async fn rpc_with_network(
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::Pass,
+            uptime_comparison: None,
         })
         .await
         .unwrap();
