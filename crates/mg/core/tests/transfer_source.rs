@@ -667,39 +667,15 @@ async fn boundary_exit_of_a_decommissioned_seat_is_no_handover() {
     s.fleet.shutdown().await;
 }
 
-/// fedimintd also exits at a session boundary when an operator schedules
-/// the shutdown. Without a `TransferSeat` asking this child, that exit is
-/// maintenance: the guardian restarts and its seat stays here.
+/// An operator's shutdown scheduled through fedimintd's older `shutdown`
+/// endpoint exits with fedimintd's ordinary code (-1, seen as 255). It is no
+/// handover: the guardian restarts and its seat stays here.
 #[tokio::test]
-async fn boundary_exit_without_a_transfer_request_restarts_the_guardian() {
+async fn legacy_scheduled_shutdown_restarts_the_guardian() {
     let s = running_source(33_036).await;
-    s.child().await.stop_at_session_boundary();
+    s.child().await.exit(255);
     eventually("the guardian respawns", || s.spawner.spawn_count() == 2).await;
     assert_eq!(s.outgoing().await, None);
-    // A request made of the previous child does not carry over either.
-    s.pull_awaits_session_end().await;
-    s.child().await.exit(1);
-    eventually("the guardian respawns", || s.spawner.spawn_count() == 3).await;
-    s.child().await.stop_at_session_boundary();
-    eventually("the guardian respawns", || s.spawner.spawn_count() == 4).await;
-    assert_eq!(s.outgoing().await, None);
-    // Asked of the running child, its boundary exit hands it over.
-    s.hand_over().await;
-    assert_eq!(s.spawner.spawn_count(), 4);
-    s.fleet.shutdown().await;
-}
-
-/// The request reaches fedimintd but its reply is lost. The guardian's
-/// boundary exit is still the transfer's.
-#[tokio::test]
-async fn boundary_exit_after_a_failed_request_still_hands_over() {
-    let s = running_source(33_048).await;
-    let child = s.child().await;
-    child.modify_state(|state| state.api_cut = true);
-    s.pull_awaits_session_end().await;
-    child.stop_at_session_boundary();
-    s.wait_for_stopped().await;
-    assert_eq!(s.spawner.spawn_count(), 1);
     s.fleet.shutdown().await;
 }
 
