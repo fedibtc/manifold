@@ -68,7 +68,7 @@ fn decode(seat_id: &SeatId, row: IncomingRow) -> Result<IncomingTransfer, DbErro
 const INCOMING_COLUMNS: &str =
     "generation, state, binding, callback_commitment, grant, iroh_api_sk, iroh_p2p_sk";
 
-async fn incoming(
+pub(super) async fn incoming(
     conn: &mut SqliteConnection,
     seat_id: &SeatId,
 ) -> Result<Option<IncomingTransfer>, DbError> {
@@ -79,6 +79,20 @@ async fn incoming(
     .fetch_optional(conn)
     .await?;
     row.map(|row| decode(seat_id, row)).transpose()
+}
+
+pub(super) async fn outgoing(
+    conn: &mut SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<OutgoingTransfer>, DbError> {
+    let phase: Option<String> =
+        sqlx::query_scalar("SELECT phase FROM seat_transfer_out WHERE quote_id = ?")
+            .bind(seat_id.as_bytes().as_slice())
+            .fetch_optional(&mut *conn)
+            .await?;
+    phase
+        .map(|phase| OutgoingTransfer::from_db_str(&phase).ok_or_else(|| corrupt(seat_id)))
+        .transpose()
 }
 
 pub(super) async fn save(
@@ -179,14 +193,7 @@ impl Db {
         &self,
         seat_id: &SeatId,
     ) -> Result<Option<OutgoingTransfer>, DbError> {
-        let phase: Option<String> =
-            sqlx::query_scalar("SELECT phase FROM seat_transfer_out WHERE quote_id = ?")
-                .bind(seat_id.as_bytes().as_slice())
-                .fetch_optional(self.pool())
-                .await?;
-        phase
-            .map(|phase| OutgoingTransfer::from_db_str(&phase).ok_or_else(|| corrupt(seat_id)))
-            .transpose()
+        outgoing(&mut *self.pool().acquire().await?, seat_id).await
     }
 
     /// Source retirement always overrides imported provenance on a later move.

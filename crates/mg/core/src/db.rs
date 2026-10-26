@@ -2,6 +2,7 @@ mod seats;
 mod transfers;
 
 pub(crate) use seats::SeatAdmissionResult;
+pub(crate) use seats::SeatRecoveryFacts;
 pub(crate) use seats::{CompletionCallbackOutcome, CompletionCallbackRecord};
 pub use seats::{
     NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,

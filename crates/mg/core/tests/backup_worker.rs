@@ -525,3 +525,107 @@ async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
         "one row per seat: the new version's record replaces the old"
     );
 }
+
+/// An import's acceptance commits its `Imported` record and its formed row
+/// together. A publication assembled concurrently must see both or neither:
+/// reading the still-`Waiting` record before the commit and the formed row
+/// after it would publish the imported guardian as a native seat, with no
+/// transfer facts and under the version pre-transfer readers accept.
+#[tokio::test]
+async fn a_publication_never_straddles_an_import_acceptance() {
+    use fedi_decentralized_service_manifold_guardian::{
+        FederationId, Locator, SeatTransferGrant, SignedRequest, Timestamp,
+    };
+    let temp = TempDir::new().unwrap();
+    let db = test_db(&temp).await;
+    let process = test_process(&temp);
+    let fa_key = |byte: u8| {
+        let mut seed = [0_u8; 32];
+        seed[0] = byte;
+        secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &seed).unwrap()
+    };
+    let mut native_publications = 0;
+    let mut straddled = 0;
+    for seat in 1..=40_u8 {
+        let facts = create_seat(&db, seat).await;
+        write_test_archive(&process, &facts).await;
+        // One federation per seat: a federation hosted once refuses a second.
+        let federation_id = format!("{seat:02x}").repeat(32);
+        let invite = InviteCode(
+            fedimint_core::invite_code::InviteCode::new(
+                "ws://127.0.0.1:8174".parse().unwrap(),
+                fedimint_core::PeerId::from(0),
+                federation_id.parse().unwrap(),
+                None,
+            )
+            .to_string(),
+        );
+        let now = crate::db::now_ms() / 1000;
+        let grant = SeatTransferGrant {
+            ts: Timestamp(now as u64),
+            expires_at: Timestamp(now as u64 + 3600),
+            fa_id: facts.fa_id,
+            federation_id: FederationId(federation_id.clone()),
+            source: Locator::new(
+                fedi_iroh_rpc::iroh::EndpointAddr::new(
+                    fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[5; 32]).public(),
+                ),
+                fa_key(6).x_only_public_key().0,
+            ),
+            source_seat_id: SeatId::from(QuoteId([200; 32])),
+            destination_service_pubkey: fa_key(9).x_only_public_key().0,
+            destination_seat_id: facts.seat_id.clone(),
+        };
+        let signed = SignedRequest::create(&grant, &fa_key(7)).unwrap();
+        let waiting = db.admit_transfer(&signed, None).await.unwrap().unwrap();
+
+        let reader = {
+            let (db, process, facts) = (db.clone(), process.clone(), facts.clone());
+            tokio::spawn(async move {
+                let mut plans = Vec::new();
+                loop {
+                    let plan = crate::backup::seat_publication_plan(&db, &process, &facts, None)
+                        .await
+                        .unwrap();
+                    let formed = plan.document.guardian.is_some();
+                    plans.push(plan.document);
+                    if formed {
+                        return plans;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        // Let the reader get going, so the acceptance lands among its reads.
+        for _ in 0..seat % 8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            db.accept_transfer(
+                &facts.seat_id,
+                waiting.generation,
+                &waiting.binding,
+                &crate::transfer_state::ImportedKeys::from_bytes(&[41; 32], &[42; 32]),
+                &invite,
+            )
+            .await
+            .unwrap()
+        );
+        for document in reader.await.unwrap() {
+            let imported = document
+                .transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.incoming.is_some());
+            match (document.guardian.is_some(), imported) {
+                (false, false) | (true, true) => {}
+                (true, false) => native_publications += 1,
+                (false, true) => straddled += 1,
+            }
+        }
+    }
+    assert_eq!(
+        (native_publications, straddled),
+        (0, 0),
+        "every publication saw the acceptance whole or not at all"
+    );
+}

@@ -24,6 +24,56 @@ use fedi_decentralized_service_manifold_guardian::{
     QuoteId, SeatId,
 };
 
+/// The durable facts a seat's recovery document is assembled from, as of one
+/// instant ([`Db::seat_recovery_facts`]).
+pub(crate) struct SeatRecoveryFacts {
+    pub(crate) payment: Option<PaymentRecord>,
+    pub(crate) incoming: Option<crate::transfer_state::IncomingTransfer>,
+    pub(crate) outgoing: Option<crate::transfer_state::OutgoingTransfer>,
+    pub(crate) formed_invite: Option<InviteCode>,
+    pub(crate) decommissioned_at_ms: Option<i64>,
+}
+
+async fn payment(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<PaymentRecord>, DbError> {
+    sqlx::query_as::<_, PaymentRow>(
+        "SELECT p.quote_id, p.evidence, p.claim_outcome, p.claim_outcome_at_ms \
+         FROM ecash_claims p WHERE p.quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?
+    .map(PaymentRecord::try_from)
+    .transpose()
+}
+
+async fn decommissioned_at_ms(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<i64>, DbError> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT decommissioned_at_ms FROM decommissioned_seats WHERE quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?)
+}
+
+async fn formed_federation_invite(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<InviteCode>, DbError> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT federation_invite FROM formed_seats WHERE quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?
+    .map(InviteCode))
+}
+
 /// Insert the formation-wide first callback on the caller's transaction so
 /// accepted inputs and notification choice have one crash boundary.
 pub(super) async fn install_completion_callback(
@@ -616,15 +666,7 @@ impl Db {
     }
 
     pub async fn payment(&self, seat_id: &SeatId) -> Result<Option<PaymentRecord>, DbError> {
-        sqlx::query_as::<_, PaymentRow>(
-            "SELECT p.quote_id, p.evidence, p.claim_outcome, p.claim_outcome_at_ms \
-             FROM ecash_claims p WHERE p.quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?
-        .map(PaymentRecord::try_from)
-        .transpose()
+        payment(&mut *self.pool().acquire().await?, seat_id).await
     }
 
     pub async fn record_claim_outcome(
@@ -811,12 +853,7 @@ impl Db {
 
     /// One seat's terminal decommission time, if it has one.
     pub async fn decommissioned_at_ms(&self, seat_id: &SeatId) -> Result<Option<i64>, DbError> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT decommissioned_at_ms FROM decommissioned_seats WHERE quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?)
+        decommissioned_at_ms(&mut *self.pool().acquire().await?, seat_id).await
     }
 
     /// One seat's last confirmed backup publication under the given envelope
@@ -901,13 +938,30 @@ impl Db {
         &self,
         seat_id: &SeatId,
     ) -> Result<Option<InviteCode>, DbError> {
-        Ok(sqlx::query_scalar::<_, String>(
-            "SELECT federation_invite FROM formed_seats WHERE quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?
-        .map(InviteCode))
+        formed_federation_invite(&mut *self.pool().acquire().await?, seat_id).await
+    }
+
+    /// One seat's recovery-relevant lifecycle facts, read from one snapshot.
+    ///
+    /// Separate reads could straddle a commit — an import's acceptance lands
+    /// its `Imported` record and its formed row together, and a reader that
+    /// saw the record before and the row after would describe an imported
+    /// guardian as a native one — so the whole set is read inside one read
+    /// transaction, which SQLite serves from a single snapshot.
+    pub(crate) async fn seat_recovery_facts(
+        &self,
+        seat_id: &SeatId,
+    ) -> Result<SeatRecoveryFacts, DbError> {
+        let mut snapshot = self.pool().begin().await?;
+        let facts = SeatRecoveryFacts {
+            payment: payment(&mut snapshot, seat_id).await?,
+            incoming: super::transfers::incoming(&mut snapshot, seat_id).await?,
+            outgoing: super::transfers::outgoing(&mut snapshot, seat_id).await?,
+            formed_invite: formed_federation_invite(&mut snapshot, seat_id).await?,
+            decommissioned_at_ms: decommissioned_at_ms(&mut snapshot, seat_id).await?,
+        };
+        snapshot.commit().await?;
+        Ok(facts)
     }
 
     /// Insert one seat exactly as a backup describes it.

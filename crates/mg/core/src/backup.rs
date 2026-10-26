@@ -531,16 +531,18 @@ pub(crate) async fn seat_publication_plan(
     facts: &SeatFacts,
     confirmed_archive_digest: Option<&str>,
 ) -> anyhow::Result<SeatPublication> {
-    let payment = db
-        .payment(&facts.seat_id)
-        .await?
-        .map(|record| PaymentBackup::from_record(&record));
-    let incoming = db.incoming_transfer(&facts.seat_id).await?;
-    let outgoing = db.outgoing_transfer(&facts.seat_id).await?;
+    // One snapshot: lifecycle facts read separately could straddle an
+    // import's acceptance and describe an imported guardian as native.
+    let crate::db::SeatRecoveryFacts {
+        payment,
+        incoming,
+        outgoing,
+        formed_invite,
+        decommissioned_at_ms,
+    } = db.seat_recovery_facts(&facts.seat_id).await?;
+    let payment = payment.map(|record| PaymentBackup::from_record(&record));
     let removed = outgoing == Some(crate::transfer_state::OutgoingTransfer::Removed);
-    let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
     let federation_invite = formed_invite.clone();
-    let decommissioned_at_ms = db.decommissioned_at_ms(&facts.seat_id).await?;
 
     // An accepted import has its guardian in the final directory and its
     // formed row before the acceptance is committed, so it reads like a

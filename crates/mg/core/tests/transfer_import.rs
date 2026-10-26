@@ -248,7 +248,7 @@ async fn destination_in(
 async fn worker_pull_authenticates_imports_and_retries_without_refetching_accepted_material() {
     use fedi_decentralized_service_manifold_guardian::{ManifoldGuardianService, PullSeatRequest};
     let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
-    let mut d = destination_with_capabilities(
+    let d = destination_with_capabilities(
         32_145,
         Arc::new(ControlledSource(source)),
         Arc::new(crate::transfer_native::tests::CoreConfigValidator),
@@ -380,7 +380,7 @@ async fn worker_shutdown_joins_native_validation_before_returning_or_accepting()
         release: std::sync::Condvar::new(),
     });
     let _release_on_panic = ReleaseValidator(validator.clone());
-    let mut d = destination_with_capabilities(
+    let d = destination_with_capabilities(
         32_153,
         Arc::new(ControlledSource(source)),
         validator.clone(),
