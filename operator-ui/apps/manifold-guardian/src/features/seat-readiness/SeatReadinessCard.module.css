@@ -47,17 +47,17 @@
 }
 
 .ok {
-  @apply font-semibold text-success;
+  @apply text-success;
 }
 
 .bad {
-  @apply font-semibold text-error;
+  @apply text-error;
 }
 
 .min {
-  @apply text-gray-500;
+  @apply font-normal text-gray-500;
 }
 
 .figure {
-  @apply whitespace-nowrap;
+  @apply whitespace-nowrap font-semibold;
 }

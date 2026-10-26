@@ -11,8 +11,8 @@ import {
   UPTIME_WINDOWS,
   uptimeLabels
 } from '@/shared/utils/seatReadiness';
-import styles from './SeatReadinessCard.module.css';
 import { formatWait } from './formatWait';
+import styles from './SeatReadinessCard.module.css';
 
 interface SeatReadinessCardProps {
   readiness: ShowSeatReadinessResponse;
@@ -65,6 +65,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
             <section className={styles.uptime} aria-label="Uptime">
               <div className={styles.uptimeHead}>
                 <strong>Uptime</strong>
+
                 <span className={styles.guidance}>
                   {wait > 0
                     ? `New seats reopen after ${formatWait(wait)} online without a break.`
@@ -79,11 +80,18 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                   <div key={window} className={styles.gauge}>
                     <div className={styles.gaugeHead}>
                       <span>{uptimeLabels[window]}</span>
+
                       <span className={styles.figure}>
                         <span className={ok ? styles.ok : styles.bad}>{formatPermille(score)}</span>
+
                         <span className={styles.min}> / {formatPermille(minimum)} needed</span>
                       </span>
                     </div>
+
+                    {/* <meter> is the semantic element, but it cannot hold the minimum tick
+                        and its bar is not styleable across browsers. role="meter" with the
+                        aria-value attributes is the same to assistive tech. */}
+                    {/* biome-ignore lint/a11y/useSemanticElements: see the note above */}
                     <div
                       className={styles.track}
                       role="meter"
@@ -96,6 +104,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                         className={ok ? styles.fillOk : styles.fillBad}
                         style={{ width: barPosition(score) }}
                       />
+
                       <div className={styles.tick} style={{ left: barPosition(minimum) }} />
                     </div>
                     {!ok && (
