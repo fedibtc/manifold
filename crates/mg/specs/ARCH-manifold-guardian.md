@@ -74,7 +74,8 @@ bounded relay reconciliation, while ordinary status reads remain local.
 Modules below are `core`'s unless named otherwise. Dependency
 direction is strictly bottom-up; each layer only knows the ones below it.
 
-- `identity` — derives every key from the install's BIP-39 root mnemonic
+- `identity` — derives local service, wallet, and native-seat keys from the
+  install's BIP-39 root mnemonic; imported guardian keys retain their source identity
   ([ARCH-manifold-guardian-identity](./ARCH-manifold-guardian-identity.md)).
 - `facts` — the durable seat vocabulary shared by storage and everything
   above it: seat ids, creation facts, formed-seat facts, and port-block
@@ -302,8 +303,28 @@ serialized decisions
 ([ARCH-manifold-guardian-storage](./ARCH-manifold-guardian-storage.md)); seat facts are loaded
 at startup and operator settings remain database-owned.
 
+Guardian transfer runs only in development and staging environments; a
+production MG refuses the transfer verbs and starts none of the machinery
+below ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md), which also states
+its recovery premises).
+
+On a destination, one fleet-owned transfer supervisor resumes each durable
+incoming transfer still waiting for its source, at startup and on every seat
+transition, independently of FA availability; it also reports a lapsed grant
+to the seat. Network and native validation work is bounded and runs outside
+the seat queue; installation, child lifecycle, and cleanup effects return
+through that queue. Cancellation drains native work before cleanup or shutdown
+releases the data-root lock.
+
+On a source, the supervisor has no part. The seat loop handles the guardian's
+session-boundary exit as part of observing its child exits, committing the
+retirement fence there; the destination's `TransferSeat` retries drive the
+rest. Removal of a retired source happens only on the FA's `RemoveSeat`, which
+the FA retries until it succeeds.
+
 One fleet-wide completion-hook worker reconciles `completion_callbacks` joined
-to immutable `formed_seats` and excluding `decommissioned_seats`; it never
+to immutable `formed_seats` and excluding `decommissioned_seats`, transfer-retired
+sources and incomplete imports; it never
 consults a ceremony attempt or probes `fedimintd`. Seat transitions only commit
 SQLite facts and wake the worker. Periodic scans are the liveness floor, so a
 missed wake or process restart loses no work. The worker invokes different seats
@@ -343,13 +364,17 @@ This does not disable telemetry registration or collection.
 
 Six kinds of state, six owners:
 
-- **Derived** (keys, identities): recomputed from the mnemonic, never
-  stored except the mnemonic itself
+- **Local identity** (service, wallet and native-seat keys, and every seat's
+  `api_auth`): recomputed from the mnemonic. An imported guardian's consensus
+  material and Iroh endpoint keys instead come from accepted native material,
+  preserved through backup and restart; it runs under this MG's own derived
+  `api_auth`, not the source's
   ([ARCH-manifold-guardian-identity](./ARCH-manifold-guardian-identity.md)).
 - **Owned live facts** (durable accepted seats, the current ceremony's
-  acknowledgement, the set-once formed federation invite, decommission):
+  acknowledgement, the set-once formed federation invite, decommission,
+  incoming transfer and source retirement/removal):
   in-memory synchronization while the daemon runs; accepted-seat identity,
-  validated ceremony inputs, formation, and decommission survive in SQLite
+  validated ceremony inputs, formation, decommission, and transfer facts survive in SQLite
   records, while ceremony acknowledgement is ephemeral. The signed acceptance
   is reconstructed from durable seat facts and signed afresh on replay; its
   signature is not stored.

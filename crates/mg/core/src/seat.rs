@@ -16,6 +16,10 @@
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
+mod import;
+mod transfer;
+mod transfer_binding;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -57,6 +61,7 @@ use crate::seat_process::{
     SeatProcessError, SeatProcessSpawner, effective_iroh_api_key, effective_iroh_p2p_key,
     seat_data_dir,
 };
+use crate::transfer_state::TransferPhase;
 
 /// Content digest of one candidate whole-object metadata target.
 ///
@@ -75,6 +80,14 @@ pub enum SeatVerbError {
     /// The seat's fedimintd is not serving; retryable.
     #[error("seat unavailable")]
     SeatUnavailable,
+    /// A transfer source's guardian has not yet stopped at a session
+    /// boundary; retryable.
+    #[error("guardian stops after its current session")]
+    AwaitingSessionEnd,
+    /// A transfer source's guardian has stopped, but the relays do not yet
+    /// confirm a backup recording that; retryable.
+    #[error("guardian transfer awaits its backup")]
+    AwaitingBackup,
     /// Formation and cancellation are unavailable after the seat is formed.
     #[error("the seat's federation is running")]
     FederationIsRunning,
@@ -101,6 +114,8 @@ pub enum SeatVerbError {
     /// admitted target remains permitted.
     #[error("meta target conflict")]
     MetaTargetConflict,
+    #[error("seat transfer grant does not match this seat")]
+    TransferGrantMismatch,
     #[error(transparent)]
     Internal(anyhow::Error),
 }
@@ -123,6 +138,8 @@ fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
     match error {
         SeatVerbError::UnknownSeat => "unknown_seat",
         SeatVerbError::SeatUnavailable => "seat_unavailable",
+        SeatVerbError::AwaitingSessionEnd => "awaiting_session_end",
+        SeatVerbError::AwaitingBackup => "awaiting_backup",
         SeatVerbError::FederationIsRunning => "federation_is_running",
         SeatVerbError::WrongState { .. } => "wrong_state",
         SeatVerbError::InvalidDkgInput(_) => "invalid_dkg_input",
@@ -131,6 +148,7 @@ fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
         SeatVerbError::MetaConsensusChanged => "meta_consensus_changed",
         SeatVerbError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         SeatVerbError::MetaTargetConflict => "meta_target_conflict",
+        SeatVerbError::TransferGrantMismatch => "transfer_grant_mismatch",
         SeatVerbError::Internal(_) => "internal",
     }
 }
@@ -197,6 +215,8 @@ pub enum SeatReport {
 /// A created seat's ceremony phase derived from runtime and durable evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SeatPhase {
+    /// Durable transfer work or retirement, preceding formed/directory status.
+    Transfer { status: ServiceStatus },
     /// fedimintd holds no local params yet.
     Created,
     /// DKG was started and fedimintd is inside its API gap.
@@ -248,6 +268,7 @@ struct SeatLoop {
     /// fences.
     meta_admission: Option<(MetaConsensusBase, MetaTargetDigest)>,
     completion_hooks: CompletionHookWake,
+    transfer_wake: crate::transfer_worker::TransferWake,
     process_spawner: SeatProcessSpawner,
     child: ProcessSlot,
     child_started: Option<tokio::time::Instant>,
@@ -360,6 +381,8 @@ pub(crate) struct SeatDurableState {
     pub(crate) formed_invite: Option<InviteCode>,
     /// Terminal decommission timestamp.
     pub(crate) decommissioned_at_ms: Option<i64>,
+    /// Transfer fence loaded before any possible child spawn.
+    pub(crate) transfer_phase: Option<TransferPhase>,
 }
 
 /// Runtime capabilities and process configuration owned by one seat.
@@ -382,6 +405,7 @@ pub(crate) struct SeatRuntimeDependencies {
     pub(crate) backup: Arc<BackupWorker>,
     /// Fleet-wide durable completion-hook reconciler.
     pub(crate) completion_hooks: CompletionHookWake,
+    pub(crate) transfer_wake: crate::transfer_worker::TransferWake,
     pub(crate) process_spawner: SeatProcessSpawner,
 }
 
@@ -390,10 +414,28 @@ struct SeatRuntimeFacts {
     formed_invite: Option<InviteCode>,
     process_slot: ProcessSlotPhase,
     decommissioned_at_ms: Option<i64>,
+    /// Transfer provenance or terminal fence, independent of formed state.
+    transfer_phase: Option<TransferPhase>,
     health: SeatHealth,
 }
 
 enum SeatCommand {
+    ReplaceSeatBinding {
+        expected_base: MetaConsensusBase,
+        binding: FormationSeatBinding,
+        reply: oneshot::Sender<Result<(), SeatVerbError>>,
+    },
+    Import(import::ImportCommand),
+    TransferOut {
+        grant: fedi_decentralized_service_manifold_guardian::SignedRequest<
+            fedi_decentralized_service_manifold_guardian::SeatTransferGrant,
+        >,
+        service_key: secp256k1::Keypair,
+        reply: oneshot::Sender<Result<crate::transfer_native::TransferMaterial, SeatVerbError>>,
+    },
+    RemoveTransferred {
+        reply: oneshot::Sender<Result<bool, SeatVerbError>>,
+    },
     #[cfg(test)]
     WatchdogTick {
         reply: oneshot::Sender<()>,
@@ -475,6 +517,36 @@ pub struct SeatFederationBinding {
 }
 
 impl Seat {
+    /// The transfer phase this seat last mirrored from its durable record.
+    pub(crate) fn transfer_phase(&self) -> Option<TransferPhase> {
+        self.state.borrow().transfer_phase
+    }
+
+    pub(crate) fn transfer_exit_unproven(&self) -> bool {
+        matches!(
+            self.state.borrow().process_slot,
+            ProcessSlotPhase::ExitUnproven
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn child_slot_empty_for_test(&self) -> bool {
+        matches!(self.state.borrow().process_slot, ProcessSlotPhase::Empty)
+    }
+    #[cfg(test)]
+    pub(crate) fn child_configured_for_test(&self) -> bool {
+        matches!(
+            self.state.borrow().process_slot,
+            ProcessSlotPhase::Configured
+        )
+    }
+    #[cfg(test)]
+    pub(crate) async fn wait_for_transfer_phase_for_test(&self, phase: TransferPhase) {
+        self.state
+            .subscribe()
+            .wait_for(|state| state.transfer_phase == Some(phase))
+            .await
+            .unwrap();
+    }
     /// Bring a durably created seat to life: install the runtime mirror and
     /// spawn the supervised fedimintd (unless decommissioned). Shared by the
     /// startup rebuild and fresh creation. Registry publication uses an exclusive map
@@ -484,6 +556,7 @@ impl Seat {
             facts,
             formed_invite,
             decommissioned_at_ms,
+            transfer_phase,
         } = durable;
         let SeatRuntimeDependencies {
             db,
@@ -495,6 +568,7 @@ impl Seat {
             fedimint_connectors,
             backup,
             completion_hooks,
+            transfer_wake,
             process_spawner,
         } = runtime;
         let facts = Arc::new(facts);
@@ -503,13 +577,15 @@ impl Seat {
             formed_invite,
             process_slot: ProcessSlotPhase::Empty,
             decommissioned_at_ms,
+            transfer_phase,
             health: SeatHealth::Unavailable,
         });
         // Keep only the next lifecycle command queued behind the one in progress.
         let (commands, command_rx) = mpsc::channel(1);
 
         if decommissioned_at_ms.is_none() {
-            let fedimint_api = FedimintApi::new(fedimint_connectors, ports.api(), &keys.api_auth);
+            let fedimint_api =
+                FedimintApi::new(fedimint_connectors.clone(), ports.api(), &keys.api_auth);
             let seat_loop = SeatLoop {
                 facts: facts.clone(),
                 db,
@@ -524,6 +600,7 @@ impl Seat {
                 backup,
                 meta_admission: None,
                 completion_hooks,
+                transfer_wake,
                 process_spawner,
                 child: ProcessSlot::Empty,
                 child_started: None,
@@ -819,7 +896,14 @@ impl Seat {
 }
 
 impl SeatRuntimeFacts {
+    fn transfer_status(&self) -> Option<ServiceStatus> {
+        self.transfer_phase.and_then(TransferPhase::service_status)
+    }
+
     fn unformed_status(&self) -> ServiceStatus {
+        if let Some(status) = self.transfer_status() {
+            return status;
+        }
         match self.process_slot {
             ProcessSlotPhase::DkgAcknowledged => ServiceStatus::DkgInProcess,
             _ => ServiceStatus::New,
@@ -835,9 +919,18 @@ impl SeatRuntimeFacts {
         Ok(())
     }
 
+    fn reject_transfer_work(&self) -> Result<(), SeatVerbError> {
+        if let Some(status) = self.transfer_status() {
+            return Err(SeatVerbError::WrongState { status });
+        }
+        Ok(())
+    }
+
     fn service_status(&self, final_data_exists: bool) -> ServiceStatus {
         if self.decommissioned_at_ms.is_some() {
             ServiceStatus::Decommissioned
+        } else if let Some(status) = self.transfer_status() {
+            status
         } else if self.formed_invite.is_some() {
             if final_data_exists {
                 ServiceStatus::Running
@@ -852,6 +945,12 @@ impl SeatRuntimeFacts {
     fn report(&self, final_data_exists: bool) -> SeatReport {
         if let Some(at_ms) = self.decommissioned_at_ms {
             return SeatReport::Decommissioned { at_ms };
+        }
+        if let Some(status) = self.transfer_status() {
+            return SeatReport::Active {
+                phase: SeatPhase::Transfer { status },
+                health: SeatHealth::Unavailable,
+            };
         }
         let (phase, health) = if let Some(invite_code) = &self.formed_invite {
             (
@@ -890,6 +989,9 @@ impl SeatLoop {
     }
 
     fn watchdog_eligible(&self) -> std::io::Result<bool> {
+        if self.state.borrow().transfer_status().is_some() {
+            return Ok(false);
+        }
         if self.state.borrow().formed_invite.is_none() {
             return Ok(false);
         }
@@ -1096,6 +1198,24 @@ impl SeatLoop {
                 break;
             };
             match command {
+                SeatCommand::ReplaceSeatBinding {
+                    expected_base,
+                    binding,
+                    reply,
+                } => {
+                    let _ = reply.send(self.replace_seat_binding(expected_base, &binding).await);
+                }
+                SeatCommand::Import(command) => self.handle_import_command(command).await,
+                SeatCommand::TransferOut {
+                    grant,
+                    service_key,
+                    reply,
+                } => {
+                    let _ = reply.send(self.transfer_out(&grant, &service_key).await);
+                }
+                SeatCommand::RemoveTransferred { reply } => {
+                    let _ = reply.send(self.remove_transferred().await);
+                }
                 #[cfg(test)]
                 SeatCommand::WatchdogTick { reply } => {
                     self.watchdog_tick().await;
@@ -1276,17 +1396,24 @@ impl SeatLoop {
                 }
             }
         }
-        match exit {
-            Ok(exit) => tracing::warn!(
-                safe_to_share = true,
-                seat_id = %self.facts.seat_id,
-                exit_code = ?exit.status_code,
-                signal = ?exit.signal,
-                "seat fedimintd exited"
-            ),
-            Err(err) => {
-                tracing::warn!(seat_id = %self.facts.seat_id, %err, "seat fedimintd wait failed")
+        let exit_code = match exit {
+            Ok(exit) => {
+                tracing::warn!(
+                    safe_to_share = true,
+                    seat_id = %self.facts.seat_id,
+                    exit_code = ?exit.status_code,
+                    signal = ?exit.signal,
+                    "seat fedimintd exited"
+                );
+                exit.status_code
             }
+            Err(err) => {
+                tracing::warn!(seat_id = %self.facts.seat_id, %err, "seat fedimintd wait failed");
+                None
+            }
+        };
+        if self.commit_session_boundary_exit(exit_code).await {
+            return;
         }
         if self
             .child_started
@@ -1370,6 +1497,17 @@ impl SeatLoop {
     }
 
     async fn spawn_child(&mut self) -> Result<(), SeatVerbError> {
+        self.state.borrow().reject_decommissioned()?;
+        self.state.borrow().reject_transfer_work()?;
+        self.spawn_child_inner(None).await
+    }
+
+    /// Only the import install command may bypass the pending-import fence,
+    /// once the accepted guardian is durably on disk.
+    async fn spawn_child_inner(
+        &mut self,
+        imported_invite: Option<&InviteCode>,
+    ) -> Result<(), SeatVerbError> {
         if !matches!(self.child, ProcessSlot::Empty) {
             return Err(SeatVerbError::internal(anyhow!(
                 "child replacement requires a proved empty process slot"
@@ -1399,6 +1537,17 @@ impl SeatLoop {
             }
         };
         let state = client.child_state().clone();
+        if let Some(expected) = imported_invite {
+            if !matches!(&state, ChildState::AlreadyConfigured { invite_code } if invite_code == &expected.0)
+            {
+                // Never feed DKG parameters to an accepted import, even if a
+                // child unexpectedly claims its installed config is absent.
+                if child.stop().await.is_err() {
+                    self.set_process_slot(ProcessSlot::ExitUnproven);
+                }
+                return Err(SeatVerbError::SeatUnavailable);
+            }
+        }
         self.set_process_slot(match state {
             ChildState::NeedsParams => ProcessSlot::Parked { child, client },
             ChildState::AlreadyConfigured { .. } => ProcessSlot::Configured {
@@ -1425,6 +1574,10 @@ impl SeatLoop {
     }
 
     fn schedule_respawn(&mut self) {
+        if self.state.borrow().transfer_status().is_some() {
+            self.respawn_at = None;
+            return;
+        }
         if self.respawn_at.is_some() || matches!(self.child, ProcessSlot::ExitUnproven) {
             return;
         }
@@ -1528,6 +1681,7 @@ impl SeatLoop {
         let final_data_exists = self.final_data_exists()?;
         let state = self.state.borrow();
         state.reject_decommissioned()?;
+        state.reject_transfer_work()?;
         if state.formed_invite.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: state.service_status(final_data_exists),
@@ -1547,6 +1701,7 @@ impl SeatLoop {
     ) -> Result<(), SeatVerbError> {
         let final_data_exists = self.final_data_exists()?;
         self.state.borrow().reject_decommissioned()?;
+        self.state.borrow().reject_transfer_work()?;
         if self.state.borrow().formed_invite.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: self.state.borrow().service_status(final_data_exists),
@@ -1749,6 +1904,7 @@ impl SeatLoop {
     ) -> Result<ServiceStatus, SeatVerbError> {
         let final_data_exists = self.final_data_exists()?;
         self.state.borrow().reject_decommissioned()?;
+        self.state.borrow().reject_transfer_work()?;
         if self.state.borrow().formed_invite.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: self.state.borrow().service_status(final_data_exists),
@@ -1850,6 +2006,8 @@ impl SeatLoop {
         &self,
         statement: &MgPeerAttestationStatement,
     ) -> Result<SeatEndpointProof, SeatVerbError> {
+        self.state.borrow().reject_decommissioned()?;
+        self.state.borrow().reject_transfer_work()?;
         let signature = effective_iroh_api_key(&self.keys, self.ports).sign(
             &statement
                 .seat_endpoint_proof_message()
@@ -2273,6 +2431,7 @@ impl SeatLoop {
     }
 
     async fn running_client(&mut self) -> Result<FedimintApi, SeatVerbError> {
+        self.state.borrow().reject_transfer_work()?;
         if self.state.borrow().formed_invite.is_none() {
             let status = self.state.borrow().unformed_status();
             return Err(SeatVerbError::WrongState { status });

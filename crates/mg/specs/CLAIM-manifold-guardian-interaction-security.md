@@ -8,7 +8,10 @@ not disclose Manifold Guardian-held secrets; grant cross-seat or fleet authority
 allocate a paid seat without its exact payment; settle a quote more than once;
 consume unrelated operator value; admit attacker-controlled payment policy,
 trust, or restore state; misuse guardian authority for fee collection; or delete
-guardian data after exposing its federation invite.
+guardian data after exposing its federation invite, except the FA-authorized
+removal of a transfer-retired source guardian, which preserves the seat's
+terminal tombstone, formed identity, payment and fee accounting, and wallet
+data.
 
 This property covers interaction authority, confidentiality, integrity, and
 value safety. It does not assert availability, resource or capacity bounds,
@@ -21,7 +24,9 @@ method/effect roster, while the proof still enumerates the preceding 3+10
 surface. Durable Holder-authorization enrollment also adds an Admin-triggered
 Nostr-to-SQLite effect not covered by the proof roster. The complete
 current 3+11 roster, including both effects, before treating this parent claim
-as current.
+as current. The proof also predates the transfer-retired source deletion
+exception, imported here from
+[CLAIM-manifold-guardian-preserves-published-guardian-data](CLAIM-manifold-guardian-preserves-published-guardian-data.md).
 
 ## Assumptions
 
@@ -52,7 +57,8 @@ as current.
   payment and value; this imports only that part of
   [CLAIM-manifold-guardian-paid-seat-payment-verified](CLAIM-manifold-guardian-paid-seat-payment-verified.md).
 - [CLAIM-manifold-guardian-quote-settlement-exclusive](CLAIM-manifold-guardian-quote-settlement-exclusive.md)
-- [CLAIM-manifold-guardian-preserves-published-guardian-data](CLAIM-manifold-guardian-preserves-published-guardian-data.md)
+- [CLAIM-manifold-guardian-preserves-published-guardian-data](CLAIM-manifold-guardian-preserves-published-guardian-data.md),
+  including its transfer-retired source exception.
 - Only the current, complete, valid publication from the pinned publisher
   determines admitted setup-payment policy; relay withholding or replay cannot
   select an older authentic policy (see
@@ -65,9 +71,9 @@ as current.
   FAs check current issuer policy and revocation. The
   authentication part is recorded by
   [CLAIM-manifold-guardian-holder-authorization-bound](CLAIM-manifold-guardian-holder-authorization-bound.md).
-- Restore adopts only current, authentic, internally consistent documents bound
-  to the recovered identity; relay withholding or replay cannot select older
-  authentic recovery state (see
+- Restore adopts authentic, internally consistent documents bound to the
+  recovered identity under the latest-backup and no-stale-local-snapshot
+  assumptions. Freshness is not enforced against a hostile relay (see
   [CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state](CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state.md)).
 - The bundled, pinned `fedimintd` and its dependencies retain their intended
   implementation integrity under hostile network input. This is an explicit

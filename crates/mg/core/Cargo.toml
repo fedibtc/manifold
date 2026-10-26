@@ -58,6 +58,7 @@ serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
 stability-pool-client = { workspace = true }
+tempfile = "3"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
@@ -82,7 +83,6 @@ humantime = "2.4.0"
 jsonrpsee-server = "0.24"
 reqwest = { version = "0.12", default-features = false }
 safe-tracing = { path = "../../safe-tracing" }
-tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

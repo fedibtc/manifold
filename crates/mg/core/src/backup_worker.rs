@@ -14,8 +14,9 @@
 //! One task scans every seat on a slow cadence and converges the diff;
 //! [`BackupWorker::mark`] cuts the wait short so a state transition — a new
 //! seat's payment evidence, a fresh guardian archive, a decommission — reaches
-//! the relay promptly rather than at the next tick. **Nothing waits for it**:
-//! not a caller, not a state transition. A scan reads SQLite and seat data
+//! the relay promptly rather than at the next tick. Nothing waits on the
+//! worker: a transfer source reads the fence its record confirms
+//! (`confirmed_outgoing`) and answers "not yet" until then. A scan reads SQLite and seat data
 //! directories only, never a child's API, so no cadence can hammer
 //! `fedimintd`; with confirmed archives skipping their file reads, a scan is
 //! a few point queries and one small hash per seat.
@@ -230,27 +231,20 @@ impl BackupWorker {
                     PUBLISH_TIMEOUT.as_secs()
                 )
             })??;
-        // The plan's consensus check and this publish are not one atomic step:
-        // the first observation can commit between them, making the document
-        // just confirmed a guardian-less description of a seat that now holds
-        // key shares. Recording it would suppress the republish that fixes it,
-        // so re-derive the requirement and leave the seat pending instead —
-        // the next scan publishes the document with its archive.
-        if plan.archive_digest().is_none()
-            && db
-                .formed_federation_invite(&seat.facts.seat_id)
-                .await?
-                .is_some()
-        {
-            anyhow::bail!(
-                "consensus was observed while a pre-consensus document was in flight; \
-                 republishing with the guardian archive"
-            );
-        }
+        // Lifecycle facts can change while the relay is responding. Reassemble
+        // the whole requirement: a prior archive alone cannot confirm a newer
+        // retirement, import, or removal document.
+        let current =
+            seat_publication_plan(db, process, &seat.facts, plan.archive_digest()).await?;
+        anyhow::ensure!(
+            current.doc_sha256() == doc_sha256,
+            "seat recovery requirements changed during publication"
+        );
         db.record_backup_publication(
             &seat.facts.seat_id,
             &doc_sha256,
             plan.archive_digest(),
+            plan.document.outgoing_transfer(),
             sink.format_version(),
         )
         .await?;

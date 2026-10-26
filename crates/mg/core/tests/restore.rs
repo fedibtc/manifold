@@ -98,6 +98,256 @@ async fn test_db(temp: &TempDir) -> Db {
     Db::open(temp.path()).await.unwrap()
 }
 
+fn transferred_document(seat: u8) -> (SeatBackupDocument, GuardianArchive) {
+    use crate::backup::{IncomingTransferBackup, TransferBackup};
+    let identity = test_identity();
+    let facts = facts(seat);
+    let archive = guardian_archive("{}");
+    let federation_id = "ab".repeat(32);
+    let invite = fedimint_core::invite_code::InviteCode::new(
+        "ws://127.0.0.1:8174".parse().unwrap(),
+        fedimint_core::PeerId::from(0),
+        federation_id.parse().unwrap(),
+        None,
+    );
+    let mut document = SeatBackupDocument::new(
+        &facts,
+        Some(payment()),
+        Some(GuardianArchiveRef {
+            archive_sha256: archive.digest(),
+            federation_invite: Some(InviteCode(invite.to_string())),
+        }),
+        None,
+    );
+    document.transfer = Some(TransferBackup {
+        incoming: Some(IncomingTransferBackup::Accepted {
+            binding: crate::transfer_state::TransferMove {
+                fa_id: facts.fa_id,
+                federation_id: fedi_decentralized_service_manifold_guardian::FederationId(
+                    federation_id,
+                ),
+                source: fedi_decentralized_service_manifold_guardian::Locator::new(
+                    fedi_iroh_rpc::iroh::EndpointAddr::new(
+                        fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[5; 32]).public(),
+                    ),
+                    identity.derive_service_pubkey(),
+                ),
+                source_seat_id: SeatId::from(QuoteId([99; 32])),
+                destination_service_pubkey: identity.derive_service_pubkey(),
+                destination_seat_id: facts.seat_id,
+            },
+            iroh_api_sk: [71; 32],
+            iroh_p2p_sk: [72; 32],
+            callback_commitment: None,
+        }),
+        outgoing: None,
+    });
+    (document, archive)
+}
+
+#[tokio::test]
+async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_restores_bearer() {
+    use crate::backup::IncomingTransferBackup;
+    use fedi_decentralized_service_manifold_guardian::{
+        DkgCompletionCallback, DkgCompletionCallbackInput, SeatTransferGrant, SignedRequest,
+        Timestamp,
+    };
+    {
+        let (document, archive) = transferred_document(4);
+        let Some(IncomingTransferBackup::Accepted { binding, .. }) =
+            document.transfer.as_ref().unwrap().incoming.as_ref()
+        else {
+            unreachable!()
+        };
+        let now = (crate::db::now_ms() / 1000) as u64;
+        let grant = SeatTransferGrant {
+            ts: Timestamp(now),
+            expires_at: Timestamp(now + 3600),
+            fa_id: binding.fa_id,
+            federation_id: binding.federation_id.clone(),
+            source: binding.source.clone(),
+            source_seat_id: binding.source_seat_id.clone(),
+            destination_service_pubkey: binding.destination_service_pubkey,
+            destination_seat_id: binding.destination_seat_id.clone(),
+        };
+        let mut seed = [0; 32];
+        seed[0] = 7;
+        let key = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &seed).unwrap();
+        let signed = SignedRequest::create(&grant, &key).unwrap();
+        let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+            callback_url: "https://push.example/hooks/dkg/opaque-bearer".into(),
+            idempotency_key: "transfer-complete".into(),
+        })
+        .unwrap();
+        let original = TempDir::new().unwrap();
+        let db = test_db(&original).await;
+        let facts = crate::test_support::insert_test_seat(
+            &db,
+            crate::db::NewSeat {
+                seat_id: document.seat_id.clone(),
+                fa_id: document.fa_id,
+                plan: document.plan.clone(),
+                federation_size: document.federation_size,
+                payment: None,
+            },
+        )
+        .await;
+        let admitted = db
+            .admit_transfer(&signed, Some(&callback))
+            .await
+            .unwrap()
+            .unwrap();
+        crate::backup::write_restored_seat_dir(
+            &crate::seat_process::seat_data_dir(&process(&original), facts.seat_no),
+            &archive,
+            &archive.digest(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            db.accept_transfer(
+                &facts.seat_id,
+                admitted.generation,
+                &admitted.binding,
+                &crate::transfer_state::ImportedKeys::from_bytes(&[71; 32], &[72; 32]),
+                document
+                    .guardian
+                    .as_ref()
+                    .unwrap()
+                    .federation_invite
+                    .as_ref()
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        );
+        let plan = crate::backup::seat_publication_plan(&db, &process(&original), &facts, None)
+            .await
+            .unwrap();
+        let archives = plan
+            .archive
+            .map(|archive| (facts.seat_id.clone(), archive))
+            .into_iter()
+            .collect();
+        let fleet = recovered(vec![plan.document], archives);
+        let restored = TempDir::new().unwrap();
+        let db = test_db(&restored).await;
+        install(&db, &process(&restored), &test_identity(), &fleet)
+            .await
+            .unwrap();
+        assert!(
+            db.completion_callback(&facts.seat_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(db.admit_transfer(&signed, None).await.unwrap().is_none());
+        assert!(
+            db.admit_transfer(&signed, Some(&callback))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.completion_callback(&facts.seat_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            db.incoming_transfer(&facts.seat_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .callback_commitment,
+            admitted.callback_commitment
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepted_import_restores_its_iroh_identity_and_remains_fenced() {
+    let (document, archive) = transferred_document(1);
+    assert!(format!("{document:?}").contains("IncomingTransferBackup(redacted)"));
+    let recovered = recovered(
+        vec![document.clone()],
+        vec![(document.seat_id.clone(), archive)],
+    );
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &test_identity(), &recovered)
+        .await
+        .unwrap();
+    let imported = db
+        .incoming_transfer(&document.seat_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        imported
+            .accepted()
+            .unwrap()
+            .same_as(&crate::transfer_state::ImportedKeys::from_bytes(
+                &[71; 32], &[72; 32]
+            )),
+        "the imported Iroh identity is restored from the document"
+    );
+    assert_eq!(
+        db.transfer_phase(&document.seat_id).await.unwrap(),
+        Some(crate::transfer_state::TransferPhase::Imported)
+    );
+    let facts = db.list_seats().await.unwrap().remove(0).facts;
+    let publication = crate::backup::seat_publication_plan(&db, &process, &facts, None)
+        .await
+        .unwrap();
+    assert_eq!(publication.document, document);
+    assert_eq!(
+        publication.archive.unwrap(),
+        recovered.archives[&facts.seat_id]
+    );
+}
+
+#[tokio::test]
+async fn removed_source_restores_formed_accounting_without_guardian_material() {
+    use crate::backup::{OutgoingTransferBackup, TransferBackup};
+    let (mut document, _) = transferred_document(3);
+    let invite = document.guardian.take().unwrap().federation_invite.unwrap();
+    document.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            removed: true,
+            federation_invite: invite.clone(),
+        }),
+    });
+    let recovered = recovered(vec![document.clone()], vec![]);
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &test_identity(), &recovered)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.outgoing_transfer(&document.seat_id).await.unwrap(),
+        Some(crate::transfer_state::OutgoingTransfer::Removed)
+    );
+    assert_eq!(
+        db.formed_federation_invite(&document.seat_id)
+            .await
+            .unwrap(),
+        Some(invite)
+    );
+    assert!(db.payment(&document.seat_id).await.unwrap().is_some());
+    assert!(!crate::seat_process::seat_data_dir(&process, SeatNo(0)).exists());
+    let facts = db.list_seats().await.unwrap().remove(0).facts;
+    let plan =
+        crate::backup::seat_publication_plan(&db, &process, &facts, Some("obsolete-archive"))
+            .await
+            .unwrap();
+    assert_eq!(plan.document, document);
+    assert!(plan.archive.is_none());
+}
+
 /// The whole capability, end to end: a recovered backup produces a fleet with
 /// its guardian configs on disk and its facts in the database.
 #[tokio::test]

@@ -90,7 +90,9 @@ const SEALED_LEN: usize = PADDED_PLAINTEXT_LEN + SEAL_OVERHEAD;
 
 /// Current document schema version. Restore refuses versions it does not know
 /// rather than guessing at a partially understood recovery payload; the one
-/// earlier version ([`LEGACY_DOCUMENT_VERSION`]) stays readable.
+/// earlier version ([`LEGACY_DOCUMENT_VERSION`]) stays readable. A document
+/// carrying transfer facts is sealed under [`TRANSFER_DOCUMENT_VERSION`]
+/// instead, with this version's archive.
 ///
 /// One version for the whole format, carried on the seat document's envelope
 /// ([`Envelope`]) and nowhere else: a schema version describes what the
@@ -113,6 +115,27 @@ pub(crate) const BACKUP_DOCUMENT_VERSION: u32 = 2;
 /// current one.
 pub(crate) const LEGACY_DOCUMENT_VERSION: u32 = 1;
 
+/// The envelope version of a document that carries guardian-transfer facts
+/// ([`SeatBackupDocument::transfer`]). Same shape and archive (coordinates
+/// and layout) as [`BACKUP_DOCUMENT_VERSION`]; only the number differs, so
+/// that readers from before guardian transfer, which accept versions 1 and 2
+/// and ignore unknown fields, refuse such a document instead of restoring a
+/// retired transfer source as a running guardian or an imported identity as
+/// a native one. Ordinary documents stay at version 2 and remain readable by
+/// those readers. Confirmed-publication records stay scoped to
+/// [`BACKUP_DOCUMENT_VERSION`]: gaining or losing transfer facts changes the
+/// document, which republishes it regardless.
+pub(crate) const TRANSFER_DOCUMENT_VERSION: u32 = 3;
+
+/// The envelope version a document is sealed under.
+fn document_version(document: &SeatBackupDocument) -> u32 {
+    if document.transfer.is_some() {
+        TRANSFER_DOCUMENT_VERSION
+    } else {
+        BACKUP_DOCUMENT_VERSION
+    }
+}
+
 /// Failure building or reading a backup payload.
 #[derive(Debug, thiserror::Error)]
 pub enum BackupError {
@@ -127,9 +150,11 @@ pub enum BackupError {
     #[error("parse backup document: {0}")]
     Parse(#[source] ciborium::de::Error<std::io::Error>),
     #[error(
-        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION} or {BACKUP_DOCUMENT_VERSION})"
+        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION}, {BACKUP_DOCUMENT_VERSION} or {TRANSFER_DOCUMENT_VERSION})"
     )]
     UnsupportedVersion { found: u32 },
+    #[error("backup document carries guardian-transfer facts under the wrong version")]
+    TransferVersion,
     #[error("version 1 guardian archive: {0}")]
     LegacyArchive(#[source] anyhow::Error),
     #[error(
@@ -215,7 +240,7 @@ impl BackupIdentity {
         let mut payload = Vec::new();
         ciborium::into_writer(
             &Envelope {
-                version: BACKUP_DOCUMENT_VERSION,
+                version: document_version(document),
                 document,
             },
             &mut payload,
@@ -234,8 +259,10 @@ impl BackupIdentity {
     }
 
     /// Open and parse a document sealed by [`Self::seal_seat_document`],
-    /// refusing any schema version this build does not know. The version it
-    /// was read under comes back with it: it decides the archive's shape.
+    /// refusing any schema version this build does not know. The archive
+    /// generation it names comes back with it, as the envelope's version: it
+    /// decides the archive's shape and coordinates, and a
+    /// [`TRANSFER_DOCUMENT_VERSION`] document names the current one.
     ///
     /// The version check lives here rather than in the caller because every
     /// reader of a document is a restore path acting on recovery material:
@@ -253,7 +280,13 @@ impl BackupIdentity {
         // whichever fields happen to still match.
         let version: Envelope<serde::de::IgnoredAny> =
             ciborium::from_reader(payload).map_err(BackupError::Parse)?;
-        if ![LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION].contains(&version.version) {
+        if ![
+            LEGACY_DOCUMENT_VERSION,
+            BACKUP_DOCUMENT_VERSION,
+            TRANSFER_DOCUMENT_VERSION,
+        ]
+        .contains(&version.version)
+        {
             return Err(BackupError::UnsupportedVersion {
                 found: version.version,
             });
@@ -267,7 +300,21 @@ impl BackupIdentity {
         if cursor.position() as usize != payload.len() {
             return Err(BackupError::Frame);
         }
-        Ok(envelope)
+        // Transfer facts and the transfer version come together: a version 2
+        // document carrying them would be read by a pre-transfer reader
+        // without them, so this writer never produces one and this reader
+        // refuses it.
+        let Envelope { version, document } = envelope;
+        match (version, document.transfer.is_some()) {
+            (TRANSFER_DOCUMENT_VERSION, true) => Ok(Envelope {
+                // The archive of a transfer-bearing document is the current
+                // one, at the current version's coordinates.
+                version: BACKUP_DOCUMENT_VERSION,
+                document,
+            }),
+            (TRANSFER_DOCUMENT_VERSION, false) | (_, true) => Err(BackupError::TransferVersion),
+            (version, false) => Ok(Envelope { version, document }),
+        }
     }
 
     /// The base64 event contents one seat's guardian archive is sealed into.
@@ -454,6 +501,24 @@ fn unframe(plaintext: &[u8]) -> Result<&[u8], BackupError> {
     Ok(payload)
 }
 
+/// Take one seat's archive slices at `version`'s coordinates, in order, up to
+/// the first gap.
+fn drain_archive_slices(
+    slices: &mut HashMap<String, Event>,
+    backup: &BackupIdentity,
+    seat_id: &SeatId,
+    version: u32,
+) -> Vec<Event> {
+    let mut found = Vec::new();
+    for index in 0.. {
+        let Some(event) = slices.remove(&backup.archive_coordinate(seat_id, version, index)) else {
+            break;
+        };
+        found.push(event);
+    }
+    found
+}
+
 /// The half of a restore that has no relay in it: given the events, what
 /// fleet do they describe?
 ///
@@ -521,6 +586,23 @@ pub fn recover_from_events(
     let mut archives = HashMap::new();
     for (version, seat) in &mut seats {
         let Some(guardian) = &mut seat.guardian else {
+            if seat
+                .transfer
+                .as_ref()
+                .and_then(|transfer| transfer.outgoing.as_ref())
+                .is_some_and(|outgoing| outgoing.removed)
+            {
+                // A removed source's tombstone drops its archive reference,
+                // but addressable slices cannot be deleted from a relay
+                // reliably. The authenticated tombstone retires exactly this
+                // seat's slice coordinates, in both generations and across
+                // gaps a relay may have left; unrelated events remain fatal.
+                for version in [LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION] {
+                    for index in 0..u32::from(crate::backup::MAX_RESTORE_SLICES_PER_SEAT) {
+                        slices.remove(&backup.archive_coordinate(&seat.seat_id, version, index));
+                    }
+                }
+            }
             continue;
         };
         // The archive ends at the first gap in its own version's coordinates.
@@ -528,30 +610,17 @@ pub fn recover_from_events(
         // the other generation — the one an upgrade retired, or the one an
         // interrupted upgrade staged before its document landed — and is
         // dropped unread.
-        let mut found = Vec::new();
-        for index in 0.. {
-            let Some(event) =
-                slices.remove(&backup.archive_coordinate(&seat.seat_id, *version, index))
-            else {
-                break;
-            };
-            found.push(
+        let found = drain_archive_slices(&mut slices, backup, &seat.seat_id, *version)
+            .into_iter()
+            .map(|event| {
                 BASE64
                     .decode(&event.content)
-                    .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))?,
-            );
-        }
+                    .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for other in [LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION] {
-            if other == *version {
-                continue;
-            }
-            for index in 0.. {
-                if slices
-                    .remove(&backup.archive_coordinate(&seat.seat_id, other, index))
-                    .is_none()
-                {
-                    break;
-                }
+            if other != *version {
+                drain_archive_slices(&mut slices, backup, &seat.seat_id, other);
             }
         }
         if found.is_empty() {

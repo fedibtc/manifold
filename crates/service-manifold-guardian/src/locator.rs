@@ -54,5 +54,35 @@ impl Locator {
     }
 }
 
+/// Name of the network-isolated E2E routing variable shared by every program
+/// that dials MGs: comma-separated `<endpoint-id>=<socket-addr>` pairs.
+pub const MG_E2E_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
+
+#[derive(Debug, thiserror::Error)]
+#[error("{MG_E2E_ENDPOINT_ADDRS_ENV} entry {pair:?} is not `<endpoint-id>=<socket-addr>`")]
+pub struct InvalidEndpointAddrPair {
+    pair: String,
+}
+
+/// Parse [`MG_E2E_ENDPOINT_ADDRS_ENV`]. Advertisements and grants name only an
+/// MG endpoint id; the isolated harness has no address lookup service, so each
+/// dialing program seeds a memory lookup from the ports the harness pinned.
+pub fn parse_endpoint_addr_pairs(
+    pairs: &str,
+) -> Result<Vec<EndpointAddr>, InvalidEndpointAddrPair> {
+    pairs
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let invalid = || InvalidEndpointAddrPair {
+                pair: pair.to_owned(),
+            };
+            let (id, addr) = pair.split_once('=').ok_or_else(invalid)?;
+            Ok(EndpointAddr::new(id.parse().map_err(|_| invalid())?)
+                .with_ip_addr(addr.parse().map_err(|_| invalid())?))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

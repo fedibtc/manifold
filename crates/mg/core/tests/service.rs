@@ -2,9 +2,9 @@ use fedi_decentralized_service_manifold_guardian::{
     CreateSeatOutcome, DkgCompletionCallback, FaId, FederationName, FederationSize, GatewayApiUrl,
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest,
-    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest,
-    StartDkgRequest,
+    MetaConsensusBase, MetaFieldKey, MetaFieldValue, MgSignedRequest, OfferEpoch, Plan,
+    ProposeFormationMetaRequest, RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId,
+    SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
 };
 use tempfile::TempDir;
 
@@ -35,6 +35,21 @@ async fn rpc_with_config(
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
 ) -> ManifoldGuardianRpc {
+    rpc_with_network(
+        temp,
+        guardian_verification_fee_account,
+        push_gateway_origin,
+        bitcoin::Network::Regtest,
+    )
+    .await
+}
+
+async fn rpc_with_network(
+    temp: &TempDir,
+    guardian_verification_fee_account: Option<Account>,
+    push_gateway_origin: Option<PushGatewayOrigin>,
+    bitcoin_network: bitcoin::Network,
+) -> ManifoldGuardianRpc {
     // A fleet opens against an identity onboarding already chose; nothing
     // mints one on open.
     let db = crate::db::Db::open(temp.path()).await.unwrap();
@@ -44,6 +59,8 @@ async fn rpc_with_config(
     let fleet = Fleet::open(
         db,
         FleetConfig {
+            transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+            guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
             process_spawner: SeatProcessSpawner::Fake(Arc::new(
                 crate::seat_process::fake::FakeSeatProcessSpawner::default(),
             )),
@@ -62,7 +79,7 @@ async fn rpc_with_config(
             process: SeatProcessConfig {
                 data_root: temp.path().to_owned(),
                 fedimintd: write_fake_fedimintd(temp.path(), &block_forever()).await,
-                bitcoin_network: bitcoin::Network::Regtest,
+                bitcoin_network,
                 iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
                 bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
                     primary: BitcoindConfig {
@@ -608,6 +625,44 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     let attacker_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let attacker_id = FaId(attacker_key.x_only_public_key().0);
 
+    let remove = RemoveSeatRequest {
+        ts: now(),
+        fa_id: attacker_id,
+        seat_id: seat_id.clone(),
+    };
+    assert_eq!(
+        rpc.remove_seat(SignedRequest::create(&remove, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::UnknownSeat,
+    );
+    let transfer = SeatTransferGrant {
+        ts: now(),
+        expires_at: Timestamp(now().0 + 3600),
+        fa_id: attacker_id,
+        federation_id: fedi_decentralized_service_manifold_guardian::FederationId("test".into()),
+        source: fedi_decentralized_service_manifold_guardian::Locator::new(
+            fedi_iroh_rpc::iroh::EndpointAddr::new(
+                fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[71; 32]).public(),
+            ),
+            rpc.fleet.identity().derive_service_pubkey(),
+        ),
+        source_seat_id: seat_id.clone(),
+        destination_service_pubkey: attacker_key.x_only_public_key().0,
+        destination_seat_id: seat_id.clone(),
+    };
+    let pull = TransferSeatRequest {
+        ts: now(),
+        destination_service_pubkey: attacker_key.x_only_public_key().0,
+        grant: SignedRequest::create(&transfer, &attacker_key).unwrap(),
+    };
+    assert_eq!(
+        rpc.transfer_seat(MgSignedRequest::create(&pull, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::UnknownSeat,
+    );
+
     let get_code = GetDkgCodeRequest {
         ts: now(),
         fa_id: attacker_id,
@@ -817,6 +872,53 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
             .unwrap_err(),
         ManifoldGuardianError::UnknownSeat
     );
+    rpc.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc_with_network(&temp, None, None, bitcoin::Network::Bitcoin).await;
+    let key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let fa_id = FaId(key.x_only_public_key().0);
+    let seat_id = SeatId::from(fedi_decentralized_service_manifold_guardian::QuoteId(
+        [72; 32],
+    ));
+    let remove = RemoveSeatRequest {
+        ts: Timestamp(0),
+        fa_id,
+        seat_id: seat_id.clone(),
+    };
+    assert!(matches!(
+        rpc.remove_seat(SignedRequest::create(&remove, &key).unwrap())
+            .await,
+        Err(ManifoldGuardianError::Unauthorized),
+    ));
+    let transfer = SeatTransferGrant {
+        ts: Timestamp(0),
+        expires_at: Timestamp(1),
+        fa_id,
+        federation_id: fedi_decentralized_service_manifold_guardian::FederationId("test".into()),
+        source: fedi_decentralized_service_manifold_guardian::Locator::new(
+            fedi_iroh_rpc::iroh::EndpointAddr::new(
+                fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[73; 32]).public(),
+            ),
+            rpc.fleet.identity().derive_service_pubkey(),
+        ),
+        source_seat_id: seat_id.clone(),
+        destination_service_pubkey: key.x_only_public_key().0,
+        destination_seat_id: seat_id,
+    };
+    let pull = TransferSeatRequest {
+        ts: Timestamp(0),
+        destination_service_pubkey: key.x_only_public_key().0,
+        grant: SignedRequest::create(&transfer, &key).unwrap(),
+    };
+    assert!(matches!(
+        rpc.transfer_seat(MgSignedRequest::create(&pull, &key).unwrap())
+            .await,
+        Err(ManifoldGuardianError::Unauthorized),
+    ));
     rpc.fleet.shutdown().await;
 }
 

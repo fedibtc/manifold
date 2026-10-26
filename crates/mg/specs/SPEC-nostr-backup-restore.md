@@ -126,6 +126,61 @@ Four kinds of state, and two of them are genuinely at risk:
 
 ## Documents
 
+### Transfer recovery extension (version 3)
+
+A seat document that carries transfer facts is sealed under envelope version
+3; every other document stays at version 2, byte for byte. Readers from before
+guardian transfer accept versions 1 and 2 and ignore unknown fields, so a
+version-2 document carrying transfer facts would restore under them as an
+ordinary seat: a stopped source as a running guardian beside its destination,
+an imported identity as a native one. Version 3 is what they refuse instead;
+that refusal fails their whole restore, which is the fail-closed outcome a
+fleet holding a transfer seat gets from a pre-transfer build. Ordinary fleets
+keep restoring under those builds as before.
+
+Version 3 is the version-2 document and archive with a different number: same
+addresses, encryption domains, archive layout and slice coordinates (a
+version-3 document names the version-2 archive generation), and native-seat
+derivations. This build's reader accepts versions 1, 2 and 3; an unknown
+version is rejected before interpreting its body, and transfer facts under any
+version but 3, or version 3 without them, are refused. A restored legacy or
+mixed-version fleet republishes under the current versions instead of seeding
+confirmations for an envelope version it did not read; confirmations stay
+scoped to version 2, since gaining or losing transfer facts changes the
+document and republishes it anyway. Native-seat documents omit the optional
+transfer field, preserving their plaintext digest.
+
+Transfer recovery carries only accepted identity, not live FA grants or
+callback bearers. It retains a confidential, non-authorizing commitment to the
+initial callback choice. A matching FA retry may reinstall a lost callback
+capability after recovery, but cannot change that choice. A destination still
+waiting for its source holds no guardian and publishes nothing about the move;
+it restores as an ordinary `New` seat and the FA renews the move. An accepted
+destination carries the guardian's two Iroh secrets inside the destination's
+encrypted document, with provenance and the immutable archive reference; the
+archive beside it is the guardian. Recovery writes the guardian into the seat data
+directory and restores the accepted row; the seat starts like any formed seat,
+and expiry cannot cancel an accepted guardian.
+
+A retired source carries a permanent transfer fence and formed federation invite.
+The narrow FA-authorized transfer-removal operation removes only local guardian
+material and records the removal; the seat's next publication is the
+archive-less removal tombstone. A restore between the two resurrects at most a
+stopped, transferred guardian that never starts again.
+Removed seats retain their seat, payment, formed, and fee-account facts. Their
+tombstones no longer carry imported secrets. Old archive slices may remain on the
+relay; only the known coordinates belonging to an authenticated removal
+tombstone are ignored, including gaps. Unclaimed events remain fatal.
+
+The source exports a transferred guardian only after the single ordered backup
+publisher has confirmed, under the current envelope version, a seat document
+that records the transfer fence; the confirmed record keeps that fence
+(`confirmed_outgoing`). This proves local read-back
+publication only; it does **not** establish freshness against later hostile
+replay. Recovery assumes the configured relay returns the latest published
+state and operators never restart stale local snapshots. Transfers are enabled
+under this premise; stale rollback can resurrect a retired source.
+
 Backups are addressable Nostr events authored by a **dedicated backup identity**
 derived from the mnemonic, deliberately distinct from the MG's service
 identity so that discovery and trust surfaces stay unlinked from recovery

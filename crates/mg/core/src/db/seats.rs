@@ -24,9 +24,59 @@ use fedi_decentralized_service_manifold_guardian::{
     QuoteId, SeatId,
 };
 
+/// The durable facts a seat's recovery document is assembled from, as of one
+/// instant ([`Db::seat_recovery_facts`]).
+pub(crate) struct SeatRecoveryFacts {
+    pub(crate) payment: Option<PaymentRecord>,
+    pub(crate) incoming: Option<crate::transfer_state::IncomingTransfer>,
+    pub(crate) outgoing: Option<crate::transfer_state::OutgoingTransfer>,
+    pub(crate) formed_invite: Option<InviteCode>,
+    pub(crate) decommissioned_at_ms: Option<i64>,
+}
+
+async fn payment(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<PaymentRecord>, DbError> {
+    sqlx::query_as::<_, PaymentRow>(
+        "SELECT p.quote_id, p.evidence, p.claim_outcome, p.claim_outcome_at_ms \
+         FROM ecash_claims p WHERE p.quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?
+    .map(PaymentRecord::try_from)
+    .transpose()
+}
+
+async fn decommissioned_at_ms(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<i64>, DbError> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT decommissioned_at_ms FROM decommissioned_seats WHERE quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?)
+}
+
+async fn formed_federation_invite(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<Option<InviteCode>, DbError> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT federation_invite FROM formed_seats WHERE quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_optional(conn)
+    .await?
+    .map(InviteCode))
+}
+
 /// Insert the formation-wide first callback on the caller's transaction so
 /// accepted inputs and notification choice have one crash boundary.
-async fn install_completion_callback(
+pub(super) async fn install_completion_callback(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     seat_id: &SeatId,
     completion_callback: Option<&DkgCompletionCallback>,
@@ -90,6 +140,9 @@ pub struct RestoredSeat {
     /// the moment it is restored.
     pub guardian: Option<RestoredGuardianConfig>,
     pub decommissioned_at_ms: Option<i64>,
+    /// Validated transfer recovery state, rebuilt before the identity commits.
+    pub(crate) incoming_transfer: Option<crate::transfer_state::IncomingTransfer>,
+    pub(crate) outgoing_transfer: Option<crate::backup::OutgoingTransferBackup>,
 }
 
 /// One seat's last relay-confirmed backup publication
@@ -101,6 +154,8 @@ pub(crate) struct SeatBackupPublication {
     pub(crate) published_at_ms: i64,
     /// Digest of the archive whose events were confirmed, once one was.
     pub(crate) archive_digest: Option<String>,
+    /// The transfer fence the confirmed document records.
+    pub(crate) confirmed_outgoing: Option<crate::transfer_state::OutgoingTransfer>,
 }
 
 /// What a restored seat's document said about its guardian archive.
@@ -511,9 +566,10 @@ impl Db {
 
         let id = new_seat.seat_id.as_bytes().as_slice();
         let (active, next_no): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), \
+            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
              COALESCE(MAX(s.seat_no) + 1, 0) \
-             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
+             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+             LEFT JOIN seat_transfer_out t USING (quote_id)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -610,15 +666,7 @@ impl Db {
     }
 
     pub async fn payment(&self, seat_id: &SeatId) -> Result<Option<PaymentRecord>, DbError> {
-        sqlx::query_as::<_, PaymentRow>(
-            "SELECT p.quote_id, p.evidence, p.claim_outcome, p.claim_outcome_at_ms \
-             FROM ecash_claims p WHERE p.quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?
-        .map(PaymentRecord::try_from)
-        .transpose()
+        payment(&mut *self.pool().acquire().await?, seat_id).await
     }
 
     pub async fn record_claim_outcome(
@@ -805,12 +853,7 @@ impl Db {
 
     /// One seat's terminal decommission time, if it has one.
     pub async fn decommissioned_at_ms(&self, seat_id: &SeatId) -> Result<Option<i64>, DbError> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT decommissioned_at_ms FROM decommissioned_seats WHERE quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?)
+        decommissioned_at_ms(&mut *self.pool().acquire().await?, seat_id).await
     }
 
     /// One seat's last confirmed backup publication under the given envelope
@@ -823,8 +866,8 @@ impl Db {
         seat_id: &SeatId,
         schema_version: u32,
     ) -> Result<Option<SeatBackupPublication>, DbError> {
-        Ok(sqlx::query_as::<_, (String, i64, Option<String>)>(
-            "SELECT doc_sha256, published_at_ms, archive_digest \
+        sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
+            "SELECT doc_sha256, published_at_ms, archive_digest, confirmed_outgoing \
              FROM seat_backup_publications WHERE quote_id = ? AND schema_version = ?",
         )
         .bind(seat_id.as_bytes().as_slice())
@@ -832,48 +875,58 @@ impl Db {
         .fetch_optional(self.pool())
         .await?
         .map(
-            |(doc_sha256, published_at_ms, archive_digest)| SeatBackupPublication {
-                doc_sha256,
-                published_at_ms,
-                archive_digest,
+            |(doc_sha256, published_at_ms, archive_digest, confirmed_outgoing)| {
+                Ok(SeatBackupPublication {
+                    doc_sha256,
+                    published_at_ms,
+                    archive_digest,
+                    confirmed_outgoing: confirmed_outgoing
+                        .map(|outgoing| {
+                            crate::transfer_state::OutgoingTransfer::from_db_str(&outgoing)
+                                .ok_or_else(|| DbError::CorruptRow {
+                                    table: "seat_backup_publications",
+                                    key: seat_id.to_string(),
+                                    detail: "invalid confirmed transfer fence".into(),
+                                })
+                        })
+                        .transpose()?,
+                })
             },
-        ))
+        )
+        .transpose()
     }
 
     /// Record a confirmed publication. Called by the backup worker alone,
     /// after the relay's read-back confirmation — never before, so a crash
     /// errs toward one redundant republication of an addressable event.
     ///
-    /// The archive digest never regresses to absent *within one schema
-    /// version*: the archive is immutable, and a later document-only
-    /// publication must not forget that its bytes are already confirmed.
-    /// Across a version change the digest is taken as given, absent
-    /// included — the recorded archive is laid out under rules the new
-    /// version's restore would refuse, so they must republish.
+    /// The digest describes the document's reference, not whether archive bytes
+    /// were sent again. A removal tombstone deliberately has no reference.
     pub(crate) async fn record_backup_publication(
         &self,
         seat_id: &SeatId,
         doc_sha256: &str,
         archive_digest: Option<&str>,
+        confirmed_outgoing: Option<crate::transfer_state::OutgoingTransfer>,
         schema_version: u32,
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO seat_backup_publications \
-             (quote_id, doc_sha256, published_at_ms, archive_digest, schema_version) \
-             VALUES (?, ?, ?, ?, ?) \
+             (quote_id, doc_sha256, published_at_ms, archive_digest, confirmed_outgoing, \
+             schema_version) \
+             VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (quote_id) DO UPDATE SET \
              doc_sha256 = excluded.doc_sha256, \
              published_at_ms = excluded.published_at_ms, \
-             archive_digest = CASE \
-                 WHEN seat_backup_publications.schema_version = excluded.schema_version \
-                 THEN COALESCE(excluded.archive_digest, seat_backup_publications.archive_digest) \
-                 ELSE excluded.archive_digest END, \
+             archive_digest = excluded.archive_digest, \
+             confirmed_outgoing = excluded.confirmed_outgoing, \
              schema_version = excluded.schema_version",
         )
         .bind(seat_id.as_bytes().as_slice())
         .bind(doc_sha256)
         .bind(now_ms())
         .bind(archive_digest)
+        .bind(confirmed_outgoing.map(crate::transfer_state::OutgoingTransfer::as_db_str))
         .bind(i64::from(schema_version))
         .execute(self.pool())
         .await?;
@@ -885,13 +938,30 @@ impl Db {
         &self,
         seat_id: &SeatId,
     ) -> Result<Option<InviteCode>, DbError> {
-        Ok(sqlx::query_scalar::<_, String>(
-            "SELECT federation_invite FROM formed_seats WHERE quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?
-        .map(InviteCode))
+        formed_federation_invite(&mut *self.pool().acquire().await?, seat_id).await
+    }
+
+    /// One seat's recovery-relevant lifecycle facts, read from one snapshot.
+    ///
+    /// Separate reads could straddle a commit — an import's acceptance lands
+    /// its `Imported` record and its formed row together, and a reader that
+    /// saw the record before and the row after would describe an imported
+    /// guardian as a native one — so the whole set is read inside one read
+    /// transaction, which SQLite serves from a single snapshot.
+    pub(crate) async fn seat_recovery_facts(
+        &self,
+        seat_id: &SeatId,
+    ) -> Result<SeatRecoveryFacts, DbError> {
+        let mut snapshot = self.pool().begin().await?;
+        let facts = SeatRecoveryFacts {
+            payment: payment(&mut snapshot, seat_id).await?,
+            incoming: super::transfers::incoming(&mut snapshot, seat_id).await?,
+            outgoing: super::transfers::outgoing(&mut snapshot, seat_id).await?,
+            formed_invite: formed_federation_invite(&mut snapshot, seat_id).await?,
+            decommissioned_at_ms: decommissioned_at_ms(&mut snapshot, seat_id).await?,
+        };
+        snapshot.commit().await?;
+        Ok(facts)
     }
 
     /// Insert one seat exactly as a backup describes it.
@@ -948,20 +1018,39 @@ impl Db {
             .bind(facts.created_at_ms)
             .execute(&mut *tx)
             .await?;
-            if let Some(guardian) = seat.guardian.as_ref() {
-                let invite =
-                    guardian
-                        .federation_invite
-                        .as_ref()
-                        .ok_or_else(|| DbError::CorruptRow {
-                            table: "backup_guardians",
-                            key: facts.seat_id.to_string(),
-                            detail: "guardian archive has no formed federation invite".to_owned(),
-                        })?;
+            if seat.guardian.is_some() || seat.outgoing_transfer.is_some() {
+                let invite = seat
+                    .guardian
+                    .as_ref()
+                    .and_then(|guardian| guardian.federation_invite.as_ref())
+                    .or_else(|| {
+                        seat.outgoing_transfer
+                            .as_ref()
+                            .map(|outgoing| &outgoing.federation_invite)
+                    })
+                    .ok_or_else(|| DbError::CorruptRow {
+                        table: "backup_guardians",
+                        key: facts.seat_id.to_string(),
+                        detail: "guardian archive has no formed federation invite".to_owned(),
+                    })?;
                 sqlx::query("INSERT INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)")
                     .bind(quote_id)
                     .bind(&invite.0)
                     .bind(now_ms())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            if let Some(incoming) = &seat.incoming_transfer {
+                super::transfers::save(&mut tx, &facts.seat_id, incoming).await?;
+            }
+            if let Some(outgoing) = &seat.outgoing_transfer {
+                sqlx::query("INSERT INTO seat_transfer_out (quote_id, phase) VALUES (?, ?)")
+                    .bind(quote_id)
+                    .bind(if outgoing.removed {
+                        "removed"
+                    } else {
+                        "retired"
+                    })
                     .execute(&mut *tx)
                     .await?;
             }
@@ -1137,6 +1226,8 @@ impl Db {
             "JOIN formed_seats f USING (quote_id) \
              LEFT JOIN decommissioned_seats d USING (quote_id) \
              WHERE d.quote_id IS NULL AND c.completion_callback IS NOT NULL \
+             AND NOT EXISTS (SELECT 1 FROM seat_transfer_in t WHERE t.quote_id = c.quote_id AND t.state != 'imported') \
+             AND NOT EXISTS (SELECT 1 FROM seat_transfer_out t WHERE t.quote_id = c.quote_id) \
              AND c.completion_callback_status IN ('pending', 'operator_blocked')",
             None,
         )

@@ -2,7 +2,7 @@ use secp256k1::{Keypair, SECP256K1};
 
 use super::*;
 use crate::signing::AuthError;
-use crate::{QuoteId, SignedRequest};
+use crate::{MgSignedRequest, QuoteId, SignedRequest};
 
 const ISSUED: u64 = 1_800_000_000;
 const DAY: u64 = 24 * 60 * 60;
@@ -94,17 +94,57 @@ fn grant_signature_does_not_verify_as_another_verb() {
     ));
 }
 
-#[test]
-fn sealed_package_is_hex_and_bounded() {
-    let package = SealedSeatPackage::new(vec![0xab, 0x01]).unwrap();
-    assert_eq!(serde_json::to_value(&package).unwrap(), "ab01");
-    assert_eq!(
-        serde_json::from_value::<SealedSeatPackage>(serde_json::json!("ab01")).unwrap(),
-        package
-    );
+fn destination_key() -> Keypair {
+    Keypair::from_seckey_slice(SECP256K1, &[9; 32]).unwrap()
+}
 
-    assert!(SealedSeatPackage::new(vec![0; SEALED_SEAT_PACKAGE_MAX_BYTES]).is_ok());
-    assert!(SealedSeatPackage::new(vec![0; SEALED_SEAT_PACKAGE_MAX_BYTES + 1]).is_err());
-    let oversized = "00".repeat(SEALED_SEAT_PACKAGE_MAX_BYTES + 1);
-    assert!(serde_json::from_value::<SealedSeatPackage>(oversized.into()).is_err());
+fn transfer_request(key: &Keypair) -> TransferSeatRequest {
+    TransferSeatRequest {
+        ts: Timestamp(ISSUED),
+        destination_service_pubkey: key.x_only_public_key().0,
+        grant: SignedRequest::create(&grant(DAY), &fa_key()).unwrap(),
+    }
+}
+
+#[test]
+fn transfer_request_verifies_only_under_the_destination_key() {
+    let request = transfer_request(&destination_key());
+    let envelope = MgSignedRequest::create(&request, &destination_key()).unwrap();
+    assert_eq!(envelope.verify(Timestamp(ISSUED + 60)).unwrap(), request);
+    assert!(matches!(
+        envelope.verify(Timestamp(ISSUED + FA_REQUEST_FRESHNESS_WINDOW_SECS + 1)),
+        Err(AuthError::Stale)
+    ));
+
+    // The envelope signer is the key the payload names, so another MG cannot
+    // sign a payload naming the destination.
+    let forged = MgSignedRequest::create(&request, &fa_key()).unwrap();
+    assert!(matches!(
+        forged.verify(Timestamp(ISSUED)),
+        Err(AuthError::BadSignature)
+    ));
+    let other = transfer_request(&fa_key());
+    let mismatched: MgSignedRequest<TransferSeatRequest> = serde_json::from_value(
+        serde_json::to_value(MgSignedRequest::create(&other, &fa_key()).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mismatched.verify(Timestamp(ISSUED)).unwrap(), other);
+}
+
+#[test]
+fn guardian_material_is_bounded_and_redacted() {
+    let material = GuardianMaterial {
+        private_json: "a".repeat(SEAT_TRANSFER_MATERIAL_MAX_BYTES - 64 - 2),
+        local_json: "c".to_owned(),
+        consensus_json: "d".to_owned(),
+        iroh_api_sk: [1; 32],
+        iroh_p2p_sk: [2; 32],
+    };
+    assert!(material.check_size().is_ok());
+    assert_eq!(format!("{material:?}"), "GuardianMaterial(redacted)");
+    let oversized = GuardianMaterial {
+        local_json: "cc".to_owned(),
+        ..material
+    };
+    assert!(oversized.check_size().is_err());
 }

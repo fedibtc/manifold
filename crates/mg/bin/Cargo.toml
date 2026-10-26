@@ -28,6 +28,7 @@ required-features = ["bitcoin-fallback-startup-tests"]
 anyhow = "1"
 async-trait = { workspace = true }
 axum = "0.8.9"
+bitcoin = "0.32.6"
 clap = { version = "4", features = ["derive"] }
 
 fedi-decentralized-domain = { path = "../../domain" }
@@ -36,8 +37,15 @@ fedi-decentralized-push-gateway-types = { path = "../../push-gateway-types" }
 fedi-decentralized-service-manifold-guardian = { path = "../../service-manifold-guardian" }
 fedi-iroh-rpc = { path = "../../fedi-iroh-rpc" }
 fedimint-core = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fedimint-lnv2-common = { workspace = true }
+fedimint-mint-common = { workspace = true }
+fedimint-mintv2-common = { workspace = true }
+fedimint-server = { workspace = true }
 fedimint-server-bitcoin-rpc = { workspace = true }
 fedimint-server-core = { workspace = true }
+fedimint-wallet-common = { workspace = true }
+fedimint-walletv2-common = { workspace = true }
 fedimintd = { workspace = true, features = ["jemalloc"] }
 futures = "0.3"
 hex = "0.4"
@@ -75,8 +83,6 @@ libc = "0.2"
 fedimint-build = { workspace = true }
 
 [dev-dependencies]
-bitcoin = "0.32.6"
-fedimint-server = { workspace = true }
 humantime = "2.4.0"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

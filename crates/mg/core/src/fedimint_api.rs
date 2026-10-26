@@ -11,7 +11,9 @@ use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _, FederationEr
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
-use fedimint_core::endpoint_constants::CLIENT_CONFIG_ENDPOINT;
+use fedimint_core::endpoint_constants::{
+    CLIENT_CONFIG_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+};
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::ADD_GATEWAY_ENDPOINT;
@@ -94,6 +96,18 @@ impl FedimintApi {
             self.api
                 .clone()
                 .request_admin_no_auth(CLIENT_CONFIG_ENDPOINT, ApiRequestErased::default()),
+        )
+        .await
+    }
+
+    /// Ask the guardian to exit once its current consensus session
+    /// completes. The schedule lives only in the running process.
+    pub async fn shutdown_after_current_session(&self) -> Result<(), FedimintApiError> {
+        self.request(
+            SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+            self.api
+                .clone()
+                .shutdown_after_current_session(self.auth.clone()),
         )
         .await
     }

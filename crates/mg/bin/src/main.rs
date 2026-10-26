@@ -11,11 +11,13 @@
 mod duplicate_instance;
 #[cfg(target_os = "linux")]
 mod file_limit;
+mod guardian_config;
 mod memory_report;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
 mod seat_readiness;
+mod transfer_source;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -27,7 +29,7 @@ use clap::{Parser, ValueEnum};
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_service_manifold_guardian::{
     GUARDIAN_TELEMETRY_ALPN, GuardianTelemetryApiServer, Locator, MANIFOLD_GUARDIAN_ALPN,
-    ManifoldGuardianServiceServer,
+    MG_E2E_ENDPOINT_ADDRS_ENV, ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
 };
 use fedi_iroh_rpc::IrohProtocol;
 use mg_core::admin;
@@ -454,11 +456,43 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Reuse the one service endpoint for outbound transfer pulls. It is bound
+    // only after the duplicate-instance veto and before fleet workers start.
+    let endpoint_builder = if local_e2e {
+        // The isolated harness has no address lookup service. It routes the
+        // endpoint ids named in grants through the shared pair list, and pins
+        // this service's port so those routes survive a daemon restart.
+        let routes = parse_endpoint_addr_pairs(
+            &std::env::var(MG_E2E_ENDPOINT_ADDRS_ENV).unwrap_or_default(),
+        )?;
+        let builder = Endpoint::builder(presets::N0DisableRelay).address_lookup(
+            iroh::address_lookup::MemoryLookup::from_endpoint_info(routes),
+        );
+        match std::env::var("MG_E2E_IROH_BIND_ADDR") {
+            Ok(addr) => builder.bind_addr(addr.parse::<std::net::SocketAddr>()?)?,
+            Err(_) => builder,
+        }
+    } else {
+        Endpoint::builder(presets::N0)
+    };
+    let endpoint = endpoint_builder
+        .secret_key(
+            db.load_identity()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("completed onboarding has no fleet identity"))?
+                .derive_iroh_secret_key(),
+        )
+        .bind()
+        .await?;
     let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db.clone(),
             FleetConfig {
+                transfer_source: Arc::new(transfer_source::IrohTransferSource::new(
+                    endpoint.clone(),
+                )),
+                guardian_config_validator: Arc::new(guardian_config::NativeGuardianConfigValidator),
                 manifold_environment: manifold_environment.environment(),
                 first_port_base: PortBase::new(args.first_port_base).ok_or_else(|| {
                     anyhow::anyhow!("--first-port-base leaves no room for a seat's port block")
@@ -507,16 +541,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         None => None,
     };
-    // The network-isolated formation harness supplies explicit loopback routes.
-    let endpoint_builder = if local_e2e {
-        Endpoint::builder(presets::N0DisableRelay)
-    } else {
-        Endpoint::builder(presets::N0)
-    };
-    let endpoint = endpoint_builder
-        .secret_key(identity.derive_iroh_secret_key())
-        .bind()
-        .await?;
     let keys = identity.derive_service_nostr_keys();
     let telemetry_registration_keys = keys.clone();
     let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::for_fleet(&fleet));
@@ -657,6 +681,11 @@ fn with_operator_ui(router: axum::Router) -> axum::Router {
 fn with_operator_ui(router: axum::Router) -> axum::Router {
     router
 }
+
+// Core recognises the bundled fedimintd's session-boundary exit without
+// depending on fedimintd.
+const _: () =
+    assert!(bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE == fedimintd::SESSION_BOUNDARY_EXIT_CODE);
 
 /// Whether this process was spawned as the bundled `fedimintd`. Must be
 /// consulted before the daemon parses its own CLI: fedimintd owns the argv.

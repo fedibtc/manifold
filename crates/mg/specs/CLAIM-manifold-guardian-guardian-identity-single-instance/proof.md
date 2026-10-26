@@ -1,6 +1,20 @@
 # Proof: A guardian identity runs in only one Manifold Guardian instance
 
+**Stale proof:** the argument below enumerates native mnemonic-derived
+identities only. Cooperative transfer adds authenticated imported identity and
+its backup/startup paths, and the approved claim now includes the
+non-conflicting-FA premise. L1/L4/L6 and the conclusion do not cover those paths.
+This maintenance does not verify the expanded claim, resolve hostile stale
+restore freshness, or constitute deployment approval. Transfer is enabled only
+in development and staging environments, under the
+latest-backup/no-stale-local-snapshot premises. A transferred guardian keeps
+its consensus material and Iroh endpoint keys and runs under the destination's
+own `api_auth`; the native argument below does not cover that split.
 
+The current property and assumptions are in
+[CLAIM-manifold-guardian-guardian-identity-single-instance](../CLAIM-manifold-guardian-guardian-identity-single-instance.md).
+The duplicated pre-transfer property below is the scope of the existing
+argument, not a replacement for that record.
 
 Scope: `crates/mg/core/src/**`, `crates/mg/core/tests/**`,
 `crates/mg/core/migrations/**`, `crates/mg/bin/src/**`,
@@ -181,6 +195,18 @@ same-root daemon exclusion and is not treated as a per-identity mechanism
   restore gate.
 
 ## Weakest links
+
+For the expanded claim, transfer-specific obligations remain outside this
+argument: native material validation and effective-key loading in
+`transfer_native`; destination authentication, stop-before-export and durable retirement
+in `seat::transfer`; accepted-import installation/publication/start ordering in
+`seat::import`; and preservation of imported keys and terminal fences through
+backup recovery. The source does not enforce destination uniqueness, so the
+new FA premise is material, not a daemon guarantee. Focused transfer tests
+exercise those mechanisms against a fake child and fake session-boundary
+exits (see [`crates/mg/testing.md`](../../testing.md)); no native end-to-end
+transfer fixture is in this tree, and none of it is a fresh claim
+verification. The restore-authenticity requirement remains unchanged.
 
 Weakest links, in order: A-operator's global human coordination, then
 L1/L4/L6's production-path enumerations, A-key-generation, and L2/L3's local

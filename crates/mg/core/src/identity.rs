@@ -168,6 +168,7 @@ impl RootMnemonic {
             iroh::SecretKey::from_bytes(&self.derive_32(info.as_bytes()))
         };
         SeatKeys {
+            preserve_guardian_identity: false,
             iroh_api: key("iroh-api"),
             iroh_p2p: key("iroh-p2p"),
             api_auth: hex::encode(
@@ -204,6 +205,9 @@ pub struct SeatKeys {
     pub iroh_api: iroh::SecretKey,
     pub iroh_p2p: iroh::SecretKey,
     pub api_auth: String,
+    /// Imported guardians keep their native keys even in the local-Iroh
+    /// formation harness: destination ports must never re-key a formed peer.
+    pub(crate) preserve_guardian_identity: bool,
 }
 
 impl std::fmt::Debug for SeatKeys {

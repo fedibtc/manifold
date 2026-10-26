@@ -70,11 +70,35 @@ pub(crate) struct FakeApiState {
     /// Hold invite lookup after a consensus probe, for pinning its
     /// serialization against restart.
     pub invite_gate: Option<Arc<Notify>>,
+    /// The `auth` of each `shutdown_after_current_session` request.
+    pub shutdown_after_current_session: Vec<Option<String>>,
+    /// Fail every local API request at the transport, as if the connection
+    /// between the MG and its child were cut while consensus continues.
+    pub api_cut: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct FakeSeatChildHandle {
     state: Arc<Mutex<FakeApiState>>,
+    exit: watch::Sender<Option<ObservedSeatExit>>,
+    seat_id: SeatId,
+}
+
+/// The registry's view of the live child of one seat.
+struct FakeChildEntry {
+    generation: u64,
+    state: Weak<Mutex<FakeApiState>>,
+    exit: watch::Sender<Option<ObservedSeatExit>>,
+}
+
+impl FakeChildEntry {
+    fn handle(&self, seat_id: &SeatId) -> Option<FakeSeatChildHandle> {
+        Some(FakeSeatChildHandle {
+            state: self.state.upgrade()?,
+            exit: self.exit.clone(),
+            seat_id: seat_id.clone(),
+        })
+    }
 }
 
 fn method_not_found() -> ErrorObjectOwned {
@@ -172,6 +196,20 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
         })
         .unwrap();
     module
+        .register_method("shutdown_after_current_session", |params, state, _ext| {
+            let auth = request_auth(params)?;
+            let mut state = state.lock().unwrap();
+            if state.api_cut {
+                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
+            }
+            if !state.consensus_running {
+                return Err(method_not_found());
+            }
+            state.shutdown_after_current_session.push(auth);
+            Ok::<_, ErrorObjectOwned>(Value::Null)
+        })
+        .unwrap();
+    module
         .register_method("module_2_get_consensus", |_params, state, _ext| {
             let mut state = state.lock().unwrap();
             state.meta_consensus_calls += 1;
@@ -257,6 +295,21 @@ impl FakeSeatChildHandle {
         update(&mut self.state.lock().unwrap());
     }
 
+    /// fedimintd exits as its scheduled shutdown takes effect at a session
+    /// boundary.
+    pub(crate) fn stop_at_session_boundary(&self) {
+        self.exit(crate::bundled_fedimintd::SESSION_BOUNDARY_EXIT_CODE);
+    }
+
+    /// The process exits on its own; the MG sees only the exit status.
+    pub(crate) fn exit(&self, status_code: i32) {
+        self.exit.send_replace(Some(ObservedSeatExit {
+            seat_id: self.seat_id.clone(),
+            status_code: Some(status_code),
+            signal: None,
+        }));
+    }
+
     /// Advance live meta consensus independently of the proposal log, as
     /// threshold peers would after accepting a submitted vote.
     pub(crate) fn set_meta_consensus(&self, value: Option<Vec<u8>>) -> u64 {
@@ -276,7 +329,7 @@ pub(super) struct FakeSeatChild {
     data_dir: PathBuf,
     api_server: FakeApiServer,
     generation: u64,
-    children: Arc<Mutex<HashMap<SeatId, (u64, Weak<Mutex<FakeApiState>>)>>>,
+    children: Arc<Mutex<HashMap<SeatId, FakeChildEntry>>>,
 }
 
 impl FakeSeatChild {
@@ -320,7 +373,7 @@ impl FakeSeatChild {
         let mut children = self.children.lock().unwrap();
         if children
             .get(&self.seat_id)
-            .is_some_and(|(generation, _)| *generation == self.generation)
+            .is_some_and(|entry| entry.generation == self.generation)
         {
             children.remove(&self.seat_id);
         }
@@ -342,11 +395,15 @@ pub(crate) enum FakeDkgStep {
 #[cfg(test)]
 pub struct FakeSeatProcessSpawner {
     scripts: Mutex<VecDeque<Vec<FakeDkgStep>>>,
+    /// Script for every spawn once `scripts` is exhausted.
+    default_script: Option<Vec<FakeDkgStep>>,
+    /// API state each new child starts with, as its database would give it.
+    spawn_state: Mutex<FakeApiState>,
     spawn_count: AtomicUsize,
     request_count: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
-    children: Arc<Mutex<HashMap<SeatId, (u64, Weak<Mutex<FakeApiState>>)>>>,
+    children: Arc<Mutex<HashMap<SeatId, FakeChildEntry>>>,
 }
 
 #[cfg(test)]
@@ -354,6 +411,8 @@ impl Default for FakeSeatProcessSpawner {
     fn default() -> Self {
         Self {
             scripts: Default::default(),
+            default_script: None,
+            spawn_state: Default::default(),
             spawn_count: Default::default(),
             request_count: Default::default(),
             requests: Default::default(),
@@ -369,6 +428,41 @@ impl FakeSeatProcessSpawner {
         Self {
             scripts: std::sync::Mutex::new(sessions.into_iter().flatten().collect()),
             ..Default::default()
+        }
+    }
+
+    /// Every spawn is a formed guardian serving consensus from its
+    /// database, starting at `session_count`.
+    pub(crate) fn configured(invite_code: &str) -> Self {
+        Self {
+            default_script: Some(vec![FakeDkgStep::Message(ChildMessage::Hello {
+                proto: PROTOCOL_VERSION,
+                code_version: "fake-fedimintd".to_owned(),
+                state: ChildState::AlreadyConfigured {
+                    invite_code: invite_code.to_owned(),
+                },
+            })]),
+            spawn_state: Mutex::new(FakeApiState {
+                consensus_running: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The live child's handle, without resetting its state.
+    pub(crate) async fn child(&self, seat_id: &SeatId) -> FakeSeatChildHandle {
+        loop {
+            let child = self
+                .children
+                .lock()
+                .unwrap()
+                .get(seat_id)
+                .and_then(|entry| entry.handle(seat_id));
+            if let Some(child) = child {
+                return child;
+            }
+            tokio::task::yield_now().await;
         }
     }
 
@@ -390,15 +484,15 @@ impl FakeSeatProcessSpawner {
         initial: FakeApiState,
     ) -> FakeSeatChildHandle {
         loop {
-            let state = self
+            let child = self
                 .children
                 .lock()
                 .unwrap()
                 .get(seat_id)
-                .and_then(|(_, state)| state.upgrade());
-            if let Some(state) = state {
-                *state.lock().unwrap() = initial;
-                return FakeSeatChildHandle { state };
+                .and_then(|entry| entry.handle(seat_id));
+            if let Some(child) = child {
+                *child.state.lock().unwrap() = initial;
+                return child;
             }
             tokio::task::yield_now().await;
         }
@@ -415,7 +509,12 @@ impl FakeSeatProcessSpawner {
         ports: SeatPorts,
     ) -> Result<SeatProcess, SeatProcessError> {
         self.spawn_count.fetch_add(1, Ordering::Relaxed);
-        let mut steps = self.scripts.lock().unwrap().pop_front();
+        let mut steps = self
+            .scripts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .or_else(|| self.default_script.clone());
         let fail_stop = steps.as_ref().is_some_and(|steps| {
             steps
                 .iter()
@@ -440,14 +539,18 @@ impl FakeSeatProcessSpawner {
         let child_seat_id = seat_id.clone();
         let request_count = self.request_count.clone();
         let requests = self.requests.clone();
-        let api_state = Arc::new(Mutex::new(FakeApiState::default()));
+        let api_state = Arc::new(Mutex::new(self.spawn_state.lock().unwrap().clone()));
         let api_server = start_api_server(ports.api(), api_state.clone()).await;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        self.children
-            .lock()
-            .unwrap()
-            .insert(seat_id.clone(), (generation, Arc::downgrade(&api_state)));
         let data_dir = seat_data_dir(config, seat_no);
+        self.children.lock().unwrap().insert(
+            seat_id.clone(),
+            FakeChildEntry {
+                generation,
+                state: Arc::downgrade(&api_state),
+                exit: exit.clone(),
+            },
+        );
         let stop_data_dir = data_dir.clone();
         let task_api_state = api_state.clone();
         let task = tokio::spawn(async move {

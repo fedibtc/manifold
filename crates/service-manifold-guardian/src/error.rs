@@ -62,6 +62,18 @@ pub enum ManifoldGuardianError {
     #[error("seat temporarily unavailable, retry")]
     SeatUnavailable,
 
+    /// The source of a guardian transfer has asked its guardian to stop once
+    /// the current consensus session completes, and it has not stopped yet.
+    /// The destination retries `TransferSeat` (SPEC-guardian-transfer).
+    #[error("guardian stops after its current session, retry")]
+    AwaitingSessionEnd,
+
+    /// The source's guardian has stopped, but the relays do not yet confirm
+    /// a backup that records the stop. The destination retries `TransferSeat`
+    /// (SPEC-guardian-transfer).
+    #[error("guardian transfer awaits its backup, retry")]
+    AwaitingBackup,
+
     /// Formation operations cannot replace a seat whose federation is formed.
     #[error("federation is running")]
     FederationIsRunning,

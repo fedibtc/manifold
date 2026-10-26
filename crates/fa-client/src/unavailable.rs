@@ -299,7 +299,7 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
 
     async fn transfer_seat(
         &self,
-        _request: SignedRequest<SeatTransferGrant>,
+        _request: MgSignedRequest<TransferSeatRequest>,
     ) -> FmResult<TransferSeatResponse> {
         Err(unavailable())
     }

@@ -86,6 +86,19 @@ marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.
 
+Guardian transfer is enabled only in development and staging MGs; a production
+MG refuses its four verbs and resumes no stored transfer. The source durably fences
+and stops its guardian and confirms its exact retirement backup before releasing
+the package; the destination starts the imported guardian at once and backs it
+up like any formed seat.
+Recovery relies on the configured backup relay returning the latest published
+state and on operators never restarting stale local snapshots. Publication
+confirmation is not anti-rollback protection: a hostile relay replaying an older
+live-seat backup, or a stale source database, can resurrect the source.
+This limitation and the latest-backup premise are explicit in
+[`SPEC-guardian-transfer`](crates/mg/specs/SPEC-guardian-transfer.md) and the
+restore claim. Cryptographic authenticity alone does not establish freshness.
+
 `fa-cli` is also locally invoked, trusted development/test tooling, but it may
 contact Iroh relays, pinned remote MG endpoints, and wallet endpoints from
 invites. Those endpoints and ordinary `fa-cli` state must remain test-only;
@@ -99,6 +112,24 @@ move wallet value; it performs no production payer-policy validation and must
 be used only with test accounts and test funds.
 
 ## Sensitive data
+
+### Imported guardian custody
+
+Transfer preserves the source guardian's native identity, not the
+destination's mnemonic-derived seat keys; only the admin password is the
+destination's own derived one. Imported Iroh secrets and threshold material
+are confidential accepted state and belong only in the protected data root,
+encrypted recovery payloads, and the Iroh connection between the two MGs
+during the hand-over; never diagnostics.
+Destination service identity and fee/payment wallets remain local.
+
+Custody admission intentionally belongs to the FA. The source verifies the FA's
+signature and ownership, not destination credentials, and does not pin the
+first destination. Single-host operation therefore assumes a non-conflicting
+FA. Removing a retired guardian deletes only its local guardian material and
+then publishes an archive-less tombstone; it does not prove erasure of
+historical backups, revoke secrets already held by a past custodian, or justify
+forgetting that custodian in FA policy.
 
 ### Manifold Guardian bundled guardian process
 
