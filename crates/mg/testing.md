@@ -89,28 +89,34 @@ Coverage is split at the ownership boundaries:
 
 ## Guardian transfer
 
-Transfer coverage stops at the `fedimintd` process boundary:
+In-tree unit and integration tests stop at the `fedimintd` process boundary:
 
 - `transfer_native` tests validate and install handed-over material built from
   an in-memory native `ServerConfig`; they run no guardian.
-- Database tests (`db/transfers`) pin admission, generation, expiry,
-  acceptance with its formed row, monotone retirement, and the migration.
+- Database tests (`db/transfers`) pin admission, that a waiting seat stays
+  bound to its move and takes a grant for the same move as a replay,
+  acceptance with its formed row, monotone retirement, and the migrations.
 - Source tests (`transfer_source.rs`) drive `TransferSeat` and `RemoveSeat`
   against `FakeSeatProcessSpawner` children. The session-boundary exit is a
   scripted exit code (`SESSION_BOUNDARY_EXIT_CODE`, or the legacy shutdown's
   code), not a real `fedimintd` reaching a session boundary.
 - Destination tests (`transfer_import.rs`) run the transfer worker against a
-  controlled in-process source and a gated validator: pull, retry, park,
-  expiry, cancellation, installation and the production gate.
+  controlled in-process source and a gated validator: pull, retry until the
+  source answers, park, same-move replay before and after import,
+  cancellation, installation and the production gate.
 - Binding, backup-format, publication and restore tests cover the metadata
   vote, the transfer document version, single-snapshot publication, and
   restore of imported and retired seats.
 
+One opt-in end-to-end test moves a real guardian between two MGs:
+`fa_moves_a_formed_guardian_to_a_new_mg_under_defe` (`MG_E2E`, described in
+the [tests-e2e README](../tests-e2e/README.md#guardian-transfer)) drives the
+transfer through `fa-cli` against real `fedimintd` children, and checks that
+the federation keeps working with the moved guardian. It observes that one
+transfer completes; it does not show when the source's `fedimintd` stops.
 That a real `fedimintd` exits with the boundary code only after its last
-session completed is the pinned Fedimint fork's contract, unit-tested there at
-the request and consensus-engine level; no
-native end-to-end transfer between two MGs runs in this tree. Treat the tests
-above as boundary coverage, not as evidence of a native handover.
+session completed is the pinned Fedimint fork's contract, unit-tested there
+at the request and consensus-engine level.
 
 ## Memory profiling
 

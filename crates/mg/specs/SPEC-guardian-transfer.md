@@ -2,8 +2,8 @@
 
 ## Status
 
-`crates/service-manifold-guardian` defines the grant, the four verbs, the four
-seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
+`crates/service-manifold-guardian` defines the grant, the four verbs, the
+transfer's seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
 `fa-client` drives the FA side of every step. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart, but only
 development and staging deployments run them. Keyed on its Manifold

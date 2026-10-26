@@ -40,11 +40,6 @@ impl TransferWake {
 
 type Seats = Arc<RwLock<HashMap<SeatId, Arc<Seat>>>>;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Work {
-    Incoming,
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("guardian transfer requires local repair")]
 struct ParkTransfer;
@@ -64,7 +59,6 @@ fn owner_failure(error: crate::seat::SeatVerbError) -> anyhow::Error {
 }
 
 struct Active {
-    work: Work,
     cancel: watch::Sender<bool>,
     retry: watch::Sender<()>,
 }
@@ -222,32 +216,25 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
             }
             let id = seat.facts().seat_id.clone();
             let wanted = if seat.is_decommissioned() {
-                None
+                false
             } else {
-                match jobs.work(&seat).await {
-                    Ok(work) => work,
+                match jobs.pulls(&seat).await {
+                    Ok(pulls) => pulls,
                     Err(_) => {
                         failed = true;
                         continue;
                     }
                 }
             };
-            if active.get(&id).map(|job| job.work) != wanted {
+            if active.contains_key(&id) != wanted {
                 drain_seat(&id, &mut active, &mut tasks).await;
-                if let Some(work) = wanted {
+                if wanted {
                     let (cancel, cancel_rx) = watch::channel(false);
                     let (retry, retry_rx) = watch::channel(());
-                    active.insert(
-                        id.clone(),
-                        Active {
-                            work,
-                            cancel,
-                            retry,
-                        },
-                    );
+                    active.insert(id.clone(), Active { cancel, retry });
                     let jobs = jobs.clone();
                     tasks.spawn(async move {
-                        jobs.run(seat, work, cancel_rx, retry_rx).await;
+                        jobs.run(seat, cancel_rx, retry_rx).await;
                         id
                     });
                 }
@@ -278,20 +265,22 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
 }
 
 impl Jobs {
-    async fn work(&self, seat: &Seat) -> anyhow::Result<Option<Work>> {
+    /// Whether the seat waits for its source to hand over a guardian.
+    async fn pulls(&self, seat: &Seat) -> anyhow::Result<bool> {
         let id = &seat.facts().seat_id;
         if self.db.outgoing_transfer(id).await?.is_some() {
-            return Ok(None);
+            return Ok(false);
         }
-        Ok(self.db.incoming_transfer(id).await?.and_then(|incoming| {
-            (incoming.phase() == TransferPhase::Waiting).then_some(Work::Incoming)
-        }))
+        Ok(self
+            .db
+            .incoming_transfer(id)
+            .await?
+            .is_some_and(|incoming| incoming.phase() == TransferPhase::Waiting))
     }
 
     async fn run(
         self: &Arc<Self>,
         seat: Arc<Seat>,
-        work: Work,
         mut cancel: watch::Receiver<bool>,
         mut retry: watch::Receiver<()>,
     ) {
@@ -300,13 +289,12 @@ impl Jobs {
             if *cancel.borrow() || seat.is_decommissioned() {
                 return;
             }
-            match self.work(&seat).await {
-                Ok(Some(current)) if current == work => {}
-                Ok(_) => return,
-                Err(_) => {}
+            match self.pulls(&seat).await {
+                Ok(true) | Err(_) => {}
+                Ok(false) => return,
             }
             retry.borrow_and_update();
-            let error = match self.attempt(&seat, work, &mut cancel).await {
+            let error = match self.attempt(&seat, &mut cancel).await {
                 Ok(()) => return,
                 Err(error) => error,
             };
@@ -341,13 +329,7 @@ impl Jobs {
         }
     }
 
-    async fn attempt(
-        &self,
-        seat: &Seat,
-        work: Work,
-        cancel: &mut watch::Receiver<bool>,
-    ) -> anyhow::Result<()> {
-        let Work::Incoming = work;
+    async fn attempt(&self, seat: &Seat, cancel: &mut watch::Receiver<bool>) -> anyhow::Result<()> {
         let record = self
             .db
             .incoming_transfer(&seat.facts().seat_id)
