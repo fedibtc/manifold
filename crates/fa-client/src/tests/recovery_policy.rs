@@ -1047,7 +1047,9 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
             .apply_mg_replacements(approval, long_request_options())
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), funding_started)
+    // Reaching the journal takes over two seconds of unoptimized work even on
+    // an idle machine; the bound only catches a wave that never funds.
+    tokio::time::timeout(Duration::from_secs(30), funding_started)
         .await
         .expect("the paid replacement output is journaled after the mixed wave is authorized");
 
