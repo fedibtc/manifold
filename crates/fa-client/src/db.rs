@@ -887,6 +887,8 @@ struct FormationTestHook {
 pub(crate) struct FaStore {
     database: Database,
     lease_clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Signalled after each committed relay backup confirmation.
+    backup_confirmations: Arc<tokio::sync::watch::Sender<()>>,
     #[cfg(test)]
     lease_acquisition_hook: LeaseTestHook,
     #[cfg(test)]
@@ -916,6 +918,7 @@ impl FaStore {
         Self {
             database,
             lease_clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
+            backup_confirmations: Arc::new(tokio::sync::watch::Sender::new(())),
             #[cfg(test)]
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
@@ -1235,7 +1238,16 @@ impl FaStore {
         .await;
         dbtx.commit_tx_result().await.map_err(|_| {
             FaError::Storage("persisting FA relay backup confirmation failed".to_owned())
-        })
+        })?;
+        self.backup_confirmations.send_replace(());
+        Ok(())
+    }
+
+    /// Changes after the next committed relay backup confirmation. Subscribe
+    /// before reading the confirmations, so one committed in between is not
+    /// missed.
+    pub(crate) fn subscribe_backup_confirmations(&self) -> tokio::sync::watch::Receiver<()> {
+        self.backup_confirmations.subscribe()
     }
 
     pub(crate) async fn insert_liquidity_operation(
@@ -1419,6 +1431,7 @@ impl FaStore {
         Self {
             database,
             lease_clock,
+            backup_confirmations: Arc::new(tokio::sync::watch::Sender::new(())),
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_renewal_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_release_commit_hook: Arc::new(std::sync::Mutex::new(None)),

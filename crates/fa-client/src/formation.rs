@@ -4818,7 +4818,7 @@ async fn retry_quote_attempt(deadline: Instant, delay: &mut Duration) -> Result<
     Ok(())
 }
 
-fn select_timer_duration(
+pub(crate) fn select_timer_duration(
     configured: Duration,
     run_remaining: Duration,
     operation: &'static str,

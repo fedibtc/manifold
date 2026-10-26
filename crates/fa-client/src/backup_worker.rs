@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 use bitcoin_hashes::sha256;
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
-use fedimint_core::runtime::{Instant, sleep};
+use fedimint_core::runtime::{Instant, sleep, timeout};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
@@ -22,8 +22,7 @@ const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The relays that must hold a backup before a guardian transfer votes its
-/// binding. Without relays nothing can be recovered, so nothing is awaited.
+/// The relays that must hold a backup before a guardian transfer goes on. Without relays nothing can be recovered, so nothing is awaited.
 #[derive(Default)]
 pub(crate) struct BackupPublication {
     relays: Vec<String>,
@@ -65,6 +64,38 @@ impl BackupPublication {
             self.wake.notify_one();
         }
         Ok(self.quorum <= confirmed)
+    }
+
+    /// Wait until a publish quorum of relays confirms the current backup, at
+    /// most until `deadline`. Each committed relay confirmation wakes the
+    /// wait, and the store's confirmations decide. The backup worker prepares
+    /// the same backup at the same time, so only the last check counts.
+    pub(crate) async fn await_current_backup(
+        &self,
+        store: &FaStore,
+        deadline: Instant,
+    ) -> FaResult<bool> {
+        loop {
+            // Subscribe before checking, so a confirmation committed in
+            // between still wakes the wait.
+            let mut confirmations = store.subscribe_backup_confirmations();
+            let attempt = self.current_backup_confirmed(store).await;
+            if matches!(attempt, Ok(true)) {
+                return attempt;
+            }
+            let Ok(remaining) = crate::formation::select_timer_duration(
+                deadline.saturating_duration_since(Instant::now()),
+                deadline.saturating_duration_since(Instant::now()),
+                "waiting for the FA backup relays",
+            ) else {
+                return attempt;
+            };
+            match timeout(remaining, confirmations.changed()).await {
+                Ok(Ok(())) => {}
+                // The store outlives this wait, so the sender stays.
+                Ok(Err(_)) | Err(_) => return attempt,
+            }
+        }
     }
 }
 
