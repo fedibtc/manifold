@@ -14,7 +14,8 @@ use std::time::Duration;
 use anyhow::{Context as _, ensure};
 use clap::{Parser, Subcommand};
 use fedi_decentralized_domain::{
-    SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SetupPaymentFederationsContent,
+    MgRelease, MgVersion, SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
+    SetupPaymentFederationsContent,
 };
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::setup_payment_federations::{
@@ -79,6 +80,30 @@ enum Command {
         allow_empty_stop_set: bool,
 
         /// Read the publisher secret from this file instead of piped standard input.
+        #[arg(long)]
+        secret_key_file: Option<PathBuf>,
+    },
+
+    /// Sign an MG release as one release signer and print the signature as
+    /// JSON, for the `mg_release.signatures` list of the policy content.
+    SignMgRelease {
+        /// The `mg_release` object as JSON. Existing signatures are ignored.
+        #[arg(long)]
+        release: PathBuf,
+
+        /// The `fman_version` the release is published under.
+        #[arg(long)]
+        version: MgVersion,
+
+        /// The environment whose MGs may install it.
+        #[arg(long)]
+        environment: ManifoldEnvironment,
+
+        /// Expected signer public key, as hex or npub.
+        #[arg(long, value_parser = parse_publisher)]
+        expected_signer: PublicKey,
+
+        /// Read the signer secret from this file instead of piped standard input.
         #[arg(long)]
         secret_key_file: Option<PathBuf>,
     },
@@ -210,6 +235,31 @@ async fn main() -> anyhow::Result<()> {
 
             save_receipt_and_publish(&receipt, &relays, &event).await?;
         }
+        Command::SignMgRelease {
+            release,
+            version,
+            environment,
+            expected_signer,
+            secret_key_file,
+        } => {
+            let release: MgRelease = serde_json::from_slice(&read_file_bounded(
+                &release,
+                SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
+                "MG release",
+            )?)
+            .context("parse MG release")?;
+            release.validate().context("validate MG release")?;
+            let keys = Keys::parse(read_secret_key(secret_key_file.as_deref())?.as_str())
+                .context("parse release signer secret key")?;
+            ensure!(
+                keys.public_key() == expected_signer,
+                "release signer secret derives {}, not expected {}",
+                keys.public_key(),
+                expected_signer
+            );
+            let signature = release.sign(&environment.to_string(), &version, &keys);
+            println!("{}", serde_json::to_string_pretty(&signature)?);
+        }
         Command::Republish {
             receipt,
             expected_publisher,
@@ -244,6 +294,36 @@ fn validate_content_for_publication(
     );
     setup_payment_federations_event_builder(content)
         .context("validate complete setup-payment federation policy")?;
+    if let Some(release) = &content.mg_release {
+        validate_release_signatures(
+            release,
+            &content.mg_version,
+            ManifoldEnvironment::Production,
+        )?;
+    }
+    Ok(())
+}
+
+/// Refuse to publish a release that the environment's MGs would not install:
+/// one that lacks the threshold of its pinned release signers.
+fn validate_release_signatures(
+    release: &MgRelease,
+    version: &MgVersion,
+    environment: ManifoldEnvironment,
+) -> anyhow::Result<()> {
+    let profile = environment
+        .profile()
+        .context("resolve Manifold environment profile")?;
+    let signers = profile.mg_release_signers().ok_or_else(|| {
+        anyhow::anyhow!("the {environment} environment pins no MG release signers")
+    })?;
+    let valid = release.valid_signers(&environment.to_string(), version);
+    ensure!(
+        signers.is_satisfied_by(&valid),
+        "MG release has {} valid signatures from pinned signers; {} required",
+        signers.keys().intersection(&valid).count(),
+        signers.threshold()
+    );
     Ok(())
 }
 

@@ -83,8 +83,22 @@ additionally requires `FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE`. Setting the auth
 mode or the password file without a bind address fails startup rather than
 starting a daemon with no dashboard.
 
-No package performs a runtime `fedimintd --version` probe or downloads a binary:
-a seat's `fedimintd` is this very binary, spawned under a `fedimintd` argv[0].
+No package performs a runtime `fedimintd --version` probe: a seat's
+`fedimintd` is this very binary, spawned under a `fedimintd` argv[0].
+
+## Automatic updates
+
+Where the environment pins MG release signers, the daemon itself downloads a
+threshold-signed static release into `$FLEET_MANAGER_DATA_DIR/releases/` and
+`exec`s it in place
+([SPEC-setup-payment-federations](../../specs/SPEC-setup-payment-federations.md#mg-release)).
+Packages need no change for this: the data volume must allow executables,
+and both the Umbrel entrypoint and the StartOS direct `fleet-manager` command
+start the image binary, which then runs a newer staged release. A package
+update with a newer image binary takes over from an older staged one. Backups
+may exclude `releases/`: a restored MG without it runs the image binary and
+downloads the published release again. MG owners turn updates off on the
+dashboard Health page or with `fman-cli auto-update set off`.
 
 ## Seat iroh reachability
 

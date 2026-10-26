@@ -74,6 +74,10 @@ pub enum AdminRequest {
     PayoutDestination,
     /// Replace or clear the global Lightning destination.
     SetPayoutDestination { destination: Option<String> },
+    /// Whether this MG installs newer signed releases on its own.
+    ShowAutoUpdate,
+    /// Allow or stop automatic installation of newer signed releases.
+    SetAutoUpdate { enabled: bool },
     /// Sweep one setup-payment wallet through an automatically selected gateway.
     SweepPaymentFees {
         #[ts(type = "FederationId")]
@@ -488,6 +492,11 @@ pub(crate) async fn dispatch(
             fleet.set_payout_destination(destination.as_deref()).await?;
             Ok(payout_destination_json(fleet.payout_destination().await?))
         }
+        AdminRequest::ShowAutoUpdate => Ok(auto_update_json(fleet.auto_update_enabled().await?)),
+        AdminRequest::SetAutoUpdate { enabled } => {
+            fleet.set_auto_update_enabled(enabled).await?;
+            Ok(auto_update_json(enabled))
+        }
         AdminRequest::SweepPaymentFees {
             federation_id,
             request_id,
@@ -625,6 +634,12 @@ fn payment_federation_json(status: PaymentFederationStatus) -> Value {
 /// destination, or null for "no destination configured".
 pub fn payout_destination_json(destination: Option<String>) -> Value {
     json!({ "destination": destination })
+}
+
+/// `ShowAutoUpdate` and `SetAutoUpdate` answer the same view: whether
+/// automatic updates are allowed.
+pub fn auto_update_json(enabled: bool) -> Value {
+    json!({ "enabled": enabled })
 }
 
 pub fn seats_json(

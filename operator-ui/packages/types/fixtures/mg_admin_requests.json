@@ -65,6 +65,11 @@
       "body": "Seat 2 stopped after the update."
     }
   },
+  "SetAutoUpdate": {
+    "SetAutoUpdate": {
+      "enabled": false
+    }
+  },
   "SetCapacity": {
     "SetCapacity": {
       "max_seats": 4
@@ -80,6 +85,7 @@
       "price_msats": 50000000
     }
   },
+  "ShowAutoUpdate": "ShowAutoUpdate",
   "ShowCapacity": "ShowCapacity",
   "ShowMnemonic": "ShowMnemonic",
   "ShowPlans": "ShowPlans",

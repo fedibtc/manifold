@@ -340,6 +340,23 @@ async fn admin_socket_round_trips_operator_verbs() {
     .await
     .unwrap();
     assert_eq!(payout["destination"], "operator@example.com");
+
+    let mut auto_update = fleet.subscribe_auto_update_enabled();
+    assert_eq!(
+        ask(AdminRequest::ShowAutoUpdate).await.unwrap(),
+        serde_json::json!({ "enabled": true })
+    );
+    assert_eq!(
+        ask(AdminRequest::SetAutoUpdate { enabled: false })
+            .await
+            .unwrap(),
+        serde_json::json!({ "enabled": false })
+    );
+    assert!(!*auto_update.borrow_and_update());
+    assert_eq!(
+        ask(AdminRequest::ShowAutoUpdate).await.unwrap(),
+        serde_json::json!({ "enabled": false })
+    );
     let sweep = ask(AdminRequest::SweepPaymentFees {
         federation_id: FederationId("nothere".to_owned()),
         request_id: "admin-test-payment".parse().unwrap(),

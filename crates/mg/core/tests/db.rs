@@ -270,6 +270,33 @@ async fn operator_settings_round_trip_with_friendly_defaults() {
 }
 
 #[tokio::test]
+async fn auto_update_opt_out_survives_reopen_and_leaves_the_offer_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    assert!(
+        db.auto_update_enabled().await.unwrap(),
+        "updates are allowed until the owner opts out"
+    );
+    let epoch = db.offer_epoch().await.unwrap();
+
+    db.set_auto_update_enabled(false).await.unwrap();
+    assert!(!db.auto_update_enabled().await.unwrap());
+    assert_eq!(
+        db.offer_epoch().await.unwrap(),
+        epoch,
+        "the update choice is not part of what a quote was priced under"
+    );
+    drop(db);
+
+    let db = Db::open(dir.path()).await.unwrap();
+    assert!(!db.auto_update_enabled().await.unwrap());
+    db.set_auto_update_enabled(true).await.unwrap();
+    drop(db);
+    let db = Db::open(dir.path()).await.unwrap();
+    assert!(db.auto_update_enabled().await.unwrap());
+}
+
+#[tokio::test]
 async fn setup_payment_policy_replacement_bumps_the_epoch_only_on_removal() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();

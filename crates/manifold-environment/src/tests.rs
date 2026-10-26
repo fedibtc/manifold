@@ -290,7 +290,11 @@ fn staging_and_production_refuse_development_overrides() {
         ManifoldEnvironment::Staging,
         ManifoldEnvironment::Production,
     ] {
-        for variable in [DEV_NOSTR_RELAYS_ENV, DEV_SETUP_PAYMENT_PUBLISHER_ENV] {
+        for variable in [
+            DEV_NOSTR_RELAYS_ENV,
+            DEV_SETUP_PAYMENT_PUBLISHER_ENV,
+            DEV_MG_RELEASE_SIGNERS_ENV,
+        ] {
             let err = environment
                 .profile_with_env(|name| (name == variable).then(|| "anything".to_owned()))
                 .unwrap_err();
@@ -311,6 +315,18 @@ fn malformed_development_overrides_are_refused() {
         (DEV_NOSTR_RELAYS_ENV, "not a url"),
         (DEV_NOSTR_RELAYS_ENV, " , "),
         (DEV_SETUP_PAYMENT_PUBLISHER_ENV, "not-a-key"),
+        (DEV_MG_RELEASE_SIGNERS_ENV, "not-a-key"),
+        (DEV_MG_RELEASE_SIGNERS_ENV, "1:not-a-key"),
+        // Zero, and more than the distinct keys (a repeated key counts once).
+        (
+            DEV_MG_RELEASE_SIGNERS_ENV,
+            "0:0000000000000000000000000000000000000000000000000000000000000001",
+        ),
+        (
+            DEV_MG_RELEASE_SIGNERS_ENV,
+            "2:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798,\
+             79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        ),
     ] {
         let err = ManifoldEnvironment::Development
             .profile_with_env(|name| (name == variable).then(|| value.to_owned()))
@@ -321,6 +337,40 @@ fn malformed_development_overrides_are_refused() {
                 if failed == variable
         ));
     }
+}
+
+#[test]
+fn release_signers_are_off_unless_overridden_and_count_threshold() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        assert_eq!(
+            environment
+                .profile_with_env(|_| None)
+                .unwrap()
+                .mg_release_signers(),
+            None
+        );
+    }
+    let keys: Vec<PublicKey> = (0..3)
+        .map(|_| nostr::Keys::generate().public_key())
+        .collect();
+    let value = format!(
+        "2:{},{}, {}",
+        keys[0],
+        keys[1].to_bech32().unwrap(),
+        keys[2]
+    );
+    let profile = ManifoldEnvironment::Development
+        .profile_with_env(|name| (name == DEV_MG_RELEASE_SIGNERS_ENV).then(|| value.clone()))
+        .unwrap();
+    let signers = profile.mg_release_signers().unwrap();
+    let outsider = nostr::Keys::generate().public_key();
+    assert!(!signers.is_satisfied_by(&BTreeSet::from([keys[0], outsider])));
+    assert!(signers.is_satisfied_by(&BTreeSet::from([keys[0], keys[2]])));
+    assert!(signers.is_satisfied_by(&BTreeSet::from([keys[0], keys[1], keys[2]])));
 }
 
 #[test]

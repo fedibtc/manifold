@@ -142,6 +142,15 @@ const setPayoutDestination: Verb<'SetPayoutDestination'> = ({ destination }) => 
   return { destination };
 };
 
+const showAutoUpdate: Verb<'ShowAutoUpdate'> = () => ({
+  enabled: getState().autoUpdateEnabled
+});
+
+const setAutoUpdate: Verb<'SetAutoUpdate'> = ({ enabled }) => {
+  getState().autoUpdateEnabled = enabled;
+  return { enabled };
+};
+
 const requirePayoutDestination = () => {
   if (!getState().payoutDestination) throw new Error('no payout destination configured');
 };
@@ -506,6 +515,8 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   ListPaymentFederations: listPaymentFederations,
   PayoutDestination: payoutDestination,
   SetPayoutDestination: setPayoutDestination,
+  ShowAutoUpdate: showAutoUpdate,
+  SetAutoUpdate: setAutoUpdate,
   SweepPaymentFees: sweepPaymentFees,
   PayoutStatus: payoutStatus,
   AwaitPayout: awaitPayout,
@@ -526,6 +537,7 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'DecommissionSeat',
   'SetPrice',
   'SetPayoutDestination',
+  'SetAutoUpdate',
   'SweepPaymentFees',
   'CollectGuardianFees',
   'SweepGuardianFees',

@@ -9,6 +9,7 @@ mod gateway;
 mod guardian_reports;
 mod mg_federation_directory;
 mod mg_peer_attestation;
+mod mg_release;
 mod mg_seat_bindings;
 mod setup_payment_federations;
 pub mod test_support;
@@ -39,6 +40,11 @@ pub use mg_peer_attestation::{
     MG_PEER_ATTESTATION_CANONICAL_TYPE, MG_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR,
     MG_SEAT_ENDPOINT_PROOF_DOMAIN, MgPeerAttestation, MgPeerAttestationStatement,
     MgPeerAttestationVerificationError, SeatEndpointProof,
+};
+pub use mg_release::{
+    GitCommit, HexBytes, MG_RELEASE_MAX_BINARIES, MG_RELEASE_MAX_BINARY_BYTES,
+    MG_RELEASE_MAX_SIGNATURES, MG_RELEASE_MAX_URL_BYTES, MgRelease, MgReleaseArch, MgReleaseBinary,
+    MgReleaseError, MgReleaseSignature, Sha256Hash,
 };
 pub use mg_seat_bindings::{
     MG_SEAT_BINDINGS_MAX_COUNT, MG_SEAT_BINDINGS_MAX_VALUE_BYTES, MG_SEAT_BINDINGS_META_FIELD_KEY,

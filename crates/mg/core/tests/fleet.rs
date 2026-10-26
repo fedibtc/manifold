@@ -686,6 +686,42 @@ async fn create_is_atomic_idempotent_and_rebuilds_as_live() {
 }
 
 #[tokio::test]
+async fn auto_update_watch_follows_the_durable_choice() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 31_290).await;
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let mut updates = fleet.subscribe_auto_update_enabled();
+    assert!(*updates.borrow_and_update());
+
+    fleet.set_auto_update_enabled(false).await.unwrap();
+    assert!(
+        updates.has_changed().unwrap(),
+        "a committed write is published before set returns"
+    );
+    assert!(!*updates.borrow_and_update());
+    assert!(!fleet.auto_update_enabled().await.unwrap());
+
+    // Restating the current choice is not a change a subscriber must act on.
+    fleet.set_auto_update_enabled(false).await.unwrap();
+    assert!(!updates.has_changed().unwrap());
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let reopened = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let mut updates = reopened.subscribe_auto_update_enabled();
+    assert!(
+        !*updates.borrow_and_update(),
+        "a reopened fleet starts from the durable opt-out"
+    );
+    reopened.set_auto_update_enabled(true).await.unwrap();
+    assert!(updates.has_changed().unwrap());
+    assert!(*updates.borrow_and_update());
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
 async fn accepted_replay_repairs_a_missing_runtime_registry_entry() {
     let temp = TempDir::new().unwrap();
     let fleet = open_fleet(config(&temp, 1, 30_070).await, Arc::new(NoWallet))

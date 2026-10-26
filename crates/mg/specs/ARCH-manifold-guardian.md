@@ -257,6 +257,16 @@ direction is strictly bottom-up; each layer only knows the ones below it.
 - `bin`'s `main` — daemon CLI args, capability wiring,
   shutdown ordering, and the argv[0] under which this binary is the bundled
   `fedimintd`.
+- `bin`'s `self_update` — automatic updates to a threshold-signed release
+  carried by the setup-payment publication
+  ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md#mg-release)).
+  The updater reads the admitted-policy watch and the owner's durable
+  opt-out (`Fleet::subscribe_auto_update_enabled`), stages a verified static
+  binary under `releases/` in the data root, and ends the serving phase.
+  `main` then shuts down in the normal order and `exec`s the staged binary,
+  which keeps the process, its PID, and its platform supervisor. Every start
+  first `exec`s a staged release newer than the running binary, before the
+  daemon opens anything. A failed update never stops the daemon.
 
 The resolved `ManifoldEnvironmentProfile` is the sole source of a seat's
 Bitcoin network. Without Bitcoin Core configuration, the binary uses the

@@ -39,6 +39,44 @@ fn telemetry_reenrollment_is_exposed_as_a_global_admin_verb() {
     assert!(matches!(args.verb, AdminVerb::ReenrollTelemetry));
 }
 
+#[test]
+fn auto_update_is_shown_and_set_with_on_or_off() {
+    let parse = |arguments: &[&str]| {
+        let args = Args::try_parse_from(
+            ["fman-cli", "--data-dir", "/tmp/mg", "auto-update"]
+                .iter()
+                .chain(arguments),
+        );
+        match args.map(|args| args.verb) {
+            Ok(AdminVerb::AutoUpdate { verb }) => Ok(verb),
+            Ok(other) => panic!("parsed as another verb: {other:?}"),
+            Err(error) => Err(error.kind()),
+        }
+    };
+
+    assert!(matches!(parse(&["show"]), Ok(AutoUpdateVerb::Show)));
+    assert!(matches!(
+        parse(&["set", "off"]),
+        Ok(AutoUpdateVerb::Set {
+            setting: AutoUpdateSetting::Off
+        })
+    ));
+    assert!(matches!(
+        parse(&["set", "on"]),
+        Ok(AutoUpdateVerb::Set {
+            setting: AutoUpdateSetting::On
+        })
+    ));
+    assert_eq!(
+        parse(&["set", "maybe"]).unwrap_err(),
+        ErrorKind::InvalidValue
+    );
+    assert_eq!(
+        parse(&["set"]).unwrap_err(),
+        ErrorKind::MissingRequiredArgument
+    );
+}
+
 fn guardian_fee_verb(arguments: &[&str]) -> GuardianFeesVerb {
     let args = Args::try_parse_from(arguments).expect("parse guardian-fee command");
     let AdminVerb::GuardianFees { verb } = args.verb else {

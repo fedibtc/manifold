@@ -10,6 +10,7 @@
 mod tests;
 
 use core::fmt;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use bitcoin::Network;
@@ -163,6 +164,10 @@ pub const DEV_NOSTR_RELAYS_ENV: &str = "MANIFOLD_DEV_NOSTR_RELAYS";
 /// replacing the built-in development placeholder publisher.
 pub const DEV_SETUP_PAYMENT_PUBLISHER_ENV: &str = "MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER";
 
+/// Development-only MG release-signer override: `<threshold>:<key>,<key>,...`,
+/// for example `2:npub1...,npub1...,npub1...`.
+pub const DEV_MG_RELEASE_SIGNERS_ENV: &str = "MANIFOLD_DEV_MG_RELEASE_SIGNERS";
+
 impl ManifoldEnvironment {
     /// Resolve this environment's public configuration, applying the
     /// development-only override environment variables.
@@ -186,10 +191,12 @@ impl ManifoldEnvironment {
     ) -> Result<ManifoldEnvironmentProfile, ManifoldEnvironmentProfileError> {
         let relays_override = env(DEV_NOSTR_RELAYS_ENV);
         let publisher_override = env(DEV_SETUP_PAYMENT_PUBLISHER_ENV);
+        let release_signers_override = env(DEV_MG_RELEASE_SIGNERS_ENV);
         if self != Self::Development {
             for (variable, value) in [
                 (DEV_NOSTR_RELAYS_ENV, &relays_override),
                 (DEV_SETUP_PAYMENT_PUBLISHER_ENV, &publisher_override),
+                (DEV_MG_RELEASE_SIGNERS_ENV, &release_signers_override),
             ] {
                 if value.is_some() {
                     return Err(
@@ -264,8 +271,14 @@ impl ManifoldEnvironment {
                 AccountType::BtcDepositor,
             )
         });
+        // No environment pins release signers yet, so only a development
+        // override enables automatic updates.
+        let mg_release_signers = release_signers_override
+            .map(|value| MgReleaseSigners::parse_override(&value))
+            .transpose()?;
         Ok(ManifoldEnvironmentProfile {
             environment: self,
+            mg_release_signers,
             nostr_relays,
             peer_badge_issuer_identities,
             minimum_peer_badge_trust_level: TRUSTED_PEER_BADGE_TRUST_LEVEL,
@@ -360,6 +373,7 @@ impl std::error::Error for ParseManifoldEnvironmentError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifoldEnvironmentProfile {
     environment: ManifoldEnvironment,
+    mg_release_signers: Option<MgReleaseSigners>,
     nostr_relays: CanonicalNostrRelays,
     peer_badge_issuer_identities: Vec<PublicKey>,
     minimum_peer_badge_trust_level: u64,
@@ -481,6 +495,13 @@ impl ManifoldEnvironmentProfile {
         self.support.as_ref()
     }
 
+    /// Return the release signers whose threshold authorizes an automatic MG
+    /// update, or `None` when this environment does not update automatically.
+    #[must_use]
+    pub fn mg_release_signers(&self) -> Option<&MgReleaseSigners> {
+        self.mg_release_signers.as_ref()
+    }
+
     /// Return the Bitcoin network on which this environment forms federations.
     #[must_use]
     pub fn bitcoin_network(&self) -> Network {
@@ -494,6 +515,60 @@ impl ManifoldEnvironmentProfile {
     #[must_use]
     pub fn default_esplora_url(&self) -> Option<&Url> {
         self.default_esplora_url.as_ref()
+    }
+}
+
+/// A t-of-n set of MG release signers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MgReleaseSigners {
+    keys: BTreeSet<PublicKey>,
+    threshold: usize,
+}
+
+impl MgReleaseSigners {
+    fn parse_override(value: &str) -> Result<Self, ManifoldEnvironmentProfileError> {
+        let invalid = |detail: String| ManifoldEnvironmentProfileError::InvalidOverride {
+            variable: DEV_MG_RELEASE_SIGNERS_ENV,
+            detail,
+        };
+        let (threshold, keys) = value
+            .trim()
+            .split_once(':')
+            .ok_or_else(|| invalid("expected `<threshold>:<key>,<key>,...`".to_owned()))?;
+        let threshold: usize = threshold
+            .parse()
+            .map_err(|err| invalid(format!("threshold: {err}")))?;
+        let keys = keys
+            .split(',')
+            .map(|key| {
+                PublicKey::parse(key.trim()).map_err(|err| invalid(format!("{key:?}: {err}")))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if threshold == 0 || threshold > keys.len() {
+            return Err(invalid(format!(
+                "threshold {threshold} must be between 1 and the {} distinct keys",
+                keys.len()
+            )));
+        }
+        Ok(Self { keys, threshold })
+    }
+
+    /// Whether at least the threshold of these signers are among `signers`.
+    #[must_use]
+    pub fn is_satisfied_by(&self, signers: &BTreeSet<PublicKey>) -> bool {
+        self.keys.intersection(signers).count() >= self.threshold
+    }
+
+    /// The signer keys.
+    #[must_use]
+    pub fn keys(&self) -> &BTreeSet<PublicKey> {
+        &self.keys
+    }
+
+    /// How many distinct signers must sign a release.
+    #[must_use]
+    pub fn threshold(&self) -> usize {
+        self.threshold
     }
 }
 

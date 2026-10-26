@@ -29,6 +29,12 @@ pub enum AdminVerb {
         #[command(subcommand)]
         verb: PayoutVerb,
     },
+    /// Show or change whether this MG installs newer signed releases on its
+    /// own.
+    AutoUpdate {
+        #[command(subcommand)]
+        verb: AutoUpdateVerb,
+    },
     /// Inspect seats.
     Seats {
         #[command(subcommand)]
@@ -165,6 +171,18 @@ pub enum PayoutVerb {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AutoUpdateVerb {
+    Show,
+    Set { setting: AutoUpdateSetting },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum AutoUpdateSetting {
+    On,
+    Off,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SeatsVerb {
     List,
     Status {
@@ -272,6 +290,14 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
         AdminVerb::Payout {
             verb: PayoutVerb::Set { destination },
         } => AdminRequest::SetPayoutDestination { destination },
+        AdminVerb::AutoUpdate {
+            verb: AutoUpdateVerb::Show,
+        } => AdminRequest::ShowAutoUpdate,
+        AdminVerb::AutoUpdate {
+            verb: AutoUpdateVerb::Set { setting },
+        } => AdminRequest::SetAutoUpdate {
+            enabled: setting == AutoUpdateSetting::On,
+        },
         AdminVerb::Payout {
             verb: PayoutVerb::Status { request_id },
         } => AdminRequest::PayoutStatus { request_id },

@@ -164,6 +164,11 @@ the fleet.
 - `PayoutDestination` returns the one LNURL-pay or Lightning Address used for
   all payment and guardian-fee sweeps, or null when none is configured.
   `SetPayoutDestination` replaces or clears it.
+- `ShowAutoUpdate` returns `{ enabled }`: whether the MG may install newer
+  signed releases on its own. It is the owner's opt-out, so it starts `true`
+  on every install. `SetAutoUpdate { enabled }` durably replaces it, answers
+  the same view, and is observed by the running daemon without a restart. It
+  is not part of the offer and never rotates the offer epoch.
 - `SweepPaymentFees` requires a caller-generated `request_id` and a configured
   payout destination. It uses the
   Fedimint client's native, persisted Lightning
