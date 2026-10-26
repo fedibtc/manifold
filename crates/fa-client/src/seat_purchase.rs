@@ -101,6 +101,13 @@ pub(crate) struct TransferFederation {
 }
 
 impl TransferFederation {
+    /// The federation's id, from its invite.
+    pub(crate) fn federation_id(&self) -> FaResult<FederationId> {
+        Ok(FederationId(
+            crate::formation::invite_federation_id(&self.invite_code)?.to_string(),
+        ))
+    }
+
     /// Whether an MG or holder hosts, or hosted, a peer of the federation.
     /// Such a host could hold two key shares.
     pub(crate) fn has_custody(&self, mg_id: PublicKey, holder: Option<PublicKey>) -> bool {
@@ -163,6 +170,7 @@ where
                 connector: Some(&self.inner.ports.mg_connector),
             },
             self.inner.peer_badge_verifier.provenance(),
+            federation.federation_id()?,
             federation.federation_size,
             federation_dkg_line(&versions)?,
             excluded,
@@ -242,6 +250,25 @@ where
                 reason: crate::SelectionReauthorizationReason::PreviewExpired,
                 failure: None,
             });
+        }
+        // The approval is a public value: it may come from a preview of
+        // another federation, whose name, size and guardians differ.
+        if approval.federation_id != federation.federation_id()? {
+            return Err(FaError::InvalidIntent(
+                "the destination was previewed for another federation".to_owned(),
+            ));
+        }
+        // The preview kept the destination off the guardians' service keys,
+        // but the guardians may have changed since.
+        if federation
+            .seats
+            .iter()
+            .any(|(_, locator, _)| locator.service_pubkey == approval.seat.locator.service_pubkey)
+        {
+            return Err(FaError::InvalidIntent(
+                "the destination shares a service key with a guardian of this federation"
+                    .to_owned(),
+            ));
         }
         if approval.verifier_provenance != self.inner.peer_badge_verifier.provenance() {
             return Err(FaError::SelectionReauthorizationRequired {

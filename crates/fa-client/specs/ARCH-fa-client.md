@@ -687,8 +687,10 @@ its seats. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.
 `start_guardian_transfer` takes the approved preview with a price cap and an
-explicit payer, checks the same custody rule, and records the transfer. It
-refuses a priced preview without a payer before it records anything.
+explicit payer. Before it asks any MG, it refuses an approval previewed for
+another federation, checks the same custody rule, checks that the destination
+shares no service key with a current guardian, and refuses a priced preview
+without a payer. Then it records the transfer.
 
 The transfer first buys the destination seat with the normal `GetQuote` and
 `CreateSeat` for the federation's size. The purchase follows the formation
