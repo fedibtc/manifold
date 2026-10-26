@@ -45,7 +45,7 @@ use mg_core::payout_wire::{
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use mg_core::seat_readiness::{
-    ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille,
+    ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
 };
 use mg_core::wallet::PayoutRequestId;
 use serde_json::Value;
@@ -111,7 +111,7 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     uptime: ReadinessOutcome::WeekUptimeLow,
-                    uptime_permille: Some(UptimeComparison {
+                    uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {
                             day: 887,
                             week: 899,
@@ -121,6 +121,11 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                             day: 700,
                             week: 900,
                             month: 930,
+                        },
+                        wait_secs: UptimeWaitSecs {
+                            day: 0,
+                            week: 3000,
+                            month: 0,
                         },
                     }),
                 }),

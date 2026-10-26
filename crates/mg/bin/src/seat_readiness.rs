@@ -24,8 +24,7 @@ use iroh::{Endpoint, RelayUrl, Watcher as _};
 use mg_core::fleet::Fleet;
 use mg_core::seat_process::{BitcoinBackend, SeatProcessConfig};
 use mg_core::seat_readiness::{
-    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeComparison,
-    UptimeScores,
+    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeScores,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -112,10 +111,7 @@ impl SeatReadiness {
                     });
                 report.uptime = scores.outcome(min);
                 // The operator sees no figures rather than zeros it cannot trust.
-                report.uptime_permille = recorded.map(|scores| UptimeComparison {
-                    scores: scores.permille(),
-                    minimums: min.into(),
-                });
+                report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
                 let ready = report.ready();
                 journal_readiness(&report, scores, min);
                 if let Err(error) = fleet.set_seat_readiness(report).await {
@@ -172,7 +168,7 @@ impl SeatReadiness {
             discovery,
             bitcoin,
             uptime: Outcome::NotApplicable,
-            uptime_permille: None,
+            uptime_comparison: None,
         }
     }
 
@@ -341,7 +337,7 @@ mod tests {
             discovery: Outcome::NotApplicable,
             bitcoin: Outcome::Pass,
             uptime: Outcome::WeekUptimeLow,
-            uptime_permille: None,
+            uptime_comparison: None,
         };
         let scores = UptimeScores {
             day: 0.9944,

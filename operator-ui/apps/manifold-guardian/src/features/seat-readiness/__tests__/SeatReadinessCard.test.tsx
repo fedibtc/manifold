@@ -12,7 +12,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   discovery: 'not_applicable',
   bitcoin: 'pass',
   uptime: 'pass',
-  uptime_permille: null,
+  uptime_comparison: null,
   ...overrides
 });
 
@@ -61,9 +61,10 @@ describe('SeatReadinessCard', () => {
           ready_for_new_seats: false,
           report: report({
             uptime: 'uptime_7d_low',
-            uptime_permille: {
+            uptime_comparison: {
               scores: { '1d': 784, '7d': 832, '30d': 914 },
-              minimums: MINIMUMS
+              minimums: MINIMUMS,
+              wait_secs: { '1d': 0, '7d': 311_400, '30d': 518_400 }
             }
           })
         }}
@@ -72,7 +73,7 @@ describe('SeatReadinessCard', () => {
 
     const meters = screen.getAllByRole('meter');
     expect(meters.map((m) => m.getAttribute('aria-valuenow'))).toEqual(['78.4', '83.2', '91.4']);
-    // 7·ln(0.168/0.1005) ≈ 3.6 days and 30·ln(0.086/0.0705) ≈ 6.0 days of unbroken uptime.
+    // The waits come from the daemon; the card only words them.
     expect(screen.getByText(/Passes after about 4 days/)).toBeTruthy();
     expect(screen.getByText(/Passes after about 6 days/)).toBeTruthy();
     expect(screen.getByText(/New seats reopen after about 6 days/)).toBeTruthy();
@@ -87,7 +88,11 @@ describe('SeatReadinessCard', () => {
         readiness={{
           ready_for_new_seats: true,
           report: report({
-            uptime_permille: { scores: { '1d': 700, '7d': 900, '30d': 930 }, minimums: MINIMUMS }
+            uptime_comparison: {
+              scores: { '1d': 700, '7d': 900, '30d': 930 },
+              minimums: MINIMUMS,
+              wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
+            }
           })
         }}
       />
@@ -107,7 +112,7 @@ describe('SeatReadinessCard', () => {
   });
 
   it('should show no uptime figures for a daemon that predates them', () => {
-    const { uptime_permille: _, ...older } = report();
+    const { uptime_comparison: _, ...older } = report();
     render(
       <SeatReadinessCard
         readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}

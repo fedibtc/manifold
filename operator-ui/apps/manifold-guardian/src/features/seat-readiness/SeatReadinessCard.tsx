@@ -12,7 +12,7 @@ import {
   uptimeLabels
 } from '@/shared/utils/seatReadiness';
 import styles from './SeatReadinessCard.module.css';
-import { daysToRecover, formatDuration } from './uptimeRecovery';
+import { formatWait } from './formatWait';
 
 interface SeatReadinessCardProps {
   readiness: ShowSeatReadinessResponse;
@@ -24,17 +24,10 @@ const barPosition = (permille: number) => `${Math.max(0, (permille - 500) / 5)}%
 export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   const { ready_for_new_seats: ready, report } = readiness;
   // Absent from daemons that predate the figures, null when a run could not record them.
-  const uptime = report?.uptime_permille ?? null;
+  const uptime = report?.uptime_comparison ?? null;
   // With figures, the uptime bars replace the generic uptime check.
   const checks = uptime ? CHECKS.filter((check) => check !== 'uptime') : CHECKS;
-  const wait = uptime
-    ? Math.max(
-        0,
-        ...UPTIME_WINDOWS.map((window) =>
-          daysToRecover(window, uptime.scores[window], uptime.minimums[window])
-        )
-      )
-    : 0;
+  const wait = uptime ? Math.max(...UPTIME_WINDOWS.map((window) => uptime.wait_secs[window])) : 0;
   return (
     <>
       {ready ? (
@@ -74,7 +67,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                 <strong>Uptime</strong>
                 <span className={styles.guidance}>
                   {wait > 0
-                    ? `New seats reopen after ${formatDuration(wait)} online without a break.`
+                    ? `New seats reopen after ${formatWait(wait)} online without a break.`
                     : 'Every window is above its minimum.'}
                 </span>
               </div>
@@ -107,9 +100,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                     </div>
                     {!ok && (
                       <span className={styles.guidance}>
-                        Passes after{' '}
-                        {formatDuration(daysToRecover(window, score, minimum))} online without a
-                        break.
+                        Passes after {formatWait(uptime.wait_secs[window])} online without a break.
                       </span>
                     )}
                   </div>

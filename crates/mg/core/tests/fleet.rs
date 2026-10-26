@@ -965,7 +965,7 @@ fn readiness(ready: bool) -> ReadinessReport {
             ReadinessOutcome::BitcoinSyncing
         },
         uptime: ReadinessOutcome::Pass,
-        uptime_permille: None,
+        uptime_comparison: None,
     }
 }
 

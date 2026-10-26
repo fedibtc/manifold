@@ -6,7 +6,7 @@
     "discovery": "discovery_record_missing",
     "relay": "pass",
     "uptime": "uptime_7d_low",
-    "uptime_permille": {
+    "uptime_comparison": {
       "minimums": {
         "1d": 700,
         "30d": 930,
@@ -16,6 +16,11 @@
         "1d": 887,
         "30d": 935,
         "7d": 899
+      },
+      "wait_secs": {
+        "1d": 0,
+        "30d": 0,
+        "7d": 3000
       }
     }
   }

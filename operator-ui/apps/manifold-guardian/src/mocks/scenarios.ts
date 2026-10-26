@@ -71,9 +71,10 @@ const READY: MockState['seatReadiness'] = {
   discovery: 'pass',
   bitcoin: 'pass',
   uptime: 'pass',
-  uptime_permille: {
+  uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
-    minimums: { '1d': 700, '7d': 900, '30d': 930 }
+    minimums: { '1d': 700, '7d': 900, '30d': 930 },
+    wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
   }
 };
 
@@ -453,9 +454,10 @@ const builders = {
     seatReadiness: {
       ...READY,
       uptime: 'uptime_7d_low',
-      uptime_permille: {
+      uptime_comparison: {
         scores: { '1d': 887, '7d': 899, '30d': 935 },
-        minimums: { '1d': 700, '7d': 900, '30d': 930 }
+        minimums: { '1d': 700, '7d': 900, '30d': 930 },
+        wait_secs: { '1d': 0, '7d': 3000, '30d': 0 }
       }
     }
   }),
