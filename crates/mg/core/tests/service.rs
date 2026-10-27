@@ -19,27 +19,28 @@ use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
 use fedi_decentralized_service_manifold_guardian::DkgCompletionCallbackInput;
 
-async fn rpc(temp: &TempDir) -> ManifoldGuardianRpc {
-    rpc_with_guardian_verification_fee_account(temp, None).await
-}
+// Every fleet here gets its own `first_port_base`: the lib tests run
+// concurrently, and a seat's fake fedimintd binds its API port, so a shared
+// base makes one test's bind fail while another holds the port. Bases sit in
+// 29_000..30_000, disjoint from the other mg-core test fleets and below the
+// ephemeral port range.
 
-async fn rpc_with_guardian_verification_fee_account(
-    temp: &TempDir,
-    guardian_verification_fee_account: Option<Account>,
-) -> ManifoldGuardianRpc {
-    rpc_with_config(temp, guardian_verification_fee_account, None).await
+async fn rpc(temp: &TempDir, first_port_base: u16) -> ManifoldGuardianRpc {
+    rpc_with_config(temp, None, None, first_port_base).await
 }
 
 async fn rpc_with_config(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
+    first_port_base: u16,
 ) -> ManifoldGuardianRpc {
     rpc_with_network(
         temp,
         guardian_verification_fee_account,
         push_gateway_origin,
         bitcoin::Network::Regtest,
+        first_port_base,
     )
     .await
 }
@@ -49,6 +50,7 @@ async fn rpc_with_network(
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
     bitcoin_network: bitcoin::Network,
+    first_port_base: u16,
 ) -> ManifoldGuardianRpc {
     // A fleet opens against an identity onboarding already chose; nothing
     // mints one on open.
@@ -66,7 +68,7 @@ async fn rpc_with_network(
             )),
             manifold_environment:
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
-            first_port_base: PortBase::new(30_000).unwrap(),
+            first_port_base: PortBase::new(first_port_base).unwrap(),
             setup_payments_configured: true,
             guardian_verification_fee_account,
             respawn: RespawnPolicy::default(),
@@ -123,16 +125,30 @@ fn test_plan() -> Plan {
 async fn rpc_with_owned_seat(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
+    first_port_base: u16,
 ) -> (ManifoldGuardianRpc, Keypair, FaId, SeatId) {
-    rpc_with_owned_seat_and_origin(temp, guardian_verification_fee_account, None).await
+    rpc_with_owned_seat_and_origin(
+        temp,
+        guardian_verification_fee_account,
+        None,
+        first_port_base,
+    )
+    .await
 }
 
 async fn rpc_with_owned_seat_and_origin(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
+    first_port_base: u16,
 ) -> (ManifoldGuardianRpc, Keypair, FaId, SeatId) {
-    let rpc = rpc_with_config(temp, guardian_verification_fee_account, push_gateway_origin).await;
+    let rpc = rpc_with_config(
+        temp,
+        guardian_verification_fee_account,
+        push_gateway_origin,
+        first_port_base,
+    )
+    .await;
     let owner_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let owner_id = FaId(owner_key.x_only_public_key().0);
     let quote = rpc
@@ -231,7 +247,7 @@ async fn valid_dkg_codes(
 #[tokio::test]
 async fn start_dkg_ignores_callback_when_no_push_gateway_is_configured() {
     let temp = TempDir::new().unwrap();
-    let (rpc, owner_key, owner_id, seat_id) = rpc_with_owned_seat(&temp, None).await;
+    let (rpc, owner_key, owner_id, seat_id) = rpc_with_owned_seat(&temp, None, 29_000).await;
     let guardian_codes = valid_dkg_codes(&rpc, &owner_key, owner_id, &seat_id).await;
     let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
         callback_url: "https://push.example/hooks/id/secret".to_owned(),
@@ -274,7 +290,7 @@ async fn start_dkg_rejects_off_origin_callback_when_gateway_is_configured() {
         PushGatewayOrigin::parse("https://push.example/", PushGatewayOriginPolicy::HttpsOnly)
             .unwrap();
     let (rpc, owner_key, owner_id, seat_id) =
-        rpc_with_owned_seat_and_origin(&temp, None, Some(origin)).await;
+        rpc_with_owned_seat_and_origin(&temp, None, Some(origin), 29_010).await;
     let guardian_codes = valid_dkg_codes(&rpc, &owner_key, owner_id, &seat_id).await;
     let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
         callback_url: "https://attacker.example/hooks/id/secret".to_owned(),
@@ -308,7 +324,7 @@ async fn start_dkg_rejects_off_origin_callback_when_gateway_is_configured() {
 #[tokio::test]
 async fn release_size_capabilities_are_advertised_and_enforced() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_020).await;
     let availability = rpc
         .get_availability(GetAvailabilityRequest {})
         .await
@@ -354,7 +370,7 @@ async fn release_size_capabilities_are_advertised_and_enforced() {
 #[tokio::test]
 async fn free_quote_creates_seat_and_replays_the_same_acceptance() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_030).await;
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let fa_id = FaId(fa_key.x_only_public_key().0);
     let quote = rpc
@@ -431,7 +447,7 @@ async fn free_quote_creates_seat_and_replays_the_same_acceptance() {
 #[tokio::test]
 async fn a_give_away_refuses_payment_material() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_040).await;
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let request = GetQuoteRequest {
         fa_id: FaId(fa_key.x_only_public_key().0),
@@ -452,7 +468,7 @@ async fn a_give_away_refuses_payment_material() {
 #[tokio::test]
 async fn a_priced_quote_refuses_a_federation_outside_the_accepted_set() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_050).await;
     let price = Msats(1_000);
     rpc.fleet.set_offered_price(Some(price)).await.unwrap();
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
@@ -487,7 +503,7 @@ async fn a_priced_quote_refuses_a_federation_outside_the_accepted_set() {
 #[tokio::test]
 async fn quote_epoch_changes_only_when_quote_settings_change() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_060).await;
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let fa_id = FaId(fa_key.x_only_public_key().0);
     let request = GetQuoteRequest {
@@ -543,7 +559,7 @@ async fn quote_epoch_changes_only_when_quote_settings_change() {
 #[tokio::test]
 async fn create_seat_rejects_quote_bound_to_another_fa() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_070).await;
     let quoted_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let caller_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let quote = rpc
@@ -575,7 +591,7 @@ async fn create_seat_rejects_quote_bound_to_another_fa() {
 #[tokio::test]
 async fn create_seat_rejects_a_signed_incoherent_quote() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_080).await;
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let fa_id = FaId(fa_key.x_only_public_key().0);
     let quote = SignedResponse::create(
@@ -620,7 +636,7 @@ async fn create_seat_rejects_a_signed_incoherent_quote() {
 #[tokio::test]
 async fn wrong_owner_precedes_policy_and_unsupported_results() {
     let temp = TempDir::new().unwrap();
-    let (rpc, victim_key, victim_id, seat_id) = rpc_with_owned_seat(&temp, None).await;
+    let (rpc, victim_key, victim_id, seat_id) = rpc_with_owned_seat(&temp, None, 29_090).await;
 
     let attacker_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let attacker_id = FaId(attacker_key.x_only_public_key().0);
@@ -834,7 +850,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     );
     let configured_temp = TempDir::new().unwrap();
     let (configured_rpc, configured_owner_key, configured_owner_id, configured_seat_id) =
-        rpc_with_owned_seat(&configured_temp, Some(configured_account)).await;
+        rpc_with_owned_seat(&configured_temp, Some(configured_account), 29_100).await;
     let configured_owner_account = configured_rpc
         .fleet
         .guardian_fee_account_descriptor(&configured_seat_id);
@@ -878,7 +894,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
 #[tokio::test]
 async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc_with_network(&temp, None, None, bitcoin::Network::Bitcoin).await;
+    let rpc = rpc_with_network(&temp, None, None, bitcoin::Network::Bitcoin, 29_110).await;
     let key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let fa_id = FaId(key.x_only_public_key().0);
     let seat_id = SeatId::from(fedi_decentralized_service_manifold_guardian::QuoteId(
@@ -950,7 +966,7 @@ async fn trust_material_is_unsupported_until_a_source_is_bound() {
     // authorization input. Answering with an empty document would let a verifier
     // read "not participating" as "participating but untrusted".
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_120).await;
 
     let error = rpc
         .get_fman_trust_material(trust_material_request())
@@ -967,7 +983,7 @@ async fn trust_material_is_unsupported_until_a_source_is_bound() {
 #[tokio::test]
 async fn trust_material_is_signed_for_the_mg_identity() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
+    let rpc = rpc(&temp, 29_130).await;
     rpc.bind_trust_material_source(Arc::new(FakeTrustMaterialSource {
         authorizations: vec![],
     }));
