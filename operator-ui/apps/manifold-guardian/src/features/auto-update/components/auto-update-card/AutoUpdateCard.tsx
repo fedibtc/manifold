@@ -23,16 +23,16 @@ export const AutoUpdateCard = () => {
   };
 
   return (
-    <SectionCard title="Automatic updates">
+    <SectionCard title="Signed hot updates">
       <div className={styles.root}>
         <p>
-          This host can install new signed releases of Manifold Fedimint Guardian on its own as soon
-          as they are published.
+          This host installs new releases of Manifold Fedimint Guardian on its own, without an app
+          store update. It installs a release only when several independent release keys signed it.
         </p>
 
         <QuerySurface disposition={disposition} onRetry={retry}>
           <CheckboxField
-            label="Install updates automatically"
+            label="Install signed hot updates"
             checked={enabled}
             onChange={handleChange}
             disabled={setAutoUpdate.isPending}
@@ -40,8 +40,8 @@ export const AutoUpdateCard = () => {
 
           {enabled ? null : (
             <Banner variant="warn">
-              Automatic updates are off. Install new releases yourself so this host keeps serving
-              its federations.
+              Signed hot updates are off. Install new releases from the app store so this host keeps
+              serving its federations.
             </Banner>
           )}
 

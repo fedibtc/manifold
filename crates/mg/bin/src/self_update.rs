@@ -130,17 +130,27 @@ impl Releases {
     /// Remove every binary except the staged one and the running one. Best
     /// effort: a leftover file only costs disk space.
     ///
+    /// A staged release that is no newer than the running binary, and is not
+    /// the running binary, lost to a platform update: its record goes too, so
+    /// its binary does not stay on disk until the next release.
+    ///
     /// Only a daemon that is past [`staged_binary`] calls this: the running
     /// binary stays, because seats spawn their `fedimintd` from it.
     pub fn prune(&self) {
-        let staged = self
-            .staged()
-            .ok()
-            .flatten()
-            .map(|staged| staged.sha256.to_string());
         let running = std::env::current_exe()
             .ok()
             .and_then(|path| path.canonicalize().ok());
+        let staged = self.staged().ok().flatten().filter(|staged| {
+            staged.version > running_version()
+                || self.binary_path(&staged.sha256).canonicalize().ok() == running
+        });
+        if staged.is_none()
+            && let Err(error) = std::fs::remove_file(self.dir.join(STAGED_FILE))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "could not remove the outdated staged release record");
+        }
+        let staged = staged.map(|staged| staged.sha256.to_string());
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
         };

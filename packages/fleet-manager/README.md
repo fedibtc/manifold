@@ -86,7 +86,7 @@ starting a daemon with no dashboard.
 No package performs a runtime `fedimintd --version` probe: a seat's
 `fedimintd` is this very binary, spawned under a `fedimintd` argv[0].
 
-## Automatic updates
+## Signed hot updates
 
 Where the environment pins MG release signers, the daemon itself downloads a
 threshold-signed static release into `$FLEET_MANAGER_DATA_DIR/releases/` and
@@ -95,7 +95,8 @@ threshold-signed static release into `$FLEET_MANAGER_DATA_DIR/releases/` and
 Packages need no change for this: the data volume must allow executables,
 and both the Umbrel entrypoint and the StartOS direct `fleet-manager` command
 start the image binary, which then runs a newer staged release. A package
-update with a newer image binary takes over from an older staged one. Backups
+update with a newer image binary takes over from an older staged one, and the
+daemon then deletes that staged binary. Backups
 may exclude `releases/`: a restored MG without it runs the image binary and
 downloads the published release again. MG owners turn updates off on the
 dashboard Health page or with `fman-cli auto-update set off`.

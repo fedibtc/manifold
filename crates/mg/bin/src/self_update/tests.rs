@@ -307,3 +307,28 @@ fn prune_keeps_only_the_staged_binary() {
     left.sort();
     assert_eq!(left, vec![keep.to_string(), STAGED_FILE.to_owned()]);
 }
+
+#[test]
+fn prune_drops_a_staged_release_that_a_platform_update_overtook() {
+    let data = tempfile::tempdir().unwrap();
+    let releases = Releases::new(data.path());
+    std::fs::create_dir_all(&releases.dir).unwrap();
+    let overtaken = Sha256Hash::new([3; 32]);
+    std::fs::write(releases.dir.join(overtaken.to_string()), b"x").unwrap();
+    // The platform shipped this very version; the staged binary is not running.
+    let staged = Staged {
+        version: running_version(),
+        sha256: overtaken,
+    };
+    write_atomically(
+        &releases.dir,
+        STAGED_FILE,
+        &serde_json::to_vec(&staged).unwrap(),
+    )
+    .unwrap();
+
+    releases.prune();
+
+    assert_eq!(std::fs::read_dir(&releases.dir).unwrap().count(), 0);
+    assert_eq!(staged_binary(&releases).unwrap(), None);
+}

@@ -38,14 +38,14 @@ it('should show automatic updates as on when the daemon allows them', async () =
   mockDaemon();
   renderCard();
 
-  expect(await screen.findByLabelText('Install updates automatically')).toBeChecked();
-  expect(screen.queryByText(/Automatic updates are off/)).not.toBeInTheDocument();
+  expect(await screen.findByLabelText('Install signed hot updates')).toBeChecked();
+  expect(screen.queryByText(/Signed hot updates are off/)).not.toBeInTheDocument();
 });
 
 it('should turn automatic updates off and say so', async () => {
   const adminCall = mockDaemon();
   renderCard();
-  const box = await screen.findByLabelText('Install updates automatically');
+  const box = await screen.findByLabelText('Install signed hot updates');
 
   fireEvent.click(box);
 
@@ -53,28 +53,28 @@ it('should turn automatic updates off and say so', async () => {
     expect(adminCall).toHaveBeenCalledWith({ SetAutoUpdate: { enabled: false } })
   );
   await waitFor(() => expect(box).not.toBeChecked());
-  expect(await screen.findByText(/Automatic updates are off/)).toBeInTheDocument();
+  expect(await screen.findByText(/Signed hot updates are off/)).toBeInTheDocument();
 });
 
 it('should turn automatic updates back on from a stored opt-out', async () => {
   storedEnabled = false;
   const adminCall = mockDaemon();
   renderCard();
-  const box = await screen.findByLabelText('Install updates automatically');
+  const box = await screen.findByLabelText('Install signed hot updates');
   expect(box).not.toBeChecked();
 
   fireEvent.click(box);
 
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetAutoUpdate: { enabled: true } }));
   await waitFor(() => expect(box).toBeChecked());
-  expect(screen.queryByText(/Automatic updates are off/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Signed hot updates are off/)).not.toBeInTheDocument();
 });
 
 it('should keep the stored choice and report a refused write', async () => {
   writeError = new Error('database is locked');
   mockDaemon();
   renderCard();
-  const box = await screen.findByLabelText('Install updates automatically');
+  const box = await screen.findByLabelText('Install signed hot updates');
 
   fireEvent.click(box);
 
