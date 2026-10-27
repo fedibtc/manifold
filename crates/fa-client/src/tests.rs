@@ -860,6 +860,9 @@ struct MgState {
     attestation_calls: AtomicUsize,
     /// Replacement MG index -> original federation peer id it operates.
     attested_peer_overrides: Mutex<HashMap<usize, usize>>,
+    /// MG index -> federation peer id, the position of its guardian code in
+    /// the StartDkg request, as fedimintd numbers peers.
+    dkg_peers: Mutex<HashMap<usize, usize>>,
     /// Seat 0 attests a peer id outside the federation's config.
     attest_foreign_peer: AtomicBool,
     /// Seat 0 signs an account different from its earlier signed acceptance.
@@ -1310,6 +1313,18 @@ impl ManifoldGuardianService for TestMg {
             .verify(Timestamp(now))
             .expect("test FA request verifies")
             .into_inner();
+        let own_code = GuardianCode(format!("guardiancode{}", self.index));
+        if let Some(peer) = request
+            .guardian_codes
+            .iter()
+            .position(|code| *code == own_code)
+        {
+            self.state
+                .dkg_peers
+                .lock()
+                .expect("test lock")
+                .insert(self.index, peer);
+        }
         self.state
             .start_callbacks
             .lock()
@@ -1396,14 +1411,20 @@ impl ManifoldGuardianService for TestMg {
         _request: SignedRequest<GetInviteCodeRequest>,
     ) -> FmResult<GetInviteCodeResponse> {
         self.state.invite_calls.fetch_add(1, Ordering::SeqCst);
+        let peer = self
+            .state
+            .dkg_peers
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .copied()
+            .unwrap_or(self.index);
+        let federation = u8::from(
+            self.state.disagreeing_invite.load(Ordering::SeqCst)
+                && self.index + 1 == usize::from(MIN_FEDERATION_SIZE),
+        );
         Ok(GetInviteCodeResponse {
-            invite_code: if self.state.disagreeing_invite.load(Ordering::SeqCst)
-                && self.index + 1 == usize::from(MIN_FEDERATION_SIZE)
-            {
-                test_invite_for_federation(self.index, 1)
-            } else {
-                test_invite(self.index)
-            },
+            invite_code: test_invite_for_peer(self.index, peer, federation),
         })
     }
 
@@ -2178,15 +2199,47 @@ fn set_mg_version(state: &MgState, index: usize, version: &str) {
         .insert(index, version.parse().expect("test version parses"));
 }
 
+fn test_guardian_url(index: usize) -> SafeUrl {
+    SafeUrl::parse(&format!("https://guardian-{index}.example/")).expect("valid test URL")
+}
+
+/// A formed default federation delivers the f+1 = 3 lowest of its seven
+/// peers, written out rather than computed so a wrong peer choice fails.
+#[track_caller]
+fn assert_formed_test_invite(invite: &InviteCode) {
+    assert_eq!(MIN_FEDERATION_SIZE, 7);
+    let invite = invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .expect("delivered invite parses");
+    assert_eq!(
+        invite.peers(),
+        [0, 1, 2]
+            .into_iter()
+            .map(|peer: u16| (PeerId::from(peer), test_guardian_url(usize::from(peer))))
+            .collect()
+    );
+    assert_eq!(
+        invite.federation_id(),
+        test_federation_config().calculate_federation_id()
+    );
+    assert_eq!(invite.api_secret(), None);
+}
+
 fn test_invite(index: usize) -> InviteCode {
     test_invite_for_federation(index, 0)
 }
 
 fn test_invite_for_federation(index: usize, federation: u8) -> InviteCode {
+    test_invite_for_peer(index, index, federation)
+}
+
+/// The invite MG `index` serves for the federation peer it runs.
+fn test_invite_for_peer(index: usize, peer: usize, federation: u8) -> InviteCode {
     InviteCode(
         FedimintInviteCode::new(
-            SafeUrl::parse(&format!("https://guardian-{index}.example/")).expect("valid test URL"),
-            PeerId::from(u16::try_from(index).expect("test index fits peer id")),
+            test_guardian_url(index),
+            PeerId::from(u16::try_from(peer).expect("test peer fits peer id")),
             if federation == 0 {
                 test_federation_config().calculate_federation_id()
             } else {
@@ -3220,7 +3273,7 @@ async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() 
     assert_eq!(first.payload.snapshot_generation, 1);
     assert_eq!(second.payload.snapshot_generation, 1);
     assert_eq!(first.created_at, second.created_at);
-    assert_eq!(first.payload.federation_invite, test_invite(0));
+    assert_formed_test_invite(&first.payload.federation_invite);
     assert_eq!(first.payload.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(first.payload.seats.iter().all(|seat| {
         seat.seat_id.to_string().len() == 64 && seat.locator.service_pubkey.serialize().len() == 32
@@ -5056,7 +5109,12 @@ async fn an_fa_that_cannot_pay_forms_against_seats_offered_at_zero() {
     let status = client.status();
     let formed = formation(&status);
     assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(formed.invite_code, Some(test_invite(0)));
+    assert_formed_test_invite(
+        formed
+            .invite_code
+            .as_ref()
+            .expect("formed federation has an invite"),
+    );
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -5120,7 +5178,12 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     assert_eq!(formed.phase, FormationPhase::Formed);
     assert_eq!(formed.freshness, FormationFreshness::Fresh);
     assert!(formed.action_required.is_none());
-    assert_eq!(formed.invite_code, Some(test_invite(0)));
+    assert_formed_test_invite(
+        formed
+            .invite_code
+            .as_ref()
+            .expect("formed federation has an invite"),
+    );
     assert!(
         formed
             .seats
