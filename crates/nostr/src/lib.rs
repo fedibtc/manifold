@@ -2,6 +2,7 @@
 
 pub mod attester;
 pub mod flip;
+pub mod json_depth;
 pub mod mg;
 pub mod setup_payment_federations;
 
