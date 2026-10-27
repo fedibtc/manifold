@@ -644,7 +644,11 @@ session. Historical absence decisions need f+1 other reporters. If neither
 last-seen nor session history is sufficient, f+1 other peers explicitly reporting
 current disconnection also qualify; this fallback does not establish duration.
 Sufficient recent history prevents that fallback. Missing responses alone never
-qualify. Peer scores use Fedimint's coverage-aware merge. Reports use the saved
+qualify. Peer scores use Fedimint's coverage-aware merge. Reports name
+Fedimint peers, which the FA maps to seats through the verified consensus seat
+bindings, matching each seat's MG; a seat's index is not its peer id. Without
+verified bindings naming every seat's MG once, reports are not used and only
+holder revocation can qualify. Reports use the saved
 invite first, then alternate MG invites one at a time. A policy refresh timeout
 can use an authenticated retained publication; invalid or missing policy fails. The policy's absence duration and weekly/monthly score floors are
 shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).

@@ -14714,5 +14714,85 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
     );
 }
 
+#[tokio::test]
+async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
+    let mg_state = Arc::new(MgState::default());
+    // Seats 0 and 1 hold Fedimint peers 1 and 0.
+    mg_state
+        .attested_peer_overrides
+        .lock()
+        .expect("test lock")
+        .extend([(0, 1), (1, 0)]);
+    let registry = TestRegistry::default();
+    registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_registry(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state,
+        MgConfig::given_away(),
+        registry,
+    )
+    .await;
+    client
+        .pay_and_create(
+            intent(),
+            selection_approval(1),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .expect("form selected test federation");
+    let authority = client
+        .post_formed_authority(client.fa_id().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(authority.seats[0].mg_id, test_mg_id(0));
+    let down = PeerId::from(1);
+    let peers = (0..MIN_FEDERATION_SIZE)
+        .map(PeerId::from)
+        .collect::<BTreeSet<_>>();
+    let sessions = peers
+        .iter()
+        .filter(|peer| **peer != down)
+        .map(|peer| {
+            (
+                *peer,
+                fedi_decentralized_domain::GuardianSessionReport {
+                    session_count: 1000,
+                    disconnected: BTreeSet::new(),
+                    last_contribution: BTreeMap::from([(down, Some(1))]),
+                },
+            )
+        })
+        .collect();
+    *client
+        .inner
+        .ports
+        .consensus_reader
+        .guardian_reports
+        .lock()
+        .unwrap() = Some(fedi_decentralized_domain::GuardianReports {
+        federation_id: FederationId(
+            formation::invite_federation_id(&authority.invite_code)
+                .unwrap()
+                .to_string(),
+        ),
+        peers,
+        sessions,
+        availability: BTreeMap::new(),
+    });
+
+    let check = client.check_replacement_candidates().await.unwrap();
+
+    assert_eq!(check.candidates.len(), 1);
+    assert_eq!(check.candidates[0].seat_index, 0);
+    assert_eq!(check.candidates[0].mg_id, test_mg_id(0));
+}
+
 #[path = "tests/replacement_receipts.rs"]
 mod replacement_receipts;
