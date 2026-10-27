@@ -123,7 +123,7 @@ impl LiveWalletStack {
         let relay_url = resources.relay().url.clone();
         let bitcoin =
             BitcoinFixture::new(resources.bitcoind().clone()).context("bitcoin fixture")?;
-        let mut gateway = GatewayFixture::start(test_id, &bitcoin, data_dir.path())
+        let mut gateway = GatewayFixture::start(test_id, &bitcoin, data_dir.fixtures())
             .await
             .context("gateway fixture")?;
         if let Some(forwarder) = forwarder {
@@ -290,7 +290,7 @@ impl LiveLiquidityStack {
         let target_fedimint = FedimintFixture::start(
             TARGET_FEDIMINT_LABEL,
             &wallet.bitcoin,
-            wallet.data_dir.path(),
+            wallet.data_dir.fixtures(),
         )
         .await
         .context("target fedimint fixture")?;
@@ -445,12 +445,13 @@ async fn live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh() -> 
     let _resources = DefeResources::live_liquidity().await?;
     let relay_url = _resources.relay().url.clone();
     let bitcoin = BitcoinFixture::new(_resources.bitcoind().clone()).context("bitcoin fixture")?;
-    let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.path())
+    let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.fixtures())
         .await
         .context("gateway fixture")?;
-    let target_fedimint = FedimintFixture::start(TARGET_FEDIMINT_LABEL, &bitcoin, data_dir.path())
-        .await
-        .context("target fedimint fixture")?;
+    let target_fedimint =
+        FedimintFixture::start(TARGET_FEDIMINT_LABEL, &bitcoin, data_dir.fixtures())
+            .await
+            .context("target fedimint fixture")?;
 
     let ports = TestPorts::allocate()?;
     let mut launch = DaemonLaunch::new(data_dir.path())?;
@@ -833,7 +834,7 @@ async fn live_second_federation_is_funded_after_the_operator_tops_up() -> anyhow
     let second_fedimint = FedimintFixture::start(
         SECOND_TARGET_FEDIMINT_LABEL,
         &stack.wallet.bitcoin,
-        stack.wallet.data_dir.path(),
+        stack.wallet.data_dir.fixtures(),
     )
     .await
     .context("second target fedimint fixture")?;
@@ -1081,7 +1082,7 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
     let second_fedimint = FedimintFixture::start(
         SECOND_TARGET_FEDIMINT_LABEL,
         &stack.wallet.bitcoin,
-        stack.wallet.data_dir.path(),
+        stack.wallet.data_dir.fixtures(),
     )
     .await
     .context("second target fedimint fixture")?;
@@ -1291,12 +1292,13 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     let _resources = DefeResources::live_liquidity().await?;
     let relay_url = _resources.relay().url.clone();
     let bitcoin = BitcoinFixture::new(_resources.bitcoind().clone()).context("bitcoin fixture")?;
-    let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.path())
+    let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.fixtures())
         .await
         .context("gateway fixture")?;
-    let target_fedimint = FedimintFixture::start(TARGET_FEDIMINT_LABEL, &bitcoin, data_dir.path())
-        .await
-        .context("target fedimint fixture")?;
+    let target_fedimint =
+        FedimintFixture::start(TARGET_FEDIMINT_LABEL, &bitcoin, data_dir.fixtures())
+            .await
+            .context("target fedimint fixture")?;
 
     let ports = TestPorts::allocate()?;
     let mut launch = DaemonLaunch::new(data_dir.path())?;
@@ -2235,7 +2237,7 @@ impl LiveStabilityStack {
         let relay_url = resources.relay().url.clone();
         let bitcoin =
             BitcoinFixture::new(resources.bitcoind().clone()).context("bitcoin fixture")?;
-        let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.path())
+        let gateway = GatewayFixture::start(&test_id, &bitcoin, data_dir.fixtures())
             .await
             .context("gateway fixture")?;
         let target_fedimint = FedimintFixture::start_with_stability_pool(
@@ -2247,7 +2249,7 @@ impl LiveStabilityStack {
         .context("stability-pool target fedimint fixture")?;
         // FLIP's own chain observer. The target client needs no chain backend:
         // its walletv2 module learns of deposits from the federation.
-        let esplora = EsploraFixture::start(&bitcoin, data_dir.path())
+        let esplora = EsploraFixture::start(&bitcoin, data_dir.fixtures())
             .await
             .context("esplora fixture")?;
 

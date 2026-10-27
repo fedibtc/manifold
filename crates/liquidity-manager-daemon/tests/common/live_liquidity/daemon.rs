@@ -71,8 +71,18 @@ impl TestPorts {
     }
 }
 
+/// One test's scratch space, split so the FLIP daemon's data dir holds only
+/// FLIP's state.
+///
+/// `create_backup` archives the whole FLIP data dir under FLIP's own
+/// quiescence barrier. The gateway and Fedimint fixtures are separate
+/// processes writing RocksDB files the barrier cannot hold still; inside the
+/// FLIP data dir, a file they delete between the backup's directory walk and
+/// its copy fails the backup with an internal error.
 pub struct TestDataDir {
-    path: PathBuf,
+    root: PathBuf,
+    flip: PathBuf,
+    fixtures: PathBuf,
 }
 
 impl TestDataDir {
@@ -81,21 +91,35 @@ impl TestDataDir {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|_| Duration::from_secs(0))
             .as_nanos();
-        let path = std::env::temp_dir()
+        let root = std::env::temp_dir()
             .join("fedi-flip-tests")
             .join(format!("{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&path).with_context(|| format!("create {}", path.display()))?;
-        Ok(Self { path })
+        let flip = root.join("flip");
+        let fixtures = root.join("fixtures");
+        for path in [&flip, &fixtures] {
+            fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+        }
+        Ok(Self {
+            root,
+            flip,
+            fixtures,
+        })
     }
 
+    /// The FLIP daemon's data dir.
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.flip
+    }
+
+    /// The data root for the gateway, Fedimint, and Esplora fixtures.
+    pub fn fixtures(&self) -> &Path {
+        &self.fixtures
     }
 }
 
 impl Drop for TestDataDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
