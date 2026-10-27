@@ -9,7 +9,8 @@ consensus, so this distributed ownership requires a durable record.
 ## Payload
 
 One FA supports one permanent formed federation. Its payload contains a schema
-version, monotonic snapshot generation, federation invite, and every seat's
+version, monotonic snapshot generation, formed federation invite (f+1 guardian
+addresses; backups from older releases hold one), and every seat's
 MG identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.

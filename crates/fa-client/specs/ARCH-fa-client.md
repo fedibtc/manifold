@@ -517,7 +517,11 @@ The driver owns availability checks, signed-quote verification, aggregate
 readiness, payment presentation, signed seat creation, DKG coordination,
 status polling, and invite recovery (rejecting bearer API secrets and
 requiring every MG's invite to identify the same federation before
-persisting the deliverable). Every ordinary resume repeats the idempotent
+persisting the deliverable). The deliverable invite combines the seats'
+own invites: together they must name each federation peer exactly once,
+and the invite keeps the addresses of the f+1 lowest peer ids, f = (n-1)/3,
+so joining tolerates f unreachable guardians. Invites persisted before this
+rule hold one guardian; they stay valid and are never rewritten. Every ordinary resume repeats the idempotent
 `StartDkg` with the same durable guardian codes, so a crashed child starts a
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
 Resume never selects the destructive `RestartDkg`: replacing a stuck ceremony

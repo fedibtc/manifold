@@ -4543,39 +4543,29 @@ where
                     })
                     .await?
                     .invite_code;
-                let federation_id = invite_federation_id(&invite).map_err(|_| {
+                invite_federation_id(&invite).map_err(|_| {
                     session
                         .client
                         .failure(MgOperation::GetInviteCode, MgCause::InvalidResponse)
                 })?;
-                Ok::<_, FaError>((position, invite, federation_id))
+                Ok::<_, FaError>((position, invite))
             });
         }
-        let mut invites = (0..sessions.len())
-            .map(|_| None)
-            .collect::<Vec<Option<(InviteCode, FedimintFederationId)>>>();
+        let mut invites = vec![None; sessions.len()];
         while let Some(result) = pending.next().await {
-            let (position, invite, federation_id) = result?;
-            invites[position] = Some((invite, federation_id));
+            let (position, invite) = result?;
+            invites[position] = Some(invite);
         }
-        let mut invites = invites.into_iter().enumerate().map(|(position, invite)| {
-            invite.ok_or_else(|| {
-                FaError::Storage(format!("missing invite response for seat {position}"))
+        let invites = invites
+            .into_iter()
+            .enumerate()
+            .map(|(position, invite)| {
+                invite.ok_or_else(|| {
+                    FaError::Storage(format!("missing invite response for seat {position}"))
+                })
             })
-        });
-        let (deliverable, expected_id) = invites
-            .next()
-            .ok_or_else(|| FaError::Storage("formed FA record contains no seats".to_owned()))??;
-        for invite in invites {
-            let (_, federation_id) = invite?;
-            if federation_id != expected_id {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "selected Manifold Guardians reported different federation identities"
-                        .to_owned(),
-                ));
-            }
-        }
-        Ok(deliverable)
+            .collect::<FaResult<Vec<_>>>()?;
+        combine_seat_invites(&invites)
     }
 
     pub(crate) async fn active_recovery(&self, fa_id: FaId) -> FaResult<ActiveFormationRecovery> {
@@ -5068,6 +5058,47 @@ pub(crate) fn restored_formation_id(fa_id: FaId, invite: &InviteCode) -> FaResul
         "restored-{}",
         hex::encode(digest.finalize())
     )))
+}
+
+/// One invite for the whole federation from every seat's own invite.
+///
+/// Each guardian's invite names only that guardian, so delivering one of them
+/// would make joining depend on that guardian being up. Fedimint's own
+/// construction keeps the f+1 lowest peer ids, of which at least one is
+/// honest and reachable while the federation can make progress. Every seat
+/// must name the same federation, its own distinct peer, and no bearer secret,
+/// and together the seats must be the whole peer set.
+pub(crate) fn combine_seat_invites(invites: &[InviteCode]) -> FaResult<InviteCode> {
+    let mut federation_id = None;
+    let mut peers = BTreeMap::new();
+    for invite in invites {
+        let id = invite_federation_id(invite)?;
+        if *federation_id.get_or_insert(id) != id {
+            return Err(FaError::InvalidManifoldGuardians(
+                "selected Manifold Guardians reported different federation identities".to_owned(),
+            ));
+        }
+        let parsed = FedimintInviteCode::from_str(&invite.0)
+            .map_err(|error| FaError::InvalidManifoldGuardians(error.to_string()))?;
+        for (peer, url) in parsed.peers() {
+            if peers.insert(peer, url).is_some() {
+                return Err(FaError::InvalidManifoldGuardians(
+                    "selected Manifold Guardians reported the same guardian".to_owned(),
+                ));
+            }
+        }
+    }
+    let federation_id = federation_id
+        .ok_or_else(|| FaError::Storage("formed FA record contains no seats".to_owned()))?;
+    let peer_ids = peers.keys().map(|peer| peer.to_usize()).collect::<Vec<_>>();
+    if peer_ids != (0..invites.len()).collect::<Vec<_>>() {
+        return Err(FaError::InvalidManifoldGuardians(
+            "selected Manifold Guardians do not name each federation peer once".to_owned(),
+        ));
+    }
+    Ok(InviteCode(
+        FedimintInviteCode::new_with_essential_num_guardians(&peers, federation_id).to_string(),
+    ))
 }
 
 pub(crate) fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {

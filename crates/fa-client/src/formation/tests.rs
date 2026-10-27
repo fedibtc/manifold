@@ -1,3 +1,4 @@
+use std::str::FromStr as _;
 use std::time::Duration;
 
 use fedi_decentralized_service_manifold_guardian::InviteCode;
@@ -10,8 +11,8 @@ use fedimint_core::runtime::Instant;
 use fedimint_core::util::SafeUrl;
 
 use super::{
-    DriverRun, FormationRunOptions, ValueCallTimeoutBudget, invite_federation_id,
-    select_timer_duration,
+    DriverRun, FormationRunOptions, ValueCallTimeoutBudget, combine_seat_invites,
+    invite_federation_id, select_timer_duration,
 };
 use crate::FaError;
 use crate::db::FaStore;
@@ -195,4 +196,107 @@ fn invite(federation_id: FederationId, url: &str, api_secret: Option<String>) ->
         )
         .to_string(),
     )
+}
+
+fn seat_invite(federation_id: FederationId, peer: u16) -> InviteCode {
+    InviteCode(
+        FedimintInviteCode::new(
+            SafeUrl::parse(&format!("https://guardian-{peer}.example/"))
+                .expect("test URL is valid"),
+            PeerId::from(peer),
+            federation_id,
+            None,
+        )
+        .to_string(),
+    )
+}
+
+/// Seven seats tolerate two faulty guardians, so the delivered invite names
+/// three: the lowest peer ids, whatever order the seats answered in. Taking
+/// the first seat's invite gives one peer and taking every seat gives seven.
+#[test]
+fn the_delivered_invite_names_f_plus_one_guardians() {
+    let federation_id: FederationId =
+        "abababababababababababababababababababababababababababababababab"
+            .parse()
+            .unwrap();
+    // Seats answer in an order unrelated to their peer ids.
+    let invites = [5, 2, 6, 0, 3, 1, 4]
+        .map(|peer| seat_invite(federation_id, peer))
+        .to_vec();
+
+    let combined = combine_seat_invites(&invites).unwrap();
+    let parsed = FedimintInviteCode::from_str(&combined.0).unwrap();
+    assert_eq!(parsed.federation_id(), federation_id);
+    assert_eq!(parsed.api_secret(), None);
+    let peers = parsed.peers();
+    assert_eq!(
+        peers.keys().map(|peer| peer.to_usize()).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    for (peer, url) in &peers {
+        assert_eq!(
+            url.as_str(),
+            format!("https://guardian-{}.example/", peer.to_usize())
+        );
+        // Each named guardian's own invite names the same federation.
+        assert_eq!(
+            invite_federation_id(&seat_invite(federation_id, peer.to_usize() as u16)).unwrap(),
+            federation_id
+        );
+    }
+    assert_eq!(invite_federation_id(&combined).unwrap(), federation_id);
+    // The seats' answer order does not change the result.
+    let mut reordered = invites.clone();
+    reordered.reverse();
+    assert_eq!(combine_seat_invites(&reordered).unwrap(), combined);
+
+    // Four seats tolerate one fault: two guardians.
+    let four = [3, 1, 0, 2]
+        .map(|peer| seat_invite(federation_id, peer))
+        .to_vec();
+    let four = FedimintInviteCode::from_str(&combine_seat_invites(&four).unwrap().0).unwrap();
+    assert_eq!(four.peers().len(), 2);
+}
+
+#[test]
+fn seat_invites_must_cover_one_federation_once() {
+    let federation_id: FederationId =
+        "abababababababababababababababababababababababababababababababab"
+            .parse()
+            .unwrap();
+    let other: FederationId = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+        .parse()
+        .unwrap();
+    let rejects = |invites: Vec<InviteCode>| {
+        assert!(
+            matches!(
+                combine_seat_invites(&invites),
+                Err(FaError::InvalidManifoldGuardians(_))
+            ),
+            "{invites:?}"
+        );
+    };
+    // Another federation.
+    rejects(vec![
+        seat_invite(federation_id, 0),
+        seat_invite(federation_id, 1),
+        seat_invite(other, 2),
+        seat_invite(federation_id, 3),
+    ]);
+    // The same guardian twice.
+    rejects(vec![
+        seat_invite(federation_id, 0),
+        seat_invite(federation_id, 1),
+        seat_invite(federation_id, 1),
+        seat_invite(federation_id, 3),
+    ]);
+    // A peer id outside the seat count.
+    rejects(vec![
+        seat_invite(federation_id, 0),
+        seat_invite(federation_id, 1),
+        seat_invite(federation_id, 2),
+        seat_invite(federation_id, 4),
+    ]);
+    assert!(combine_seat_invites(&[]).is_err());
 }
