@@ -719,8 +719,18 @@ the row for `resume_guardian_transfer`.
 With the seat bought, the FA signs a grant, which has no expiry, and
 sends `PullSeat` with an optional completion callback. From then on the seat
 stays bound to this move: the source may have answered already, so the FA
-never offers the seat to another guardian. A destination that reports `New`,
-for example after an MG restore, gets `PullSeat` again with the same grant.
+never offers the seat to another guardian. The FA stores no grant. It signs
+one from the transfer row whenever it sends `PullSeat`, and the destination
+takes a grant signed again for the same move as a replay.
+
+Until the source is removed, the FA checks the destination's status before
+every vote and before each `RemoveSeat`. A destination that reports `New`,
+for example after it restored a backup from before its import, gets
+`PullSeat` again with the move's completion callback, and the transfer
+stays in its phase until the destination runs the guardian. `Running` once
+does not prove that the destination's backup holds the guardian, and the
+stopped source still does. Any status other than `New`, `AwaitingTransfer`
+or `Running` is an error, and the transfer stays open.
 
 `resume_guardian_transfer` continues from the recorded stage. While the
 destination is `AwaitingTransfer` it polls until the run ends and then
@@ -734,11 +744,10 @@ destination for the same peer. This step does not need a reconciled seat
 list, because consensus may already name the destination. In the same
 transaction it replaces the source seat in the federation's seat list with
 the destination, and records the source MG and its known holder as a past
-host. Before each `RemoveSeat` to the source, it asks the destination for
-its status again, also on a resume in `RemovingSource`: the source seat is
-the last other copy of the guardian. A destination that is unreachable or not
-`Running`, or an unreachable source, leaves the transfer in `RemovingSource`
-for a later resume.
+host. The source seat is the last other copy of the guardian, so the FA
+sends `RemoveSeat` only right after the destination reports `Running`. A
+destination that is unreachable or still pulling, or an unreachable source,
+leaves the transfer in `RemovingSource` for a later resume.
 
 A transfer and a liquidity request do not overlap: the liquidity commitment
 names the current seats, so each refuses to start while the other is live.

@@ -16,7 +16,13 @@
 //! Once a grant was sent, the destination seat stays bound to this move. The
 //! source may have stopped and handed over the guardian, and only a grant for
 //! the same move recovers it, so the seat is never offered to another
-//! guardian. A grant has no expiry.
+//! guardian. A grant has no expiry, so the FA keeps none: it signs one for
+//! this move whenever the destination needs it.
+//!
+//! Before every vote and before the source removal, the FA checks that the
+//! destination runs the guardian. A destination that restored a backup from
+//! before its import reports `New` and pulls the guardian again from the
+//! stopped source, with the move's completion callback.
 //!
 //! The FA backup never names an open transfer. It changes only when the
 //! seat list names the destination. A device lost before then restores the
@@ -93,11 +99,9 @@ pub enum GuardianTransferPhase {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StoredTransferPhase {
-    /// The destination pulls the guardian with this grant.
-    Pulling {
-        grant: SignedRequest<SeatTransferGrant>,
-    },
-    /// The guardian runs on the destination. The FA votes its binding.
+    /// The destination pulls the guardian. The FA has not seen it run yet.
+    Pulling,
+    /// The guardian ran on the destination. The FA votes its binding.
     Binding,
     /// Consensus names the destination. The source still holds its copy.
     RemovingSource,
@@ -172,7 +176,7 @@ impl StoredGuardianTransfer {
         match &self.stage {
             TransferStage::Buying(_) => GuardianTransferPhase::BuyingSeat,
             TransferStage::Moving(moving) => match moving.phase {
-                StoredTransferPhase::Pulling { .. } => GuardianTransferPhase::AwaitingSource,
+                StoredTransferPhase::Pulling => GuardianTransferPhase::AwaitingSource,
                 StoredTransferPhase::Binding => GuardianTransferPhase::PublishingBinding,
                 StoredTransferPhase::RemovingSource => GuardianTransferPhase::RemovingSource,
             },
@@ -312,17 +316,10 @@ where
                 let destination = self
                     .drive_seat_purchase(&transfer, purchase.clone(), fa_id, run)
                     .await?;
-                let grant = self.sign_grant(
-                    fa_id,
-                    &transfer.federation_id,
-                    &transfer.source_locator,
-                    &transfer.source_seat_id,
-                    &destination,
-                )?;
                 let moving = StoredMove {
                     destination,
                     binding: None,
-                    phase: StoredTransferPhase::Pulling { grant },
+                    phase: StoredTransferPhase::Pulling,
                 };
                 lease
                     .write_guardian_transfer(
@@ -333,28 +330,26 @@ where
                 moving
             }
         };
-        if let StoredTransferPhase::Pulling { grant } = &moving.phase {
-            match self
-                .await_pulled_guardian(&transfer, &moving.destination, grant, fa_id, wait, run)
+        if !matches!(moving.phase, StoredTransferPhase::RemovingSource) {
+            // Check before every vote, not only the first: a destination
+            // that restored a backup from before its import lost the
+            // guardian, and pulls it again from the stopped source.
+            if let Pulled::Waiting = self
+                .await_pulled_guardian(&transfer, &moving.destination, fa_id, wait, run)
                 .await?
             {
-                Pulled::Running => {
-                    moving.phase = StoredTransferPhase::Binding;
-                    lease
-                        .write_guardian_transfer(
-                            fa_id,
-                            GuardianTransferWrite::Update(transfer.moved(&moving)),
-                        )
-                        .await?;
-                }
-                Pulled::Waiting => {
-                    return Ok(transfer
-                        .moved(&moving)
-                        .view(GuardianTransferPhase::AwaitingSource));
-                }
+                let current = transfer.moved(&moving);
+                return Ok(current.view(current.public_phase()));
             }
-        }
-        if matches!(moving.phase, StoredTransferPhase::Binding) {
+            if matches!(moving.phase, StoredTransferPhase::Pulling) {
+                moving.phase = StoredTransferPhase::Binding;
+                lease
+                    .write_guardian_transfer(
+                        fa_id,
+                        GuardianTransferWrite::Update(transfer.moved(&moving)),
+                    )
+                    .await?;
+            }
             // The seat list may be stale after a reopen: consensus can name
             // the destination already. The readback below confirms the moved
             // seat itself, so the transfer does not wait for a full
@@ -406,9 +401,10 @@ where
         // The source seat is the last other copy of the guardian. Remove it
         // only right after the destination says again that it runs it, on
         // every attempt: a binding saved or published earlier says nothing
-        // about the destination now.
-        if !self
-            .destination_runs(&moving.destination, fa_id, run)
+        // about the destination now. A destination that lost the guardian
+        // pulls it again from the source first.
+        if let Pulled::Waiting = self
+            .await_pulled_guardian(&transfer, &moving.destination, fa_id, wait, run)
             .await?
         {
             return Ok(transfer.view(GuardianTransferPhase::RemovingSource));
@@ -429,20 +425,20 @@ where
         }
     }
 
-    /// Ask the destination to pull. With `wait`, poll it until the guardian
-    /// runs or the run ends.
-    /// An unreachable destination counts as still waiting.
+    /// Make sure the destination runs the guardian: a destination that
+    /// reports `New` gets `PullSeat` with a grant for this move. With `wait`,
+    /// poll it until the guardian runs or the run ends. An unreachable
+    /// destination counts as still waiting.
     async fn await_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
         destination: &StoredDestinationSeat,
-        grant: &SignedRequest<SeatTransferGrant>,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         match self
-            .poll_pulled_guardian(transfer, destination, grant, fa_id, wait, run)
+            .poll_pulled_guardian(transfer, destination, fa_id, wait, run)
             .await
         {
             Err(FaError::Mg(failure))
@@ -458,7 +454,6 @@ where
         &self,
         transfer: &StoredGuardianTransfer,
         destination: &StoredDestinationSeat,
-        grant: &SignedRequest<SeatTransferGrant>,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
@@ -489,14 +484,16 @@ where
             match status {
                 ServiceStatus::Running => return Ok(Pulled::Running),
                 ServiceStatus::AwaitingTransfer => {}
-                // A restored destination comes back `New` and needs the
-                // grant again.
+                // A new seat, or a destination restored from a backup from
+                // before its import. A grant has no expiry, and the
+                // destination takes a grant signed again for the same move
+                // as a replay.
                 ServiceStatus::New => {
                     let request = self.sign(&PullSeatRequest {
                         ts: Timestamp(now_secs()?),
                         fa_id,
                         seat_id: destination.seat_id.clone(),
-                        grant: grant.clone(),
+                        grant: self.sign_grant(fa_id, transfer, destination)?,
                         completion_callback: transfer.completion_callback.clone(),
                     })?;
                     client
@@ -791,63 +788,21 @@ where
     }
 
     /// Sign a grant for the move. It has no expiry.
-    pub(crate) fn sign_grant(
+    fn sign_grant(
         &self,
         fa_id: FaId,
-        federation_id: &FederationId,
-        source: &Locator,
-        source_seat_id: &SeatId,
+        transfer: &StoredGuardianTransfer,
         destination: &StoredDestinationSeat,
     ) -> FaResult<SignedRequest<SeatTransferGrant>> {
         self.sign(&SeatTransferGrant {
             ts: Timestamp(now_secs()?),
             fa_id,
-            federation_id: federation_id.clone(),
-            source: source.clone(),
-            source_seat_id: source_seat_id.clone(),
+            federation_id: transfer.federation_id.clone(),
+            source: transfer.source_locator.clone(),
+            source_seat_id: transfer.source_seat_id.clone(),
             destination_service_pubkey: destination.locator.service_pubkey,
             destination_seat_id: destination.seat_id.clone(),
         })
-    }
-
-    /// Whether the destination reports the moved guardian running now. An
-    /// unreachable destination does not.
-    async fn destination_runs(
-        &self,
-        destination: &StoredDestinationSeat,
-        fa_id: FaId,
-        run: DriverRun<'_>,
-    ) -> FaResult<bool> {
-        let client = match MgClient::connect(
-            &self.inner.ports.mg_connector,
-            &destination.locator,
-            run,
-        )
-        .await
-        {
-            Ok(client) => client,
-            Err(FaError::Mg(_)) => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        let request = self.sign(&GetStatusRequest {
-            ts: Timestamp(now_secs()?),
-            fa_id,
-            seat_id: destination.seat_id.clone(),
-        })?;
-        match client
-            .call(run, MgOperation::GetStatus, |client| {
-                client.get_status(request)
-            })
-            .await
-        {
-            Ok(response) => Ok(response.status == ServiceStatus::Running),
-            Err(FaError::Mg(failure))
-                if matches!(failure.cause, MgCause::Timeout | MgCause::Transport) =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error),
-        }
     }
 
     async fn remove_source_seat(

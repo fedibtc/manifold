@@ -1375,9 +1375,21 @@ impl ManifoldGuardianService for TestMg {
         request: SignedRequest<PullSeatRequest>,
     ) -> FmResult<PullSeatResponse> {
         let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
-        // Like the real MG, the first pull commits its completion callback,
-        // and a later pull of the move must carry the same one.
-        let renewed_with_another_callback = self
+        // Like the real MG, the first pull binds the seat to its move and
+        // completion callback. A later pull must carry a grant for the same
+        // move, signed at any time, and the same callback.
+        let grant_move = |pull: &PullSeatRequest| {
+            let mut grant = pull
+                .grant
+                .clone()
+                .verify(Timestamp(test_now_secs()))
+                .map(|grant| grant.into_inner());
+            if let Ok(grant) = &mut grant {
+                grant.ts = Timestamp(0);
+            }
+            grant.ok()
+        };
+        let another_move = self
             .state
             .pull_requests
             .lock()
@@ -1386,9 +1398,10 @@ impl ManifoldGuardianService for TestMg {
             .any(|(index, earlier)| {
                 *index == self.index
                     && earlier.seat_id == request.seat_id
-                    && earlier.completion_callback != request.completion_callback
+                    && (earlier.completion_callback != request.completion_callback
+                        || grant_move(earlier) != grant_move(&request))
             });
-        if renewed_with_another_callback {
+        if another_move {
             return Err(ManifoldGuardianError::SeatTransferGrantMismatch);
         }
         self.state

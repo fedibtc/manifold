@@ -341,12 +341,13 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
 }
 
 #[tokio::test]
-async fn a_destination_that_lost_the_grant_gets_the_same_grant() {
+async fn a_destination_that_lost_the_grant_gets_a_grant_for_the_same_move() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     let started = start_transfer(&client, &mg_state).await;
     let destination = started.destination_seat_id.clone().unwrap();
     // A destination MG restored from its backup forgets the grant and
-    // reports `New` again. The grant has no expiry, so the FA sends it as is.
+    // reports `New` again. The test MG, like the real one, takes only a
+    // grant for the same move.
     mg_state
         .seat_statuses
         .lock()
@@ -364,7 +365,6 @@ async fn a_destination_that_lost_the_grant_gets_the_same_grant() {
     let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
     assert_eq!(pulls.len(), 2);
     assert_eq!(pulls[1].0, DESTINATION);
-    assert_eq!(pulls[1].1.grant, pulls[0].1.grant);
 
     guardian_arrives(&mg_state);
     let finished = client
@@ -373,6 +373,118 @@ async fn a_destination_that_lost_the_grant_gets_the_same_grant() {
         .unwrap()
         .unwrap();
     assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+}
+
+/// The destination ran the guardian, then restored a backup from before
+/// its import and reports `New`. The stopped source still holds the
+/// guardian, so the FA pulls it again before it removes the source, with the
+/// move's completion callback.
+async fn check_destination_pulls_again(
+    client: &TestClient,
+    mg_state: &MgState,
+    callback: Option<DkgCompletionCallback>,
+) {
+    let phase = client.guardian_transfer().await.unwrap().unwrap().phase;
+    let source_seat_id = client
+        .guardian_transfer()
+        .await
+        .unwrap()
+        .unwrap()
+        .source_seat_id;
+    let pulls_before = mg_state.pull_requests.lock().expect("test lock").len();
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+
+    // Until the destination runs the guardian again, the source stays.
+    let waiting = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.phase, phase);
+    let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
+    assert_eq!(pulls.len(), pulls_before + 1);
+    assert_eq!(pulls.last().unwrap().1.completion_callback, callback);
+    assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
+
+    guardian_arrives(mg_state);
+    let finished = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    assert_eq!(
+        mg_state.removed_seats.lock().expect("test lock").clone(),
+        vec![(MOVED, source_seat_id)]
+    );
+}
+
+#[tokio::test]
+async fn a_destination_that_lost_the_guardian_before_the_vote_pulls_it_again() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+        callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
+        idempotency_key: "transfer-complete".to_owned(),
+    })
+    .unwrap();
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+    client
+        .start_guardian_transfer(
+            MOVED as u16,
+            destination_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            Some(callback.clone()),
+            transfer_options(),
+        )
+        .await
+        .unwrap();
+    guardian_arrives(&mg_state);
+    // The transfer saw the guardian run, then the vote failed.
+    for index in [0, 2, 3] {
+        mg_state
+            .meta_terminal_errors
+            .lock()
+            .expect("test lock")
+            .insert(index, ManifoldGuardianError::MetaValueInvalid);
+    }
+    client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap_err();
+    mg_state
+        .meta_terminal_errors
+        .lock()
+        .expect("test lock")
+        .clear();
+    assert_eq!(
+        client.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::PublishingBinding
+    );
+
+    check_destination_pulls_again(&client, &mg_state, Some(callback)).await;
+}
+
+#[tokio::test]
+async fn a_destination_that_lost_the_guardian_before_the_removal_pulls_it_again() {
+    let (_database, mg_state, restored, _destination, _backup) =
+        transfer_adopted_but_unrecorded().await;
+    // Reconciliation sees consensus name the destination: only the removal
+    // is left.
+    restored.resume().await.unwrap();
+    assert_eq!(
+        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::RemovingSource
+    );
+
+    check_destination_pulls_again(&restored, &mg_state, None).await;
 }
 
 #[tokio::test]
@@ -598,13 +710,21 @@ async fn a_published_binding_does_not_remove_the_source_of_a_lost_destination() 
         .expect("test lock")
         .insert(DESTINATION, ServiceStatus::DataLoss);
 
-    let waiting = restored
+    let error = restored
         .resume_guardian_transfer(transfer_options())
         .await
-        .unwrap()
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(waiting.phase, GuardianTransferPhase::RemovingSource);
+    assert!(
+        matches!(&error, FaError::Mg(failure) if failure.cause == MgCause::WrongState(ServiceStatus::DataLoss)),
+        "{error:?}"
+    );
+    // The destination is checked before the rebind too, so the transfer
+    // stays where it stopped.
+    assert_eq!(
+        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::PublishingBinding
+    );
     assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
 }
 
