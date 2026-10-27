@@ -50,7 +50,9 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{
+    ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores, seats_outcome,
+};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -852,6 +854,18 @@ impl Fleet {
             );
         }
         Ok(())
+    }
+
+    /// The readiness seats check: whether this MG's formed seats are
+    /// serving their federations.
+    pub fn seats_outcome(&self) -> ReadinessOutcome {
+        seats_outcome(
+            self.seats
+                .read()
+                .expect("seat registry lock is never poisoned")
+                .values()
+                .filter_map(|seat| seat.serving_federation()),
+        )
     }
 
     /// Record the current slot of uptime, up or not, and return the uptime

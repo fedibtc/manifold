@@ -277,6 +277,8 @@ struct SeatLoop {
     /// First failed watchdog probe of the current child since it last
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
+    /// The completed-session count the current child last answered.
+    session_count: Option<u64>,
     backoff: Duration,
 }
 
@@ -417,6 +419,10 @@ struct SeatRuntimeFacts {
     /// Transfer provenance or terminal fence, independent of formed state.
     transfer_phase: Option<TransferPhase>,
     health: SeatHealth,
+    /// When the current child stops counting as serving its federation
+    /// unless it completes a consensus session: its start or its last
+    /// completed session, plus the policy's stall limit.
+    consensus_stalls_at: tokio::time::Instant,
 }
 
 enum SeatCommand {
@@ -579,6 +585,7 @@ impl Seat {
             decommissioned_at_ms,
             transfer_phase,
             health: SeatHealth::Unavailable,
+            consensus_stalls_at: tokio::time::Instant::now() + policy.consensus_stall_after,
         });
         // Keep only the next lifecycle command queued behind the one in progress.
         let (commands, command_rx) = mpsc::channel(1);
@@ -607,6 +614,7 @@ impl Seat {
                 respawn_at: None,
                 watchdog_at: None,
                 unresponsive_since: None,
+                session_count: None,
                 backoff: policy.initial_backoff,
             };
             tokio::spawn(async move {
@@ -635,6 +643,24 @@ impl Seat {
     /// operator listing read this.
     pub(crate) fn is_decommissioned(&self) -> bool {
         self.state.borrow().decommissioned_at_ms.is_some()
+    }
+
+    /// Whether this seat is serving its federation: its child answers the
+    /// watchdog and completed a consensus session within the stall limit.
+    /// `None` for a seat with no federation to serve: before formation,
+    /// once decommissioned, or during transfer work.
+    pub(crate) fn serving_federation(&self) -> Option<bool> {
+        let state = self.state.borrow();
+        if state.formed_invite.is_none()
+            || state.decommissioned_at_ms.is_some()
+            || state.transfer_status().is_some()
+        {
+            return None;
+        }
+        Some(
+            state.health == SeatHealth::Healthy
+                && tokio::time::Instant::now() < state.consensus_stalls_at,
+        )
     }
 
     /// A decommissioned seat refuses mutation. Used by RPC callers as a fast
@@ -1038,7 +1064,10 @@ impl SeatLoop {
 
         let result = tokio::time::timeout(WATCHDOG_PROBE_TIMEOUT, self.client().probe()).await;
         let (health, failure_kind) = match result {
-            Ok(Ok(())) => (SeatHealth::Healthy, None),
+            Ok(Ok(session_count)) => {
+                self.observe_session_count(session_count);
+                (SeatHealth::Healthy, None)
+            }
             Err(_) => (SeatHealth::Unavailable, Some("timeout")),
             Ok(Err(FedimintApiError::Unreachable(_))) => {
                 (SeatHealth::Unavailable, Some("unreachable"))
@@ -1062,6 +1091,37 @@ impl SeatLoop {
         } else {
             self.restart_if_unresponsive(failure_kind).await;
         }
+    }
+
+    /// A grown completed-session count is consensus progress; the first
+    /// count a child answers is only its starting point.
+    fn observe_session_count(&mut self, session_count: u64) {
+        let advanced = self
+            .session_count
+            .is_some_and(|previous| session_count > previous);
+        self.session_count = Some(session_count);
+        if advanced {
+            self.restart_stall_limit();
+        }
+    }
+
+    /// A seat that newly has a federation gets the full stall limit to show
+    /// consensus progress. A respawned child does not: restarting cannot
+    /// make a stalled seat count as serving.
+    fn publish_formed_invite(&self, invite_code: InviteCode) {
+        let stalls_at = tokio::time::Instant::now() + self.policy.consensus_stall_after;
+        self.state.send_modify(|state| {
+            if state.formed_invite.is_none() {
+                state.consensus_stalls_at = stalls_at;
+            }
+            state.formed_invite = Some(invite_code);
+        });
+    }
+
+    fn restart_stall_limit(&self) {
+        let stalls_at = tokio::time::Instant::now() + self.policy.consensus_stall_after;
+        self.state
+            .send_modify(|state| state.consensus_stalls_at = stalls_at);
     }
 
     /// Kill and respawn a configured child whose local API has failed every
@@ -1557,6 +1617,7 @@ impl SeatLoop {
         });
         self.child_started = Some(tokio::time::Instant::now());
         self.unresponsive_since = None;
+        self.session_count = None;
         if let Err(error) = self.handle_child_state(state).await {
             // Revalidation or a database read may fail before RunDkg begins.
             // Do not leave that child parked while respawn is scheduled: the
@@ -1656,8 +1717,7 @@ impl SeatLoop {
         self.db
             .record_formed(&self.facts.seat_id, &invite_code)
             .await?;
-        self.state
-            .send_modify(|state| state.formed_invite = Some(invite_code.clone()));
+        self.publish_formed_invite(invite_code.clone());
         self.mark_configured();
         self.schedule_watchdog(Duration::ZERO);
         self.backup.mark();

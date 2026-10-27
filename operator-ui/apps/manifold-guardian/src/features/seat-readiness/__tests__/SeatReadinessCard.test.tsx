@@ -11,6 +11,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   relay: 'pass',
   discovery: 'not_applicable',
   bitcoin: 'pass',
+  seats: 'not_applicable',
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
@@ -24,6 +25,8 @@ describe('SeatReadinessCard', () => {
 
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
     expect(screen.getByText('Not checked in this deployment.')).toBeTruthy();
+    // A host without formed seats is told so, not that the check is off.
+    expect(screen.getByText('This host has no formed seats to check.')).toBeTruthy();
     expect(screen.getByText(/Last checked 2026-10-01 12:34 UTC/)).toBeTruthy();
   });
 
@@ -37,6 +40,19 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
     expect(screen.getByText('Bitcoin Core is still in initial block download.')).toBeTruthy();
     expect(screen.getByText(guidance.bitcoin)).toBeTruthy();
+  });
+
+  it('should explain seats that are not serving their federations', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: false, report: report({ seats: 'seats_not_serving' }) }}
+      />
+    );
+
+    expect(screen.getByText(labels.seats)).toBeTruthy();
+    expect(screen.getByText(outcomes.seats_not_serving)).toBeTruthy();
+    expect(screen.getByText(guidance.seats)).toBeTruthy();
+    expect(screen.queryByText(guidance.bitcoin)).toBeNull();
   });
 
   it('should explain a closed gate whose only failure is uptime', () => {

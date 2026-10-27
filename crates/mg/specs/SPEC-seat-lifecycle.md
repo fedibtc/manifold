@@ -145,6 +145,20 @@ A configured child whose local API fails every probe for 15 minutes is killed
 and respawned: the API is local, so such an outage means a wedged child, which
 would otherwise never exit on its own.
 
+Each answered probe also reads the guardian's completed-session count. A seat
+stops counting as serving its federation once two hours pass without the
+count growing. That limit is twice the one-hour session timeout MG sets on
+every child (`FM_SESSION_TIMEOUT_SECS`), after which `fedimintd` exits a stuck
+session on its own. A slow but live federation finishes each session within
+that timeout, so the limit comes from it rather than from typical session
+length, which varies by federation. The limit starts when the seat gains its
+federation (formation, import, or daemon start) and restarts on each growth. A respawned child's first
+count is only its baseline, and respawning does not restart the limit, so a
+child that `fedimintd` restarts every hour while stuck in one session stays
+not serving. The readiness seats check reads this
+([SPEC-advertisement](SPEC-advertisement.md#readiness-gate)); FA-visible
+health does not change.
+
 `GetInviteCode` reads the formed record alone and remains available while the
 child is down. A configured child's `Hello` is the sole repair path for a
 missing formed record: every spawn reports `AlreadyConfigured { invite_code }`

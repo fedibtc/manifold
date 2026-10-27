@@ -1236,6 +1236,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         } else {
             ReadinessOutcome::BitcoinSyncing
         },
+        seats: ReadinessOutcome::NotApplicable,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -2430,6 +2431,103 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(replacement.state().probe_calls, 1);
     assert_eq!(spawner.spawn_count(), spawns + 1);
+    fleet.shutdown().await;
+}
+
+/// A formed seat serves its federation only while its consensus advances:
+/// an answering API is not enough, and a respawned child does not restart
+/// the stall limit.
+#[tokio::test]
+async fn a_seat_serves_only_while_its_consensus_advances() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_400).await;
+    config.respawn.initial_backoff = Duration::from_millis(10);
+    config.respawn.consensus_stall_after = Duration::from_millis(1500);
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::Hello {
+            proto: PROTOCOL_VERSION,
+            code_version: "fake-fedimintd".to_owned(),
+            state: ChildState::AlreadyConfigured {
+                invite_code: invite,
+            },
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 145).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    // A seat without a federation has nothing to serve.
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::NotApplicable);
+
+    // Formation long after the seat started still gets the full limit.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let fake = fleet
+        .form_fake_child(
+            &seat_id,
+            FakeApiState {
+                session_count: 5,
+                ..running_federation(0, None)
+            },
+        )
+        .await;
+    seat.watchdog_tick_for_test().await;
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
+
+    // Healthy, but stuck in one session past the limit.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    seat.watchdog_tick_for_test().await;
+    assert!(matches!(
+        seat.report().await.unwrap(),
+        SeatReport::Active {
+            health: SeatHealth::Healthy,
+            ..
+        }
+    ));
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
+
+    // A completed session restarts the limit.
+    fake.modify_state(|state| state.session_count = 6);
+    seat.watchdog_tick_for_test().await;
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
+
+    // fedimintd exits after its session timeout and is respawned; the
+    // replacement answers at once, still in the same session.
+    let spawns = spawner.spawn_count();
+    fake.exit(255);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while spawner.spawn_count() == spawns {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the exited child is respawned");
+    let replacement = fleet
+        .configure_fake_child(
+            &seat_id,
+            FakeApiState {
+                session_count: 6,
+                ..running_federation(0, None)
+            },
+        )
+        .await;
+    seat.watchdog_tick_for_test().await;
+    seat.watchdog_tick_for_test().await;
+    assert!(matches!(
+        seat.report().await.unwrap(),
+        SeatReport::Active {
+            health: SeatHealth::Healthy,
+            ..
+        }
+    ));
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
+
+    replacement.modify_state(|state| state.session_count = 7);
+    seat.watchdog_tick_for_test().await;
+    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
     fleet.shutdown().await;
 }
 
