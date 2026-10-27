@@ -18,7 +18,10 @@ use crate::seat_process::fake::{
     FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
-use crate::seat_readiness::{ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{
+    ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeComparison, UptimePermille,
+    UptimeScores, UptimeWaitSecs,
+};
 use crate::wallet::NoWallet;
 use crate::wallet::testutil::GatedRefundWallet;
 
@@ -1116,6 +1119,58 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
         "a priced offer is discoverable before payment runtime preparation"
     );
     assert!(host.advertisement().await.is_some());
+    fleet.shutdown().await;
+}
+
+/// The advertisement reports the uptime scores the latest readiness run
+/// compared, and none before a run has recorded them.
+#[tokio::test]
+async fn advertisement_reports_the_compared_uptime_scores() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 1, 31_700).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(host.advertisement().await.expect("selling").uptime, None);
+
+    let mut compared = readiness(true);
+    compared.uptime_comparison = Some(UptimeComparison {
+        scores: UptimePermille {
+            day: 998,
+            week: 991,
+            month: 964,
+        },
+        minimums: UptimePermille {
+            day: 900,
+            week: 950,
+            month: 960,
+        },
+        wait_secs: UptimeWaitSecs {
+            day: 0,
+            week: 0,
+            month: 0,
+        },
+    });
+    fleet.set_seat_readiness(compared).await.unwrap();
+    assert_eq!(
+        host.advertisement().await.expect("selling").uptime,
+        Some(UptimePermille {
+            day: 998,
+            week: 991,
+            month: 964,
+        }),
+        "the scores, not the minimums, in their own windows",
+    );
     fleet.shutdown().await;
 }
 

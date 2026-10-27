@@ -7,7 +7,9 @@ The additive-field compatibility required by
 not yet implemented. Current typed consumers discard unknown payload fields
 during deserialization and reconstruct the payload for signature verification,
 so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients.
+proof in those clients. Until released FAs verify the payload as received, new
+advertisement data goes beside the payload, as the self-reported uptime does,
+instead of into it.
 
 ## Record justification
 
@@ -98,6 +100,26 @@ published by `mg-nostr`'s advertisement loop):
   spelling;
 - `holder_authorizations` — embedded verified trust envelopes
   ([SPEC-holder-trust-envelope](../../domain/specs/SPEC-holder-trust-envelope.md)).
+
+### Self-reported uptime
+
+The document may carry an optional `uptime_permille` object beside `payload`
+and `proof`: `{"1d", "7d", "30d"}` integers, the MG's own uptime scores in
+per-mille as its readiness gate last compared them
+([SPEC-advertisement](../../mg/specs/SPEC-advertisement.md), *Readiness gate*).
+The MG omits it until a readiness run has recorded uptime.
+
+It is outside the payload proof because released FAs decode the payload into
+a typed struct that drops unknown fields and then verify the proof over that
+re-serialized struct (see *Status*), so a new payload field would make every
+released FA reject the advertisement. Released FAs also ignore unknown
+document fields, so they accept an advertisement that carries it. The Nostr
+event signature still authenticates it: FAs verify the event and require its
+author to equal `payload.fman_id_pubkey`, the key that signs the payload.
+
+The scores are a transparency report, not a trust input or a selection hint.
+They are self-asserted, and the MG computes them from its own clock. FAs must
+not use them to admit, reject, rank, or select an MG.
 
 ### Additive evolution
 

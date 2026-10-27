@@ -180,6 +180,58 @@ fn pinned_signed_advertisement_fixture_stays_accepted() {
     );
 }
 
+/// The pinned fixture's exact signed bytes with the self-reported uptime added
+/// beside them, as a current MG publishes it.
+const FIXTURE_WITH_UPTIME: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_version":"0.8.1+fedi","federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"3FMOmhFQ0sHinyiy0bnyGzp8xFRYL4lcewDve5fn8bjlS8AMS-RUrVIxMmkIyB_4buZfOC9stXfANFyJGBghew"},"uptime_permille":{"1d":998,"7d":991,"30d":964}}"#;
+
+#[test]
+fn self_reported_uptime_sits_outside_the_payload_proof() {
+    let document = serde_json::from_str::<AdvertisementDocument>(FIXTURE_WITH_UPTIME)
+        .expect("fixture with uptime parses");
+    verify_advertisement_self_signature(&document)
+        .expect("uptime beside the payload leaves the pinned proof valid");
+    assert_eq!(
+        document.uptime_permille,
+        Some(AdvertisedUptime {
+            day: 998,
+            week: 991,
+            month: 964,
+        }),
+    );
+
+    let mut changed = document.clone();
+    changed.uptime_permille = None;
+    verify_advertisement_self_signature(&changed)
+        .expect("the payload proof does not cover the uptime");
+    assert_eq!(
+        serde_json::to_value(&document).unwrap()["uptime_permille"],
+        serde_json::json!({"1d": 998, "7d": 991, "30d": 964}),
+        "the wire names match the readiness report's",
+    );
+}
+
+#[test]
+fn released_document_shape_accepts_self_reported_uptime() {
+    /// The document type of released FAs: no `uptime_permille`, and serde's
+    /// default of ignoring unknown fields.
+    #[derive(Deserialize)]
+    struct ReleasedAdvertisementDocument {
+        payload: AdvertisementPayload,
+        proof: SchnorrSignatureProof,
+    }
+
+    let released = serde_json::from_str::<ReleasedAdvertisementDocument>(FIXTURE_WITH_UPTIME)
+        .expect("released document shape parses an advertisement with uptime");
+    // Released FAs verify over the payload they decoded; it must be the
+    // signed one unchanged.
+    verify_advertisement_self_signature(&AdvertisementDocument {
+        payload: released.payload,
+        proof: released.proof,
+        uptime_permille: None,
+    })
+    .expect("released verification still accepts the proof");
+}
+
 /// One structurally complete holder-authorization envelope at realistic
 /// worst-case size: real Schnorr signatures and digests, plus an RSA
 /// credential-proof filler matching the SDK's 2048-bit issuer modulus
@@ -287,7 +339,12 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
             .map(|_| worst_case_envelope(&holder, &issuer, mg.public_key()))
             .collect(),
     };
-    let document = sign_advertisement(payload, &mg).expect("worst-case advertisement signs");
+    let mut document = sign_advertisement(payload, &mg).expect("worst-case advertisement signs");
+    document.uptime_permille = Some(AdvertisedUptime {
+        day: 1000,
+        week: 1000,
+        month: 1000,
+    });
     let content = serde_json::to_string(&document).expect("worst-case advertisement serializes");
     let event = nostr::EventBuilder::new(nostr::Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND), content)
         .tag(nostr::Tag::identifier(MG_ADVERTISEMENT_D_TAG))

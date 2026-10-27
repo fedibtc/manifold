@@ -244,6 +244,7 @@ fn test_snapshot() -> AdvertisementSnapshot {
         plans: vec![Plan::InfiniteBestEffort {
             price_msats: 250000,
         }],
+        uptime: None,
     }
 }
 

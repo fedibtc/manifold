@@ -48,6 +48,12 @@ discovery hint rather than a capacity reservation. The payload contains:
 - the MG identity's bounded set of durably enrolled Holder authorizations and
   backing signed credentials, deduplicated by credential digest.
 
+Beside the signed payload, the document carries the uptime scores of the
+latest readiness run, when one has recorded uptime. They are a transparency
+report that FAs ignore
+([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md),
+*Self-reported uptime*).
+
 The inner document is Schnorr-signed by the Nostr identity over
 `SHA256(fedi-fman-advertisement-domain || JCS(payload))`; the Nostr event supplies
 its own signature as well. The payload identity is required to match the signing

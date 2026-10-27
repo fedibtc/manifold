@@ -104,6 +104,32 @@ pub struct AdvertisementDocument {
 
     /// MG service-key Schnorr proof over the canonical payload.
     pub proof: SchnorrSignatureProof,
+
+    /// The MG's own uptime scores, for transparency only; consumers must not
+    /// act on them (`SPEC-mg-nostr-events`, *Self-reported uptime*).
+    ///
+    /// Outside `payload` because released FAs verify the proof over the
+    /// payload as they decoded it, so a payload field they do not know breaks
+    /// the proof. The Nostr event signature still authenticates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_permille: Option<AdvertisedUptime>,
+}
+
+/// An MG's self-reported uptime scores, in permille: the exponential moving
+/// averages its readiness gate compares, rounded as the gate rounds them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdvertisedUptime {
+    /// One-day score.
+    #[serde(rename = "1d")]
+    pub day: u16,
+
+    /// Seven-day score.
+    #[serde(rename = "7d")]
+    pub week: u16,
+
+    /// Thirty-day score.
+    #[serde(rename = "30d")]
+    pub month: u16,
 }
 
 /// Unsigned MG advertisement payload (`SPEC-mg-nostr-events`, v1).
@@ -219,6 +245,7 @@ pub fn sign_advertisement(
     Ok(AdvertisementDocument {
         payload,
         proof: SchnorrSignatureProof { signature },
+        uptime_permille: None,
     })
 }
 

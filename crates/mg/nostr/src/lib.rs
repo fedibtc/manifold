@@ -561,10 +561,12 @@ async fn advertise_once(
     let Some(snapshot) = host.advertisement().await else {
         return Ok(());
     };
+    let uptime = snapshot.uptime;
     let mut payload = build_payload(snapshot, &inner.keys);
     payload.holder_authorizations = holder_authorizations;
 
-    let document = sign_advertisement(payload, &inner.keys)?;
+    let mut document = sign_advertisement(payload, &inner.keys)?;
+    document.uptime_permille = uptime.map(Into::into);
     let content = serde_json::to_string(&document).context("serialize advertisement")?;
     nostr
         .publish_event(

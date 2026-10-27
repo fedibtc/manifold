@@ -7,6 +7,7 @@
 //! telemetry.
 
 use fedi_decentralized_domain::MinUptimePercent;
+use fedi_decentralized_nostr::mg::AdvertisedUptime;
 
 /// One uptime slot: the daemon records one per readiness run, and runs at
 /// least once per slot while it is up.
@@ -90,6 +91,16 @@ pub struct UptimePermille {
     pub week: u16,
     #[serde(rename = "30d")]
     pub month: u16,
+}
+
+impl From<UptimePermille> for AdvertisedUptime {
+    fn from(scores: UptimePermille) -> Self {
+        Self {
+            day: scores.day,
+            week: scores.week,
+            month: scores.month,
+        }
+    }
 }
 
 impl From<MinUptimePercent> for UptimePermille {
