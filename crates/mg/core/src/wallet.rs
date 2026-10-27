@@ -344,9 +344,9 @@ pub trait EcashWallet: Send + Sync + 'static {
     /// Gates paid-plan availability (advertised slots), never free plans.
     async fn receivable(&self, federation_id: &FederationId) -> bool;
 
-    /// Every payment-federation client open in this process. Removed members
-    /// stay sweepable only while their retained clients remain open; use
-    /// [`Self::retained_federation_ids`] to discover dormant scopes after restart.
+    /// Every payment-federation client open in this process. After a restart
+    /// a removed member's client stays closed until a listing or sweep reopens
+    /// it; use [`Self::retained_federation_ids`] to discover such scopes.
     async fn joined_federation_ids(&self) -> Vec<FederationId>;
 
     /// Every payment-federation scope durably retained by the wallet, including
