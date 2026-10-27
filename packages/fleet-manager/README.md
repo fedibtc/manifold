@@ -101,6 +101,14 @@ may exclude `releases/`: a restored MG without it runs the image binary and
 downloads the published release again. MG owners turn updates off on the
 dashboard Health page or with `fman-cli auto-update set off`.
 
+To publish a release, push the tag `mg-v<workspace version>`. The
+`Publish MG release binaries` workflow attaches both static binaries and the
+unsigned `mg-release.json` to the GitHub release. Each signer runs
+`scripts/verify-mg-release.sh` on that file, which rebuilds every binary from
+its source commit and compares hash and size, and then signs it with
+`setup-payment-publisher sign-mg-release`. The publisher adds the signed object
+as `mg_release` to the next setup-payment publication.
+
 ## Seat iroh reachability
 
 Each seat's `fedimintd` places its iroh UDP sockets at the seat's p2p and api

@@ -1,0 +1,107 @@
+name: Publish MG release binaries
+
+# Builds the static `fleet-manager` binaries for signed hot updates and
+# attaches them to a GitHub release, together with the unsigned `mg_release`
+# object that release signers verify and sign
+# (SPEC-setup-payment-federations, "MG release"). Kept apart from the image
+# workflow so that only this workflow can write releases, and only on an
+# explicit `mg-v<version>` tag.
+on:
+  push:
+    tags:
+      - 'mg-v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  # Create the GitHub release and upload its assets.
+  contents: write
+
+jobs:
+  release:
+    name: Build and attach static binaries
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 120
+    steps:
+      # Nothing after checkout needs git authentication; do not leave the
+      # release-write token in .git/config on this shared runner.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      # The tag names the version MGs compare against their own; it must be
+      # the version the binaries report.
+      - name: Check the tag against the workspace version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(awk '/^\[workspace.package\]/ { in_pkg = 1; next }
+                         /^\[/ { in_pkg = 0 }
+                         in_pkg && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
+          if [ "$TAG" != "mg-v$version" ]; then
+            echo "ERROR: tag $TAG does not match workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: fedibtc
+          skipPush: true
+        continue-on-error: true
+
+      # Both architectures cross-build from x86_64.
+      - name: Build static binaries
+        run: |
+          set -euo pipefail
+          nix build --accept-flake-config -L .#fleet-manager-static-x86_64 -o result-x86_64
+          nix build --accept-flake-config -L .#fleet-manager-static-aarch64 -o result-aarch64
+
+      - name: Write release assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mg-release"
+          binaries='{}'
+          for arch in x86_64 aarch64; do
+            name="fleet-manager-$VERSION-$arch-linux-musl"
+            cp "result-$arch/bin/fleet-manager" "$RUNNER_TEMP/mg-release/$name"
+            sha256=$(sha256sum "$RUNNER_TEMP/mg-release/$name" | cut -d' ' -f1)
+            size=$(stat -c %s "$RUNNER_TEMP/mg-release/$name")
+            url="https://github.com/$REPOSITORY/releases/download/$TAG/$name"
+            binaries=$(nix run nixpkgs#jq -- -c \
+              --arg arch "$arch" --arg sha256 "$sha256" --argjson size "$size" --arg url "$url" \
+              '. + {($arch): {sha256: $sha256, size: $size, url: $url}}' <<< "$binaries")
+          done
+          nix run nixpkgs#jq -- -n \
+            --arg commit "$COMMIT" --argjson binaries "$binaries" \
+            '{source_commit: $commit, binaries: $binaries, signatures: []}' \
+            > "$RUNNER_TEMP/mg-release/mg-release.json"
+          cat "$RUNNER_TEMP/mg-release/mg-release.json"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          nix run nixpkgs#gh -- release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --title "MG $TAG" \
+            --notes "Static fleet-manager binaries for signed hot updates. Signers: verify with scripts/verify-mg-release.sh before signing mg-release.json." \
+            "$RUNNER_TEMP"/mg-release/*
+
+      - name: Clean up build roots
+        if: always()
+        run: |
+          rm -f result-x86_64 result-aarch64
+          rm -rf "$RUNNER_TEMP/mg-release"
