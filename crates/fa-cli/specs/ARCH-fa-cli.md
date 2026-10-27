@@ -226,8 +226,12 @@ approval never leaves it. A paid seat takes the same payment-wallet flags as
 `resume`, and `--payment-federation-id` is the payer. `transfer resume` calls
 `fa-client::resume_guardian_transfer` without a reconciliation, because the
 seat list can lag consensus during a transfer. It takes the payment-wallet
-flags too, for an interrupted purchase. `transfer status` is a storage-only
-projection. All four use the maintenance timing flags.
+flags too, for an interrupted purchase. `transfer replace` takes the same
+arguments as `transfer start`, but runs a replacement check first and starts
+the transfer through `fa-client::request_guardian_replacement` with that
+check's receipt for the seat, so it refuses a guardian that is not eligible
+now. `transfer status` is a storage-only projection. All five use the
+maintenance timing flags.
 
 Identity and state persist in `--state-dir`; secret-key bytes are never
 printed or logged. This disposable local state supports development and E2E
@@ -262,7 +266,7 @@ consensus readback. Every successful liquidity subcommand likewise writes exactl
 one stdout JSON value: discovery writes `{providers,rejected}`, request/resume/
 status write one `LiquidityOperationSnapshot`, and list writes one
 `LiquidityOperationPage`. `transfer preview` writes `{seat,validUntil}` with
-one preview seat row. `transfer start`, `resume`, and `status` write one
+one preview seat row. `transfer start`, `replace`, `resume`, and `status` write one
 transfer object with `seatIndex`, `sourceFmanPubkey`, `sourceSeatId`,
 `destinationFmanPubkey`, `destinationSeatId`, and the
 lower-snake-case `phase`, or `null` when no transfer is open.
@@ -287,7 +291,6 @@ the local caller; wallet root-secret bytes are never rendered.
 
 `replacement-candidates` asks `fa-client` for eligible seats and reasons.
 `--watch` drives the library's hourly checker and prints each successful
-snapshot; the CLI does not schedule its own polls. `--request-seat` presents
-that same check's opaque receipt to the replacement stub, which currently
-returns not implemented without buying or transferring a seat. JSON contains
-only display data, never receipts; approvals are not portable between runs.
+snapshot; the CLI does not schedule its own polls. `transfer replace` acts on
+a candidate (see Guardian transfer). JSON contains only display data, never
+receipts; approvals are not portable between runs.

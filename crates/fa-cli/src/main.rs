@@ -132,9 +132,6 @@ enum Command {
         /// Keep running fa-client's hourly checks until interrupted.
         #[arg(long)]
         watch: bool,
-        /// Present this seat's eligibility receipt to the replacement stub.
-        #[arg(long, conflicts_with = "watch")]
-        request_seat: Option<u16>,
     },
     /// Move one guardian of the formed federation onto a new seat.
     Transfer(TransferArgs),
@@ -182,6 +179,9 @@ enum TransferCommand {
     Preview,
     /// Buy a seat on a fresh MG and start to move one guardian onto it.
     Start(Box<TransferStartArgs>),
+    /// Like `start`, but only for a guardian that a replacement check finds
+    /// eligible now; the check's receipt authorizes the start.
+    Replace(Box<TransferStartArgs>),
     /// Continue the open guardian transfer, including an interrupted purchase.
     Resume(ResumeArgs),
     /// Print the open guardian transfer without network access.
@@ -1329,10 +1329,7 @@ async fn run(
             let selection = query.preview_mg_selection(&request, options).await?;
             output.selection_preview(&selection, format)?;
         }
-        Command::ReplacementCandidates {
-            watch,
-            request_seat,
-        } => {
+        Command::ReplacementCandidates { watch } => {
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client_with_fee_account_provider(
@@ -1367,12 +1364,6 @@ async fn run(
             } else {
                 let check = client.check_replacement_candidates().await?;
                 output.replacement_candidates(&check, format)?;
-                if let Some(seat) = request_seat {
-                    let receipt = check
-                        .receipt(seat)
-                        .context("guardian is not eligible for replacement")?;
-                    client.request_guardian_replacement(receipt).await?;
-                }
             }
         }
         Command::Maintenance(_) => {
@@ -1422,6 +1413,7 @@ async fn run(
         }
         Command::Transfer(transfer) => {
             let options = transfer.options()?;
+            let replace = matches!(transfer.command, TransferCommand::Replace(_));
             match transfer.command {
                 TransferCommand::Preview => {
                     let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
@@ -1431,7 +1423,7 @@ async fn run(
                     endpoint.close().await;
                     output.transfer_preview(&result?, format)?;
                 }
-                TransferCommand::Start(start) => {
+                TransferCommand::Start(start) | TransferCommand::Replace(start) => {
                     let completion_callback = start
                         .completion_callback_url_file
                         .as_ref()
@@ -1453,19 +1445,45 @@ async fn run(
                     // Reconcile first: the approval below is short-lived.
                     let result = async {
                         client.resume().await?;
+                        let receipt = if replace {
+                            let check = client.check_replacement_candidates().await?;
+                            Some(
+                                check
+                                    .receipt(start.seat_index)
+                                    .context("the guardian is not eligible for replacement")?
+                                    .clone(),
+                            )
+                        } else {
+                            None
+                        };
                         let approval = client
                             .preview_transfer_destination(MgDiscoveryOptions::default())
                             .await?
                             .approve(start.max_msats)?;
-                        client
-                            .start_guardian_transfer(
-                                start.seat_index,
-                                approval,
-                                payer,
-                                completion_callback,
-                                options,
-                            )
-                            .await
+                        anyhow::Ok(match receipt {
+                            Some(receipt) => {
+                                client
+                                    .request_guardian_replacement(
+                                        &receipt,
+                                        approval,
+                                        payer,
+                                        completion_callback,
+                                        options,
+                                    )
+                                    .await?
+                            }
+                            None => {
+                                client
+                                    .start_guardian_transfer(
+                                        start.seat_index,
+                                        approval,
+                                        payer,
+                                        completion_callback,
+                                        options,
+                                    )
+                                    .await?
+                            }
+                        })
                     }
                     .await;
                     endpoint.close().await;
@@ -2224,7 +2242,7 @@ impl WalletRootSecret {
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Transfer(TransferArgs {
-                command: TransferCommand::Start(args),
+                command: TransferCommand::Start(args) | TransferCommand::Replace(args),
                 ..
             }) => args.payment.wallet_secret_file.as_ref(),
             Command::Transfer(TransferArgs {
@@ -4610,16 +4628,27 @@ mod replacement_command_tests {
     use super::*;
 
     #[test]
-    fn replacement_watch_cannot_also_request_a_transfer() {
+    fn transfer_replace_takes_the_start_arguments() {
+        let args = AppArgs::try_parse_from([
+            "fa-cli",
+            "transfer",
+            "replace",
+            "--seat-index",
+            "2",
+            "--max-msats",
+            "0",
+        ])
+        .unwrap();
+        let Command::Transfer(TransferArgs {
+            command: TransferCommand::Replace(start),
+            ..
+        }) = args.command
+        else {
+            panic!("transfer replace parses as a replacement");
+        };
+        assert_eq!((start.seat_index, start.max_msats), (2, 0));
         assert!(
-            AppArgs::try_parse_from([
-                "fa-cli",
-                "replacement-candidates",
-                "--watch",
-                "--request-seat",
-                "0"
-            ])
-            .is_err()
+            AppArgs::try_parse_from(["fa-cli", "transfer", "replace", "--max-msats", "0"]).is_err()
         );
     }
 

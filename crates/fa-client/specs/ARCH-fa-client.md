@@ -658,10 +658,14 @@ result and its original timestamp through refresh errors, clearing it when its
 federation context is no longer ready. Each result carries its own opaque receipts.
 A receipt held for confirmation survives background refresh; it cannot be
 constructed or deserialized by a caller, is bound to this client instance and
-exact federation/seat, and is lost on restart. The replacement entry point
-validates that binding without rechecking health. It currently stops at a
-`NotImplemented` stub before any purchase or transfer. Once integrated, starting
-must persist the transfer; resume relies on that operation, not an unused receipt.
+exact federation/seat, and is lost on restart. `request_guardian_replacement`
+validates that binding without rechecking health, then starts a guardian
+transfer of the receipt's seat with the caller's destination approval, payer,
+and callback, exactly as `start_guardian_transfer` does (below). An invalid
+receipt is `ReplacementStartError::InvalidReceipt`, before any purchase or
+transfer row; a failed start is `ReplacementStartError::Transfer` with the
+transfer's error. The started transfer's row authorizes resume, not the
+receipt.
 
 ## Guardian transfer
 

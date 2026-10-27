@@ -245,8 +245,12 @@ that approval's Fedimint line, size, and exclusions describe other
 guardians. The start also checks again, against the guardians it has now,
 that the destination is no MG or badge holder that hosts or hosted a peer
 of the federation, and that it shares no service key with a current
-guardian. Re-check this when the
-approval gains or loses a field, or when the start reads guardians from a
+guardian. `request_guardian_replacement` adds a replacement
+receipt in front of the same start: the receipt is bound to this client
+opening, the federation, and the guardian's seat, so it can start only the
+move of the guardian the caller was shown, and a receipt from another client
+or an earlier opening is refused before any purchase or transfer row. Re-check
+this when the approval gains or loses a field, or when the start reads guardians from a
 different source than the preview.
 
 ## Durable ordering
