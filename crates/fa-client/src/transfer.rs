@@ -17,6 +17,11 @@
 //! source may have stopped and handed over the guardian, and only a grant for
 //! the same move recovers it, so the seat is never offered to another
 //! guardian. A grant has no expiry.
+//!
+//! The FA backup never names an open transfer. It changes only when the
+//! seat list names the destination. A device lost before then restores the
+//! old seat list, and if consensus already names the destination, the
+//! restored FA cannot reconcile that federation. Both cases are accepted.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,8 +81,7 @@ pub enum GuardianTransferPhase {
     /// The destination waits for the source MG to hand over the guardian.
     AwaitingSource,
     /// The guardian runs on the destination. Its new seat binding and fee
-    /// recipient are not confirmed in consensus yet. Before the first vote,
-    /// the FA backup with this transfer reaches its relays.
+    /// recipient are not confirmed in consensus yet.
     PublishingBinding,
     /// Consensus names the destination. The source MG has not deleted the
     /// old guardian data yet.
@@ -143,29 +147,6 @@ impl StoredGuardianTransfer {
         Self {
             stage: TransferStage::Moving(moving.clone()),
             ..self.clone()
-        }
-    }
-
-    /// What a backup keeps of this transfer: its destination, only while the
-    /// FA votes it into consensus. A vote can reach consensus before the
-    /// backup with the new seat list, and a restore must then still find the
-    /// destination. Before then a lost device loses the move, as a lost
-    /// device loses a formation that has not formed yet.
-    pub(crate) fn backup(&self) -> Option<crate::backup::FaBackupTransfer> {
-        match &self.stage {
-            TransferStage::Moving(StoredMove {
-                destination,
-                phase: StoredTransferPhase::Binding,
-                ..
-            }) => Some(crate::backup::FaBackupTransfer {
-                seat_index: self.seat_index,
-                destination: crate::backup::FaBackupSeat {
-                    mg_identity: destination.mg_id,
-                    seat_id: destination.seat_id.clone(),
-                    locator: destination.locator.clone(),
-                },
-            }),
-            _ => None,
         }
     }
 
@@ -374,14 +355,6 @@ where
             }
         }
         if matches!(moving.phase, StoredTransferPhase::Binding) {
-            // A restore must find the destination once a vote may reach
-            // consensus, so no vote leaves before the relays hold the backup
-            // that names it.
-            if !self.transfer_backup_confirmed(run).await? {
-                return Ok(transfer
-                    .moved(&moving)
-                    .view(GuardianTransferPhase::PublishingBinding));
-            }
             // The seat list may be stale after a reopen: consensus can name
             // the destination already. The readback below confirms the moved
             // seat itself, so the transfer does not wait for a full
@@ -549,19 +522,11 @@ where
         }
     }
 
-    /// Wait until the relays confirm the current backup, at most until the
-    /// run ends.
-    async fn transfer_backup_confirmed(&self, run: DriverRun<'_>) -> FaResult<bool> {
-        self.inner
-            .backup_publication
-            .await_current_backup(&self.inner.store, run.deadline())
-            .await
-    }
-
-    /// Put a transfer's destination in place of its source when consensus
-    /// shows the move done but the seat list still names the source. That
-    /// happens when this device lost the run before it recorded the move, or
-    /// restored a backup taken before then.
+    /// Advance this device's open transfer to `RemovingSource` when
+    /// consensus shows the move done but the seat list still names the
+    /// source. That happens when the run ended after the vote and before it
+    /// recorded the move. The rebind puts the destination in the seat list,
+    /// and the transfer still removes the source.
     pub(crate) async fn adopt_transferred_seat(
         &self,
         fa_id: FaId,
@@ -569,106 +534,34 @@ where
         bindings: &[fedi_decentralized_domain::VerifiedSeatBinding],
         run: DriverRun<'_>,
     ) -> FaResult<crate::backup::FaBackupPayload> {
-        let open = self.inner.store.load_guardian_transfer().await?;
-        let (seat_index, destination, open) = match (open, &payload.transfer) {
-            (Some(transfer), _) => match &transfer.stage {
-                TransferStage::Moving(moving) => (
-                    transfer.seat_index,
-                    moving.destination.clone(),
-                    Some(transfer.clone()),
-                ),
-                TransferStage::Buying(_) => return Ok(payload),
-            },
-            (None, None) => return Ok(payload),
-            (None, Some(backed_up)) => (
-                backed_up.seat_index,
-                restored_destination(&backed_up.destination),
-                None,
-            ),
+        let Some(transfer) = self.inner.store.load_guardian_transfer().await? else {
+            return Ok(payload);
         };
-        let source = payload.seats.get(usize::from(seat_index)).ok_or_else(|| {
-            FaError::Storage("the transferred seat index is out of range".to_owned())
-        })?;
+        let TransferStage::Moving(mut moving) = transfer.stage.clone() else {
+            return Ok(payload);
+        };
+        let source = payload
+            .seats
+            .get(usize::from(transfer.seat_index))
+            .ok_or_else(|| {
+                FaError::Storage("the transferred seat index is out of range".to_owned())
+            })?;
         let named = |mg_id: PublicKey| {
             bindings
                 .iter()
                 .any(|binding| binding.mg_pubkey.0 == mg_id.to_string())
         };
-        if named(source.mg_identity) || !named(destination.mg_id) {
+        if named(source.mg_identity) || !named(moving.destination.mg_id) {
             return Ok(payload);
         }
-        match open {
-            // This device still drives the move: advance it with the seat, so
-            // its row no longer backs up a destination the seat list names,
-            // and it still removes the source.
-            Some(transfer) => {
-                let TransferStage::Moving(mut moving) = transfer.stage.clone() else {
-                    unreachable!("matched a moving transfer above");
-                };
-                moving.phase = StoredTransferPhase::RemovingSource;
-                run.lease()
-                    .write_guardian_transfer(
-                        fa_id,
-                        GuardianTransferWrite::Rebind(transfer.moved(&moving)),
-                    )
-                    .await?;
-            }
-            None => {
-                self.inner
-                    .store
-                    .adopt_transferred_seat(fa_id, seat_index, &source.seat_id, &destination)
-                    .await?;
-            }
-        }
-        self.inner.store.formed_federation_payload(fa_id).await
-    }
-
-    /// Open the backed-up transfer again on a restored FA. A backup keeps a
-    /// transfer only while its guardian runs on the destination and the FA
-    /// votes it into consensus, so the reopened transfer continues there.
-    pub(crate) async fn reopen_backed_up_transfer(
-        &self,
-        fa_id: FaId,
-        snapshot: &crate::FormedFederationSnapshot,
-        payload: &crate::backup::FaBackupPayload,
-        run: DriverRun<'_>,
-    ) -> FaResult<()> {
-        let Some(backed_up) = &payload.transfer else {
-            return Ok(());
-        };
-        if self.inner.store.load_guardian_transfer().await?.is_some() {
-            return Ok(());
-        }
-        let source = payload
-            .seats
-            .get(usize::from(backed_up.seat_index))
-            .ok_or_else(|| {
-                FaError::Storage("the transferred seat index is out of range".to_owned())
-            })?;
-        let federation_id = FederationId(
-            crate::formation::invite_federation_id(&snapshot.federation_invite)?.to_string(),
-        );
-        let transfer = StoredGuardianTransfer {
-            transfer_id: FormationId(format!(
-                "{}:guardian-transfer:{}",
-                snapshot.formation_id.0,
-                now_secs()?
-            )),
-            seat_index: backed_up.seat_index,
-            source_mg_id: source.mg_identity,
-            source_locator: source.locator.clone(),
-            source_seat_id: source.seat_id.clone(),
-            federation_id,
-            completion_callback: None,
-            stage: TransferStage::Moving(StoredMove {
-                destination: restored_destination(&backed_up.destination),
-                binding: None,
-                phase: StoredTransferPhase::Binding,
-            }),
-        };
+        moving.phase = StoredTransferPhase::RemovingSource;
         run.lease()
-            .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer))
-            .await
+            .write_guardian_transfer(
+                fa_id,
+                GuardianTransferWrite::Rebind(transfer.moved(&moving)),
+            )
+            .await?;
+        self.inner.store.formed_federation_payload(fa_id).await
     }
 
     /// Fetch and check the destination's binding for the moved peer.
@@ -980,17 +873,6 @@ where
             })
             .await?;
         Ok(())
-    }
-}
-
-/// A backed-up destination, without the acceptance and holder a backup omits.
-fn restored_destination(seat: &crate::backup::FaBackupSeat) -> StoredDestinationSeat {
-    StoredDestinationSeat {
-        mg_id: seat.mg_identity,
-        locator: seat.locator.clone(),
-        seat_id: seat.seat_id.clone(),
-        guardian_fee_account: None,
-        holder: None,
     }
 }
 

@@ -746,28 +746,26 @@ names the current seats, so each refuses to start while the other is live.
 A transfer that completes puts the destination seat in the formed record in
 place of the source seat, and adds the source to the record's past hosts.
 
-The backup carries the move only in `PublishingBinding`: from when the
-destination runs the guardian until the seat list names the destination.
-Before the first vote, the FA waits, at most until the run ends, until a
-publish quorum of backup relays confirms that backup. It reports
-`PublishingBinding` while it waits. So a restore finds every move that a
-guardian voted for. A device lost before then restores a backup without the
-move, while consensus still names the source. Formation makes the same
-tradeoff: its backup starts only once the federation formed. The restored FA
-does not know of the bought seat or of a guardian that already runs on it. It
-can start another move of the same guardian, and two hosts can then run that
-guardian until their operators stop one.
+The FA backup never names an open transfer. The backup changes only when the
+rebind puts the destination in the seat list, after consensus confirmed the
+new binding, and the backup worker then publishes it as any seat-list change.
+These restore cases are accepted:
 
-A restored FA that reconciles and finds the source still in consensus opens
-the same move again at its vote. When
-consensus already names the destination, reconciliation puts the destination
-in place of the source; this also covers a device that lost its run before it
-recorded the move. If this device still has that move open, reconciliation
-advances it to `RemovingSource` in the same transaction, so its backup no
-longer carries the move and the transfer still removes the source. A restored
-FA without the open move does not know whether the source data was removed,
-so it does not send `RemoveSeat` for a move that consensus already shows. The
-FA never seals a backup that restore would refuse. An open purchase is not backed up.
+- A device lost before the vote restores the old seat list while consensus
+  names the source. The restored FA knows of no transfer. It may start another
+  move of the same guardian, and two hosts can then run that guardian.
+- A device lost after a vote reached consensus but before the relays held the
+  new seat list restores the old seat list while consensus names the
+  destination. Consensus does not hold the destination's seat id or locator,
+  so reconciliation fails and the restored FA cannot manage the federation.
+- A device lost in `RemovingSource` restores the new seat list. The restored
+  FA does not remove the source seat.
+
+When this device still has the move open and consensus already names the
+destination, for example after a run that ended between the vote and the
+rebind, reconciliation does the rebind and advances the transfer to
+`RemovingSource`, so the transfer still removes the source. The FA never
+seals a backup that restore would refuse.
 
 ## Modules
 

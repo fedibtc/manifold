@@ -15,19 +15,15 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
-It optionally contains the open guardian transfer whose destination runs the
-guardian but is not in the seats yet, which is the transfer's
-`publishing_binding` phase: the source seat index and the destination's MG
-identity, seat id, and locator. A transfer in any other phase is not backed
-up. An absent transfer is
-omitted from the encoding, so a payload without one keeps its earlier bytes
-and older readers. The writer applies the same validation as restore before
-it seals a payload: a transfer destination that is already in the seats, or
-any other payload that restore refuses, is never published.
-It lists every past host: the MG identity, and the verified badge holder
-when known, of each source that a guardian transfer moved a peer away from.
-Destination selection excludes them, because a past host may still hold its
-key share. An empty list is omitted in the same way.
+It never contains an open guardian transfer: the seats change only when a
+transfer puts its destination in the seat list, after consensus confirmed
+the new binding. It lists every past host: the MG identity, and the verified
+badge holder when known, of each source that a guardian transfer moved a peer
+away from. Destination selection excludes them, because a past host may still
+hold its key share. An empty list is omitted from the encoding, so a payload
+without one keeps its earlier bytes and older readers. The writer applies the
+same validation as restore before it seals a payload, so a payload that
+restore refuses is never published.
 
 The payload omits FA identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
@@ -55,20 +51,16 @@ per-relay workers decide whether their relay needs publication, read back,
 retry, and durably record their own last confirmed plaintext SHA, generation,
 event id, and time. To guard against relay retention pruning, each worker
 publishes a freshly resealed replacement when its relay's confirmation reaches
-15 days old, without advancing the snapshot generation. Publication blocks no
-FA operation except one: a guardian transfer votes no binding until a publish
-quorum of relays confirms the current backup, which names the transfer. The
-transfer asks for an immediate publication and reports `publishing_binding`
-while it waits. Fedi enforces one active writer.
+15 days old, without advancing the snapshot generation. Publication never
+blocks an FA operation. Fedi enforces one active writer.
 
 Restore queries every configured relay through its bounded deadline, ignores
 invalid, foreign, undecryptable, or unsupported candidates, and selects the
 authenticated payload with the highest snapshot generation among completed
-reads. A strict majority of canonical relays must complete their queries before
-FA reports a backup or no backup; fewer complete reads report an incomplete
-lookup for retry. Every such read set includes a relay of each publish quorum,
-so a restore never misses a confirmed guardian transfer. This is not proof that
-the remaining relays hold no newer backup. FA records a successful
+reads. When no authenticated payload is found, a strict majority of canonical
+relays must complete their queries before FA reports no backup; fewer complete
+reads report an incomplete lookup for retry. This is an availability policy,
+not proof that the remaining relays hold no backup. FA records a successful
 restored-or-empty lookup in its own FA database by Manifold environment.
 An authenticated import and its completion record commit in one transaction;
 an incomplete read commits neither. Reopening the same FA database skips a
@@ -86,10 +78,11 @@ manager locators and tries alternatives for the same federation without
 requiring every manager online or every seat healthy. Verified guardian
 addresses are remembered only in memory for subsequent reads; the backup and
 signed liquidity commitment remain unchanged.
-Reconciliation of a restored transfer either opens the same move again at its
-vote, while consensus names the source, or puts the destination in
-the seats, once consensus names it. The destination's guardian-fee account
-is not backed up. An open seat purchase is not backed up.
+A restored seat list that disagrees with consensus, for example because a
+guardian transfer reached consensus before its new seat list reached the
+relays, fails reconciliation. The restored FA then cannot manage the
+federation. This is an accepted loss, as for a formation lost before its
+backup.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FA expose fresh post-formed authority and hydrate the

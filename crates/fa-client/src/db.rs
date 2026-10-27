@@ -887,8 +887,6 @@ struct FormationTestHook {
 pub(crate) struct FaStore {
     database: Database,
     lease_clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    /// Signalled after each committed relay backup confirmation.
-    backup_confirmations: Arc<tokio::sync::watch::Sender<()>>,
     #[cfg(test)]
     lease_acquisition_hook: LeaseTestHook,
     #[cfg(test)]
@@ -918,7 +916,6 @@ impl FaStore {
         Self {
             database,
             lease_clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
-            backup_confirmations: Arc::new(tokio::sync::watch::Sender::new(())),
             #[cfg(test)]
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
@@ -971,17 +968,12 @@ impl FaStore {
             }
         }
         drop(entries);
-        let transfer = dbtx
-            .get_value(&GuardianTransferKey)
-            .await
-            .and_then(|transfer| transfer.backup());
         let mut payload = crate::backup::FaBackupPayload {
             schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
             snapshot_generation: 0,
             federation_invite,
             seats,
             liquidity,
-            transfer,
             past_hosts,
         };
         let semantic_hash = crate::backup::semantic_hash(&payload)?;
@@ -1238,16 +1230,7 @@ impl FaStore {
         .await;
         dbtx.commit_tx_result().await.map_err(|_| {
             FaError::Storage("persisting FA relay backup confirmation failed".to_owned())
-        })?;
-        self.backup_confirmations.send_replace(());
-        Ok(())
-    }
-
-    /// Changes after the next committed relay backup confirmation. Subscribe
-    /// before reading the confirmations, so one committed in between is not
-    /// missed.
-    pub(crate) fn subscribe_backup_confirmations(&self) -> tokio::sync::watch::Receiver<()> {
-        self.backup_confirmations.subscribe()
+        })
     }
 
     pub(crate) async fn insert_liquidity_operation(
@@ -1431,7 +1414,6 @@ impl FaStore {
         Self {
             database,
             lease_clock,
-            backup_confirmations: Arc::new(tokio::sync::watch::Sender::new(())),
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_renewal_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_release_commit_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -3425,22 +3407,6 @@ impl FaStore {
             .ok_or_else(|| FaError::InvalidIntent("formation lease bound is too large".to_owned()))
     }
 
-    /// Put a backed-up transfer's destination in place of a restored seat,
-    /// after consensus showed that the transfer moved the guardian there.
-    pub(crate) async fn adopt_transferred_seat(
-        &self,
-        fa_id: FaId,
-        seat_index: u16,
-        source_seat_id: &SeatId,
-        destination: &crate::seat_purchase::StoredDestinationSeat,
-    ) -> FaResult<()> {
-        let mut dbtx = self.database.begin_transaction().await;
-        rebind_federation_seat(&mut dbtx, fa_id, seat_index, source_seat_id, destination).await?;
-        dbtx.commit_tx_result().await.map_err(|_| {
-            FaError::Storage("persisting the adopted destination seat failed".to_owned())
-        })
-    }
-
     /// Who may hold a key share of the formed federation, besides its
     /// current MGs: the known badge holders of its seats and of its past
     /// hosts, and the past hosts' MGs.
@@ -3982,8 +3948,6 @@ async fn rebind_federation_seat(
                 .push((destination.seat_id.clone(), holder));
         }
     }
-    // A transfer from a backup is done once its destination is in the seats.
-    formed.payload.transfer = None;
     dbtx.insert_entry(&FormedFederationKey, &formed).await;
     Ok(())
 }
@@ -4455,7 +4419,6 @@ async fn record_formed_federation(
                     .ok_or_else(|| FaError::Storage("formed FA record has no invite".to_owned()))?,
                 seats,
                 liquidity: None,
-                transfer: None,
                 past_hosts: Vec::new(),
             },
             formation_id: formation.formation_id,

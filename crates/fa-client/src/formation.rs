@@ -3978,8 +3978,6 @@ where
             context.matches_commitment(commitment)?;
         }
 
-        self.reopen_backed_up_transfer(fa_id, &snapshot, &payload, run)
-            .await?;
         self.remember_read_invite(&snapshot.federation_invite, &consensus)
             .await?;
         self.inner
@@ -4818,7 +4816,7 @@ async fn retry_quote_attempt(deadline: Instant, delay: &mut Duration) -> Result<
     Ok(())
 }
 
-pub(crate) fn select_timer_duration(
+fn select_timer_duration(
     configured: Duration,
     run_remaining: Duration,
     operation: &'static str,

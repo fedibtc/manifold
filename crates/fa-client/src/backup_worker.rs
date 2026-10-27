@@ -5,11 +5,11 @@ use std::{sync::Arc, time::Duration};
 use bitcoin_hashes::sha256;
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
-use fedimint_core::runtime::{Instant, sleep, timeout};
+use fedimint_core::runtime::{Instant, sleep};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
-use tokio::sync::{Notify, OwnedMutexGuard, watch};
+use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
 use crate::{
@@ -21,83 +21,6 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// The relays that must hold a backup before a guardian transfer goes on. Without relays nothing can be recovered, so nothing is awaited.
-#[derive(Default)]
-pub(crate) struct BackupPublication {
-    relays: Vec<String>,
-    quorum: usize,
-    wake: Arc<Notify>,
-}
-
-impl BackupPublication {
-    pub(crate) fn new(relays: &[RelayUrl], quorum: usize) -> Self {
-        Self {
-            relays: relays.iter().map(ToString::to_string).collect(),
-            quorum,
-            wake: Arc::default(),
-        }
-    }
-
-    pub(crate) fn wake(&self) -> Arc<Notify> {
-        self.wake.clone()
-    }
-
-    /// Whether a publish quorum of relays confirmed the current backup. If
-    /// not, ask the coordinator to publish it now.
-    pub(crate) async fn current_backup_confirmed(&self, store: &FaStore) -> FaResult<bool> {
-        if self.quorum == 0 {
-            return Ok(true);
-        }
-        let document_hash = store.backup_payload().await?.document_hash;
-        let mut confirmed = 0;
-        for relay in &self.relays {
-            if store
-                .backup_confirmation(relay)
-                .await
-                .is_some_and(|confirmation| confirmation.document_hash == document_hash)
-            {
-                confirmed += 1;
-            }
-        }
-        if confirmed < self.quorum {
-            self.wake.notify_one();
-        }
-        Ok(self.quorum <= confirmed)
-    }
-
-    /// Wait until a publish quorum of relays confirms the current backup, at
-    /// most until `deadline`. Each committed relay confirmation wakes the
-    /// wait, and the store's confirmations decide. The backup worker prepares
-    /// the same backup at the same time, so only the last check counts.
-    pub(crate) async fn await_current_backup(
-        &self,
-        store: &FaStore,
-        deadline: Instant,
-    ) -> FaResult<bool> {
-        loop {
-            // Subscribe before checking, so a confirmation committed in
-            // between still wakes the wait.
-            let mut confirmations = store.subscribe_backup_confirmations();
-            let attempt = self.current_backup_confirmed(store).await;
-            if matches!(attempt, Ok(true)) {
-                return attempt;
-            }
-            let Ok(remaining) = crate::formation::select_timer_duration(
-                deadline.saturating_duration_since(Instant::now()),
-                deadline.saturating_duration_since(Instant::now()),
-                "waiting for the FA backup relays",
-            ) else {
-                return attempt;
-            };
-            match timeout(remaining, confirmations.changed()).await {
-                Ok(Ok(())) => {}
-                // The store outlives this wait, so the sender stays.
-                Ok(Err(_)) | Err(_) => return attempt,
-            }
-        }
-    }
-}
 
 #[derive(Clone)]
 struct Desired {
@@ -111,7 +34,6 @@ pub(crate) fn spawn_workers(
     store: FaStore,
     root: DerivableSecret,
     relays: Vec<RelayUrl>,
-    wake: Arc<Notify>,
 ) {
     if relays.is_empty() {
         return;
@@ -126,22 +48,23 @@ pub(crate) fn spawn_workers(
                 let identity = (prepared.document_hash, prepared.created_at);
                 if last != Some(identity)
                     && let Ok(sealed) = keys.seal(&prepared.payload)
-                    && let Ok(event) = backup_event(&keys, &sealed, prepared.created_at)
                 {
-                    desired_tx.send_replace(Some(Arc::new(Desired {
-                        event,
-                        document_hash: prepared.document_hash,
-                        generation: prepared.payload.snapshot_generation,
-                    })));
-                    last = Some(identity);
+                    let builder =
+                        EventBuilder::new(Kind::Custom(FA_BACKUP_EVENT_KIND), sealed.content())
+                            .tags([Tag::identifier(FA_BACKUP_D_TAG)]);
+                    let builder =
+                        builder.custom_created_at(Timestamp::from_secs(prepared.created_at));
+                    if let Ok(event) = builder.sign_with_keys(keys.author()) {
+                        desired_tx.send_replace(Some(Arc::new(Desired {
+                            event,
+                            document_hash: prepared.document_hash,
+                            generation: prepared.payload.snapshot_generation,
+                        })));
+                        last = Some(identity);
+                    }
                 }
             }
-            // A guardian transfer wakes the scan: its binding vote waits for
-            // this publication.
-            tokio::select! {
-                () = sleep(SCAN_INTERVAL) => {}
-                () = wake.notified() => {}
-            }
+            sleep(SCAN_INTERVAL).await;
         }
     });
 
@@ -153,18 +76,6 @@ pub(crate) fn spawn_workers(
             relay_worker(store, relay, desired),
         );
     }
-}
-
-/// The signed relay event that carries `sealed`.
-pub(crate) fn backup_event(
-    keys: &FaBackupKeys,
-    sealed: &EncryptedFaBackup,
-    created_at: u64,
-) -> Result<Event, nostr_sdk::event::builder::Error> {
-    EventBuilder::new(Kind::Custom(FA_BACKUP_EVENT_KIND), sealed.content())
-        .tags([Tag::identifier(FA_BACKUP_D_TAG)])
-        .custom_created_at(Timestamp::from_secs(created_at))
-        .sign_with_keys(keys.author())
 }
 
 async fn relay_worker(
@@ -303,7 +214,7 @@ pub(crate) fn spawn_recovery(
                 &root,
                 fa_id,
                 profile.nostr_relays().as_urls(),
-                profile.fa_backup_read_quorum(),
+                profile.fa_backup_empty_read_quorum(),
                 &key,
             )
             .await;
@@ -338,13 +249,14 @@ pub(crate) fn spawn_recovery(
     });
 }
 
-// Either outcome is admitted only after a majority completed. A backup that
-// a publication quorum confirmed is then among the reads, so a pending
-// guardian move is never restored from an older backup. The remaining relays
-// are still queried until their deadlines.
-fn require_read_quorum(successful_reads: usize, required_reads: usize) -> FaResult<()> {
+// Empty is admitted only after a majority completed. The remaining relays
+// are still queried until their deadlines to find a possible backup.
+fn no_backup_or_unavailable(
+    successful_reads: usize,
+    required_reads: usize,
+) -> FaResult<BackupRestoreOutcome> {
     if required_reads > 0 && successful_reads >= required_reads {
-        Ok(())
+        Ok(BackupRestoreOutcome::NoBackup)
     } else {
         Err(FaError::Registry(
             "FA backup relay lookup incomplete".to_owned(),
@@ -389,23 +301,13 @@ pub(crate) async fn restore_from_relays(
                 .ok()
         }
     });
-    let reads = futures::future::join_all(queries).await;
-    restore_from_reads(store, &keys, fa_id, reads, required_reads, recovery).await
-}
-
-/// Restore from the relays' answers: one entry per relay, `None` for a read
-/// that failed.
-pub(crate) async fn restore_from_reads(
-    store: &FaStore,
-    keys: &FaBackupKeys,
-    fa_id: FaId,
-    reads: Vec<Option<Vec<Event>>>,
-    required_reads: usize,
-    recovery: &RecoveryCompletedKey,
-) -> FaResult<BackupRestoreOutcome> {
     let mut best = None;
     let mut successful_reads = 0;
-    for events in reads.into_iter().flatten() {
+    for events in futures::future::join_all(queries)
+        .await
+        .into_iter()
+        .flatten()
+    {
         successful_reads += 1;
         for event in events {
             if event.pubkey != keys.public_key() || event.verify().is_err() {
@@ -427,10 +329,10 @@ pub(crate) async fn restore_from_reads(
             }
         }
     }
-    require_read_quorum(successful_reads, required_reads)?;
     let Some(payload) = best else {
+        let outcome = no_backup_or_unavailable(successful_reads, required_reads)?;
         store.complete_empty_recovery(recovery).await?;
-        return Ok(BackupRestoreOutcome::NoBackup);
+        return Ok(outcome);
     };
     store
         .restore_backup_payload_with_completion(fa_id, payload, Some(recovery))
@@ -445,12 +347,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn restore_requires_a_complete_read_quorum() {
-        require_read_quorum(2, 2).unwrap();
-        require_read_quorum(3, 2).unwrap();
+    fn empty_restore_requires_a_complete_read_quorum() {
+        assert_eq!(
+            no_backup_or_unavailable(2, 2).unwrap(),
+            BackupRestoreOutcome::NoBackup
+        );
+        assert_eq!(
+            no_backup_or_unavailable(3, 2).unwrap(),
+            BackupRestoreOutcome::NoBackup
+        );
         for (completed, required) in [(0, 1), (1, 2), (0, 2)] {
             assert!(matches!(
-                require_read_quorum(completed, required),
+                no_backup_or_unavailable(completed, required),
                 Err(FaError::Registry(_))
             ));
         }

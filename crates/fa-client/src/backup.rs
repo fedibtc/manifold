@@ -38,24 +38,10 @@ pub(crate) struct FaBackupPayload {
     pub(crate) seats: Vec<FaBackupSeat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) liquidity: Option<RequestLiquidityDetailsCommitmentV1>,
-    /// The open guardian transfer while the FA votes its destination into
-    /// consensus, before `seats` names it. Omitted when absent, so a payload without one keeps its
-    /// earlier bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) transfer: Option<FaBackupTransfer>,
     /// MGs that hosted a peer before a guardian transfer moved it away.
-    /// Omitted when empty, like `transfer`.
+    /// Omitted when empty, so a payload without one keeps its earlier bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) past_hosts: Vec<FaBackupPastHost>,
-}
-
-/// A guardian that runs on `destination` and whose binding the FA votes in
-/// place of `seats[seat_index]`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FaBackupTransfer {
-    pub(crate) seat_index: u16,
-    pub(crate) destination: FaBackupSeat,
 }
 
 /// An MG that may still hold the key share of a peer it no longer hosts.
@@ -241,14 +227,6 @@ fn validate_payload(payload: &FaBackupPayload) -> FaResult<()> {
             return Err(invalid("backup seats are not unique"));
         }
     }
-    if let Some(transfer) = &payload.transfer
-        && (usize::from(transfer.seat_index) >= payload.seats.len()
-            || identities.contains(&transfer.destination.mg_identity)
-            || seat_ids.contains(&transfer.destination.seat_id)
-            || service_keys.contains(&transfer.destination.locator.service_pubkey))
-    {
-        return Err(invalid("backup transfer does not fit its seats"));
-    }
     Ok(())
 }
 
@@ -285,7 +263,6 @@ mod tests {
             federation_invite: InviteCode("invite".into()),
             seats: vec![],
             liquidity: None,
-            transfer: None,
             past_hosts: Vec::new(),
         };
         let mut payload = payload;
@@ -339,13 +316,9 @@ mod tests {
             schema_version: BACKUP_SCHEMA_VERSION,
             snapshot_generation: 4,
             federation_invite: InviteCode("invite".into()),
-            seats: vec![seat.clone()],
+            // The same seat twice.
+            seats: vec![seat.clone(), seat],
             liquidity: None,
-            // The destination is in the seat list already.
-            transfer: Some(FaBackupTransfer {
-                seat_index: 0,
-                destination: seat,
-            }),
             past_hosts: Vec::new(),
         };
         assert!(keys(7).seal(&payload).is_err());
@@ -359,7 +332,6 @@ mod tests {
             federation_invite: InviteCode("x".repeat(PADDED_PLAINTEXT_LEN)),
             seats: vec![],
             liquidity: None,
-            transfer: None,
             past_hosts: Vec::new(),
         };
         assert!(keys(1).seal(&payload).is_err());

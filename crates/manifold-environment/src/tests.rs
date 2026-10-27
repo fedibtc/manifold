@@ -491,23 +491,20 @@ fn production_pins_each_public_authority_without_committing_secrets() {
 }
 
 #[test]
-fn fa_backup_quorums_track_the_canonical_relay_set() {
+fn fa_backup_empty_read_quorum_tracks_the_canonical_relay_set() {
     let staging = ManifoldEnvironment::Staging
         .profile_with_env(|_| None)
         .unwrap();
     let production = ManifoldEnvironment::Production
         .profile_with_env(|_| None)
         .unwrap();
-    assert_eq!(staging.fa_backup_read_quorum(), 1);
-    assert_eq!(staging.fa_backup_publish_quorum(), 1);
-    assert_eq!(production.fa_backup_read_quorum(), 2);
-    assert_eq!(production.fa_backup_publish_quorum(), 2);
+    assert_eq!(staging.fa_backup_empty_read_quorum(), 1);
+    assert_eq!(production.fa_backup_empty_read_quorum(), 2);
     let development = ManifoldEnvironment::Development
         .profile_with_env(|name| (name == DEV_NOSTR_RELAYS_ENV).then(||
             "wss://relay1.example wss://relay2.example wss://relay3.example wss://relay4.example".to_owned()))
         .unwrap();
-    assert_eq!(development.fa_backup_read_quorum(), 3);
-    assert_eq!(development.fa_backup_publish_quorum(), 2);
+    assert_eq!(development.fa_backup_empty_read_quorum(), 3);
 }
 
 #[test]

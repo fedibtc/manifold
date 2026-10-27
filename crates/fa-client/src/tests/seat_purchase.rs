@@ -183,8 +183,6 @@ async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
 
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats.len(), usize::from(MIN_FEDERATION_SIZE));
-    // The move waits for its source, so the backup does not keep it yet.
-    assert_eq!(backup.transfer, None);
 }
 
 #[tokio::test]
@@ -208,18 +206,6 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
     assert_eq!(pending.destination_mg_id, test_mg_id(DESTINATION));
     assert_eq!(pending.destination_seat_id, None);
     assert!(open_purchase(&client).await.outputs_started);
-    // The paid seat is not in the backup until it exists.
-    assert_eq!(
-        client
-            .inner
-            .store
-            .backup_payload()
-            .await
-            .unwrap()
-            .payload
-            .transfer,
-        None
-    );
     let quotes_after_failure = mg_state.quote_calls.load(Ordering::SeqCst);
     let funded_after_failure = payment_state.create_calls.load(Ordering::SeqCst);
 
@@ -599,32 +585,26 @@ async fn only_one_transfer_is_open_at_a_time() {
 }
 
 #[test]
-fn a_backup_without_a_transfer_keeps_its_earlier_encoding() {
+fn a_backup_without_past_hosts_keeps_its_earlier_encoding() {
     let payload = crate::backup::FaBackupPayload {
         schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
         snapshot_generation: 1,
         federation_invite: test_invite(0),
         seats: Vec::new(),
         liquidity: None,
-        transfer: None,
         past_hosts: Vec::new(),
     };
     let json = serde_json::to_value(&payload).unwrap();
-    assert!(json.get("transfer").is_none());
     assert!(json.get("past_hosts").is_none());
-    let mut with_transfer = payload.clone();
-    with_transfer.transfer = Some(crate::backup::FaBackupTransfer {
-        seat_index: 1,
-        destination: crate::backup::FaBackupSeat {
-            mg_identity: test_mg_id(DESTINATION),
-            seat_id: SeatId::from(QuoteId([7; 32])),
-            locator: locator(DESTINATION),
-        },
-    });
+    let mut with_past_host = payload.clone();
+    with_past_host.past_hosts = vec![crate::backup::FaBackupPastHost {
+        mg_identity: test_mg_id(MOVED),
+        holder: None,
+    }];
     let mut encoded = Vec::new();
-    ciborium::into_writer(&with_transfer, &mut encoded).unwrap();
+    ciborium::into_writer(&with_past_host, &mut encoded).unwrap();
     let decoded: crate::backup::FaBackupPayload = ciborium::from_reader(&encoded[..]).unwrap();
-    assert_eq!(decoded, with_transfer);
+    assert_eq!(decoded, with_past_host);
 }
 
 pub(super) fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
