@@ -151,7 +151,7 @@ FA's shared formation idempotency key deduplicates retries and other guardians
 addressing the same hook. Delivery does not depend on a live ceremony, seat
 process, or FA polling.
 
-`GetPeerAttestation`, `ProposeFormationMeta`, `SetMetaField`, and
+`GetPeerAttestation`, `ProposeFormationMeta`, `SetMetaField`, `SetMetaFields`, and
 `RegisterGateway` are FA-signed and seat-scoped. All require a formed record
 and a healthy watchdog snapshot, then make only the substantive API call the
 verb needs; they never issue a request-scoped liveness probe. A stale
@@ -183,14 +183,15 @@ upstream setup codes: the DKG peer handshake authenticates peer endpoint keys,
 while `SeatEndpointProof` independently binds each post-DKG account attestation
 to the final config. No DKG transcript is carried by `SetMetaField`.
 
-`SetMetaField` relays a metadata proposal only for a key in a compiled,
-typed validator set; an unregistered key is refused as `MetaKeyRefused`
+`SetMetaField` and `SetMetaFields` relay metadata proposals only for keys in a
+compiled, typed validator set; an unregistered key is refused as `MetaKeyRefused`
 without reaching `fedimintd`, and a registered key whose raw value exceeds its
 per-key cap is likewise refused before any child probe. A bounded value that
 fails its semantic validator is `MetaValueInvalid`. The set contains the guardian-fee rate, the validated
 FA maintenance keys, and the Fedi app settings documented in
-[SPEC-fa-metadata-maintenance](./SPEC-fa-metadata-maintenance.md). The formation-owned trust-directory and fee-recipient keys are refused by this
-generic verb.
+[SPEC-fa-metadata-maintenance](./SPEC-fa-metadata-maintenance.md). The formation-owned trust-directory and fee-recipient keys are refused by
+these verbs. Batch validation and all-or-nothing voting follow the
+same metadata-maintenance contract.
 
 The request commits to the exact consensus merge occurrence (`Absent`, or a
 domain-separated SHA-256 over the meta module's monotone consensus revision
@@ -203,7 +204,7 @@ distinct `MetaTargetConflict` instead: rereading cannot clear it, and the
 caller must wait for consensus to move or the process to restart
 ([SPEC-fa-metadata-maintenance](./SPEC-fa-metadata-maintenance.md)).
 Otherwise it
-replaces exactly the validated string field, preserves all other fields,
+replaces exactly the validated string fields, preserves all other fields,
 canonicalizes the whole object, and submits it with the seat's admin auth.
 **Success means submitted, not live:** the module promotes a value only once
 threshold guardians submit byte-identical bytes, so the FA serializes
