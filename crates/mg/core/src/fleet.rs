@@ -178,9 +178,8 @@ impl VerifiedPayment {
 pub struct PaymentFederationStatus {
     pub federation_id: FederationId,
     /// Member of the currently admitted common setup-payment set. A
-    /// `false` here is a durable wallet leftover of a removed member. After a
-    /// restart its client may remain dormant: listing stays fail-closed, while
-    /// sweep still requires reopening work not implemented here.
+    /// `false` here is a durable wallet leftover of a removed member; after a
+    /// restart, listing and sweep reopen its client on demand.
     pub accepted: bool,
     pub receivable: bool,
     /// Explicit, fail-closed wallet value and operation projection.

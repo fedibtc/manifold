@@ -91,12 +91,20 @@ const BITCOIN_CLI_TIMEOUT: Duration = Duration::from_secs(60);
 const MINER_WALLET: &str = "default";
 const MINT_V2_REPLAY_TIMEOUT: Duration = Duration::from_secs(90);
 /// The paid run adds wallet joins, an on-chain deposit past the regtest
-/// finality delay, key-locked ecash payments, and a second formation.
+/// finality delay, key-locked ecash payments, a second formation, and two
+/// Lightning sweeps from the removed payment federation, one after an MG
+/// restart and one after a mnemonic restore.
 const PAID_FORMATION_TIMEOUT: Duration = Duration::from_secs(600);
-/// Per-seat InfiniteBestEffort price the paid test charges.
-const SEAT_PRICE_MSAT: u64 = 10_240;
+/// Per-seat InfiniteBestEffort price the paid test charges: two ecash notes
+/// (16384 + 4096 msat). One claimed payment leaves 19968 msat, of which the
+/// MG lists 14 sats as sweepable after the Defe gateway's send fees (2000 msat
+/// + 0.5% each for routing and transaction), covering
+/// [`FORMER_PAYMENT_SWEEP_MSAT`].
+const SEAT_PRICE_MSAT: u64 = 20_480;
 /// One mint-v2 denomination large enough for every seat and transaction fee.
 const FA_FUNDING_MSAT: u64 = 262_144;
+/// What each MG sweeps out of the removed setup-payment federation.
+const FORMER_PAYMENT_SWEEP_MSAT: u64 = 12_000;
 const FA_WALLET_SECRET: [u8; 64] = [42; 64];
 /// Authenticated policy locator required by kind-37707 version 1. The paid
 /// formation gate does not call it; it only proves the complete event schema
@@ -3428,7 +3436,12 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     // max-seats 2: seat 1 forms the payment federation, seat 2 the paid one.
     // A port grid disjoint from the free test's, in case both run at once.
     let iroh_overrides = local_iroh_overrides_for_grid(32_000, 2, PAID_GUARDIAN_COUNT);
-    let (daemons, locators) = start_daemons(
+    let nostr = NostrEnv {
+        relay_urls: &nostr_relay.url,
+        holder_relay_url: &nostr_relay.url,
+        setup_payment_publisher: &setup_payment_publisher,
+    };
+    let (mut daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
@@ -3436,11 +3449,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         32_000,
         Some(&iroh_overrides),
         PAID_GUARDIAN_COUNT,
-        Some(NostrEnv {
-            relay_urls: &nostr_relay.url,
-            holder_relay_url: &nostr_relay.url,
-            setup_payment_publisher: &setup_payment_publisher,
-        }),
+        Some(nostr),
         None,
     )
     .await;
@@ -3809,6 +3818,23 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         "MG 0 wallet balance {balance_msat} msat is not a plausible \
          fee-reduced seat payment of {SEAT_PRICE_MSAT} msat"
     );
+    exercise_removed_payment_federation_sweeps(
+        &mut defe,
+        bitcoind,
+        &manifold_guardian_bin,
+        &fa_cli_bin,
+        &bitcoin_cli,
+        &miner_address,
+        &temp,
+        &iroh_overrides,
+        nostr,
+        &setup_payment_keys,
+        &payment_invite,
+        &payment_federation_id,
+        paid_invite.trim(),
+        &mut daemons,
+    )
+    .await?;
     shutdown_daemons(daemons)
         .await
         .expect("Manifold Guardians shut down cleanly");
@@ -3820,6 +3846,342 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         .expect("release bitcoind lease");
     std::fs::remove_dir_all(&temp).expect("remove paid E2E tempdir after success");
 
+    Ok(())
+}
+
+/// A federation dropped from the setup-payment set stays sweepable
+/// (SPEC-setup-payment-federations): MG 0 sweeps it after a daemon restart,
+/// which must reopen its retained wallet on demand, and MG 1 sweeps it after a
+/// mnemonic restore onto a fresh data root, which must rejoin it from the
+/// backed-up claim evidence rather than from the current set.
+#[expect(clippy::too_many_arguments)]
+async fn exercise_removed_payment_federation_sweeps(
+    defe: &mut AsyncDefeClient,
+    bitcoind: &defe_api::BitcoindInfo,
+    manifold_guardian_bin: &Path,
+    fa_cli_bin: &Path,
+    bitcoin_cli: &BitcoinCli<'_>,
+    miner_address: &str,
+    temp: &Path,
+    iroh_overrides: &str,
+    nostr: NostrEnv<'_>,
+    setup_payment_keys: &NostrKeys,
+    payment_invite: &str,
+    payment_federation_id: &str,
+    replacement_invite: &str,
+    daemons: &mut Vec<Child>,
+) -> anyhow::Result<()> {
+    let gateway_cli_bin = locate_binary(GATEWAY_CLI_BIN_ENV, "gateway-cli")?;
+    let gateway_lease = defe
+        .request_gatewayd(GatewaydRequest {
+            sharing: SharingMode::Exclusive,
+            bitcoind: bitcoind.clone(),
+            iroh_connect_overrides: Some(iroh_overrides.to_owned()),
+        })
+        .await
+        .context("allocate a real Fedimint gateway through defe")?;
+    let ResourceDescriptor::Gatewayd(gateway) = &gateway_lease.descriptor else {
+        anyhow::bail!(
+            "expected gatewayd descriptor from defe, got {:?}",
+            gateway_lease.descriptor
+        );
+    };
+    wait_for_gateway_connect(&gateway_cli_bin, gateway, payment_invite).await?;
+    register_local_gateway_for_lnv2(temp, payment_invite, iroh_overrides, &gateway.api_url).await?;
+    fund_gateway_federation_wallet(
+        &gateway_cli_bin,
+        gateway,
+        bitcoin_cli,
+        miner_address,
+        payment_federation_id,
+    )
+    .await?;
+    let recipient = SweepRecipient {
+        fa_cli_bin,
+        wallet_dir: temp.join("former-payment-sweep-recipient"),
+        wallet_secret_file: temp.join("former-payment-sweep-recipient-secret"),
+        iroh_overrides,
+        federation_id: payment_federation_id,
+    };
+    write_sensitive_file(&recipient.wallet_secret_file, &hex::encode([73_u8; 64]))?;
+    run_fa_payment_wallet(
+        fa_cli_bin,
+        &recipient.wallet_dir,
+        &recipient.wallet_secret_file,
+        &["join", "--payment-invite-code", payment_invite],
+        iroh_overrides,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    // Replace the common set with one that no longer names the payment
+    // federation every MG was paid in.
+    NostrRelayClient::connect(
+        nostr.relay_urls,
+        setup_payment_keys.clone(),
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("connect setup-payment publisher to relay: {err}"))?
+    .publish_event(
+        EventBuilder::new(
+            Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+            serde_json::json!({
+                "version": 1,
+                "fman_version": "0.1.0",
+                "federations": [replacement_invite],
+                "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
+            })
+            .to_string(),
+        )
+        .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG)),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("publish replacement setup-payment federations event: {err}"))?;
+
+    let mg0_dir = temp.join("mg-0");
+    let mg1_dir = temp.join("mg-1");
+    for dir in [&mg0_dir, &mg1_dir] {
+        wait_for_former_payment_federation(manifold_guardian_bin, dir, payment_federation_id)
+            .await?;
+    }
+
+    // Restart MG 0 on its own data root. The removed member is no longer
+    // joined by policy, so only an on-demand reopen of the retained wallet
+    // can list its balance and sweep it.
+    let original = daemons.remove(0);
+    shutdown_daemons(vec![original]).await?;
+    let mut restarted = spawn_manifold_guardian(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        32_000,
+        Some(iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    read_locator(&mut restarted, 0).await?;
+    daemons.insert(0, restarted);
+    wait_for_former_payment_federation(manifold_guardian_bin, &mg0_dir, payment_federation_id)
+        .await?;
+    sweep_former_payment_federation(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &recipient,
+        "former-payment-sweep-after-restart",
+    )
+    .await?;
+
+    // Restore MG 1 from its mnemonic onto a fresh data root. Its wallet
+    // database is gone; the backed-up claim evidence names the payment
+    // federation, and the restored wallet must rejoin it by recovery scan.
+    wait_for_settled_backup(manifold_guardian_bin, &mg1_dir, 2).await?;
+    let mnemonic = manifold_guardian_admin(manifold_guardian_bin, &mg1_dir, &["show-mnemonic"])
+        .await?["mnemonic"]
+        .as_str()
+        .context("show-mnemonic returns the root phrase")?
+        .to_owned();
+    let original = daemons.remove(1);
+    shutdown_daemons(vec![original]).await?;
+    let restored_dir = temp.join("restored-mg-1");
+    let mnemonic_file = temp.join("restore-mnemonic-mg-1");
+    write_sensitive_file(&mnemonic_file, &mnemonic)?;
+    let mut restored = spawn_manifold_guardian(
+        manifold_guardian_bin,
+        &restored_dir,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        32_100,
+        Some(iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    let mnemonic_file_arg = mnemonic_file.display().to_string();
+    let restored_answer = retry_manifold_guardian_admin(
+        manifold_guardian_bin,
+        &restored_dir,
+        &[
+            "onboard",
+            "restore",
+            "--mnemonic-file",
+            &mnemonic_file_arg,
+            "--acknowledge-original-host-is-gone",
+        ],
+    )
+    .await?;
+    anyhow::ensure!(
+        restored_answer["onboarded"] == "restored" && restored_answer["seats"].as_u64() == Some(2),
+        "restore must recover both paid seats: {restored_answer}"
+    );
+    complete_onboarding_stages(manifold_guardian_bin, &restored_dir, 2, nostr).await?;
+    read_locator(&mut restored, 1).await?;
+    daemons.insert(1, restored);
+    wait_for_former_payment_federation(manifold_guardian_bin, &restored_dir, payment_federation_id)
+        .await?;
+    sweep_former_payment_federation(
+        manifold_guardian_bin,
+        &restored_dir,
+        &recipient,
+        "former-payment-sweep-after-restore",
+    )
+    .await?;
+
+    defe.release(gateway_lease.handle_id).await?;
+    Ok(())
+}
+
+/// The recipient wallet both former-member sweeps pay into.
+struct SweepRecipient<'a> {
+    fa_cli_bin: &'a Path,
+    wallet_dir: PathBuf,
+    wallet_secret_file: PathBuf,
+    iroh_overrides: &'a str,
+    federation_id: &'a str,
+}
+
+/// Wait until `data_dir` lists `federation_id` as a former (no longer
+/// accepted) member whose wallet can fund [`FORMER_PAYMENT_SWEEP_MSAT`].
+async fn wait_for_former_payment_federation(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    federation_id: &str,
+) -> anyhow::Result<()> {
+    let mut last = serde_json::Value::Null;
+    let waited = tokio::time::timeout(Duration::from_secs(240), async {
+        loop {
+            let listed = manifold_guardian_admin(
+                manifold_guardian_bin,
+                data_dir,
+                &["payment-federations", "list"],
+            )
+            .await?;
+            let former = listed["federations"].as_array().and_then(|federations| {
+                federations
+                    .iter()
+                    .find(|federation| federation["federation_id"] == federation_id)
+            });
+            if let Some(former) = former
+                && former["accepted"] == serde_json::Value::Bool(false)
+                && former["wallet"]["economically_sweepable_recipient_msat"]
+                    .as_u64()
+                    .is_some_and(|msat| msat >= FORMER_PAYMENT_SWEEP_MSAT)
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            last = listed;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await;
+    match waited {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "{} never listed a sweepable former payment federation {federation_id}: {last}",
+            data_dir.display()
+        ),
+    }
+}
+
+/// Sweep exactly [`FORMER_PAYMENT_SWEEP_MSAT`] out of the former payment
+/// federation over real LNv2 and prove the recipient claimed it.
+async fn sweep_former_payment_federation(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    recipient: &SweepRecipient<'_>,
+    request_id: &str,
+) -> anyhow::Result<()> {
+    // Invoice creation fails before any operation while the gateway's LNv2
+    // routing converges, so retrying cannot duplicate a receive.
+    let amount_sats = (FORMER_PAYMENT_SWEEP_MSAT / 1_000).to_string();
+    let invoice_args = [
+        "invoice",
+        "--payment-federation-id",
+        recipient.federation_id,
+        "--amount-sats",
+        &amount_sats,
+    ];
+    let invoice = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            if let Ok(invoice) = run_fa_payment_wallet(
+                recipient.fa_cli_bin,
+                &recipient.wallet_dir,
+                &recipient.wallet_secret_file,
+                &invoice_args,
+                recipient.iroh_overrides,
+                Duration::from_secs(15),
+            )
+            .await
+            {
+                return invoice;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("LNv2 gateway did not become ready for invoice creation"))?;
+    let invoice_operation = invoice["operationId"]
+        .as_str()
+        .context("payment-wallet invoice returns operation id")?
+        .to_owned();
+    let invoice = invoice["invoice"]
+        .as_str()
+        .context("payment-wallet invoice returns BOLT11")?
+        .to_owned();
+    let lnurl = LnurlPayServer::start(invoice, FORMER_PAYMENT_SWEEP_MSAT).await?;
+    manifold_guardian_admin(
+        manifold_guardian_bin,
+        data_dir,
+        &["payout", "set", lnurl.destination()],
+    )
+    .await?;
+    manifold_guardian_admin(
+        manifold_guardian_bin,
+        data_dir,
+        &[
+            "payment-federations",
+            "sweep",
+            recipient.federation_id,
+            "--request-id",
+            request_id,
+        ],
+    )
+    .await?;
+    let terminal = manifold_guardian_admin_with_timeout(
+        manifold_guardian_bin,
+        data_dir,
+        &["payout", "await", request_id],
+        Duration::from_secs(120),
+    )
+    .await?;
+    anyhow::ensure!(
+        terminal["payout"]["state"] == "succeeded"
+            && terminal["payout"]["recipient_amount_msat"].as_u64()
+                == Some(FORMER_PAYMENT_SWEEP_MSAT),
+        "{} must sweep the former payment federation: {terminal}",
+        data_dir.display()
+    );
+    let received = run_fa_payment_wallet(
+        recipient.fa_cli_bin,
+        &recipient.wallet_dir,
+        &recipient.wallet_secret_file,
+        &[
+            "await-invoice",
+            "--payment-federation-id",
+            recipient.federation_id,
+            "--operation-id",
+            &invoice_operation,
+        ],
+        recipient.iroh_overrides,
+        Duration::from_secs(60),
+    )
+    .await?;
+    anyhow::ensure!(
+        received["state"] == "claimed",
+        "the sweep recipient must claim the invoice: {received}"
+    );
     Ok(())
 }
 

@@ -16,11 +16,11 @@ yet publish kind 37707, so production paid setup remains unavailable until the
 first publication. Development and staging use their profile placeholder
 publishers.
 
-MG's intended removed-member retention has a known restart deviation: its
-durable client prefix and balance remain, but the restarted daemon does not
-reopen that scope. Its supported listing retains the scope with an unknown
-wallet projection, but configured-destination sweep cannot reach it. See the falsified
-[CLAIM-manifold-guardian-payment-continuation-progresses](../crates/mg/specs/CLAIM-manifold-guardian-payment-continuation-progresses.md).
+A removed member's MG wallet survives a daemon restart: policy no longer
+joins it, but listing and sweep reopen its retained client on demand. A
+mnemonic restore rejoins it from the backed-up claim evidence
+([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
+so it is listed and sweepable there too.
 
 ## Record justification
 
