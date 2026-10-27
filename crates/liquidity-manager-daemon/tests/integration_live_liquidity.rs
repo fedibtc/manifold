@@ -3126,7 +3126,11 @@ async fn wait_for_gateway_funding_operation(
     statuses: &[&str],
     require_txid: bool,
 ) -> anyhow::Result<Value> {
-    for _ in 0..180 {
+    // A cold allocation attaches the gateway to the target federation and waits
+    // for walletv2's first valid deposit address before it can broadcast; that
+    // alone has taken over 17 seconds on shared runners.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
         let allocation = get_admin_allocation(http, admin_url, federation_id).await?;
         let operations = gateway_funding_operations(&allocation)?;
         ensure!(
