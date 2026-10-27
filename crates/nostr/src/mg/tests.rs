@@ -40,6 +40,93 @@ fn payload(keys: &Keys) -> AdvertisementPayload {
     }
 }
 
+/// Verify `document` as a consumer receives it: serialized, then parsed.
+fn verify(
+    document: &AdvertisementDocument,
+) -> Result<AdvertisementDocument, AdvertisementDocumentError> {
+    parse_self_signed_advertisement(&serde_json::to_string(document).unwrap())
+}
+
+/// The verification of released FAs: the proof checked over the typed
+/// payload re-serialized after decoding.
+fn released_verify(
+    payload: &AdvertisementPayload,
+    proof: &SchnorrSignatureProof,
+) -> Result<(), nostr::secp256k1::Error> {
+    let pubkey = nostr::PublicKey::parse(&payload.mg_id_pubkey).unwrap();
+    nostr::SECP256K1.verify_schnorr(
+        &proof.signature,
+        &nostr::secp256k1::Message::from_digest(payload_digest(payload).unwrap()),
+        &pubkey.xonly().unwrap(),
+    )
+}
+
+/// A signed document whose payload carries a field this release does not
+/// know, as a newer MG would publish it.
+fn document_with_unknown_payload_field(keys: &Keys) -> serde_json::Value {
+    let mut payload = serde_json::to_value(payload(keys)).unwrap();
+    payload["future_field"] = serde_json::json!({"nested": [1, "two", 3.5]});
+    let digest = payload_digest(&payload).unwrap();
+    let proof = SchnorrSignatureProof {
+        signature: keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest)),
+    };
+    serde_json::json!({"payload": payload, "proof": proof})
+}
+
+#[test]
+fn unknown_signed_payload_fields_verify_as_received() {
+    let keys = Keys::generate();
+    let received = document_with_unknown_payload_field(&keys);
+
+    let document = parse_self_signed_advertisement(&received.to_string())
+        .expect("a newer signed payload field keeps the proof valid");
+    assert_eq!(document.payload, payload(&keys));
+    assert!(
+        released_verify(&document.payload, &document.proof).is_err(),
+        "re-serializing the typed payload drops the field and breaks the proof",
+    );
+
+    let mut stripped = received.clone();
+    stripped["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("future_field");
+    assert_eq!(
+        parse_self_signed_advertisement(&stripped.to_string()).unwrap_err(),
+        AdvertisementDocumentError::InvalidProof,
+        "the unknown field is signed: removing it invalidates the proof",
+    );
+
+    let mut changed = received;
+    changed["payload"]["future_field"]["nested"][2] = serde_json::json!(4.5);
+    assert_eq!(
+        parse_self_signed_advertisement(&changed.to_string()).unwrap_err(),
+        AdvertisementDocumentError::InvalidProof,
+        "changing a signed field this release does not know invalidates the proof",
+    );
+}
+
+#[test]
+fn unparsable_advertisement_content_is_distinguished_from_a_bad_proof() {
+    let keys = Keys::generate();
+    let mut missing_service_key = document_with_unknown_payload_field(&keys);
+    missing_service_key["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_pubkey");
+    for content in [
+        "not json".to_owned(),
+        r#"{"proof":{"signature":"AA"}}"#.to_owned(),
+        missing_service_key.to_string(),
+    ] {
+        assert_eq!(
+            parse_self_signed_advertisement(&content).unwrap_err(),
+            AdvertisementDocumentError::Unparsable,
+            "{content}",
+        );
+    }
+}
+
 #[test]
 fn advertisement_signature_round_trips_and_pins_the_payload() {
     let keys = Keys::generate();
@@ -52,7 +139,7 @@ fn advertisement_signature_round_trips_and_pins_the_payload() {
         document.payload.availability.federation_sizes.contains(&20),
         "advertisements include the inclusive custom-size ceiling"
     );
-    verify_advertisement_self_signature(&document).unwrap();
+    verify(&document).unwrap();
     let value = serde_json::to_value(&document).unwrap();
     let proof = serde_json::to_value(&document.proof).unwrap();
     assert_eq!(
@@ -86,7 +173,7 @@ fn advertisement_signature_round_trips_and_pins_the_payload() {
             .unwrap();
     tampered.payload.issued_at += 1;
     assert_eq!(
-        verify_advertisement_self_signature(&tampered).unwrap_err(),
+        verify(&tampered).unwrap_err(),
         AdvertisementDocumentError::InvalidProof
     );
 
@@ -103,7 +190,7 @@ fn advertisement_verification_rejects_a_malformed_pubkey() {
     let mut document = sign_advertisement(payload(&keys), &keys).unwrap();
     document.payload.mg_id_pubkey = "not-a-pubkey".to_owned();
     assert_eq!(
-        verify_advertisement_self_signature(&document).unwrap_err(),
+        verify(&document).unwrap_err(),
         AdvertisementDocumentError::MalformedMgIdPubkey
     );
 }
@@ -143,7 +230,7 @@ fn advertisement_requires_service_pubkey() {
 /// Pinned cross-program fixture (`testing.md`): a fully signed v1 kind-37701
 /// advertisement document captured as literal JSON from hardcoded keys
 /// (Nostr identity secret `0x...03`, advertised service pubkey from secret
-/// `0x...05`). `verify_advertisement_self_signature` must keep accepting
+/// `0x...05`). `parse_self_signed_advertisement` must keep accepting
 /// these exact bytes; a failure here means the signing convention or the v1
 /// payload schema changed in a way that breaks external producers and
 /// verifiers.
@@ -152,8 +239,7 @@ fn pinned_signed_advertisement_fixture_stays_accepted() {
     const FIXTURE: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_version":"0.8.1+fedi","federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"3FMOmhFQ0sHinyiy0bnyGzp8xFRYL4lcewDve5fn8bjlS8AMS-RUrVIxMmkIyB_4buZfOC9stXfANFyJGBghew"}}"#;
 
     let document =
-        serde_json::from_str::<AdvertisementDocument>(FIXTURE).expect("pinned fixture parses");
-    verify_advertisement_self_signature(&document).expect("pinned fixture stays verifiable");
+        parse_self_signed_advertisement(FIXTURE).expect("pinned fixture stays verifiable");
 
     // Literal expectations, not production constants, so a constant change
     // cannot silently move implementation and expectation together.
@@ -174,7 +260,7 @@ fn pinned_signed_advertisement_fixture_stays_accepted() {
     tampered_key.payload.service_pubkey =
         "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9".to_owned();
     assert_eq!(
-        verify_advertisement_self_signature(&tampered_key).unwrap_err(),
+        verify(&tampered_key).unwrap_err(),
         AdvertisementDocumentError::InvalidProof,
         "swapping the advertised service pubkey must invalidate the signature",
     );
@@ -186,9 +272,7 @@ const FIXTURE_WITH_UPTIME: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f
 
 #[test]
 fn self_reported_uptime_sits_outside_the_payload_proof() {
-    let document = serde_json::from_str::<AdvertisementDocument>(FIXTURE_WITH_UPTIME)
-        .expect("fixture with uptime parses");
-    verify_advertisement_self_signature(&document)
+    let document = parse_self_signed_advertisement(FIXTURE_WITH_UPTIME)
         .expect("uptime beside the payload leaves the pinned proof valid");
     assert_eq!(
         document.uptime_permille,
@@ -201,8 +285,7 @@ fn self_reported_uptime_sits_outside_the_payload_proof() {
 
     let mut changed = document.clone();
     changed.uptime_permille = None;
-    verify_advertisement_self_signature(&changed)
-        .expect("the payload proof does not cover the uptime");
+    verify(&changed).expect("the payload proof does not cover the uptime");
     assert_eq!(
         serde_json::to_value(&document).unwrap()["uptime_permille"],
         serde_json::json!({"1d": 998, "7d": 991, "30d": 964}),
@@ -224,12 +307,8 @@ fn released_document_shape_accepts_self_reported_uptime() {
         .expect("released document shape parses an advertisement with uptime");
     // Released FAs verify over the payload they decoded; it must be the
     // signed one unchanged.
-    verify_advertisement_self_signature(&AdvertisementDocument {
-        payload: released.payload,
-        proof: released.proof,
-        uptime_permille: None,
-    })
-    .expect("released verification still accepts the proof");
+    released_verify(&released.payload, &released.proof)
+        .expect("released verification still accepts the proof");
 }
 
 /// One structurally complete holder-authorization envelope at realistic
@@ -346,6 +425,8 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
         month: 1000,
     });
     let content = serde_json::to_string(&document).expect("worst-case advertisement serializes");
+    parse_self_signed_advertisement(&content)
+        .expect("u64::MAX prices canonicalize alike when signed typed and verified as received");
     let event = nostr::EventBuilder::new(nostr::Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND), content)
         .tag(nostr::Tag::identifier(MG_ADVERTISEMENT_D_TAG))
         .tag(nostr::Tag::hashtag(MG_ADVERTISEMENT_HASHTAG))

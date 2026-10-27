@@ -397,6 +397,39 @@ async fn invalid_advertisement_proof_is_rejected() {
     ));
 }
 
+/// A newer MG may sign payload fields this release does not know; discovery
+/// verifies the proof over the payload as received and ignores the fields
+/// (REQ-extensible-mg-advertisement).
+#[tokio::test]
+async fn unknown_signed_payload_field_is_admitted() {
+    use sha2::Digest as _;
+
+    let mg = mg_keys(1);
+    let mut payload = serde_json::to_value(self_authorized_payload(&mg)).expect("payload JSON");
+    payload["future_field"] = serde_json::json!({"nested": [1, "two"]});
+    let digest: [u8; 32] = sha2::Sha256::new()
+        .chain_update(fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_SIGNATURE_DOMAIN)
+        .chain_update(serde_json_canonicalizer::to_vec(&payload).expect("payload canonicalizes"))
+        .finalize()
+        .into();
+    let proof = SchnorrSignatureProof {
+        signature: mg.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest)),
+    };
+    let event = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND),
+        serde_json::json!({"payload": payload, "proof": proof}).to_string(),
+    )
+    .tag(Tag::identifier(MG_ADVERTISEMENT_D_TAG))
+    .custom_created_at(nostr_sdk::Timestamp::from_secs(NOW - 600))
+    .sign_with_keys(&mg)
+    .expect("test event signs");
+
+    let discovery = discover(vec![event]).await;
+    assert!(discovery.rejected.is_empty(), "{:?}", discovery.rejected);
+    assert_eq!(discovery.candidates.len(), 1);
+    assert_eq!(discovery.candidates[0].mg_id(), mg.public_key());
+}
+
 #[tokio::test]
 async fn payload_author_mismatch_is_rejected() {
     // A validly signed document by one key republished under another author.

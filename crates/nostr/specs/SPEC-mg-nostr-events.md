@@ -2,14 +2,13 @@
 
 ## Status
 
-The additive-field compatibility required by
-[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md) is
-not yet implemented. Current typed consumers discard unknown payload fields
+`fa-client` verifies the advertisement proof over the payload as received, as
+[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md)
+requires. FAs released before that change discard unknown payload fields
 during deserialization and reconstruct the payload for signature verification,
-so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients. Until released FAs verify the payload as received, new
-advertisement data goes beside the payload, as the self-reported uptime does,
-instead of into it.
+so they reject an otherwise valid advertisement with a newly added signed
+field. Until those FA releases are retired, new advertisement data goes beside
+the payload, as the self-reported uptime does, instead of into it.
 
 ## Record justification
 

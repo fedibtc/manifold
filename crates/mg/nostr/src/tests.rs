@@ -273,7 +273,11 @@ async fn built_payload_advertises_the_service_pubkey() {
         }],
     );
     let document = sign_advertisement(payload, &keys).expect("built payload signs");
-    verify_advertisement_self_signature(&document).expect("built payload verifies");
+    let content = serde_json::to_string(&document).expect("built document serializes");
+    assert_eq!(
+        parse_self_signed_advertisement(&content).expect("built payload verifies"),
+        document,
+    );
 }
 
 #[tokio::test]

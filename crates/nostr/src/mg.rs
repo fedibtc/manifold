@@ -195,6 +195,9 @@ pub struct Availability {
 /// Error signing or verifying a portable MG advertisement document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdvertisementDocumentError {
+    /// The content is not a v1 advertisement document.
+    Unparsable,
+
     /// The payload `fman_id_pubkey` does not match the signing key.
     SigningKeyMismatch,
 
@@ -211,6 +214,7 @@ pub enum AdvertisementDocumentError {
 impl core::fmt::Display for AdvertisementDocumentError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Unparsable => formatter.write_str("not a v1 advertisement document"),
             Self::SigningKeyMismatch => {
                 formatter.write_str("advertisement payload pubkey must match the signing key")
             }
@@ -249,10 +253,15 @@ pub fn sign_advertisement(
     })
 }
 
-/// Verify the advertisement document's self-signature only: the Schnorr
-/// proof by the key the payload itself names in `fman_id_pubkey`, over the
-/// canonicalized payload bytes (SPEC-mg-nostr-events, *Portable MG
-/// advertisement document*).
+/// Parse a received advertisement document (the Nostr event `content`) and
+/// verify its self-signature only: the Schnorr proof by the key the payload
+/// itself names in `fman_id_pubkey`, over the canonicalized payload exactly
+/// as received (SPEC-mg-nostr-events, *Additive evolution*).
+///
+/// The proof is checked against the received payload, including fields this
+/// release does not know, before those fields are dropped from the typed
+/// result. Verifying a typed payload re-serialized after decoding would
+/// reject every advertisement that carries a newer signed field.
 ///
 /// Passing proves exactly one thing: whoever holds the key the payload names
 /// signed exactly these bytes. It explicitly does NOT:
@@ -268,29 +277,49 @@ pub fn sign_advertisement(
 ///
 /// # Errors
 ///
-/// Returns an error when the payload pubkey is malformed, the payload cannot
-/// be canonicalized, or the proof does not verify.
-pub fn verify_advertisement_self_signature(
-    document: &AdvertisementDocument,
-) -> Result<(), AdvertisementDocumentError> {
-    let pubkey = nostr::PublicKey::parse(&document.payload.mg_id_pubkey)
+/// Returns an error when the content is not an advertisement document, the
+/// payload pubkey is malformed, the payload cannot be canonicalized, or the
+/// proof does not verify.
+pub fn parse_self_signed_advertisement(
+    content: &str,
+) -> Result<AdvertisementDocument, AdvertisementDocumentError> {
+    /// The document as received: the payload stays untyped until its proof
+    /// has been checked over every received field.
+    #[derive(Deserialize)]
+    struct ReceivedDocument {
+        payload: serde_json::Value,
+        proof: SchnorrSignatureProof,
+        #[serde(default)]
+        uptime_permille: Option<AdvertisedUptime>,
+    }
+
+    let received = serde_json::from_str::<ReceivedDocument>(content)
+        .map_err(|_| AdvertisementDocumentError::Unparsable)?;
+    let payload = AdvertisementPayload::deserialize(&received.payload)
+        .map_err(|_| AdvertisementDocumentError::Unparsable)?;
+    let pubkey = nostr::PublicKey::parse(&payload.mg_id_pubkey)
         .map_err(|_| AdvertisementDocumentError::MalformedMgIdPubkey)?;
-    let digest = payload_digest(&document.payload)?;
+    let digest = payload_digest(&received.payload)?;
     nostr::SECP256K1
         .verify_schnorr(
-            &document.proof.signature,
+            &received.proof.signature,
             &nostr::secp256k1::Message::from_digest(digest),
             &pubkey
                 .xonly()
                 .map_err(|_| AdvertisementDocumentError::MalformedMgIdPubkey)?,
         )
-        .map_err(|_| AdvertisementDocumentError::InvalidProof)
+        .map_err(|_| AdvertisementDocumentError::InvalidProof)?;
+    Ok(AdvertisementDocument {
+        payload,
+        proof: received.proof,
+        uptime_permille: received.uptime_permille,
+    })
 }
 
 // Cross-program contract: the domain separator and the JCS canonicalization
 // below are the byte-level signing convention of `SPEC-mg-nostr-events`.
 // External producers and verifiers depend on these exact bytes.
-fn payload_digest(payload: &AdvertisementPayload) -> Result<[u8; 32], AdvertisementDocumentError> {
+fn payload_digest(payload: &impl Serialize) -> Result<[u8; 32], AdvertisementDocumentError> {
     let canonical = serde_json_canonicalizer::to_vec(payload)
         .map_err(|_| AdvertisementDocumentError::Canonicalize)?;
     Ok(Sha256::new()

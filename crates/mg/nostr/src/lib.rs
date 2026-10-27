@@ -28,8 +28,8 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr::mg::HolderAuthorizationEventContent;
 pub use fedi_decentralized_nostr::mg::{
     AdvertisementDocument, AdvertisementPayload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, sign_advertisement,
-    verify_advertisement_self_signature,
+    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, parse_self_signed_advertisement,
+    sign_advertisement,
 };
 use fedi_decentralized_nostr::setup_payment_federations::{
     AdmittedSetupPaymentFederationsEvent, admit_setup_payment_federations_event,

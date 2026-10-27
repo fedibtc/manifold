@@ -2473,6 +2473,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2 0.10.9",
  "stability-pool-common",
  "thiserror 2.0.18",
