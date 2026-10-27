@@ -19,3 +19,9 @@ pub const ARGV0: &str = "fedimintd";
 /// boundary (`fedimintd::SESSION_BOUNDARY_EXIT_CODE`, which the composition
 /// root asserts equal).
 pub const SESSION_BOUNDARY_EXIT_CODE: i32 = 3;
+
+/// How long a consensus session may run before fedimintd exits on its own,
+/// so that a respawn can unstick it. The seat process sets it on every spawn
+/// (`FM_SESSION_TIMEOUT_SECS`, upstream's default), and the seat's stall limit
+/// is derived from it.
+pub const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);

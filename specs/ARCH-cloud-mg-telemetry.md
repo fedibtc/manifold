@@ -186,7 +186,8 @@ both shapes: `SeatCapacityEvent` and `SeatReadinessEvent` in
 `service-manifold-guardian` name their messages and fields, the MG emits them
 under those names, and MG tests decode the emitted records with them. Releases
 before 0.1.4 journal only the free seats, the accepting flag and the operator
-limit, and no uptime outcome, scores or minimums. Absent fields stay absent.
+limit, and no uptime outcome, scores or minimums; releases before the seats
+check journal no `seats` outcome. Absent fields stay absent.
 
 While validating a batch from the MG journal, the collector keeps the last
 record of each kind, in journal order, that has an RFC 3339 timestamp and

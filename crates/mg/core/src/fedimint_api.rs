@@ -69,10 +69,18 @@ impl FedimintApi {
             .map_err(map_federation_error)
     }
 
-    /// Confirm that the formed federation's consensus API is serving.
-    pub async fn probe(&self) -> Result<(), FedimintApiError> {
+    /// Confirm that the formed federation's consensus API is serving, and
+    /// return the number of consensus sessions the guardian has completed.
+    pub async fn probe(&self) -> Result<u64, FedimintApiError> {
         match tokio::time::timeout(REQUEST_TIMEOUT, self.api.clone().status()).await {
-            Ok(Ok(_)) => Ok(()),
+            // fedimintd's consensus API always states the federation.
+            Ok(Ok(status)) => status
+                .federation
+                .map(|federation| federation.session_count)
+                .ok_or_else(|| FedimintApiError::InvalidResponse {
+                    method: "status".to_owned(),
+                    detail: "no federation status".to_owned(),
+                }),
             Ok(Err(error)) => Err(map_federation_error(error)),
             Err(_) => Err(FedimintApiError::Unreachable(
                 "status request timed out".to_owned(),

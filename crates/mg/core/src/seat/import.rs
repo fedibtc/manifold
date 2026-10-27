@@ -218,8 +218,7 @@ impl SeatLoop {
         {
             return Err(SeatVerbError::SeatUnavailable);
         }
-        self.state
-            .send_modify(|state| state.formed_invite = Some(guardian.invite.clone()));
+        self.publish_formed_invite(guardian.invite.clone());
         self.mirror_incoming(TransferPhase::Imported);
         // Acceptance is durable; a spawn failure is now an ordinary formed
         // seat outage that the respawn schedule and the watchdog recover.
