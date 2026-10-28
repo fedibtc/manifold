@@ -1,12 +1,10 @@
-//! Testing-only FA seat release.
+//! Owner-authorized terminal FA seat release in every environment.
 //!
-//! The 0.1 product boundary is deliberately asymmetric: an FA buys a seat for
-//! as long as the operator keeps hosting it, and only the operator can end it
+//! The FA forfeits its own seat without a refund. Decommission retains the
+//! seat records and guardian data, exactly as operator decommission does
 //! ([`ARCH-manifold-guardian-product-boundary`](../../mg/specs/ARCH-manifold-guardian-product-boundary.md)).
-//! This verb exists solely so development and staging deployments can churn
-//! federations without an operator in the loop, and the daemon refuses it in
-//! production with [`crate::ManifoldGuardianError::UnsupportedVerb`]. Nothing
-//! about it is a commercial commitment; do not build product behaviour on it.
+//! Older production daemons can refuse this verb with
+//! [`crate::ManifoldGuardianError::UnsupportedVerb`].
 
 use crate::{FaId, SeatId, Timestamp};
 

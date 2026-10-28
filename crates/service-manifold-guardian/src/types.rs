@@ -306,7 +306,7 @@ pub struct FedimintStats {
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq, strum::Display)]
 pub enum Plan {
     /// Paid once, never expires. The seat runs at the operator's discretion
-    /// ("best effort"); only an operator decommission ends it.
+    /// ("best effort"); operator or owner decommission ends it.
     InfiniteBestEffort {
         /// One-time price, in millisatoshis — the same unit and type as
         /// [`QuoteTerms::price_msats`](crate::QuoteTerms::price_msats), so a
