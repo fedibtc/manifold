@@ -221,12 +221,16 @@ where
                     .ok()?;
                 (!versions.is_empty()).then_some(versions)
             };
-        let mut pending = FuturesUnordered::new();
-        pending.push(read(None, None));
-        for (_, locator, seat_id) in &federation.seats {
-            pending.push(read(Some(seat_id), Some(locator)));
-        }
         fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
+            // Each working invite queries the whole federation, so the
+            // seats' invites are only a fallback for the saved one.
+            if let Some(versions) = read(None, None).await {
+                return versions;
+            }
+            let mut pending = FuturesUnordered::new();
+            for (_, locator, seat_id) in &federation.seats {
+                pending.push(read(Some(seat_id), Some(locator)));
+            }
             while let Some(answer) = pending.next().await {
                 if let Some(versions) = answer {
                     return versions;
