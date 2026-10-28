@@ -563,7 +563,6 @@ async fn a_publication_never_straddles_an_import_acceptance() {
         let now = crate::db::now_ms() / 1000;
         let grant = SeatTransferGrant {
             ts: Timestamp(now as u64),
-            expires_at: Timestamp(now as u64 + 3600),
             fa_id: facts.fa_id,
             federation_id: FederationId(federation_id.clone()),
             source: Locator::new(
@@ -603,7 +602,6 @@ async fn a_publication_never_straddles_an_import_acceptance() {
         assert!(
             db.accept_transfer(
                 &facts.seat_id,
-                waiting.generation,
                 &waiting.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[41; 32], &[42; 32]),
                 &invite,

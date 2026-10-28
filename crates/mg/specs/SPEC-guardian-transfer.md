@@ -2,8 +2,8 @@
 
 ## Status
 
-`crates/service-manifold-guardian` defines the grant, the four verbs, the four
-seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
+`crates/service-manifold-guardian` defines the grant, the four verbs, the
+transfer's seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
 `fa-client` does not drive a transfer yet. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart, but only
 development and staging deployments run them. Keyed on its Manifold
@@ -29,15 +29,14 @@ bought on a destination MG. The move is cooperative: the source must come
 online once. The FA does not have to be online at the same time.
 
 1. The FA signs a `SeatTransferGrant` naming the federation, the source
-   locator and seat, the destination service key and seat, and an expiry. It
-   sends the grant to the destination seat with `PullSeat`.
+   locator and seat, and the destination service key and seat. A grant has
+   no expiry. The FA sends it to the destination seat with `PullSeat`.
 2. The destination persists the grant, reports `AwaitingTransfer`, and
    presents the grant to the source with `TransferSeat` until the source
-   answers or the grant expires. On expiry a seat that has not accepted the
-   guardian drops the grant and reports `TransferGrantExpired`. The source may already have answered, so
-   the FA does not treat the seat as a free spare: it renews the move with
-   `PullSeat` and a new grant. A `TransferGrantExpired` seat accepts a grant
-   like a `New` seat.
+   answers. The seat stays bound to this move: it treats any grant for the
+   same move, also one the FA signed again, as a replay, and refuses a grant
+   for another move. The source may already have answered, so the FA never
+   treats the seat as a free spare.
 3. The destination signs `TransferSeat` with the service key the grant names
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
@@ -56,15 +55,18 @@ online once. The FA does not have to be online at the same time.
      the same guardian.
 4. The destination validates the guardian against the grant, durably
    stores it, and starts it. From then on the seat is a formed seat that
-   reports `Running`: the grant's expiry no longer applies, its backup
-   follows asynchronously as for a natively formed seat, and it accepts a
-   renewed grant for the same move as a replay. It refuses a grant for a
-   federation it already hosts, but its own pending import does not count.
-   It then invokes the `PullSeat` completion callback. `Running` ends the
+   reports `Running`: its backup follows asynchronously as for a natively
+   formed seat, and it accepts a grant for the same move as a replay. It
+   refuses a grant for a federation it already hosts, but its own pending
+   import does not count. It then invokes the `PullSeat` completion callback. `Running` ends the
    destination's part of the transfer.
-5. The FA sends `ReplaceSeatBinding` to every seat. Each MG replaces only
-   the moved peer's directory entry and fee recipient and votes. The FA
-   confirms by consensus readback.
+5. The FA sends `ReplaceSeatBinding` with the destination's attestation to
+   every seat except the stopped source. Each MG derives its vote from
+   the consensus values in `expected_base` with `rebind_transferred_seat`:
+   the moved peer's directory entry becomes the new attestation, and the
+   peer's fee recipient share moves to the new account. Nothing else
+   changes. The FA confirms by readback that consensus holds exactly those
+   values.
 6. The FA sends `RemoveSeat` to the source. The source deletes the seat's
    guardian data at once and reports `Removed`; its next backup publication
    drops the archive and keeps the tombstone. A failed removal leaves the
@@ -150,7 +152,7 @@ refuse, so they never restore a stopped source or an imported identity as an
 ordinary seat. The guardian's admin password is not moved:
 each MG runs the child under its own derived `api_auth`. It does not carry the grant: a
 restored seat that was `AwaitingTransfer` comes back as `New`, and the FA
-renews the move.
+sends the move again with `PullSeat`.
 
 The source records the move as a tombstone in its seat backup, not as a
 deletion: relays may keep a deleted event. A restored `Transferred` seat

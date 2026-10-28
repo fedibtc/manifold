@@ -1,5 +1,5 @@
 //! Outbound source RPC capability. The binary owns the shared Iroh endpoint;
-//! core owns retry, expiry, validation and acceptance.
+//! core owns retry, validation and acceptance.
 
 use fedi_decentralized_service_manifold_guardian::{
     FmResult, Locator, MgSignedRequest, TransferSeatRequest, TransferSeatResponse,

@@ -107,9 +107,8 @@ pub use telemetry::{
 pub use transfer::{
     GuardianMaterial, GuardianMaterialTooLarge, PullSeatRequest, PullSeatResponse, RebindSeatError,
     ReboundSeat, RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest,
-    ReplaceSeatBindingResponse, SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS,
-    SEAT_TRANSFER_MATERIAL_MAX_BYTES, SeatTransferGrant, TransferSeatRequest, TransferSeatResponse,
-    rebind_transferred_seat,
+    ReplaceSeatBindingResponse, SEAT_TRANSFER_MATERIAL_MAX_BYTES, SeatTransferGrant,
+    TransferSeatRequest, TransferSeatResponse, rebind_transferred_seat,
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,

@@ -63,11 +63,12 @@ Consequences the database transaction and schema enforce:
   material.
 
 Guardian transfer intent and acceptance are database-owned recovery facts, not
-a live RPC's state. Pending generations fence stale replies. The guardian
+a live RPC's state. A seat stays bound to one move, so a late reply of that
+move installs the same guardian. The guardian
 itself lives only in the seat data directory and the backup: acceptance is
 committed after the files are durably installed, together with the formed row,
 and records only the guardian's two Iroh secrets; the directory is the archive,
-as for a natively formed seat. Acceptance survives grant expiry. The outgoing
+as for a natively formed seat. A grant has no expiry. The outgoing
 fence is recorded once the child's exit is proved, and removal after it is
 monotone and survives guardian-data deletion.
 The per-seat owner serializes child and filesystem effects with these facts;

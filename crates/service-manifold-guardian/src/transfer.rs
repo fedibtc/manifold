@@ -18,9 +18,6 @@ use crate::{
     signing::FA_REQUEST_FRESHNESS_WINDOW_SECS,
 };
 
-/// Longest validity an FA may give a [`SeatTransferGrant`].
-pub const SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
-
 /// Largest guardian material a source returns: the total byte length of the
 /// five [`GuardianMaterial`] fields. JSON escaping at most doubles it, which
 /// keeps the response under the 1 MiB RPC frame.
@@ -29,10 +26,10 @@ pub const SEAT_TRANSFER_MATERIAL_MAX_BYTES: usize = 384 * 1024;
 /// FA-signed authority to move one formed guardian seat to a destination seat.
 ///
 /// Carried as a [`SignedRequest`]. Unlike every other FA request it is not a
-/// one-hour challenge: it stays valid from `ts` until `expires_at`, because
-/// the destination presents it to the source repeatedly until the source is
-/// online. The source answers it with `TransferSeat`; the destination accepts
-/// it through `PullSeat`.
+/// one-hour challenge: it has no expiry, because the destination presents it
+/// to the source until the source is online, however long that takes. The
+/// source answers it with `TransferSeat`; the destination accepts it through
+/// `PullSeat`.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SeatTransferGrant {
@@ -59,32 +56,20 @@ pub struct SeatTransferGrant {
 
     /// Bought, unformed seat on the destination MG.
     pub destination_seat_id: SeatId,
-
-    /// Last second at which the destination asks the source and the source
-    /// answers. A destination that accepted the guardian before then finishes
-    /// the import after it. At most
-    /// [`SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS`] after `ts`.
-    pub expires_at: Timestamp,
 }
 
 impl SeatTransferGrant {
-    /// Valid from issue, with the usual clock allowance, until `expires_at`.
-    /// A grant whose lifetime exceeds the maximum is never valid.
+    /// Valid from issue, with the usual clock allowance, and never after.
     pub(crate) fn is_valid_at(&self, now: Timestamp) -> bool {
-        self.ts.0 <= self.expires_at.0
-            && self.expires_at.0 - self.ts.0 <= SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS
-            && self.ts.0 <= now.0.saturating_add(FA_REQUEST_FRESHNESS_WINDOW_SECS)
-            && now.0 <= self.expires_at.0
+        self.ts.0 <= now.0.saturating_add(FA_REQUEST_FRESHNESS_WINDOW_SECS)
     }
 }
 
-/// Ask a bought `New` or `TransferGrantExpired` seat to pull a guardian from
-/// its source MG.
+/// Ask a bought `New` seat to pull a guardian from its source MG.
 ///
 /// The seat becomes `AwaitingTransfer` and polls the source until it obtains
-/// the guardian or the grant expires, then reports `TransferGrantExpired`. A
-/// replay of the same grant succeeds; a different grant on an awaiting seat
-/// is refused.
+/// the guardian. A grant for the same move, also one signed again, is a
+/// replay and succeeds; a grant for another move is refused.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PullSeatRequest {

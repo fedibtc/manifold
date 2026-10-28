@@ -162,7 +162,6 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
         let now = (crate::db::now_ms() / 1000) as u64;
         let grant = SeatTransferGrant {
             ts: Timestamp(now),
-            expires_at: Timestamp(now + 3600),
             fa_id: binding.fa_id,
             federation_id: binding.federation_id.clone(),
             source: binding.source.clone(),
@@ -207,7 +206,6 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
         assert!(
             db.accept_transfer(
                 &facts.seat_id,
-                admitted.generation,
                 &admitted.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[71; 32], &[72; 32]),
                 document

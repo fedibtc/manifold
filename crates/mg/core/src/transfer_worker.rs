@@ -40,11 +40,6 @@ impl TransferWake {
 
 type Seats = Arc<RwLock<HashMap<SeatId, Arc<Seat>>>>;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Work {
-    Incoming(u64),
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("guardian transfer requires local repair")]
 struct ParkTransfer;
@@ -64,7 +59,6 @@ fn owner_failure(error: crate::seat::SeatVerbError) -> anyhow::Error {
 }
 
 struct Active {
-    work: Work,
     cancel: watch::Sender<bool>,
     retry: watch::Sender<()>,
 }
@@ -167,22 +161,6 @@ async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     let _ = cancel.wait_for(|cancelled| *cancelled).await;
 }
 
-fn grant_deadline(expires_at: Timestamp) -> tokio::time::Instant {
-    let remaining_ms = expires_at
-        .0
-        .saturating_add(1)
-        .saturating_mul(1000)
-        .saturating_sub(crate::db::now_ms() as u64);
-    tokio::time::Instant::now() + Duration::from_millis(remaining_ms)
-}
-
-async fn deadline(deadline: Option<tokio::time::Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
-    }
-}
-
 async fn drain_seat(
     seat: &SeatId,
     active: &mut HashMap<SeatId, Active>,
@@ -238,32 +216,25 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
             }
             let id = seat.facts().seat_id.clone();
             let wanted = if seat.is_decommissioned() {
-                None
+                false
             } else {
-                match jobs.work(&seat).await {
-                    Ok(work) => work,
+                match jobs.pulls(&seat).await {
+                    Ok(pulls) => pulls,
                     Err(_) => {
                         failed = true;
                         continue;
                     }
                 }
             };
-            if active.get(&id).map(|job| job.work) != wanted {
+            if active.contains_key(&id) != wanted {
                 drain_seat(&id, &mut active, &mut tasks).await;
-                if let Some(work) = wanted {
+                if wanted {
                     let (cancel, cancel_rx) = watch::channel(false);
                     let (retry, retry_rx) = watch::channel(());
-                    active.insert(
-                        id.clone(),
-                        Active {
-                            work,
-                            cancel,
-                            retry,
-                        },
-                    );
+                    active.insert(id.clone(), Active { cancel, retry });
                     let jobs = jobs.clone();
                     tasks.spawn(async move {
-                        jobs.run(seat, work, cancel_rx, retry_rx).await;
+                        jobs.run(seat, cancel_rx, retry_rx).await;
                         id
                     });
                 }
@@ -294,40 +265,22 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
 }
 
 impl Jobs {
-    /// The work a seat's durable transfer calls for, from one load of its
-    /// record and one phase decision.
-    ///
-    /// Expiry is derived from the grant's clock, not committed, so no write
-    /// tells the seat that its mirrored `Waiting` has lapsed. The decision
-    /// that drops an expired generation therefore mirrors the expiry through
-    /// the seat owner first: whoever observes the lapse — the supervisor at
-    /// startup or on any wake, or a job ending at its deadline, retry or
-    /// parked wait — is the one that reports it, and no second read can
-    /// disagree with it.
-    async fn work(&self, seat: &Seat) -> anyhow::Result<Option<Work>> {
+    /// Whether the seat waits for its source to hand over a guardian.
+    async fn pulls(&self, seat: &Seat) -> anyhow::Result<bool> {
         let id = &seat.facts().seat_id;
         if self.db.outgoing_transfer(id).await?.is_some() {
-            return Ok(None);
+            return Ok(false);
         }
-        let Some(incoming) = self.db.incoming_transfer(id).await? else {
-            return Ok(None);
-        };
-        match incoming.phase() {
-            TransferPhase::Waiting => Ok(Some(Work::Incoming(incoming.generation))),
-            TransferPhase::Expired => {
-                if seat.transfer_phase() == Some(TransferPhase::Waiting) {
-                    seat.expire_transfer(incoming.generation).await?;
-                }
-                Ok(None)
-            }
-            TransferPhase::Imported | TransferPhase::Outgoing(_) => Ok(None),
-        }
+        Ok(self
+            .db
+            .incoming_transfer(id)
+            .await?
+            .is_some_and(|incoming| incoming.phase() == TransferPhase::Waiting))
     }
 
     async fn run(
         self: &Arc<Self>,
         seat: Arc<Seat>,
-        work: Work,
         mut cancel: watch::Receiver<bool>,
         mut retry: watch::Receiver<()>,
     ) {
@@ -336,13 +289,12 @@ impl Jobs {
             if *cancel.borrow() || seat.is_decommissioned() {
                 return;
             }
-            match self.work(&seat).await {
-                Ok(Some(current)) if current == work => {}
-                Ok(_) => return,
-                Err(_) => {}
+            match self.pulls(&seat).await {
+                Ok(true) | Err(_) => {}
+                Ok(false) => return,
             }
             retry.borrow_and_update();
-            let error = match self.attempt(&seat, work, &mut cancel).await {
+            let error = match self.attempt(&seat, &mut cancel).await {
                 Ok(()) => return,
                 Err(error) => error,
             };
@@ -357,42 +309,18 @@ impl Jobs {
             {
                 // Keep this job registered, with no retry timer. Another
                 // seat's transitions and JoinSet completions cannot restart
-                // immutable local failures. Same-seat replay/operator action
-                // or generation cancellation can wake it.
-                let expires = match self.db.incoming_transfer(&seat.facts().seat_id).await {
-                    Ok(Some(record)) => match record.state {
-                        IncomingState::Waiting { grant } => Some(
-                            grant
-                                .verify(Timestamp((crate::db::now_ms() / 1000) as u64))
-                                .map(|grant| grant_deadline(grant.expires_at))
-                                .unwrap_or_else(|_| tokio::time::Instant::now()),
-                        ),
-                        _ => None,
-                    },
-                    _ => None,
-                };
+                // immutable local failures. Same-seat replay, operator action
+                // or cancellation can wake it.
                 tokio::select! {
                     biased;
                     _ = cancelled(&mut cancel) => return,
-                    _ = deadline(expires) => {},
                     _ = retry.changed() => {}
                 }
                 continue;
             }
             // Remote/process/storage failures get bounded retries; jitter
             // avoids synchronizing source and relay requests after restart.
-            let mut delay = backoff + Duration::from_millis(rand::random::<u64>() % 250);
-            if let Ok(Some(record)) = self.db.incoming_transfer(&seat.facts().seat_id).await
-                && let IncomingState::Waiting { grant } = record.state
-            {
-                delay = match grant.verify(Timestamp((crate::db::now_ms() / 1000) as u64)) {
-                    Ok(grant) => delay.min(
-                        grant_deadline(grant.expires_at)
-                            .saturating_duration_since(tokio::time::Instant::now()),
-                    ),
-                    Err(_) => Duration::ZERO,
-                };
-            }
+            let delay = backoff + Duration::from_millis(rand::random::<u64>() % 250);
             tokio::select! {
                 _ = cancelled(&mut cancel) => return,
                 _ = tokio::time::sleep(delay) => {}
@@ -401,45 +329,20 @@ impl Jobs {
         }
     }
 
-    async fn attempt(
-        &self,
-        seat: &Seat,
-        work: Work,
-        cancel: &mut watch::Receiver<bool>,
-    ) -> anyhow::Result<()> {
-        let Work::Incoming(generation) = work;
+    async fn attempt(&self, seat: &Seat, cancel: &mut watch::Receiver<bool>) -> anyhow::Result<()> {
         let record = self
             .db
             .incoming_transfer(&seat.facts().seat_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("transfer disappeared"))?;
-        anyhow::ensure!(
-            record.generation == generation,
-            "transfer generation changed"
-        );
         let IncomingState::Waiting { grant } = record.state else {
             return Ok(());
         };
-        let expires = match grant.verify(Timestamp((crate::db::now_ms() / 1000) as u64)) {
-            Ok(grant) => grant_deadline(grant.expires_at),
-            Err(_) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
-        };
         let permit = tokio::select! {
             _ = cancelled(cancel) => anyhow::bail!("transfer cancelled"),
-            _ = tokio::time::sleep_until(expires) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
             permit = self.permits.acquire() => permit?,
         };
         let now = Timestamp((crate::db::now_ms() / 1000) as u64);
-        if grant.verify(now).is_err() {
-            seat.expire_transfer(generation).await?;
-            return Ok(());
-        }
         let request = MgSignedRequest::create(
             &TransferSeatRequest {
                 ts: now,
@@ -450,10 +353,6 @@ impl Jobs {
         )?;
         let response = tokio::select! {
             _ = cancelled(cancel) => anyhow::bail!("transfer cancelled"),
-            _ = tokio::time::sleep_until(expires) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
             response = tokio::time::timeout(Duration::from_secs(30), self.config.transfer_source.transfer(&record.binding.source, request)) => response???,
         };
         let material = TransferMaterial::from_wire(response.material)?;
@@ -469,7 +368,7 @@ impl Jobs {
         .map_err(|_| anyhow::anyhow!("source guardian material is invalid"))?;
         drop(permit);
         anyhow::ensure!(!*cancel.borrow(), "transfer cancelled");
-        seat.install_transfer(generation, record.binding, guardian)
+        seat.install_transfer(record.binding, guardian)
             .await
             .map_err(owner_failure)?;
         self.advertisement.notify_one();

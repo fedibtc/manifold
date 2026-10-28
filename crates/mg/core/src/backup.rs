@@ -99,7 +99,7 @@ pub struct TransferBackup {
 /// Accepted incoming provenance survives whole-fleet recovery. The Iroh
 /// secrets are confidential and are sealed by the destination's normal backup
 /// encryption. A seat still waiting for its source carries nothing: it holds
-/// no guardian, and the FA renews the move after a restore.
+/// no guardian, and the FA sends the move again after a restore.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IncomingTransferBackup {
     /// Restore through the import validation/installation path, not straight into
