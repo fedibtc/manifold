@@ -40,8 +40,8 @@ pub use discovery::{
 };
 pub use eligibility::{ReplacementCandidate, ReplacementCheck, ReplacementReason};
 pub use error::{
-    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
-    MgOperation, SelectionReauthorizationReason,
+    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, FailureDisposition,
+    FormationFailure, MgCause, MgFailure, MgOperation, SelectionReauthorizationReason,
 };
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_liquidity_manager::{
@@ -425,7 +425,7 @@ where
             &self.inner.ports.registry,
             &self.inner.ports.mg_connector,
         );
-        self.publish_error(FaErrorCode::CapabilityUnavailable);
+        self.publish_error(&FaError::CapabilityUnavailable(Capability::Registry));
         Err(FaError::CapabilityUnavailable(Capability::Registry))
     }
 
@@ -484,54 +484,66 @@ where
     /// and cancellation behavior as [`Self::resume`].
     pub async fn resume_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fa_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FaError::Identity)?;
-        let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
-            let recovery = self.inner.store.load_recovery(fa_id).await?;
-            match recovery {
-                db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
-                db::FaRecovery::Formation(recovery) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
-                    self.resume_formation(*recovery, options, deadline, &lease)
+            options.validate_for_start(&self.inner.store)?;
+            let fa_id = self
+                .inner
+                .ports
+                .identity
+                .public_key()
+                .map_err(FaError::Identity)?;
+            let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
+            let result = async {
+                let recovery = self.inner.store.load_recovery(fa_id).await?;
+                match recovery {
+                    db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
+                    db::FaRecovery::Formation(recovery) => {
+                        self.inner
+                            .progress
+                            .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
+                        self.resume_formation(*recovery, options, deadline, &lease)
+                            .await
+                    }
+                    db::FaRecovery::Restored(snapshot)
+                        if snapshot.freshness == FormationFreshness::Fresh =>
+                    {
+                        Ok(())
+                    }
+                    db::FaRecovery::Restored(snapshot) => {
+                        self.inner
+                            .progress
+                            .send_replace(FaStatus::Restored(snapshot.clone()));
+                        self.reconcile_restored(
+                            snapshot,
+                            fa_id,
+                            formation::DriverRun::new(options, deadline, &lease),
+                        )
                         .await
-                }
-                db::FaRecovery::Restored(snapshot)
-                    if snapshot.freshness == FormationFreshness::Fresh =>
-                {
-                    Ok(())
-                }
-                db::FaRecovery::Restored(snapshot) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Restored(snapshot.clone()));
-                    self.reconcile_restored(
-                        snapshot,
-                        fa_id,
-                        formation::DriverRun::new(options, deadline, &lease),
-                    )
-                    .await
+                    }
                 }
             }
+            .await;
+            formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
         }
         .await;
-        formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        if let Err(error) = &result {
+            self.publish_error(error);
+        }
+        result
     }
 
-    fn publish_error(&self, error: FaErrorCode) {
-        if let FaStatus::Formation(mut snapshot) = self.status() {
-            snapshot.last_error = Some(error);
-            self.inner
-                .progress
-                .send_replace(FaStatus::Formation(snapshot));
-        }
+    fn publish_error(&self, error: &FaError) {
+        let failure = Some(error.into());
+        self.inner.progress.send_if_modified(|status| {
+            if let FaStatus::Formation(snapshot) = status
+                && snapshot.last_error != failure
+            {
+                snapshot.last_error = failure;
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 

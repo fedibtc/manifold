@@ -6,7 +6,7 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use nostr_sdk::PublicKey;
 
-use crate::{FaError, FaErrorCode, FaResult};
+use crate::{FaError, FaResult};
 
 /// Smallest product-supported federation size.
 pub const MIN_FEDERATION_SIZE: u16 = 7;
@@ -701,8 +701,9 @@ pub struct FormationSnapshot {
     pub payment_outputs_started: bool,
     /// Join deliverable once every seat reports running.
     pub invite_code: Option<InviteCode>,
-    /// Most recent operation error category.
-    pub last_error: Option<FaErrorCode>,
+    /// Most recent runtime failure. Not stored in durable recovery records.
+    #[serde(default)]
+    pub last_error: Option<crate::FormationFailure>,
 }
 
 /// Complete FA state. Invalid “active formation without id/intent” shapes are

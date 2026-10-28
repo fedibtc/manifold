@@ -218,6 +218,7 @@ enum TestEffect {
 #[derive(Default)]
 struct PaymentState {
     payable_calls: AtomicUsize,
+    fail_payable: AtomicBool,
     readiness_calls: AtomicUsize,
     reservation_recover_calls: AtomicUsize,
     whole_release_calls: AtomicUsize,
@@ -312,6 +313,9 @@ impl FaPayments for TestPayments {
         admitted: &[FederationId],
     ) -> Result<Vec<FederationId>, FaPaymentError> {
         self.0.payable_calls.fetch_add(1, Ordering::SeqCst);
+        if self.0.fail_payable.load(Ordering::SeqCst) {
+            return Err(FaPaymentError::new("wallet capability query interrupted"));
+        }
         if self.0.pay_none.load(Ordering::SeqCst) {
             return Ok(Vec::new());
         }
@@ -776,6 +780,7 @@ struct CreateRecord {
 
 #[derive(Default)]
 struct MgState {
+    status_overrides: Mutex<HashMap<usize, ServiceStatus>>,
     connect_calls: AtomicUsize,
     connect_attempts: Mutex<HashMap<usize, usize>>,
     fail_connect_on_attempt: Mutex<Option<(usize, usize)>>,
@@ -1400,7 +1405,14 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetStatusResponse {
-            status: ServiceStatus::Running,
+            status: self
+                .state
+                .status_overrides
+                .lock()
+                .unwrap()
+                .get(&self.index)
+                .cloned()
+                .unwrap_or(ServiceStatus::Running),
             detail: StatusDetail::None,
             seat_health: Some(SeatHealth::Healthy),
         })
@@ -7012,6 +7024,10 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
         client.create_at(intent(), locators(), options()).await,
         Err(FaError::Payment(_))
     ));
+    assert_eq!(
+        formation(&client.status()).last_error.unwrap().disposition,
+        crate::FailureDisposition::Retryable,
+    );
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let recovery = active_recovery(
@@ -7386,9 +7402,10 @@ async fn formation_names_the_mg_with_a_divergent_guardian_verification_fee_accou
         .lock()
         .expect("test lock")
         .insert(divergent_index, divergent_account.clone());
+    let database = MemDatabase::new().into_database();
     let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         mg_state.clone(),
         MgConfig::given_away(),
     )
@@ -7412,6 +7429,20 @@ async fn formation_names_the_mg_with_a_divergent_guardian_verification_fee_accou
             .contains_key(&divergent_index),
         "the divergent MG must reject before submitting a vote"
     );
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::ManifoldGuardian,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    drop(client);
+    let reopened = open_client(database, payments, mg_state, MgConfig::given_away()).await;
+    assert_eq!(formation(&reopened.status()).last_error, None);
+    // A single refused vote is not a terminal aggregate failure: successful
+    // siblings can already have adopted the proposal, which resume must read.
+    reopened.resume().await.unwrap();
+    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]
@@ -12222,9 +12253,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     assert!(
         matches!(reopened.status(), FaStatus::Formation(_)),
@@ -12233,9 +12271,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
 
     let error = reopened.abandon_formation(options()).await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -12358,9 +12403,16 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -13839,6 +13891,188 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
         seats,
         "the rebased retry sends an identical accepted request to every seat"
     );
+}
+
+#[test]
+fn failure_disposition_distinguishes_causes_with_identical_progress_codes() {
+    use crate::FailureDisposition::{Retryable, Terminal};
+    let failure = |cause| MgFailure {
+        mg: manager_key(3).x_only_public_key().0,
+        operation: MgOperation::GetStatus,
+        cause,
+    };
+    let cases = [
+        (
+            FaError::Storage("I/O interrupted".into()),
+            FaErrorCode::Storage,
+            Retryable,
+        ),
+        (
+            FaError::StorageInvariant("missing authorized quote".into()),
+            FaErrorCode::Storage,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::Transport)),
+            FaErrorCode::ManifoldGuardian,
+            Retryable,
+        ),
+        (
+            FaError::Mg(failure(MgCause::TerminalStatus(
+                ServiceStatus::Decommissioned,
+            ))),
+            FaErrorCode::ManifoldGuardian,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::OfferChanged)),
+            FaErrorCode::ManifoldGuardian,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::GuardianVerificationFeeAccountMismatch)),
+            FaErrorCode::ManifoldGuardian,
+            Retryable,
+        ),
+        (
+            FaError::Mg(failure(MgCause::InvalidResponse)),
+            FaErrorCode::InvalidManifoldGuardians,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::FormationMetaAlreadyPublished)),
+            FaErrorCode::InvalidManifoldGuardians,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::Timeout)),
+            FaErrorCode::Timeout,
+            Retryable,
+        ),
+        (
+            FaError::SelectionPreviewTimeout,
+            FaErrorCode::Timeout,
+            Terminal,
+        ),
+        (
+            FaError::Payment("wallet temporarily unavailable".into()),
+            FaErrorCode::Payment,
+            Retryable,
+        ),
+        (
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                failure: None,
+            },
+            FaErrorCode::SelectionReauthorizationRequired,
+            Terminal,
+        ),
+        (
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(failure(MgCause::Timeout)),
+            },
+            FaErrorCode::SelectionReauthorizationRequired,
+            Terminal,
+        ),
+    ];
+    for (error, code, disposition) in cases {
+        assert_eq!(error.code(), code);
+        assert_eq!(error.disposition(), disposition, "{error:?}");
+        assert_eq!(
+            crate::FormationFailure::from(&error),
+            crate::FormationFailure { code, disposition }
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_guardian_status_pauses_formation_without_discarding_recovery() {
+    for status in [ServiceStatus::DataLoss, ServiceStatus::Decommissioned] {
+        let database = MemDatabase::new().into_database();
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(MgState::default());
+        state
+            .status_overrides
+            .lock()
+            .unwrap()
+            .insert(4, status.clone());
+        let client = open_client(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            MgConfig::given_away(),
+        )
+        .await;
+        assert!(matches!(
+            client.create_at(intent(), locators(), options()).await.as_ref(),
+            Err(FaError::Mg(MgFailure { mg, operation: MgOperation::GetStatus, cause: MgCause::TerminalStatus(actual) }))
+                if *actual == status && *mg == manager_key(4).x_only_public_key().0
+        ));
+        let before = formation(&client.status()).clone();
+        assert_eq!(
+            before.last_error,
+            Some(crate::FormationFailure {
+                code: FaErrorCode::ManifoldGuardian,
+                disposition: crate::FailureDisposition::Terminal,
+            })
+        );
+        assert!(before.seats.iter().all(|seat| seat.seat_id.is_some()));
+        drop(client);
+        let reopened = open_client(database, payments, state, MgConfig::given_away()).await;
+        assert_eq!(
+            formation(&reopened.status()).formation_id,
+            before.formation_id
+        );
+        assert_eq!(formation(&reopened.status()).last_error, None);
+        assert!(reopened.resume().await.is_err());
+        assert_eq!(formation(&reopened.status()).last_error, before.last_error);
+    }
+}
+
+#[tokio::test]
+async fn wallet_lookup_failure_retains_selected_formation_and_exact_reservation() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("retry-wallet-query".to_owned());
+    let reservation_id = seed_selected_recorded_reservation(
+        &client,
+        &payment_state,
+        formation_id.clone(),
+        test_now_secs() + 300,
+    )
+    .await;
+    payment_state.fail_payable.store(true, Ordering::SeqCst);
+    let error = client.resume().await.unwrap_err();
+    assert!(matches!(error, FaError::Payment(_)), "{error:?}");
+    assert_eq!(formation(&client.status()).formation_id, formation_id);
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Payment,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    assert!(
+        payment_state
+            .reservations
+            .lock()
+            .unwrap()
+            .contains_key(reservation_id.as_str())
+    );
+    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
+    payment_state.fail_payable.store(false, Ordering::SeqCst);
+    client.resume().await.unwrap();
+    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
 }
 
 // Keep the subscriber attached to the future, not a process-global default:

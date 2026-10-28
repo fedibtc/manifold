@@ -625,14 +625,14 @@ fn apply_authorized_effect_in_memory(
     effect: AdmissionEffect,
 ) -> FaResult<()> {
     let seat = recovery.seats.get_mut(position).ok_or_else(|| {
-        FaError::Storage(format!(
+        FaError::StorageInvariant(format!(
             "authorized effect names missing FA seat row {position}"
         ))
     })?;
     seat.admission.mark_effect_authorized(quote_id, effect)?;
     if seat.replacement_for.is_some() {
         if !seat.replacement_approved {
-            return Err(FaError::Storage(format!(
+            return Err(FaError::StorageInvariant(format!(
                 "authorized replacement FA seat row {position} lacks its approval"
             )));
         }
@@ -848,7 +848,7 @@ where
                 .insert(seat.progress.locator.service_pubkey, mg_id)
                 .is_some()
             {
-                return Err(FaError::Storage(
+                return Err(FaError::StorageInvariant(
                     "selected formation contains duplicate retained service signing keys"
                         .to_owned(),
                 ));
@@ -941,7 +941,7 @@ where
                     .insert(seat.progress.locator.service_pubkey, mg_id)
                     .is_some()
                 {
-                    return Err(FaError::Storage(
+                    return Err(FaError::StorageInvariant(
                         "selected formation contains duplicate retained service signing keys"
                             .to_owned(),
                     ));
@@ -1392,7 +1392,7 @@ where
                     .await
                     .map(|latest| latest.snapshot)
                     .unwrap_or(validated_fallback);
-                snapshot.last_error = Some(error.code());
+                snapshot.last_error = Some(error.into());
                 self.publish_snapshot(snapshot);
             }
             result
@@ -1437,7 +1437,7 @@ where
         if cleanup == ReservationCleanup::DefinitivelyAbsent
             && recovery.payment_reservation_id.is_some()
         {
-            return Err(FaError::Storage(
+            return Err(FaError::StorageInvariant(
                 "wallet reservation cannot be both durable and definitively absent".to_owned(),
             ));
         }
@@ -1484,7 +1484,7 @@ where
                         if recovery.payment_reservation_id.as_ref() == Some(&reservation_id)
                             && !recovery.payment_reservation_release_intended
                         {
-                            return Err(FaError::Storage(
+                            return Err(FaError::StorageInvariant(
                                 "durable FA reservation is absent from the payment wallet"
                                     .to_owned(),
                             ));
@@ -1496,7 +1496,7 @@ where
                 }
             }
             _ if recovery.payment_reservation_id.is_some() => {
-                return Err(FaError::Storage(
+                return Err(FaError::StorageInvariant(
                     "cannot wipe FA state while its wallet reservation cannot be reconstructed"
                         .to_owned(),
                 ));
@@ -1525,7 +1525,7 @@ where
             let requirements = recovery
                 .reserved_payment_requirements(fa_id)?
                 .ok_or_else(|| {
-                    FaError::Storage(
+                    FaError::StorageInvariant(
                         "replacement reservation has no exact payment requirements".to_owned(),
                     )
                 })?;
@@ -1533,7 +1533,7 @@ where
                 || crate::db::payment_reservation_id(&recovery.snapshot.formation_id, &requirements)
                     != reservation_id
             {
-                return Err(FaError::Storage(
+                return Err(FaError::StorageInvariant(
                     "replacement reservation no longer matches its exact authorization".to_owned(),
                 ));
             }
@@ -1603,7 +1603,7 @@ where
                 .as_ref()
                 .is_some_and(|stored| stored != &reservation_id)
             {
-                return Err(FaError::Storage(
+                return Err(FaError::StorageInvariant(
                     "stored wallet reservation does not match exact payment requirements"
                         .to_owned(),
                 ));
@@ -1624,7 +1624,7 @@ where
                 }
                 PaymentReservationRecovery::Absent if recovery.payment_reservation_id.is_some() => {
                     if !recovery.payment_reservation_release_intended {
-                        return Err(FaError::Storage(
+                        return Err(FaError::StorageInvariant(
                             "durable FA reservation is absent from the payment wallet".to_owned(),
                         ));
                     }
@@ -1878,7 +1878,7 @@ where
             .as_ref()
             .is_some_and(|stored| stored != &reservation_id)
         {
-            return Err(FaError::Storage(
+            return Err(FaError::StorageInvariant(
                 "stored wallet reservation does not match exact payment requirements".to_owned(),
             ));
         }
@@ -1891,7 +1891,7 @@ where
             return Ok(reservation);
         }
         if recovery.payment_reservation_id.is_some() {
-            return Err(FaError::Storage(
+            return Err(FaError::StorageInvariant(
                 "durable FA reservation is absent from the payment wallet".to_owned(),
             ));
         }
@@ -1973,13 +1973,13 @@ where
                 .iter()
                 .find(|seat| seat.progress.index == requirement.index)
                 .ok_or_else(|| {
-                    FaError::Storage(format!(
+                    FaError::StorageInvariant(format!(
                         "payment requirement names missing FA seat row {}",
                         requirement.index
                     ))
                 })?;
             let signed = seat.signed_quote.as_ref().ok_or_else(|| {
-                FaError::Storage(format!(
+                FaError::StorageInvariant(format!(
                     "payment requirement has no quote for FA seat row {}",
                     requirement.index
                 ))
@@ -1993,7 +1993,7 @@ where
                 expected_payer.as_ref(),
             )?;
             if quote.quote_id() != requirement.quote_id || quote.terms.payment.is_none() {
-                return Err(FaError::Storage(format!(
+                return Err(FaError::StorageInvariant(format!(
                     "payment requirement does not match FA seat row {}",
                     requirement.index
                 )));
@@ -2194,7 +2194,9 @@ where
                 continue;
             }
             let reservation_id = recovery_reservation_id.clone().ok_or_else(|| {
-                FaError::Storage("authorized paid quote has no aggregate reservation id".to_owned())
+                FaError::StorageInvariant(
+                    "authorized paid quote has no aggregate reservation id".to_owned(),
+                )
             })?;
             pending_recoveries.push(async move {
                 let recovered = run
@@ -2411,7 +2413,7 @@ where
                 recovery.payment_requirements(fa_id)?
             }
             .ok_or_else(|| {
-                FaError::Storage(
+                FaError::StorageInvariant(
                     "paid output generation has no complete payment requirements".to_owned(),
                 )
             })?;
@@ -2446,7 +2448,7 @@ where
             let recovered_payment = recovered_payments[position].take();
             let refreshed_payment = refreshed_payments[position].take();
             let client = clients[position].take().ok_or_else(|| {
-                FaError::Storage(format!(
+                FaError::StorageInvariant(format!(
                     "missing preflight MG connection for seat {position}"
                 ))
             })?;
@@ -2463,8 +2465,9 @@ where
                 });
                 continue;
             }
-            let signed_quote = signed_quote
-                .ok_or_else(|| FaError::Storage(format!("FA seat row {position} has no quote")))?;
+            let signed_quote = signed_quote.ok_or_else(|| {
+                FaError::StorageInvariant(format!("FA seat row {position} has no quote"))
+            })?;
             match recovered_payment {
                 None => {
                     presentations.push(PendingSeatPresentation {
@@ -2485,12 +2488,12 @@ where
                 }
                 Some(SeatPaymentRecovery::NotStarted) => {
                     let quote = refreshed_payment.ok_or_else(|| {
-                        FaError::Storage(format!(
+                        FaError::StorageInvariant(format!(
                             "paid FA seat row {position} escaped the refresh barrier"
                         ))
                     })?;
                     let reservation = payment_reservation.clone().ok_or_else(|| {
-                        FaError::Storage(format!(
+                        FaError::StorageInvariant(format!(
                             "paid FA seat row {position} has no aggregate reservation"
                         ))
                     })?;
@@ -2506,12 +2509,12 @@ where
                     });
                 }
                 Some(SeatPaymentRecovery::Prepared(_)) => {
-                    return Err(FaError::Storage(format!(
+                    return Err(FaError::StorageInvariant(format!(
                         "prepared FA seat row {position} escaped the replay barrier"
                     )));
                 }
                 Some(SeatPaymentRecovery::Rejected(_)) => {
-                    return Err(FaError::Storage(format!(
+                    return Err(FaError::StorageInvariant(format!(
                         "rejected FA seat row {position} escaped terminal clearing"
                     )));
                 }
@@ -2754,7 +2757,7 @@ where
             .enumerate()
             .map(|(position, session)| {
                 session.ok_or_else(|| {
-                    FaError::Storage(format!("missing live session for seat {position}"))
+                    FaError::StorageInvariant(format!("missing live session for seat {position}"))
                 })
             })
             .collect()
@@ -2778,13 +2781,13 @@ where
             let requirements = recovery
                 .reserved_payment_requirements(fa_id)?
                 .ok_or_else(|| {
-                    FaError::Storage(
+                    FaError::StorageInvariant(
                         "stored wallet reservation has no exact payment requirements".to_owned(),
                     )
                 })?;
             let expected = crate::db::payment_reservation_id(formation_id, &requirements);
             if recovery.payment_reservation_id.as_ref() != Some(&expected) {
-                return Err(FaError::Storage(
+                return Err(FaError::StorageInvariant(
                     "stored wallet reservation no longer matches journaled quotes".to_owned(),
                 ));
             }
@@ -2798,7 +2801,7 @@ where
                         return Ok(None);
                     }
                     let signed = seat.signed_quote.clone().ok_or_else(|| {
-                        FaError::Storage(format!(
+                        FaError::StorageInvariant(format!(
                             "reserved FA seat row {position} has no signed quote"
                         ))
                     })?;
@@ -3011,7 +3014,7 @@ where
             .enumerate()
             .map(|(position, code)| {
                 code.ok_or_else(|| {
-                    FaError::Storage(format!("missing guardian code for seat {position}"))
+                    FaError::StorageInvariant(format!("missing guardian code for seat {position}"))
                 })
             })
             .collect::<FaResult<Vec<_>>>()?;
@@ -3155,7 +3158,7 @@ where
             .await?
             .map_err(|error| FaError::Payment(error.to_string()))?;
         } else if release_proof.is_some() {
-            return Err(FaError::Storage(format!(
+            return Err(FaError::StorageInvariant(format!(
                 "free FA seat row {position} unexpectedly carried a wallet release proof"
             )));
         }
@@ -3181,7 +3184,7 @@ where
                         .verify(&recovery.seats[position].progress.locator.service_pubkey)
                         .map(|quote| quote.quote_id())
                         .map_err(|error| {
-                            FaError::Storage(format!(
+                            FaError::StorageInvariant(format!(
                                 "invalid terminal quote for replacement row {position}: {error}"
                             ))
                         })
@@ -3586,7 +3589,7 @@ where
     ) -> FaResult<FreeSeatQuote> {
         let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
         if verified.terms.payment.is_some() {
-            return Err(FaError::Storage(format!(
+            return Err(FaError::StorageInvariant(format!(
                 "paid FA seat row {index} had no authorized payment action"
             )));
         }
@@ -3604,7 +3607,7 @@ where
     ) -> FaResult<PaidSeatQuote> {
         let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
         if verified.terms.payment.is_none() {
-            return Err(FaError::Storage(format!(
+            return Err(FaError::StorageInvariant(format!(
                 "free FA seat row {index} had a paid acquisition action"
             )));
         }
@@ -3864,7 +3867,7 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FaError::Storage("formed FA record contains no persisted invite".to_owned())
+            FaError::StorageInvariant("formed FA record contains no persisted invite".to_owned())
         })?;
         let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
             // Consensus already confirmed formation. Recheck that proof without
@@ -3990,7 +3993,7 @@ where
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
-                FaError::Storage(format!("FA seat row {position} has no seat id"))
+                FaError::StorageInvariant(format!("FA seat row {position} has no seat id"))
             })?;
 
             let client =
@@ -4561,7 +4564,9 @@ where
             .enumerate()
             .map(|(position, invite)| {
                 invite.ok_or_else(|| {
-                    FaError::Storage(format!("missing invite response for seat {position}"))
+                    FaError::StorageInvariant(format!(
+                        "missing invite response for seat {position}"
+                    ))
                 })
             })
             .collect::<FaResult<Vec<_>>>()?;
@@ -4584,7 +4589,9 @@ where
                     return Err(FaError::NoActiveFormation);
                 }
                 let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-                    FaError::Storage("formed FA record has no federation invite".to_owned())
+                    FaError::StorageInvariant(
+                        "formed FA record has no federation invite".to_owned(),
+                    )
                 })?;
                 let seats = recovery
                     .seats
@@ -4595,7 +4602,9 @@ where
                             mg_id: seat.admission.mg_id(),
                             locator: seat.progress.locator,
                             seat_id: seat.progress.seat_id.ok_or_else(|| {
-                                FaError::Storage("formed FA seat has no seat id".to_owned())
+                                FaError::StorageInvariant(
+                                    "formed FA seat has no seat id".to_owned(),
+                                )
                             })?,
                         })
                     })
@@ -4618,7 +4627,9 @@ where
                     .map(|(index, seat)| {
                         Ok(PostFormedSeat {
                             index: u16::try_from(index).map_err(|_| {
-                                FaError::Storage("restored FA seat index overflow".to_owned())
+                                FaError::StorageInvariant(
+                                    "restored FA seat index overflow".to_owned(),
+                                )
                             })?,
                             mg_id: seat.mg_identity,
                             locator: seat.locator,
@@ -5087,8 +5098,9 @@ pub(crate) fn combine_seat_invites(invites: &[InviteCode]) -> FaResult<InviteCod
             }
         }
     }
-    let federation_id = federation_id
-        .ok_or_else(|| FaError::Storage("formed FA record contains no seats".to_owned()))?;
+    let federation_id = federation_id.ok_or_else(|| {
+        FaError::StorageInvariant("formed FA record contains no seats".to_owned())
+    })?;
     let peer_ids = peers.keys().map(|peer| peer.to_usize()).collect::<Vec<_>>();
     if peer_ids != (0..invites.len()).collect::<Vec<_>>() {
         return Err(FaError::InvalidManifoldGuardians(

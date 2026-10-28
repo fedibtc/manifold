@@ -154,6 +154,37 @@ pub enum FaErrorCode {
     Timeout,
 }
 
+/// Whether an unchanged formation should resume without a user command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureDisposition {
+    /// A later attempt can succeed without new authorization or state repair.
+    Retryable,
+    /// Stop automatic retries until an explicit command or a fresh launch.
+    ///
+    /// This does not authorize abandonment and does not mean funds are lost.
+    Terminal,
+}
+
+/// Runtime-only formation failure. Durable recovery remains the source of truth
+/// and a fresh launch rechecks it rather than persisting a failure verdict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FormationFailure {
+    /// Stable progress-facing category.
+    pub code: FaErrorCode,
+    /// Manifold-owned automatic retry policy.
+    pub disposition: FailureDisposition,
+}
+
+impl From<&FaError> for FormationFailure {
+    fn from(error: &FaError) -> Self {
+        Self {
+            code: error.code(),
+            disposition: error.disposition(),
+        }
+    }
+}
+
 /// A failure produced by one identity-bound Manifold Guardian operation.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("MG {mg} {operation}: {cause}")]
@@ -326,6 +357,10 @@ pub enum FaError {
     /// Durable state could not be read or written.
     #[error("FA storage failure: {0}")]
     Storage(String),
+    /// Durable or in-memory recovery facts violate an engine invariant.
+    /// Retrying unchanged facts cannot repair them; this is not database I/O.
+    #[error("FA storage invariant failure: {0}")]
+    StorageInvariant(String),
     /// The consumer-provided identity could not be used.
     #[error("FA identity failure: {0}")]
     Identity(String),
@@ -477,6 +512,48 @@ pub enum FaError {
 }
 
 impl FaError {
+    /// Classify automatic retries at the source, without parsing error text.
+    /// Unknown transport, wallet and storage failures remain retryable.
+    #[must_use]
+    pub fn disposition(&self) -> FailureDisposition {
+        match self {
+            Self::Mg(failure) => match failure.cause {
+                MgCause::InvalidResponse
+                | MgCause::FormationMetaAlreadyPublished
+                | MgCause::OfferChanged
+                | MgCause::TerminalStatus(_) => FailureDisposition::Terminal,
+                _ => FailureDisposition::Retryable,
+            },
+            Self::Storage(_)
+            | Self::Busy
+            | Self::Registry(_)
+            | Self::ManifoldGuardian { .. }
+            | Self::Payment(_)
+            | Self::Liquidity(_)
+            | Self::MaintenanceConvergence { .. }
+            | Self::Timeout(_) => FailureDisposition::Retryable,
+            Self::InvalidIntent(_)
+            | Self::InvalidOptions(_)
+            | Self::StorageInvariant(_)
+            | Self::Identity(_)
+            | Self::NoActiveFormation
+            | Self::AbandonUnavailable(_)
+            | Self::Selection(_)
+            | Self::InsufficientMgSeats { .. }
+            | Self::SelectionPreviewTimeout
+            | Self::SelectionEstimateOverflow
+            | Self::SelectionReauthorizationRequired { .. }
+            | Self::CapabilityUnavailable(_)
+            | Self::InvalidManifoldGuardians(_)
+            | Self::LiquidityOperationExists { .. }
+            | Self::MaintenanceWrongState { .. }
+            | Self::MaintenanceRejected { .. }
+            | Self::MaintenanceUnsupported { .. }
+            | Self::MaintenanceConsensusTooLarge { .. }
+            | Self::MaintenanceConsensusInvalid { .. } => FailureDisposition::Terminal,
+        }
+    }
+
     /// Return the stable error category used by progress surfaces.
     #[must_use]
     pub fn code(&self) -> FaErrorCode {
@@ -490,7 +567,7 @@ impl FaError {
             },
             Self::InvalidIntent(_) => FaErrorCode::InvalidIntent,
             Self::InvalidOptions(_) => FaErrorCode::InvalidOptions,
-            Self::Storage(_) => FaErrorCode::Storage,
+            Self::Storage(_) | Self::StorageInvariant(_) => FaErrorCode::Storage,
             Self::Identity(_) => FaErrorCode::Identity,
             Self::Busy => FaErrorCode::Busy,
             Self::NoActiveFormation => FaErrorCode::NoActiveFormation,
