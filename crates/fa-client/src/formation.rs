@@ -63,6 +63,14 @@ pub(crate) const MIN_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(1)
 /// Largest duration represented without overflow by native and WASM runtime timers.
 pub(crate) const MAX_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(i32::MAX as u64);
 const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
+/// Budget for one post-DKG consensus read through the new federation's invite.
+///
+/// One read downloads the client config, agrees it across a threshold of
+/// guardians and then reads the metadata consensus. Upstream retries the
+/// config download internally for about 45 seconds, and a large federation
+/// needs more guardians to answer, so one ordinary request timeout is too
+/// short. A read that still times out is retried within the same run.
+const FORMATION_CONSENSUS_READ_TIMEOUT: Duration = Duration::from_secs(120);
 const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
@@ -167,6 +175,7 @@ pub struct FormationRunOptionsConfig {
     pub run_timeout: Duration,
     /// Maximum time for one ordinary capability call.
     /// Payment creation, recovery, and refund settlement use the remaining run timeout.
+    /// Post-DKG formation consensus reads use their own longer budget.
     pub request_timeout: Duration,
 }
 
@@ -316,6 +325,19 @@ impl<'a> DriverRun<'a> {
         Fut: Future<Output = T>,
     {
         self.call_with_timeout(operation, self.options.request_timeout(), make_future)
+            .await
+    }
+
+    /// Fence one post-DKG consensus read under its longer budget.
+    async fn call_consensus_read<T, Fut>(
+        &self,
+        operation: &'static str,
+        make_future: impl FnOnce() -> FaResult<Fut>,
+    ) -> FaResult<T>
+    where
+        Fut: Future<Output = T>,
+    {
+        self.call_with_timeout(operation, FORMATION_CONSENSUS_READ_TIMEOUT, make_future)
             .await
     }
 
@@ -4018,13 +4040,16 @@ where
             loop {
                 ensure_time_remaining(run.deadline, "reading the formation config")?;
                 match run
-                    .call("reading the formation config", || {
+                    .call_consensus_read("reading the formation config", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                     })
-                    .await?
+                    .await
                 {
-                    Ok(snapshot) => break Some(snapshot.config),
-                    Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
+                    Ok(Ok(snapshot)) => break Some(snapshot.config),
+                    Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                        sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         } else {
@@ -4100,14 +4125,18 @@ where
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = run
-                .call("reading the formation metadata base", || {
+            let snapshot = match run
+                .call_consensus_read("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?;
-            let Ok(snapshot) = snapshot else {
-                sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-                continue;
+                .await
+            {
+                Ok(Ok(snapshot)) => snapshot,
+                Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                    sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(

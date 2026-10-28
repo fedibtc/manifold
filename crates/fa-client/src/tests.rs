@@ -1888,6 +1888,12 @@ struct TestConsensusReader {
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
     reads_before_meta_advance: Arc<AtomicUsize>,
     revision_bump_after_next_read: Arc<AtomicU64>,
+    /// Reads that never complete, consumed before any other behavior.
+    stalled_reads: Arc<AtomicUsize>,
+    /// How long every completing read takes.
+    read_delay: Arc<Mutex<Duration>>,
+    /// Every started consensus read.
+    started_reads: Arc<AtomicUsize>,
 }
 
 impl TestConsensusReader {
@@ -1903,7 +1909,18 @@ impl TestConsensusReader {
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
             reads_before_meta_advance: Arc::new(AtomicUsize::new(0)),
             revision_bump_after_next_read: Arc::new(AtomicU64::new(0)),
+            stalled_reads: Arc::new(AtomicUsize::new(0)),
+            read_delay: Arc::new(Mutex::new(Duration::ZERO)),
+            started_reads: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    fn stall_next(&self, count: usize) {
+        self.stalled_reads.store(count, Ordering::SeqCst);
+    }
+
+    fn delay_reads(&self, delay: Duration) {
+        *self.read_delay.lock().expect("test lock") = delay;
     }
 
     fn check_invite(&self, invite: &InviteCode) -> Result<(), FederationConsensusError> {
@@ -2035,6 +2052,20 @@ impl FederationConsensusReader for TestConsensusReader {
         &self,
         invite_code: &InviteCode,
     ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
+        self.started_reads.fetch_add(1, Ordering::SeqCst);
+        if self
+            .stalled_reads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            std::future::pending::<()>().await;
+        }
+        let delay = *self.read_delay.lock().expect("test lock");
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         self.check_invite(invite_code)?;
         if self
             .failures
@@ -8537,6 +8568,85 @@ async fn fee_rate_uses_terminal_maintenance_rejection() {
             .await,
         Err(FaError::MaintenanceRejected { .. })
     ));
+}
+
+#[tokio::test]
+async fn a_post_dkg_consensus_read_may_outlast_the_request_timeout() {
+    // A large federation's config download and threshold agreement can take
+    // longer than one ordinary MG request; the read must not be cut at it.
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    let read_delay = Duration::from_millis(400);
+    assert!(
+        read_delay > Duration::from_millis(200),
+        "longer than options() request_timeout"
+    );
+    reader.delay_reads(read_delay);
+    let started_reads = reader.started_reads.clone();
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(1),
+        run_timeout: Duration::from_secs(10),
+        request_timeout: Duration::from_millis(200),
+    })
+    .unwrap();
+
+    client
+        .create_at(intent(), locators(), options)
+        .await
+        .unwrap();
+
+    formed(&client.status());
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    let reads = started_reads.load(Ordering::SeqCst);
+    // No read was abandoned: the config read, the metadata base read and the
+    // confirming read each ran once.
+    assert_eq!(reads, 3, "consensus reads started");
+    assert_eq!(invite_calls, locators().len(), "one invite fetch per seat");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_post_dkg_consensus_read_is_retried_within_the_run() {
+    // A read that hangs is cut at its own budget and retried, instead of
+    // failing the run and repeating MG connection, status and invite calls.
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.stall_next(1);
+    let started_reads = reader.started_reads.clone();
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+
+    client
+        .create_at(intent(), locators(), FormationRunOptions::default())
+        .await
+        .unwrap();
+
+    formed(&client.status());
+    assert_eq!(
+        started_reads.load(Ordering::SeqCst),
+        4,
+        "one stalled read, then three"
+    );
+    assert_eq!(
+        mg_state.invite_calls.load(Ordering::SeqCst),
+        locators().len(),
+        "the run did not restart"
+    );
 }
 
 #[tokio::test]
