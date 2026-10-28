@@ -350,6 +350,46 @@ fn assert_collection_failures(poller: &MetricsPoller, stage: Option<&str>) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn admission_expiry_counts_one_deadline_failure_and_no_rejection() {
+    // The policy fails with the same opaque error when its cooperative
+    // deadline expires. A real end-to-end race between the scrape and the
+    // admission deadline would be timing-dependent, so this exercises the
+    // admission-error branch with a budget that has and has not run out.
+    let directory = tempfile::tempdir().unwrap();
+    let (store, _, _) = registered_test_store(&directory).await;
+    let poller = test_poller(store).await;
+    let rendered = |poller: &MetricsPoller| {
+        let mut output = String::new();
+        poller.observability().render(&mut output, 0).unwrap();
+        output
+    };
+
+    let expired = tokio::time::Instant::now();
+    let mut failures = FailureRecorder::new(&poller.observability, expired);
+    assert_eq!(
+        poller.admission_failed(&mut failures, expired),
+        AdmissionFailure::BudgetExhausted
+    );
+    assert_collection_failures(&poller, Some("deadline"));
+    assert!(
+        rendered(&poller)
+            .contains("cloud_fman_telemetry_metrics_admission_total{event=\"rejected\"} 0 0")
+    );
+
+    let open = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut failures = FailureRecorder::new(&poller.observability, open);
+    assert_eq!(
+        poller.admission_failed(&mut failures, open),
+        AdmissionFailure::Rejected
+    );
+    assert_collection_failures(&poller, Some("deadline"));
+    assert!(
+        rendered(&poller)
+            .contains("cloud_fman_telemetry_metrics_admission_total{event=\"rejected\"} 1 0")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unreachable_target_counts_one_connect_failure() {
     let directory = tempfile::tempdir().unwrap();
     // The registered target's endpoint id does not parse, so no dial starts.

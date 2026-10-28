@@ -433,9 +433,11 @@ impl MetricsPoller {
             ) {
                 Ok(admitted) => admitted,
                 Err(_) => {
-                    self.observability.record(AdmissionOutcome::Rejected);
                     complete = false;
-                    continue;
+                    match self.admission_failed(&mut failures, deadline) {
+                        AdmissionFailure::Rejected => continue,
+                        AdmissionFailure::BudgetExhausted => break,
+                    }
                 }
             };
             self.observability.record(AdmissionOutcome::Admitted);
@@ -533,6 +535,34 @@ fn seat_federation(
     let mut canonical = String::new();
     let canonical = write!(canonical, "{invite}").is_ok().then_some(canonical);
     Some((invite.federation_id().to_string(), canonical))
+}
+
+/// Why admission refused one scraped seat response.
+#[derive(Debug, Eq, PartialEq)]
+enum AdmissionFailure {
+    /// The policy rejected the response; later seats are still collected.
+    Rejected,
+    /// The target budget ran out during admission; the poll ends.
+    BudgetExhausted,
+}
+
+impl MetricsPoller {
+    /// Account for an admission error. The policy also fails when its
+    /// cooperative deadline expires, which is budget exhaustion, not a
+    /// rejection of the response.
+    fn admission_failed(
+        &self,
+        failures: &mut FailureRecorder<'_>,
+        deadline: tokio::time::Instant,
+    ) -> AdmissionFailure {
+        if tokio::time::Instant::now() >= deadline {
+            failures.record(CollectionFailure::Deadline);
+            AdmissionFailure::BudgetExhausted
+        } else {
+            self.observability.record(AdmissionOutcome::Rejected);
+            AdmissionFailure::Rejected
+        }
+    }
 }
 
 /// Counts why one target poll lost data. A failure observed after the target
