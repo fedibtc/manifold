@@ -1353,6 +1353,18 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
         reader,
     )
     .await;
+    // Maintenance needs a reconciled formed record.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match reopened.resume().await {
+                Err(FaError::Busy) => tokio::task::yield_now().await,
+                result => break result,
+            }
+        }
+    })
+    .await
+    .expect("cancelled driver released its lease")
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match reopened

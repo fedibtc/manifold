@@ -8,8 +8,8 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
     FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
     FaStatus, FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FedimintdVersionRange, FormationIntent, FormationPhase,
-    FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
+    FedimintFederationId, FedimintdVersionRange, FormationIntent, FormationRunOptions,
+    GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
     LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
     ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
     MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
@@ -1547,9 +1547,7 @@ async fn run(
                 .provider_pubkey()
                 .clone();
                 let formation_id = match client.status() {
-                    FaStatus::Formation(snapshot) if snapshot.phase == FormationPhase::Formed => {
-                        snapshot.formation_id
-                    }
+                    FaStatus::Formed(snapshot) => snapshot.formation_id,
                     _ => anyhow::bail!("liquidity requires an active formed federation"),
                 };
                 let connector = CliLiquidityConnector::new(endpoint.clone());
@@ -3449,7 +3447,7 @@ mod tests {
     #[tokio::test]
     async fn post_formation_operation_is_polled_only_after_successful_reconciliation() {
         // CLI liquidity and maintenance call sites use this helper after
-        // opening persisted Formed state, which fa-client restores unsynced.
+        // opening a persisted formed federation, which fa-client loads unsynced.
         let fresh = std::cell::Cell::new(false);
         let operation_polled = std::cell::Cell::new(false);
         let outcome = reconcile_then_run_post_formation(

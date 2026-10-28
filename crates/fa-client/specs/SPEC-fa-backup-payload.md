@@ -23,8 +23,10 @@ terminal liquidity history, and all secrets or spendable value. Restore keeps
 locators exactly; later operation-specific trust checks do not refresh them
 from advertisements.
 
-A snapshot becomes eligible only after the existing formed-metadata target is
-confirmed. There is no deletion, tombstone, or second federation payload.
+The FA's formed federation record holds this payload. Formation writes the
+record when consensus confirms the formed-metadata target, and import writes it
+from a backup. A snapshot is eligible only from that record. There is no
+deletion, tombstone, or second federation payload.
 
 ## Sealed document and relay reconciliation
 
@@ -58,7 +60,7 @@ When opened with a restored-mnemonic hint, `fa-client` starts the lookup and
 retries failures in its own task group while holding its mutation guard.
 New-seed openings skip recovery.
 
-A restored payload imports local recovery state as `Unsynced`; reconciliation
+A restored payload imports the formed federation record as `Unsynced`; reconciliation
 gates mutations until fresh guardian consensus confirms the saved federation
 identity and complete signed seat-binding directory. It checks the saved MG
 identities and any liquidity commitment against that directory. If the saved

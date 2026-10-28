@@ -418,6 +418,10 @@ pub enum FaError {
         /// Durable phase observed before any maintenance network effect.
         phase: crate::FormationPhase,
     },
+    /// A post-formation maintenance verb was attempted before this run
+    /// checked the formed federation against consensus. A resume does that.
+    #[error("federation maintenance requires a reconciled formed federation")]
+    MaintenanceUnsynced,
     /// One guardian returned a terminal typed refusal for this maintenance
     /// request. Retryable unavailability and stale-base responses never use
     /// this variant.
@@ -508,7 +512,9 @@ impl FaError {
             Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
             Self::Payment(_) => FaErrorCode::Payment,
             Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
-            Self::MaintenanceWrongState { .. } => FaErrorCode::MaintenanceWrongState,
+            Self::MaintenanceWrongState { .. } | Self::MaintenanceUnsynced => {
+                FaErrorCode::MaintenanceWrongState
+            }
             // Keep the serialized category stable; callers can distinguish
             // unsupported metadata through the public Rust error variant.
             Self::MaintenanceRejected { .. } | Self::MaintenanceUnsupported { .. } => {

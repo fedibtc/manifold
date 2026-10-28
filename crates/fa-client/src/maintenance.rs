@@ -19,7 +19,7 @@ use crate::formation::{
 };
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusError,
-    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness, FormationPhase,
+    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness,
     ManifoldGuardianConnector,
 };
 
@@ -375,9 +375,10 @@ where
     /// is retained in the convergence result. Typed policy/lifecycle refusals
     /// return [`FaError::MaintenanceRejected`]. A `MetaKeyRefused` response
     /// stops retries to that seat, but returns [`FaError::MaintenanceUnsupported`]
-    /// only when too few other seats remain to reach the threshold. A non-formed durable
-    /// record returns [`FaError::MaintenanceWrongState`] before connector
-    /// work.
+    /// only when too few other seats remain to reach the threshold. A formation
+    /// that is not formed returns [`FaError::MaintenanceWrongState`], and a
+    /// formed federation that this run has not reconciled returns
+    /// [`FaError::MaintenanceUnsynced`], both before connector work.
     pub async fn update_federation_metadata(
         &self,
         update: FederationMetadataUpdate,
@@ -673,26 +674,22 @@ where
     ) -> FaResult<crate::formation::PostFormedAuthority> {
         match self.inner.store.load_recovery(fa_id).await? {
             crate::db::FaRecovery::Idle => return Err(FaError::NoActiveFormation),
-            crate::db::FaRecovery::Formation(recovery)
-                if recovery.snapshot.phase != FormationPhase::Formed =>
-            {
+            crate::db::FaRecovery::Formation(recovery) => {
                 return Err(FaError::MaintenanceWrongState {
                     phase: recovery.snapshot.phase,
                 });
             }
-            crate::db::FaRecovery::Restored(snapshot)
+            crate::db::FaRecovery::Formed(snapshot)
                 if !matches!(
                     self.status(),
-                    FaStatus::Restored(current)
+                    FaStatus::Formed(current)
                         if current.freshness == FormationFreshness::Fresh
                             && current.formation_id == snapshot.formation_id
                 ) =>
             {
-                return Err(FaError::MaintenanceWrongState {
-                    phase: snapshot.phase,
-                });
+                return Err(FaError::MaintenanceUnsynced);
             }
-            crate::db::FaRecovery::Formation(_) | crate::db::FaRecovery::Restored(_) => {}
+            crate::db::FaRecovery::Formed(_) => {}
         }
         self.post_formed_authority(fa_id).await
     }

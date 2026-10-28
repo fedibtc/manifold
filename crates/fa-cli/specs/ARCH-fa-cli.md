@@ -174,12 +174,12 @@ guardian, or Guardian Verification Fee account input. Omitting the rate uses
 5,000 ppm; fa-client also enforces the admitted published minimum with a
 1,500-ppm fallback.
 
-Every maintenance command reopens the existing active formation, reconciles it
+Every maintenance command reopens the formed federation, reconciles it
 through `fa-client::resume`, and invokes the typed library operation through the
 same open client and real consensus reader. A failed reconciliation prevents
 the mutation future from being polled. Reopening does not connect the live
 registry because neither reconciliation nor these operations uses it. The
-commands require a durable `Formed` record and return only after fa-client
+commands require a durable formed record and return only after fa-client
 rereads threshold consensus and observes the exact metadata value or requested guardian-fee rate. They do not persist a second CLI-side operation record.
 
 fa-client does not expose a standalone projection of arbitrary consensus
@@ -197,7 +197,7 @@ capability.
 `liquidity discover` performs the complete no-private-data FLIP admission walk
 for an explicit Bitcoin network and gateway amount range. `liquidity request`
 repeats that fresh discovery, chooses either the named admitted provider or the
-first deterministic provider, requires the active formation to be `Formed`,
+first deterministic provider, requires a formed federation,
 reconciles it through `fa-client::resume`, and invokes
 `fa-client::start_liquidity` in the same process through a generated Iroh
 public-RPC client. The CLI never constructs provider trust or sends the invite

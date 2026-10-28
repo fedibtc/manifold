@@ -408,9 +408,14 @@ new durable sequence state in MVP.
 
 Rechecking an already formed federation uses fresh threshold consensus, not
 Manifold Guardian liveness. Verify the saved invite's federation identity and the
-complete signed directory; local formations also require their saved directory
-and fee recipients to remain exact. Restored backups must match every saved seat
-and any liquidity commitment before exposing fresh authority. Initial formation
+complete signed directory. Every formed federation, formed here or restored,
+must match every saved seat and any liquidity commitment before exposing fresh
+authority. The recheck does not require the directory or the fee recipients
+agreed at formation to stay exact. Guardians can vote new ones, and the FA
+keeps managing the federation after such a vote even though the FA did not
+consent to it. A guardian vote is not FA consent, so this is a deliberate
+tradeoff: the FA cannot undo the vote, and refusing management would only
+block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
 still requires every manager's health and agreed invite.
 If the saved invite cannot reach consensus, recovery may ask the saved managers
 for alternative invites. They are dialing hints only: reject a different

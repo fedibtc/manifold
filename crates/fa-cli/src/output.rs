@@ -256,13 +256,13 @@ impl<'a> CliOutput<'a> {
                         }
                     }
                 }
-                FaStatus::Restored(snapshot) => {
+                FaStatus::Formed(snapshot) => {
                     writeln!(self.stdout, "{}", snapshot.federation_invite.0)?;
                     let freshness = match snapshot.freshness {
                         fa_client::FormationFreshness::Fresh => "fresh",
                         fa_client::FormationFreshness::Unsynced => "unsynced",
                     };
-                    writeln!(self.stdout, "recovery state: {freshness}")?;
+                    writeln!(self.stdout, "federation state: {freshness}")?;
                 }
             }
         }

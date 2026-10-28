@@ -630,8 +630,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .unwrap();
 
     let formed_status = client.status();
-    let formed = formation(&formed_status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
+    let formed = formed(&formed_status);
     assert_eq!(
         formed.seats[usize::from(replaced_index)].locator,
         replacement_locator
@@ -779,7 +778,7 @@ async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
         .await
         .expect("the first verified federation forms from all-zero quotes");
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
