@@ -4000,27 +4000,87 @@ where
         self.publish_formed(fa_id).await
     }
 
+    /// Connect to every seat's MG for a run that needs all of them.
+    ///
+    /// The seats exist, so a definite connection failure is transient here:
+    /// it is retried with bounded backoff until the run deadline instead of
+    /// ending the run. MGs are dialed concurrently, so one slow MG does not
+    /// hold up the others.
     async fn seat_sessions(
         &self,
         recovery: &ActiveFormationRecovery,
         run: DriverRun<'_>,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
-        let mut sessions = Vec::with_capacity(recovery.seats.len());
+        let formation_id = &recovery.snapshot.formation_id;
+        let mut pending = FuturesUnordered::new();
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
                 FaError::Storage(format!("FA seat row {position} has no seat id"))
             })?;
-
-            let client =
-                MgClient::connect(&self.inner.ports.mg_connector, &seat.progress.locator, run)
+            let locator = &seat.progress.locator;
+            let index = seat.progress.index;
+            pending.push(async move {
+                let client = self
+                    .connect_seat_with_retry(locator, formation_id, run)
                     .await?;
-            sessions.push(SeatSession {
-                index: seat.progress.index,
-                client,
-                seat_id,
+                Ok::<_, FaError>((
+                    position,
+                    SeatSession {
+                        index,
+                        client,
+                        seat_id,
+                    },
+                ))
             });
         }
-        Ok(sessions)
+        let mut sessions = (0..recovery.seats.len()).map(|_| None).collect::<Vec<_>>();
+        while let Some(result) = pending.next().await {
+            let (position, session) = result?;
+            sessions[position] = Some(session);
+        }
+        sessions
+            .into_iter()
+            .enumerate()
+            .map(|(position, session)| {
+                session.ok_or_else(|| {
+                    FaError::Storage(format!("missing MG session for seat {position}"))
+                })
+            })
+            .collect()
+    }
+
+    /// Connect to one existing seat's MG, retrying timeouts and transport
+    /// failures with bounded exponential backoff until the run deadline.
+    async fn connect_seat_with_retry(
+        &self,
+        locator: &Locator,
+        formation_id: &FormationId,
+        run: DriverRun<'_>,
+    ) -> FaResult<MgClient<F::Client>> {
+        let mut retry_delay = run
+            .options
+            .poll_interval
+            .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
+            .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+        loop {
+            let error = match MgClient::connect(&self.inner.ports.mg_connector, locator, run).await
+            {
+                Ok(client) => return Ok(client),
+                Err(error) => error,
+            };
+            let FaError::Mg(failure) = error else {
+                return Err(error);
+            };
+            if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport)
+                || sleep_for_retry(run.deadline, retry_delay).await.is_err()
+            {
+                return Err(failure.into());
+            }
+            log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+        }
     }
 
     /// Publish the directory and initial fee policy as one formation vote.

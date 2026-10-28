@@ -8649,6 +8649,89 @@ async fn a_timed_out_post_dkg_consensus_read_is_retried_within_the_run() {
     );
 }
 
+/// A formation stopped in `PublishingSeatBindings`, as when its run timed
+/// out before the metadata vote reached consensus, reopened on a new client.
+async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> TestClient {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.force_value("{}");
+    let client = open_client_with_reader(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    drop(client);
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    assert_eq!(
+        formation(&reopened.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+    // Let the fake consensus adopt the submitted directory on the next read.
+    *mg_state.meta_consensus_raw.lock().unwrap() = None;
+    reopened
+}
+
+#[tokio::test]
+async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
+    // On a poor network single MG connections fail intermittently. The seats
+    // exist, so one failed dial is retried instead of ending the run.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let connects = mg_state.connect_calls.load(Ordering::SeqCst);
+    mg_state
+        .connect_failures_remaining
+        .store(3, Ordering::SeqCst);
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst) - connects,
+        locators().len() + 3,
+        "every seat connected once, plus one retry per injected failure"
+    );
+}
+
+#[tokio::test]
+async fn a_post_dkg_resume_still_ends_at_the_deadline_when_an_mg_stays_unreachable() {
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    mg_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
+
+    let started = std::time::Instant::now();
+    let result = reopened.resume_with_options(options()).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(FaError::Mg(MgFailure {
+                operation: MgOperation::Connect,
+                cause: MgCause::Transport,
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "bounded by the 2 s run"
+    );
+    assert_eq!(
+        formation(&reopened.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+}
+
 #[tokio::test]
 async fn a_transient_consensus_read_failure_is_retried() {
     // An unreachable federation is a reason to wait, not to fail a formation
