@@ -20,6 +20,7 @@ mod availability;
 mod decommission;
 mod dkg;
 mod error;
+pub mod guardian_link;
 mod locator;
 mod locked_payment;
 mod maintenance;
@@ -46,6 +47,13 @@ pub use fedi_decentralized_services::domain::{
     MgApiUrlsMetadata, MgTrustMaterial, MgTrustMaterialVerificationError, Timestamp,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
+pub use guardian_link::{
+    AttentionReason, DEVICE_LABEL_MAX_CHARS, GUARDIAN_LINK_ALPN, GetAttentionRequest,
+    GetAttentionResponse, GuardianLinkError, GuardianLinkInvite, GuardianLinkResult,
+    GuardianLinkService, GuardianLinkServiceClient, GuardianLinkServiceServer,
+    InvalidGuardianLinkInvite, LinkDeviceRequest, LinkDeviceResponse, LinkSecret,
+    RenewCallbackRequest, RenewCallbackResponse, UnlinkDeviceRequest, UnlinkDeviceResponse,
+};
 pub use locator::{
     InvalidEndpointAddrPair, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,
     parse_endpoint_addr_pairs,

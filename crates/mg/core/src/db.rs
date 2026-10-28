@@ -1,4 +1,7 @@
+mod guardian_link;
 mod seats;
+
+pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 mod transfers;
 
 pub(crate) use seats::SeatAdmissionResult;

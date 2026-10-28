@@ -24,11 +24,13 @@
 use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
 use fedi_decentralized_domain::MgVersion;
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationId, InviteCode, Plan, QuoteId, SeatHealth, SeatId,
+    AttentionReason, DkgCompletionCallback, DkgCompletionCallbackInput, FaId, FederationId,
+    GuardianLinkInvite, InviteCode, LinkSecret, Plan, QuoteId, SeatHealth, SeatId,
 };
 use fedimint_core::Amount;
 use mg_core::admin::{self, AdminError, AdminErrorKind, AdminRequest};
 use mg_core::backup_worker::BackupScanOutcome;
+use mg_core::db::{GuardianLinkDelivery, GuardianLinkRecord};
 use mg_core::directory::{DirectoryPresence, OnboardingStatus};
 use mg_core::facts::{CompletionCallbackReason, CompletionCallbackStatus};
 use mg_core::fleet::PaymentFederationStatus;
@@ -36,12 +38,14 @@ use mg_core::guardian_fee::{
     Collected, CollectionFailure, CollectionFailurePhase, FederationFeeStatus, FeePolicy,
     Remittance,
 };
+use mg_core::guardian_link::{GuardianLinkStatus, LinkOfferStatus};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
     PayoutJobOperationWire, PayoutJobStatusWire, PayoutJobWire, PayoutScopeWire,
     WalletDrainStatusWire,
 };
+use mg_core::push_callback::CallbackAttemptOutcome;
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use mg_core::seat_readiness::{
@@ -84,6 +88,9 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "mg_collect_guardian_fees_incomplete_idle",
     "mg_collect_guardian_fees_incomplete",
     "mg_collect_guardian_fees_incomplete_refresh",
+    "mg_guardian_link",
+    "mg_guardian_link_unlinked",
+    "mg_guardian_link_test",
     "mg_onboarding",
     "mg_holder_authorization_refresh",
     "mg_mnemonic",
@@ -160,6 +167,17 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         (
             "mg_collect_guardian_fees_incomplete_refresh",
             collect_guardian_fees_incomplete_refresh_fixture(),
+        ),
+        ("mg_guardian_link", guardian_link_fixture()),
+        (
+            "mg_guardian_link_unlinked",
+            guardian_link_unlinked_fixture(),
+        ),
+        (
+            "mg_guardian_link_test",
+            admin::guardian_link_test_json(CallbackAttemptOutcome::Retryable(
+                CompletionCallbackReason::MaxUsesExceeded,
+            )),
         ),
         ("mg_onboarding", onboarding_fixture()),
         ("mg_holder_authorization_refresh", onboarding_fixture()),
@@ -386,7 +404,11 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             seat_id,
             request_id: "fixture-guardian-payout".parse().unwrap(),
         },
-        AdminRequest::SweepGuardianFees { .. } => AdminRequest::Onboarding,
+        AdminRequest::SweepGuardianFees { .. } => AdminRequest::GuardianLink,
+        AdminRequest::GuardianLink => AdminRequest::CreateGuardianLinkOffer,
+        AdminRequest::CreateGuardianLinkOffer => AdminRequest::RevokeGuardianLink,
+        AdminRequest::RevokeGuardianLink => AdminRequest::TestGuardianLinkNotification,
+        AdminRequest::TestGuardianLinkNotification => AdminRequest::Onboarding,
         AdminRequest::Onboarding => AdminRequest::RefreshHolderAuthorizations,
         AdminRequest::RefreshHolderAuthorizations => AdminRequest::ConfigureInitialOffer {
             max_seats: Some(4),
@@ -427,6 +449,10 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::GuardianFees { .. } => "GuardianFees",
         AdminRequest::CollectGuardianFees { .. } => "CollectGuardianFees",
         AdminRequest::SweepGuardianFees { .. } => "SweepGuardianFees",
+        AdminRequest::GuardianLink => "GuardianLink",
+        AdminRequest::CreateGuardianLinkOffer => "CreateGuardianLinkOffer",
+        AdminRequest::RevokeGuardianLink => "RevokeGuardianLink",
+        AdminRequest::TestGuardianLinkNotification => "TestGuardianLinkNotification",
         AdminRequest::Onboarding => "Onboarding",
         AdminRequest::RefreshHolderAuthorizations => "RefreshHolderAuthorizations",
         AdminRequest::ConfigureInitialOffer { .. } => "ConfigureInitialOffer",
@@ -722,6 +748,52 @@ pub fn seat_status_fixture() -> Value {
 
 pub fn decommission_seat_fixture() -> Value {
     admin::decommission_seat_json(true)
+}
+
+/// A linked phone whose hook the gateway has since rejected, plus an open
+/// offer the dashboard is showing. The offer URI is the shape the app
+/// parses; the secret here is a fixture, not one a fleet minted.
+pub fn guardian_link_fixture() -> Value {
+    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+        callback_url: "https://push.example.com/hooks/hk_fixture/sec_fixture".to_owned(),
+        idempotency_key: "fixture".to_owned(),
+    })
+    .unwrap();
+    admin::guardian_link_json(GuardianLinkStatus {
+        available: true,
+        link: Some(GuardianLinkRecord {
+            device_id: FaId("a".repeat(64).parse().unwrap()),
+            device_label: "Pixel 8".to_owned(),
+            callback: Some(callback),
+            callback_expires_at: 1_702_592_000,
+            linked_at_ms: 1_700_000_000_000,
+            notification_seq: 3,
+            notified_reasons: vec![AttentionReason::SeatFailed, AttentionReason::SupportMessage],
+            last_notified_at_ms: Some(1_700_003_600_000),
+            delivery: GuardianLinkDelivery::Terminal(
+                CompletionCallbackReason::HookExpiredOrRevoked,
+            ),
+        }),
+        offer: Some(LinkOfferStatus {
+            uri: GuardianLinkInvite {
+                fman_nostr_pubkey: nostr_sdk::PublicKey::from_hex(&"b".repeat(64)).unwrap(),
+                iroh_endpoint_id: "c".repeat(64),
+                environment: "development".to_owned(),
+                secret: LinkSecret::from_bytes([0xd; 32]),
+            }
+            .to_uri(),
+            expires_at: 1_700_004_200,
+        }),
+    })
+}
+
+/// A host with no push gateway configured: nothing linked, no offer possible.
+pub fn guardian_link_unlinked_fixture() -> Value {
+    admin::guardian_link_json(GuardianLinkStatus {
+        available: false,
+        link: None,
+        offer: None,
+    })
 }
 
 pub fn reenroll_telemetry_fixture() -> Value {

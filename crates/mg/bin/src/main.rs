@@ -28,13 +28,15 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_service_manifold_guardian::{
-    GUARDIAN_TELEMETRY_ALPN, GuardianTelemetryApiServer, Locator, MANIFOLD_GUARDIAN_ALPN,
-    MG_E2E_ENDPOINT_ADDRS_ENV, ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
+    GUARDIAN_LINK_ALPN, GUARDIAN_TELEMETRY_ALPN, GuardianLinkServiceServer,
+    GuardianTelemetryApiServer, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,
+    ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
 };
 use fedi_iroh_rpc::IrohProtocol;
 use mg_core::admin;
 use mg_core::admin_http::{self, AdminHttpAuth};
 use mg_core::bundled_fedimintd;
+use mg_core::guardian_link::GuardianLinkRpc;
 
 use fedimint_core::Amount;
 use fedimint_core::util::SafeUrl;
@@ -584,7 +586,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 std::time::Duration::from_secs(5),
             ),
         )
+        .accept(
+            GUARDIAN_LINK_ALPN,
+            // One phone talks to this; a signed verb with a hook URL fits in
+            // a few kilobytes.
+            IrohProtocol::with_limits_and_request_read_timeout(
+                GuardianLinkServiceServer::new(GuardianLinkRpc::new(
+                    fleet.clone(),
+                    nostr.presence(),
+                )),
+                8 * 1024,
+                4,
+                std::time::Duration::from_secs(5),
+            ),
+        )
         .spawn();
+    fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());
+    let guardian_link_notifier = mg_core::guardian_link::spawn_notifier(
+        fleet.clone(),
+        nostr.presence(),
+        mg_core::guardian_link::DEFAULT_NOTIFY_SCAN_INTERVAL,
+    );
 
     let mut seat_readiness =
         seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
@@ -645,6 +667,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     seat_readiness.abort();
     runtime_seat_limits.abort();
+    guardian_link_notifier.shutdown().await;
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.
