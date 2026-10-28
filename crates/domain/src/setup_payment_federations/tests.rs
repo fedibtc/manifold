@@ -54,6 +54,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
         guardian_transfer: None,
+        min_mg_version: None,
     })
     .expect("test content serializes")
 }
@@ -237,6 +238,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
             guardian_transfer: None,
+            min_mg_version: None,
         })
         .unwrap();
         assert_eq!(
@@ -469,6 +471,57 @@ fn unset_seat_limits_stay_off_the_wire() {
     assert!(!encoded.contains("seat_memory_budget_mib"));
     assert!(!encoded.contains("max_seats_per_mg"));
     assert!(!encoded.contains("guardian_transfer"));
+    assert!(!encoded.contains("min_mg_version"));
+}
+
+/// A minimum is optional (absent or null), compares by SemVer precedence, may not exceed the latest
+/// release the same event names, and a value that is not a version rejects
+/// the whole event, as any other malformed field does.
+#[test]
+fn min_mg_version_is_optional_semver_and_at_most_the_latest() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.10.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    assert_eq!(admitted("").unwrap().min_mg_version(), None);
+    // 0.9.0 sorts above 0.10.0 as text but below it as a version.
+    assert_eq!(
+        admitted(r#","min_mg_version":"0.9.0""#)
+            .unwrap()
+            .min_mg_version()
+            .map(ToString::to_string),
+        Some("0.9.0".to_owned())
+    );
+    assert!(admitted(r#","min_mg_version":"0.10.0""#).is_ok());
+    // Build metadata has no SemVer precedence: 0.10.0+build is not above 0.10.0.
+    // Equality stays exact, so a re-published build still reads as a change.
+    let with_build = admitted(r#","min_mg_version":"0.10.0+build.7""#).unwrap();
+    assert_ne!(
+        with_build.min_mg_version(),
+        admitted(r#","min_mg_version":"0.10.0""#)
+            .unwrap()
+            .min_mg_version()
+    );
+    // An explicit null is the same as an absent field: no minimum.
+    assert_eq!(
+        admitted(r#","min_mg_version":null"#)
+            .unwrap()
+            .min_mg_version(),
+        None
+    );
+    assert_eq!(
+        admitted(r#","min_mg_version":"0.10.1""#),
+        Err(SetupPaymentFederationsContentError::MinMgVersionAboveLatest)
+    );
+    for malformed in [r#""0.9""#, r#""v0.9.0""#, r#""""#, "9"] {
+        assert_eq!(
+            admitted(&format!(r#","min_mg_version":{malformed}"#)),
+            Err(SetupPaymentFederationsContentError::MalformedContent),
+            "{malformed}"
+        );
+    }
 }
 
 #[test]

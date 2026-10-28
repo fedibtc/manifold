@@ -1,14 +1,21 @@
 import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'uptime';
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'uptime';
 
-export const CHECKS: readonly ReadinessCheck[] = ['relay', 'discovery', 'bitcoin', 'uptime'];
+export const CHECKS: readonly ReadinessCheck[] = [
+  'relay',
+  'discovery',
+  'bitcoin',
+  'version',
+  'uptime'
+];
 
 export const labels: Record<ReadinessCheck, string> = {
   relay: 'Relay connection',
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
+  version: 'Software version',
   uptime: 'Uptime'
 };
 
@@ -22,12 +29,24 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_wrong_network: 'The configured Bitcoin backend is on a different network.',
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
   bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
+  mg_version_too_old: 'Update required.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
   uptime_30d_low: 'This host was offline too much recently.'
 };
 
-export const guidance: Record<ReadinessCheck, string> = {
+/** What a check that does not apply means for that check. */
+const notApplicable: Partial<Record<ReadinessCheck, string>> = {
+  version: 'No minimum set.'
+};
+
+/** The host-facing words for one check's outcome. */
+export const describeOutcome = (check: ReadinessCheck, outcome: ReadinessOutcome): string =>
+  (outcome === 'not_applicable' && notApplicable[check]) || outcomes[outcome];
+
+/** What to do about a failing check, shown under it. The version check has a one-line outcome
+ * like the others; what to do about it is in the not-ready banner ({@link updateGuidance}). */
+export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
   relay:
     'Check that this host can hold long-lived outbound connections to the relay. No inbound port is needed.',
   discovery:
@@ -36,6 +55,9 @@ export const guidance: Record<ReadinessCheck, string> = {
     'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
   uptime: 'Keep this host online.'
 };
+
+export const updateGuidance =
+  'This version of Manifold Guardian is below the minimum for new seats. Update to the latest release; this does not count against uptime.';
 
 export const passed = (outcome: ReadinessOutcome): boolean =>
   outcome === 'pass' || outcome === 'not_applicable';

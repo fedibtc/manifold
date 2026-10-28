@@ -142,6 +142,17 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
+Each run also requires this MG's release to be at least the setup-payment
+policy's `min_mg_version` by SemVer precedence (a pre-release ranks below its
+release; build metadata does not count); without one the check does not
+apply. An MG below it stops selling new seats until it is updated, but it
+still serves its seats, so the version check is not a prerequisite and never
+marks a slot down. A newly admitted policy starts a run at once, so raising
+the minimum closes `GetAvailability` and `GetQuote` and stops publishing the
+advertisement without waiting for the next slot, and lowering or removing it
+reopens them and publishes again. An advertisement already on relays stays
+visible until its signed expiry, as above.
+
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;

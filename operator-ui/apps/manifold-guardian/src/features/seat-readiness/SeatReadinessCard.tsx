@@ -3,12 +3,13 @@ import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
 import {
   CHECKS,
+  describeOutcome,
   formatPermille,
   guidance,
   labels,
-  outcomes,
   passed,
   UPTIME_WINDOWS,
+  updateGuidance,
   uptimeLabels
 } from '@/shared/utils/seatReadiness';
 import { formatWait } from './formatWait';
@@ -38,6 +39,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
         <Banner variant="error" title="Not accepting new seats">
           This host stopped advertising and quoting new seats until every check passes. Running
           seats are not affected.
+          {report?.version === 'mg_version_too_old' && ` ${updateGuidance}`}
         </Banner>
       )}
 
@@ -53,8 +55,8 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
               <li key={check} className={styles.check}>
                 <strong>{labels[check]}</strong>
 
-                <span>{outcomes[report[check]]}</span>
-                {!passed(report[check]) && (
+                <span>{describeOutcome(check, report[check])}</span>
+                {check !== 'version' && !passed(report[check]) && (
                   <span className={styles.guidance}>{guidance[check]}</span>
                 )}
               </li>

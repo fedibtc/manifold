@@ -70,6 +70,7 @@ const READY: MockState['seatReadiness'] = {
   relay: 'pass',
   discovery: 'pass',
   bitcoin: 'pass',
+  version: 'pass',
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -444,6 +445,19 @@ const builders = {
       bitcoin: 'bitcoin_syncing'
     }
   }),
+  // The published policy requires a newer release than this host runs.
+  'version-too-old': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      version: 'mg_version_too_old'
+    }
+  }),
   'uptime-low': () => ({
     ...base(),
     seats: [],
@@ -700,6 +714,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'not-ready-for-seats': {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
+    affects: ['overview', 'health']
+  },
+  'version-too-old': {
+    desc: 'Every prerequisite passes, but the setup-payment policy requires a newer release than this host runs, so the daemon has stopped advertising and quoting new seats until it is updated. Uptime is not affected.',
     affects: ['overview', 'health']
   },
   'uptime-low': {

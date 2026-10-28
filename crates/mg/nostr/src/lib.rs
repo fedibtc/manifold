@@ -32,7 +32,8 @@ pub use fedi_decentralized_nostr::mg::{
     verify_advertisement_self_signature,
 };
 use fedi_decentralized_nostr::setup_payment_federations::{
-    AdmittedSetupPaymentFederationsEvent, admit_setup_payment_federations_event,
+    AdmittedSetupPaymentFederationsEvent, SetupPaymentFederationsEventError,
+    admit_setup_payment_federations_event, authenticate_setup_payment_federations_address_event,
     restore_durably_admitted_setup_payment_federations_event,
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
@@ -735,7 +736,8 @@ async fn refresh_setup_payment_federations(
 ///
 /// Fails when the retained event cannot be decoded or no longer authenticates
 /// under `publisher` — a rotated publisher must stop the daemon, not silently
-/// downgrade it to no policy.
+/// downgrade it to no policy. An authentic event whose content this release
+/// no longer admits loads as no policy instead.
 pub async fn load_retained_setup_payment_policy(
     store: &FleetSetupPaymentPolicyStore,
     publisher: PublicKey,
@@ -783,12 +785,43 @@ fn admit(
         .map(|json| serde_json::from_str::<Event>(&json))
         .transpose()
         .context("decode stored setup-payment policy")?;
-    let mut admitted = stored
+    let mut admitted = match stored
         .as_ref()
         .map(|event| restore_durably_admitted_setup_payment_federations_event(event, publisher))
         .transpose()
-        .context("restore setup-payment policy")?;
+    {
+        Ok(admitted) => admitted,
+        // An older release retains content it does not interpret, so an
+        // authentic stored event can fail this release's content admission.
+        // That is no reason to refuse to start: hold no policy, as before the
+        // first admission, until a higher event passes.
+        Err(SetupPaymentFederationsEventError::Content(error)) => {
+            tracing::warn!(
+                %error,
+                "retained setup-payment policy fails this release's admission; waiting for a newer one"
+            );
+            None
+        }
+        Err(error) => return Err(error).context("restore setup-payment policy"),
+    };
+    // The stored event stays the replacement high-water mark even when its
+    // content no longer admits, so a relay cannot roll the policy back.
+    let floor = match (&admitted, &stored) {
+        (None, Some(stored)) => Some(
+            authenticate_setup_payment_federations_address_event(stored, publisher)
+                .context("restore setup-payment policy")?,
+        ),
+        _ => None,
+    };
     for candidate in candidates {
+        let below_floor = admitted.is_none()
+            && floor.as_ref().is_some_and(|floor| {
+                authenticate_setup_payment_federations_address_event(&candidate, publisher)
+                    .is_ok_and(|candidate| !candidate.is_newer_than(floor))
+            });
+        if below_floor {
+            continue;
+        }
         if let Ok(candidate) =
             admit_setup_payment_federations_event(&candidate, publisher, now, admitted.as_ref())
         {
