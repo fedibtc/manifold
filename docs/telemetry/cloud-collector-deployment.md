@@ -221,7 +221,10 @@ current federation invite. Discard events mean the collector
 kept independently valid allowlisted families while omitting the affected
 family; they do not expose the discarded family's name, labels, or values.
 `target_fresh=1` therefore means the target completed a bounded safe projection,
-not that every desired family was present or valid. Alert on increases in
+not that every desired family was present or valid.
+`cloud_fman_telemetry_seat_fresh{fman_id,fman_name,guardian_seat_id}` reports
+each seat of the MG's latest successful seat listing. It shows which seat keeps
+`target_fresh` at 0, including a seat that never served an observation. Alert on increases in
 `unknown_discarded`, `invalid_admitted_discarded`, or `rejected` and investigate
 before changing the inventory. The collector also emits at most one fixed,
 `safe_to_share` projection-degradation warning per five minutes; it never puts

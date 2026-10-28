@@ -476,6 +476,13 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
+                "DELETE FROM metric_listed_seats WHERE target_id =
+                 (SELECT target_id FROM targets WHERE fman_pubkey = ?)",
+            )
+            .bind(target.mg_pubkey)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
                 "UPDATE metric_poll_state SET last_complete_at=NULL WHERE target_id =
                  (SELECT target_id FROM targets WHERE fman_pubkey = ?)",
             )
@@ -557,6 +564,10 @@ impl Store {
             && let Some(target_id) = target_id
         {
             sqlx::query("DELETE FROM metric_snapshots WHERE target_id = ?")
+                .bind(&target_id)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("DELETE FROM metric_listed_seats WHERE target_id = ?")
                 .bind(target_id)
                 .execute(&mut *transaction)
                 .await?;
@@ -897,6 +908,19 @@ impl Store {
             return Ok(MetricsCommitOutcome::Stale);
         }
         if let Some(listed_seats) = &commit.listed_seats {
+            sqlx::query("DELETE FROM metric_listed_seats WHERE target_id = ?")
+                .bind(target.target_id())
+                .execute(&mut *transaction)
+                .await?;
+            for seat in listed_seats {
+                sqlx::query(
+                    "INSERT INTO metric_listed_seats(target_id,guardian_seat_id) VALUES (?,?)",
+                )
+                .bind(target.target_id())
+                .bind(seat)
+                .execute(&mut *transaction)
+                .await?;
+            }
             let existing: Vec<String> = sqlx::query_scalar(
                 "SELECT guardian_seat_id FROM metric_snapshots WHERE target_id = ?",
             )
@@ -1217,6 +1241,7 @@ impl Store {
         .bind(now)
         .fetch_all(&mut *transaction)
         .await?;
+        let mut listed_seats = active_listed_seats(&mut transaction, now).await?;
         transaction.commit().await?;
 
         let mut snapshots = Vec::new();
@@ -1330,8 +1355,10 @@ impl Store {
             .into_iter()
             .map(|row| {
                 let completed: Option<i64> = row.get("last_complete_at");
+                let mg_id: String = row.get("fman_pubkey");
                 MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
+                    seats: listed_seats.remove(&mg_id).unwrap_or_default(),
+                    mg_id,
                     mg_name: row.get("fman_name"),
                     fresh: completed.is_some_and(|value| value >= cutoff),
                 }
@@ -1533,12 +1560,15 @@ impl Store {
         .bind(now)
         .fetch_all(&self.pool)
         .await?;
+        let mut listed_seats = active_listed_seats(&mut *self.pool.acquire().await?, now).await?;
         Ok(rows
             .into_iter()
             .map(|row| {
                 let completed: Option<i64> = row.get("last_complete_at");
+                let mg_id: String = row.get("fman_pubkey");
                 MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
+                    seats: listed_seats.remove(&mg_id).unwrap_or_default(),
+                    mg_id,
                     mg_name: row.get("fman_name"),
                     fresh: completed.is_some_and(|value| value >= cutoff),
                 }
@@ -1919,6 +1949,36 @@ async fn store_mg_report<T: MgReport>(
     .execute(&mut **transaction)
     .await?;
     Ok(())
+}
+
+/// Seats from each active target's latest successful listing, by MG id.
+///
+/// A row that does not decode is skipped; the seat then has no freshness
+/// series until the next listing replaces it.
+async fn active_listed_seats(
+    connection: &mut sqlx::SqliteConnection,
+    now: i64,
+) -> Result<BTreeMap<String, Vec<String>>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT t.fman_pubkey,l.guardian_seat_id
+         FROM metric_listed_seats l JOIN targets t ON t.target_id=l.target_id
+         WHERE t.status='active' AND t.lease_until > ?
+         ORDER BY t.fman_pubkey,l.guardian_seat_id",
+    )
+    .bind(now)
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut seats: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let (Ok(mg_id), Ok(seat)) = (
+            row.try_get::<String, _>("fman_pubkey"),
+            row.try_get::<String, _>("guardian_seat_id"),
+        ) else {
+            continue;
+        };
+        seats.entry(mg_id).or_default().push(seat);
+    }
+    Ok(seats)
 }
 
 async fn target_is_current(
@@ -3153,6 +3213,144 @@ mod tests {
             usize::try_from(MAX_METRIC_STATE_SAMPLES).unwrap()
         );
         assert_eq!(loaded.rejected, 1);
+    }
+
+    /// Renders the private exposition through the production store view.
+    async fn rendered_exposition(store: &Store, now: i64, stale_after: i64) -> String {
+        let view = store
+            .metric_exposition(&metrics_policy(), now, now * 1000, stale_after)
+            .await
+            .unwrap();
+        crate::metrics_snapshot::render_metrics(
+            view.snapshots.snapshots,
+            view.targets,
+            view.snapshots.rejected,
+            now * 1000,
+            stale_after * 1000,
+            false,
+            &crate::metrics_observability::MetricsObservability::default(),
+        )
+        .unwrap()
+    }
+
+    fn seat_fresh_line(seat: &str, fresh: u8) -> String {
+        format!(
+            "cloud_fman_telemetry_seat_fresh{{fman_id=\"11\",fman_name=\"calm-tern\",guardian_seat_id=\"{seat}\"}} {fresh} 101000\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn seat_freshness_counts_only_revalidated_observations_of_listed_seats() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory).await;
+        store
+            .reserve_auth(&auth("metrics", 100), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("metrics", 100), target(1), 100)
+            .await
+            .unwrap();
+        store
+            .configure_metrics_policy(&metrics_policy().fingerprint())
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_metric_work(&scheduled, 100, 1_800)
+            .await
+            .unwrap()
+            .unwrap();
+        let listing = |seats: &[&str]| MetricsCommit {
+            listed_seats: Some(seats.iter().map(|seat| (*seat).to_owned()).collect()),
+            snapshots: Vec::new(),
+            complete: false,
+        };
+        store
+            .commit_metrics(&work, listing(&["aa", "bb", "cc", "dd", "ee"]), 100)
+            .await
+            .unwrap();
+        // aa is healthy. bb is future-dated, as after a backward clock step.
+        // cc holds a sample the policy rejects. dd has a wrongly typed
+        // timestamp. ee was listed but never observed.
+        insert_snapshot(&store, "aa", 100_000, &stored_samples("aa", 1)).await;
+        insert_snapshot(&store, "bb", 180_000, &stored_samples("bb", 1)).await;
+        insert_snapshot(&store, "cc", 100_000, &["fm_not_inventoried 1".to_owned()]).await;
+        insert_snapshot(&store, "dd", 100_000, &stored_samples("dd", 1)).await;
+        sqlx::query(
+            "UPDATE metric_snapshots SET observed_at_ms='soon' WHERE guardian_seat_id='dd'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let output = rendered_exposition(&store, 101, 60).await;
+        assert!(output.contains(&seat_fresh_line("aa", 1)), "{output}");
+        for seat in ["bb", "cc", "dd", "ee"] {
+            assert!(
+                output.contains(&seat_fresh_line(seat, 0)),
+                "{seat}: {output}"
+            );
+        }
+        assert!(output.contains("cloud_fman_telemetry_snapshot_rejected_rows 3 101000\n"));
+
+        // A later listing replaces the seat set; unlisted seats leave.
+        store
+            .commit_metrics(&work, listing(&["aa"]), 100)
+            .await
+            .unwrap();
+        let output = rendered_exposition(&store, 101, 60).await;
+        assert!(output.contains(&seat_fresh_line("aa", 1)), "{output}");
+        assert_eq!(
+            output.matches("cloud_fman_telemetry_seat_fresh{").count(),
+            1
+        );
+
+        // A failed listing keeps the previous seats.
+        store
+            .commit_metrics(
+                &work,
+                MetricsCommit {
+                    listed_seats: None,
+                    snapshots: Vec::new(),
+                    complete: false,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        let output = rendered_exposition(&store, 101, 60).await;
+        assert!(output.contains(&seat_fresh_line("aa", 1)), "{output}");
+
+        // The observation ages out after the freshness threshold.
+        let output = rendered_exposition(&store, 161, 60).await;
+        assert!(
+            output.contains(&seat_fresh_line("aa", 0).replace("101000", "161000")),
+            "{output}"
+        );
+
+        // Renewal after lease expiry starts without the previous listing.
+        store
+            .reserve_auth(&auth("metrics-renewed", 3_800), 3_800)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("metrics-renewed", 3_800), target(1), 3_800)
+            .await
+            .unwrap();
+        let output = rendered_exposition(&store, 3_801, 60).await;
+        assert!(
+            output.contains("cloud_fman_telemetry_target_fresh{"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("cloud_fman_telemetry_seat_fresh{"),
+            "{output}"
+        );
     }
 
     #[tokio::test]
