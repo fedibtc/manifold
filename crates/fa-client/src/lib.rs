@@ -16,14 +16,16 @@ mod maintenance;
 mod mg;
 mod ports;
 mod replacement_checks;
+mod seat_purchase;
 mod selection;
 mod setup_payment_federations;
 mod state;
+mod transfer;
 mod unavailable;
 
 use std::sync::Arc;
 
-use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
+use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
@@ -85,7 +87,8 @@ pub use replacement_checks::{ReplacementReceipt, ReplacementStartError};
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
-    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    MgSelectionRequest, SeatProvenance, SelectedMgSeat, TransferDestinationApproval,
+    TransferDestinationPreview, VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
@@ -102,6 +105,7 @@ pub use state::{
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
+pub use transfer::{GuardianTransfer, GuardianTransferPhase};
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
     UnavailableManifoldGuardianConnector, UnavailablePayments, UnavailableRegistry,
@@ -132,6 +136,9 @@ struct FaClientInner<I, P, N, F, C> {
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    /// Supplies the guardian-transfer default when the setup-payment policy
+    /// does not say.
+    manifold_environment: ManifoldEnvironment,
     backup_tasks: TaskGroup,
     replacement_checks: replacement_checks::ReplacementChecks,
 }
@@ -200,6 +207,9 @@ where
             peer_badge_verifier,
             None,
             None,
+            // Without a profile, guardian transfer defaults to production's
+            // rule.
+            ManifoldEnvironment::Production,
         )
         .await
     }
@@ -231,6 +241,7 @@ where
         fa_fee_account_provider: impl FaFeeAccountProvider,
         setup_payment_publisher: PublicKey,
         guardian_verification_fee_account: Option<Account>,
+        manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
         Self::open_inner(
             database,
@@ -245,6 +256,7 @@ where
             peer_badge_verifier,
             Some(setup_payment_publisher),
             guardian_verification_fee_account,
+            manifold_environment,
         )
         .await
     }
@@ -318,6 +330,7 @@ where
             peer_badge_verifier,
             setup_payment_publisher,
             guardian_verification_fee_account,
+            profile.environment(),
         )
         .await?;
         if recovery_hint == BackupRecoveryHint::RestoredMnemonic
@@ -371,6 +384,7 @@ where
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
+        manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
@@ -387,6 +401,7 @@ where
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                manifold_environment,
                 backup_tasks,
                 replacement_checks: replacement_checks::ReplacementChecks::default(),
             }),

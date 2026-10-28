@@ -10,9 +10,10 @@ use tokio::sync::{Mutex, watch};
 
 use crate::formation::{PostFormedAuthority, invite_federation_id};
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
-    FederationId, FormationFreshness, FormationId, ManifoldGuardianConnector, ReplacementCandidate,
-    ReplacementCheck,
+    DkgCompletionCallback, FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus,
+    FederationConsensusReader, FederationId, FormationFreshness, FormationId, GuardianTransfer,
+    MaintenanceRunOptions, ManifoldGuardianConnector, ReplacementCandidate, ReplacementCheck,
+    TransferDestinationApproval,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -80,13 +81,16 @@ pub struct ReplacementReceipt {
     candidate: ReplacementCandidate,
 }
 
-/// The replacement entry point is intentionally a stub until transfer integration.
-#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+/// Why a guardian replacement did not start.
+#[derive(Debug, thiserror::Error)]
 pub enum ReplacementStartError {
+    /// The receipt is from another client or opening, or the guardian it
+    /// names no longer holds that seat. Check the candidates again.
     #[error("replacement receipt does not belong to this client's current guardian seat")]
     InvalidReceipt,
-    #[error("guardian replacement is not implemented yet")]
-    NotImplemented,
+    /// The receipt was valid, but the guardian transfer did not start.
+    #[error(transparent)]
+    Transfer(#[from] FaError),
 }
 
 impl ReplacementCheck {
@@ -207,16 +211,22 @@ where
         }
     }
 
-    /// Validate the eligibility receipt without asking about health again.
+    /// Replace the guardian a receipt names: validate the receipt without
+    /// asking about health again, then start a guardian transfer of that
+    /// guardian onto the approved destination, as
+    /// [`Self::start_guardian_transfer`] does.
     ///
-    /// This stub performs no purchase, authorization, or transfer. A valid receipt
-    /// reaches NotImplemented; PR #184 can replace that final step with its driver.
-    /// Once a transfer starts, its durable operation authorizes resume; restarting
-    /// invalidates unused receipts, not transfers already started.
+    /// The receipt only authorizes the start. Once the transfer started, its
+    /// durable row authorizes [`Self::resume_guardian_transfer`]; reopening
+    /// the client invalidates unused receipts, not transfers already started.
     pub async fn request_guardian_replacement(
         &self,
         receipt: &ReplacementReceipt,
-    ) -> Result<(), ReplacementStartError> {
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
+        completion_callback: Option<DkgCompletionCallback>,
+        options: MaintenanceRunOptions,
+    ) -> Result<GuardianTransfer, ReplacementStartError> {
         let authority = self
             .post_formed_authority(
                 self.fa_id()
@@ -227,6 +237,14 @@ where
         if !receipt.matches(&self.inner.replacement_checks.issuer, &authority) {
             return Err(ReplacementStartError::InvalidReceipt);
         }
-        Err(ReplacementStartError::NotImplemented)
+        Ok(self
+            .start_guardian_transfer(
+                receipt.candidate.seat_index,
+                approval,
+                payment_federation_id,
+                completion_callback,
+                options,
+            )
+            .await?)
     }
 }

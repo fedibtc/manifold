@@ -67,7 +67,7 @@ const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100)
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum QuoteAttemptPolicy {
+pub(crate) enum QuoteAttemptPolicy {
     /// The verified row has not crossed its output/acceptance boundary, so a
     /// definite transport failure may be retried and eventually returned as
     /// a fresh-selection requirement.
@@ -292,6 +292,11 @@ impl<'a> DriverRun<'a> {
         self.options.request_timeout()
     }
 
+    /// Return the driver lease that fences this invocation's durable writes.
+    pub(crate) fn lease(self) -> &'a DriverLease {
+        self.lease
+    }
+
     /// Return this invocation's absolute monotonic deadline.
     pub(crate) fn deadline(self) -> Instant {
         self.deadline
@@ -373,7 +378,7 @@ impl<'a> DriverRun<'a> {
     /// This refreshes the coarse run guard and captures the call's time budget.
     /// Constructing the future remains effect-free; the wallet body starts only
     /// when `poll_value_call` polls it.
-    async fn prepare_value_call_budget(
+    pub(crate) async fn prepare_value_call_budget(
         &self,
         operation: &'static str,
     ) -> FaResult<ValueCallTimeoutBudget> {
@@ -425,13 +430,13 @@ impl<'a> DriverRun<'a> {
 }
 
 /// Absolute run deadline prepared for one wallet-output poll.
-struct ValueCallTimeoutBudget {
+pub(crate) struct ValueCallTimeoutBudget {
     operation: &'static str,
     deadline: Instant,
 }
 
 impl ValueCallTimeoutBudget {
-    async fn poll_value_call<T>(
+    pub(crate) async fn poll_value_call<T>(
         self,
         run: DriverRun<'_>,
         future: impl Future<Output = T>,
@@ -477,6 +482,7 @@ pub(crate) struct PostFormedSeat {
     pub(crate) seat_id: SeatId,
 }
 
+#[derive(Clone)]
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
@@ -499,25 +505,25 @@ pub(crate) enum MetaFieldSubmissionError {
     ManifoldGuardian(ManifoldGuardianError),
 }
 
-enum SeatCreation<T> {
+pub(crate) enum SeatCreation<T> {
     Accepted(SeatAcceptance),
     Refused(SeatRefusal<T>),
 }
 
 #[derive(Clone)]
-struct SeatAcceptance {
-    seat_id: SeatId,
-    guardian_fee_account: Account,
+pub(crate) struct SeatAcceptance {
+    pub(crate) seat_id: SeatId,
+    pub(crate) guardian_fee_account: Account,
 }
 
-struct FreeSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
+pub(crate) struct FreeSeatQuote {
+    pub(crate) signed: SignedResponse<GetQuoteResponse>,
+    pub(crate) verified: SignatureVerified<GetQuoteResponse>,
 }
 
-struct PaidSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
+pub(crate) struct PaidSeatQuote {
+    pub(crate) signed: SignedResponse<GetQuoteResponse>,
+    pub(crate) verified: SignatureVerified<GetQuoteResponse>,
 }
 
 enum SeatAcquisition<R> {
@@ -566,7 +572,7 @@ enum SeatCheckpoint {
     Required,
 }
 
-enum SeatPresentation<R> {
+pub(crate) enum SeatPresentation<R> {
     Free(FreeSeatQuote),
     Paid {
         quote: PaidSeatQuote,
@@ -574,9 +580,9 @@ enum SeatPresentation<R> {
     },
 }
 
-struct SeatRefusal<T> {
-    error: MgFailure,
-    release_proof: Option<T>,
+pub(crate) struct SeatRefusal<T> {
+    pub(crate) error: MgFailure,
+    pub(crate) release_proof: Option<T>,
 }
 
 enum TerminalSeatOutcome {
@@ -3368,7 +3374,7 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn request_new_quote(
+    pub(crate) async fn request_new_quote(
         &self,
         index: usize,
         client: &MgClient<F::Client>,
@@ -3534,7 +3540,7 @@ where
         })
     }
 
-    fn verify_quote(
+    pub(crate) fn verify_quote(
         &self,
         index: usize,
         signed_quote: &SignedResponse<GetQuoteResponse>,
@@ -3615,7 +3621,7 @@ where
         Ok(PaidSeatQuote { signed, verified })
     }
 
-    async fn present_seat(
+    pub(crate) async fn present_seat(
         &self,
         formation_id: &FormationId,
         index: usize,
@@ -3934,6 +3940,9 @@ where
                     "formed federation seat-binding directory is invalid: {error}"
                 ))
             })?;
+        let payload = self
+            .adopt_transferred_seat(fa_id, payload, &bindings, run)
+            .await?;
         let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
@@ -4753,7 +4762,7 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
     }
 }
 
-fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
+pub(crate) fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
     const ADJECTIVES: [&str; 16] = [
         "Amber", "Bright", "Calm", "Cedar", "Clear", "Copper", "Gentle", "Golden", "Kind",
         "Lively", "Quiet", "Silver", "Solar", "Steady", "Warm", "Wild",

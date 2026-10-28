@@ -15,6 +15,15 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
+It never contains an open guardian transfer: the seats change only when a
+transfer puts its destination in the seat list, after consensus confirmed
+the new binding. It lists every past host: the MG identity, and the verified
+badge holder when known, of each source that a guardian transfer moved a peer
+away from. Destination selection excludes them, because a past host may still
+hold its key share. An empty list is omitted from the encoding, so a payload
+without one keeps its earlier bytes and older readers. The writer applies the
+same validation as restore before it seals a payload, so a payload that
+restore refuses is never published.
 
 The payload omits FA identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
@@ -69,6 +78,11 @@ manager locators and tries alternatives for the same federation without
 requiring every manager online or every seat healthy. Verified guardian
 addresses are remembered only in memory for subsequent reads; the backup and
 signed liquidity commitment remain unchanged.
+A restored seat list that disagrees with consensus, for example because a
+guardian transfer reached consensus before its new seat list reached the
+relays, fails reconciliation. The restored FA then cannot manage the
+federation. This is an accepted loss, as for a formation lost before its
+backup.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FA expose fresh post-formed authority and hydrate the

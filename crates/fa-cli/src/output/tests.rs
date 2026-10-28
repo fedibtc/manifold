@@ -216,6 +216,62 @@ fn funded_wallet_notice_is_suppressed_in_json_mode() {
 }
 
 #[test]
+fn guardian_transfer_json_has_exact_schema() {
+    let source = NostrPublicKey::from_hex(
+        "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
+    )
+    .unwrap();
+    let destination = NostrPublicKey::from_hex(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    )
+    .unwrap();
+    let source_seat_id = fedi_decentralized_service_manifold_guardian::SeatId::from(
+        fedi_decentralized_service_manifold_guardian::QuoteId([1; 32]),
+    );
+    let mut transfer = fa_client::GuardianTransfer {
+        seat_index: 2,
+        source_mg_id: source,
+        source_seat_id: source_seat_id.clone(),
+        destination_mg_id: destination,
+        destination_seat_id: None,
+        phase: fa_client::GuardianTransferPhase::BuyingSeat,
+    };
+    let expected = |destination_seat_id: &str, phase: &str| {
+        format!(
+            concat!(
+                r#"{{"seatIndex":2,"#,
+                r#""sourceFmanPubkey":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","#,
+                r#""sourceSeatId":"{}","#,
+                r#""destinationFmanPubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","#,
+                r#""destinationSeatId":{},"phase":"{}"}}"#,
+                "\n"
+            ),
+            source_seat_id, destination_seat_id, phase
+        )
+    };
+
+    let (stdout, stderr) =
+        capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
+    assert_eq!(stdout, expected("null", "buying_seat"));
+    assert_eq!(stderr, "");
+
+    let destination_seat_id = fedi_decentralized_service_manifold_guardian::SeatId::from(
+        fedi_decentralized_service_manifold_guardian::QuoteId([2; 32]),
+    );
+    transfer.destination_seat_id = Some(destination_seat_id.clone());
+    transfer.phase = fa_client::GuardianTransferPhase::AwaitingSource;
+    let (stdout, _) =
+        capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
+    assert_eq!(
+        stdout,
+        expected(&format!("\"{destination_seat_id}\""), "awaiting_source")
+    );
+
+    let (stdout, _) = capture(|output| output.guardian_transfer(None, OutputFormat::Json));
+    assert_eq!(stdout, "null\n");
+}
+
+#[test]
 fn post_formation_consensus_json_has_exact_schemas() {
     let (stdout, stderr) = capture(|output| {
         output.metadata_consensus(
