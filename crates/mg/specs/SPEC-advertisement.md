@@ -126,8 +126,7 @@ can observe different settings epochs and live state.
 ## Readiness gate
 
 A seat sold by an MG that cannot be reached or cannot use Bitcoin becomes
-the cause of a failed DKG, and an MG whose seats are not serving their
-federations should not sell more, so the daemon admits new seats only while its
+the cause of a failed DKG, so the daemon admits new seats only while its
 readiness checks pass. At startup and then once in every 10-minute uptime
 slot (every minute while failing), it requires a connected home relay, its own discovery record
 resolving through n0 pkarr or DNS with a relay it is connected to, and its
@@ -143,25 +142,11 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
-The seats check requires most formed seats to be serving their federations:
-a seat serves while its watchdog health is healthy and its child completed a
-consensus session within the stall limit of two hours
-([SPEC-seat-lifecycle](SPEC-seat-lifecycle.md)). A child's local API keeps
-answering while its consensus is stuck, so health alone would miss a seat
-that cannot catch up and that `fedimintd` restarts once an hour. A seat can
-stall because of its federation rather than this MG, so the check fails only
-when more than half of the formed seats are not serving: one bad federation
-does not close an MG whose other seats serve, while a host-wide fault that
-stalls them all does, and an MG with one seat is judged by it. Unformed,
-decommissioned, and transferring seats do not count; with none left, the
-check does not apply.
-
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
-Each run records its 10-minute slot, up when the run's prerequisites
-(including the seats check) passed;
+Each run records its 10-minute slot, up when the run's prerequisites passed;
 the first run in a slot decides it. The daemon keeps durable exponential
 moving averages over slots with 1-, 7- and 30-day time constants and compares
 each at the 0.1% telemetry reports; a failure names the shortest failing

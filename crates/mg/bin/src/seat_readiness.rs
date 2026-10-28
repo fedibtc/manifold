@@ -2,8 +2,7 @@
 //!
 //! An MG that can advertise and sell a seat but cannot reach its relay,
 //! be discovered, or use its Bitcoin backend becomes the cause of a failed
-//! DKG, and one whose seats are not serving their federations should not
-//! sell more. Each run probes those prerequisites, hands the verdict to the fleet
+//! DKG. Each run probes those prerequisites, hands the verdict to the fleet
 //! (which stops advertising and quoting while it fails), and records the
 //! outcome as one shareable event for telemetry.
 
@@ -85,7 +84,7 @@ impl SeatReadiness {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                let mut report = self.probe(&fleet).await;
+                let mut report = self.probe().await;
                 // Recording this slot also accounts for every slot since the
                 // last record, such as a restart's downtime.
                 let recorded_at = SystemTime::now();
@@ -130,17 +129,17 @@ impl SeatReadiness {
 
     /// Probe the prerequisites, retrying failures. The caller sets the
     /// uptime outcome.
-    async fn probe(&mut self, fleet: &Fleet) -> Report {
+    async fn probe(&mut self) -> Report {
         let give_up = Instant::now() + RETRY_BUDGET;
-        let mut report = self.probe_once(fleet).await;
+        let mut report = self.probe_once().await;
         while !report.prerequisites_passed() && Instant::now() + RETRY_DELAY < give_up {
             tokio::time::sleep(RETRY_DELAY).await;
-            report = self.probe_once(fleet).await;
+            report = self.probe_once().await;
         }
         report
     }
 
-    async fn probe_once(&mut self, fleet: &Fleet) -> Report {
+    async fn probe_once(&mut self) -> Report {
         let bitcoin_deadline = Instant::now() + CHECK_TIMEOUT;
         let mut bitcoin = self
             .stalled_bitcoin
@@ -168,8 +167,6 @@ impl SeatReadiness {
             relay,
             discovery,
             bitcoin,
-            // Read after the slower checks, so it reflects the run's end.
-            seats: fleet.seats_outcome(),
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }
@@ -303,7 +300,6 @@ fn journal_readiness(report: &Report, scores: UptimeScores, min: MinUptimePercen
         relay = report.relay.as_str(),
         discovery = report.discovery.as_str(),
         bitcoin = report.bitcoin.as_str(),
-        seats = report.seats.as_str(),
         uptime = report.uptime.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
@@ -340,7 +336,6 @@ mod tests {
             relay: Outcome::Pass,
             discovery: Outcome::NotApplicable,
             bitcoin: Outcome::Pass,
-            seats: Outcome::SeatsNotServing,
             uptime: Outcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -379,7 +374,6 @@ mod tests {
                 relay: "pass".into(),
                 discovery: "not_applicable".into(),
                 bitcoin: "pass".into(),
-                seats: Some("seats_not_serving".into()),
                 uptime: Some("uptime_7d_low".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),

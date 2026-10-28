@@ -66,15 +66,13 @@ async fn child_receives_configured_relay_and_auth_environment() {
     let args_path = temp.path().join("args");
     let env_path = temp.path().join("iroh-dns");
     let auth_path = temp.path().join("auth");
-    let session_timeout_path = temp.path().join("session-timeout");
     let fedimintd = fake::write_fake_fedimintd(
         temp.path(),
         &format!(
-            "printf '%s\\n' \"$@\" > '{}'; printf '%s' \"$FM_IROH_DNS\" > '{}'; printf '%s\\n' \"$FM_PASSWORD_API\" \"$FM_PASSWORD_UI\" > '{}'; printf '%s' \"$FM_SESSION_TIMEOUT_SECS\" > '{}'",
+            "printf '%s\\n' \"$@\" > '{}'; printf '%s' \"$FM_IROH_DNS\" > '{}'; printf '%s\\n' \"$FM_PASSWORD_API\" \"$FM_PASSWORD_UI\" > '{}'",
             args_path.display(),
             env_path.display(),
-            auth_path.display(),
-            session_timeout_path.display()
+            auth_path.display()
         ),
     )
     .await;
@@ -99,13 +97,6 @@ async fn child_receives_configured_relay_and_auth_environment() {
     child.wait().await.unwrap();
 
     assert_eq!(tokio::fs::read_to_string(env_path).await.unwrap(), relay);
-    // The stall limit is derived from this timeout, so it is set, not assumed.
-    assert_eq!(
-        tokio::fs::read_to_string(session_timeout_path)
-            .await
-            .unwrap(),
-        "3600"
-    );
     let args = tokio::fs::read_to_string(args_path).await.unwrap();
     assert!(args.lines().any(|arg| arg == "--enable-iroh=true"));
     assert!(!args.contains("test-seat-password"));

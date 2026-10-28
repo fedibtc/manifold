@@ -1131,7 +1131,6 @@ mod tests {
                 "relay": "pass",
                 "discovery": "pass",
                 "bitcoin": "not_applicable",
-                "seats": null,
                 "uptime": null,
                 "uptime_1d_pct": null,
                 "uptime_7d_pct": null,

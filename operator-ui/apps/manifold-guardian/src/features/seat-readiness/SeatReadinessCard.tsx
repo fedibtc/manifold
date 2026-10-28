@@ -3,10 +3,10 @@ import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
 import {
   CHECKS,
-  describeOutcome,
   formatPermille,
   guidance,
   labels,
+  outcomes,
   passed,
   UPTIME_WINDOWS,
   uptimeLabels
@@ -53,7 +53,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
               <li key={check} className={styles.check}>
                 <strong>{labels[check]}</strong>
 
-                <span>{describeOutcome(check, report[check])}</span>
+                <span>{outcomes[report[check]]}</span>
                 {!passed(report[check]) && (
                   <span className={styles.guidance}>{guidance[check]}</span>
                 )}
