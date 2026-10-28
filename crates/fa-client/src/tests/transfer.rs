@@ -1099,3 +1099,48 @@ async fn a_policy_without_transfer_buys_no_seat() {
     );
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
+
+/// A deployment whose publisher has published no policy follows its Manifold
+/// environment's default instead of failing, as its MGs do: a development
+/// stack publishes none.
+#[tokio::test]
+async fn an_unpublished_policy_leaves_transfer_to_the_environment_default() {
+    for (environment, enabled) in [
+        (ManifoldEnvironment::Development, true),
+        (ManifoldEnvironment::Production, false),
+    ] {
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(MgState::default());
+        let client = FaClient::open_inner(
+            MemDatabase::new().into_database(),
+            FaClientPorts {
+                identity: TestIdentity,
+                payments,
+                registry: TestRegistry::default(),
+                mg_connector: TestConnector {
+                    state: state.clone(),
+                    config: MgConfig::given_away(),
+                },
+                consensus_reader: TestConsensusReader::new(state),
+                fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
+            },
+            test_peer_badge_verifier(),
+            Some(setup_payment_keys().public_key()),
+            Some(guardian_fee_account(31)),
+            environment,
+        )
+        .await
+        .expect("open test FA client");
+        let (deadline, lease) = crate::formation::start_driver_run(&client.inner.store, options())
+            .await
+            .unwrap();
+        let run = crate::formation::DriverRun::new(options(), deadline, &lease);
+        let result = client.guardian_transfer_enabled(run).await;
+        let result = crate::formation::finish_driver_run(
+            result,
+            client.inner.store.release_driver_lease(lease).await,
+        );
+
+        assert_eq!(result.unwrap(), enabled, "{environment:?}");
+    }
+}
