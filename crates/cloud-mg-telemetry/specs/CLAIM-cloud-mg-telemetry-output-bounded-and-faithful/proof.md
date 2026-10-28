@@ -49,7 +49,7 @@ the payload fields inside each safe event.
    containing the six named `cloud_fman_telemetry_*` families. The renderer
    constructs only those generated families in addition to already-filtered
    forwarded samples. Admission diagnostics use only six fixed event labels,
-   and collection-failure counters only four fixed stage labels
+   and collection-failure counters only five fixed stage labels
    (`exposes_fixed_collection_failure_stages`); the rate-limited warning has
    one fixed reason and no source-derived field.
    Complete call-site enumeration remains `enum`.
