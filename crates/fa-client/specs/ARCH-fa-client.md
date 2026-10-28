@@ -541,10 +541,11 @@ authentication is
 
 ## Post-formation metadata maintenance
 
-`update_federation_metadata` exposes only the MG's compiled policy as
+`update_federation_metadata` and `update_federation_metadata_batch` expose only
+the MG's compiled policy as
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
-message/description, a caller-supplied public HTTP(S) terms URL, and one
-`FederationAppSetting` value at a time. The shared types
+message/description, a caller-supplied public HTTP(S) terms URL, and
+`FederationAppSetting` values. The shared types
 apply the trim-for-validation/raw-for-submission rules, each
 setting's format, and its absolute raw resource cap before lease, signing,
 connection, or network effects; every MG repeats the same authoritative
@@ -554,6 +555,13 @@ never by deleting the field. The operation requires
 a fresh formed record, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
+
+The batch API rejects empty lists and repeated keys with `InvalidIntent`.
+All edits share one consensus base and one vote per guardian; success requires
+a fresh consensus read containing every requested value. A one-item batch uses
+`SetMetaField`, as does the single-update API. Larger batches use `SetMetaFields`;
+an older MG's unknown-verb reply surfaces as `MaintenanceRejected`, with no
+fallback to separate updates.
 
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked

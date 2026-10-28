@@ -34,8 +34,8 @@ use fedi_decentralized_domain::{
 };
 use fedi_decentralized_service_manifold_guardian::{
     FEDERATION_METADATA_OBJECT_MAX_BYTES, FaId, FederationName, FormationSeatBinding, GuardianCode,
-    InviteCode, MetaConsensusBase, MetaFieldKey, MetaFieldValue, Plan, SeatHealth, SeatId,
-    ServiceStatus,
+    InviteCode, MetaConsensusBase, MetaField, MetaFieldKey, MetaFieldValue, Plan, SeatHealth,
+    SeatId, ServiceStatus,
 };
 use fedimint_core::base32::{self, FEDIMINT_PREFIX};
 use fedimint_core::config::ClientConfig;
@@ -477,11 +477,11 @@ enum SeatCommand {
         guardian_verification_fee_account: Account,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
-    SubmitMetaField {
+    SubmitMetaFields {
         expected_base: MetaConsensusBase,
-        key: MetaFieldKey,
-        value: MetaFieldValue,
+        fields: Vec<MetaField>,
         min_send_ppm: u64,
+        operation: &'static str,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
     RegisterGateway {
@@ -866,11 +866,28 @@ impl Seat {
         value: MetaFieldValue,
         min_send_ppm: u64,
     ) -> Result<(), SeatVerbError> {
-        self.verb_request(|reply| SeatCommand::SubmitMetaField {
+        self.submit_meta_fields(
             expected_base,
-            key,
-            value,
+            vec![MetaField { key, value }],
             min_send_ppm,
+            "set_meta_field",
+        )
+        .await
+    }
+
+    /// `SetMetaFields`: validate every field, then cast one guardian vote.
+    pub(crate) async fn submit_meta_fields(
+        &self,
+        expected_base: MetaConsensusBase,
+        fields: Vec<MetaField>,
+        min_send_ppm: u64,
+        operation: &'static str,
+    ) -> Result<(), SeatVerbError> {
+        self.verb_request(|reply| SeatCommand::SubmitMetaFields {
+            expected_base,
+            fields,
+            min_send_ppm,
+            operation,
             reply,
         })
         .await
@@ -1282,15 +1299,15 @@ impl SeatLoop {
                         .await;
                     let _ = reply.send(result);
                 }
-                SeatCommand::SubmitMetaField {
+                SeatCommand::SubmitMetaFields {
                     expected_base,
-                    key,
-                    value,
+                    fields,
                     min_send_ppm,
+                    operation,
                     reply,
                 } => {
                     let result = self
-                        .submit_meta_field(expected_base, &key, &value, min_send_ppm)
+                        .submit_meta_fields(expected_base, &fields, min_send_ppm, operation)
                         .await;
                     let _ = reply.send(result);
                 }
@@ -2175,33 +2192,44 @@ impl SeatLoop {
     /// reaching consensus first makes this proposal stale instead of letting
     /// a late whole-object vote silently discard it. The FA serializes typed
     /// maintenance operations and confirms each target by consensus readback.
-    async fn submit_meta_field(
+    ///
+    /// Several fields are all-or-nothing: every field is validated before any
+    /// child access, and they land in one whole-object vote.
+    async fn submit_meta_fields(
         &mut self,
         expected_base: MetaConsensusBase,
-        key: &MetaFieldKey,
-        value: &MetaFieldValue,
+        fields: &[MetaField],
         min_send_ppm: u64,
+        operation: &'static str,
     ) -> Result<(), SeatVerbError> {
-        validate_meta_field(key, value).map_err(|err| self.meta_field_error(key.0.len(), err))?;
-        if key.0 == crate::guardian_fee::SEND_PPM_META_KEY {
-            let send_ppm = value
-                .0
-                .parse::<u64>()
-                .map_err(|_| SeatVerbError::MetaValueInvalid)?;
-            crate::guardian_fee::prevalidate_guardian_fee_rate(send_ppm, min_send_ppm)
-                .map_err(|_| SeatVerbError::MetaValueInvalid)?;
+        if fields.is_empty() {
+            return Err(SeatVerbError::MetaValueInvalid);
+        }
+        let mut updates = BTreeMap::new();
+        for MetaField { key, value } in fields {
+            validate_meta_field(key, value)
+                .map_err(|err| self.meta_field_error(key.0.len(), err))?;
+            if key.0 == crate::guardian_fee::SEND_PPM_META_KEY {
+                let send_ppm = value
+                    .0
+                    .parse::<u64>()
+                    .map_err(|_| SeatVerbError::MetaValueInvalid)?;
+                crate::guardian_fee::prevalidate_guardian_fee_rate(send_ppm, min_send_ppm)
+                    .map_err(|_| SeatVerbError::MetaValueInvalid)?;
+            }
+            // A JSON string field inside the meta object, matching Fedimint's
+            // own `ClientConfig::meta` convention and what FLIP's reader
+            // expects.
+            if updates
+                .insert(key.0.clone(), serde_json::Value::String(value.0.clone()))
+                .is_some()
+            {
+                return Err(SeatVerbError::MetaValueInvalid);
+            }
         }
         let (client, config) = self.running_client_config().await?;
-        // A JSON string field inside the meta object, matching Fedimint's own
-        // `ClientConfig::meta` convention and what FLIP's reader expects.
-        self.submit_meta_patch(
-            &client,
-            &config,
-            expected_base,
-            BTreeMap::from([(key.0.clone(), serde_json::Value::String(value.0.clone()))]),
-            "set_meta_field",
-        )
-        .await
+        self.submit_meta_patch(&client, &config, expected_base, updates, operation)
+            .await
     }
 
     async fn register_gateway(&mut self, gateway_api: SafeUrl) -> Result<bool, SeatVerbError> {

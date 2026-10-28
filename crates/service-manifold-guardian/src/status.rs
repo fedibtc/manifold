@@ -12,8 +12,8 @@ use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use stability_pool_common::{Account, AccountType};
 
 use crate::{
-    FaId, FedimintStats, GatewayApiUrl, GuardianCode, InviteCode, MetaConsensusBase, MetaFieldKey,
-    MetaFieldValue, SeatHealth, SeatId, Timestamp, ValidUntilDate,
+    FaId, FedimintStats, GatewayApiUrl, GuardianCode, InviteCode, MetaConsensusBase, MetaField,
+    MetaFieldKey, MetaFieldValue, SeatHealth, SeatId, Timestamp, ValidUntilDate,
 };
 
 /// Request for DKG or running federation status.
@@ -284,6 +284,37 @@ pub struct SetMetaFieldRequest {
 /// live consensus value back.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetMetaFieldResponse;
+
+/// Request to set several federation metadata fields in one guardian vote.
+///
+/// Same semantics as [`SetMetaFieldRequest`], applied to every field at once:
+/// the MG validates each field with the single-field rules and refuses the
+/// whole request if any field, an empty list, or a repeated key fails.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct SetMetaFieldsRequest {
+    /// Freshness challenge timestamp (±1h window, SPEC-signed-envelopes).
+    pub ts: Timestamp,
+
+    /// Federation Ambassador identity.
+    #[serde(rename = "fi_id")]
+    pub fa_id: FaId,
+
+    /// Seat being modified.
+    pub seat_id: SeatId,
+
+    /// Exact consensus occurrence on which this read-modify-write is based.
+    /// See [`SetMetaFieldRequest::expected_base`].
+    pub expected_base: MetaConsensusBase,
+
+    /// Fields to set. A list rather than a map so that a repeated key is
+    /// refused instead of silently collapsed by deserialization.
+    pub fields: Vec<MetaField>,
+}
+
+/// Response to a multi-field metadata update request. Like
+/// [`SetMetaFieldResponse`], success acknowledges one guardian vote only.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SetMetaFieldsResponse;
 
 /// Ask one guardian to store a gateway in its local LNv2 module.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

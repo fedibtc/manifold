@@ -43,7 +43,7 @@ digest-only verifiers.
 
 FA request labels cover `create_seat`, `get_dkg_code`, `start_dkg`,
 `restart_dkg`, `get_status`, `get_invite_code`, `get_peer_attestation`,
-`propose_formation_meta`, `set_meta_field`, `register_gateway`, and
+`propose_formation_meta`, `set_meta_field`, `set_meta_fields`, `register_gateway`, and
 `get_fedimint_stats`. MG
 response labels cover `get_quote` and `create_seat`.
 

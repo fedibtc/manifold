@@ -1200,12 +1200,14 @@ where
         let fa_id = self.fa_id()?;
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
-        let key = MetaFieldKey(
-            fedi_decentralized_service_manifold_guardian::GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY
-                .to_owned(),
-        );
-        let value = MetaFieldValue(send_ppm.value().to_string());
-        let result = self.update_meta_field_pinned(key, value, fa_id, run).await;
+        let field = MetaField {
+            key: MetaFieldKey(
+                fedi_decentralized_service_manifold_guardian::GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY
+                    .to_owned(),
+            ),
+            value: MetaFieldValue(send_ppm.value().to_string()),
+        };
+        let result = self.update_meta_fields_pinned(&[field], fa_id, run).await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
@@ -4301,32 +4303,54 @@ where
         sessions: &[SeatSession<F::Client>],
         fa_id: FaId,
         expected_base: MetaConsensusBase,
-        key: &MetaFieldKey,
-        value: &MetaFieldValue,
+        fields: &[MetaField],
         run: DriverRun<'_>,
     ) -> Vec<(u16, Result<MetaFieldSubmission, MetaFieldSubmissionError>)> {
         let mut pending = FuturesUnordered::new();
         for session in sessions {
             pending.push(async move {
                 let result = async {
-                    let request = SetMetaFieldRequest {
-                        ts: Timestamp(now_secs().map_err(MetaFieldSubmissionError::Driver)?),
-                        fa_id,
-                        seat_id: session.seat_id.clone(),
-                        expected_base,
-                        key: key.clone(),
-                        value: value.clone(),
-                    };
-                    let request = run
-                        .construct("signing SetMetaField request", || self.sign(&request))
-                        .await
-                        .map_err(MetaFieldSubmissionError::Driver)?;
-                    let response = run
-                        .call("submitting SetMetaField proposal", || {
+                    let ts = Timestamp(now_secs().map_err(MetaFieldSubmissionError::Driver)?);
+                    // One field keeps the single-field verb so this still
+                    // works against MGs that predate `set_meta_fields`.
+                    let response = if let [MetaField { key, value }] = fields {
+                        let request = SetMetaFieldRequest {
+                            ts,
+                            fa_id,
+                            seat_id: session.seat_id.clone(),
+                            expected_base,
+                            key: key.clone(),
+                            value: value.clone(),
+                        };
+                        let request = run
+                            .construct("signing SetMetaField request", || self.sign(&request))
+                            .await
+                            .map_err(MetaFieldSubmissionError::Driver)?;
+                        run.call("submitting SetMetaField proposal", || {
                             Ok(session.client.set_meta_field(request))
                         })
                         .await
-                        .map_err(MetaFieldSubmissionError::Driver)?;
+                        .map_err(MetaFieldSubmissionError::Driver)?
+                        .map(|_| ())
+                    } else {
+                        let request = SetMetaFieldsRequest {
+                            ts,
+                            fa_id,
+                            seat_id: session.seat_id.clone(),
+                            expected_base,
+                            fields: fields.to_vec(),
+                        };
+                        let request = run
+                            .construct("signing SetMetaFields request", || self.sign(&request))
+                            .await
+                            .map_err(MetaFieldSubmissionError::Driver)?;
+                        run.call("submitting SetMetaFields proposal", || {
+                            Ok(session.client.set_meta_fields(request))
+                        })
+                        .await
+                        .map_err(MetaFieldSubmissionError::Driver)?
+                        .map(|_| ())
+                    };
                     match response {
                         Ok(_) => Ok(MetaFieldSubmission::Accepted),
                         Err(ManifoldGuardianError::MetaConsensusChanged) => {
@@ -4843,10 +4867,9 @@ fn seat_bindings_field(meta_value: &Option<Vec<u8>>) -> FaResult<Option<String>>
     }
 }
 
-pub(crate) fn meta_field_matches(
+pub(crate) fn meta_fields_match(
     meta_value: Option<&[u8]>,
-    key: &MetaFieldKey,
-    expected: &MetaFieldValue,
+    expected: &[MetaField],
 ) -> FaResult<bool> {
     let Some(fields) = parse_metadata_object(meta_value).map_err(|error| {
         FaError::MaintenanceConsensusInvalid {
@@ -4856,13 +4879,19 @@ pub(crate) fn meta_field_matches(
     else {
         return Ok(false);
     };
-    match fields.get(&key.0) {
-        None => Ok(false),
-        Some(serde_json::Value::String(value)) => Ok(value == &expected.0),
-        Some(_) => Err(FaError::MaintenanceConsensusInvalid {
-            reason: format!("{} consensus metadata is not a string", key.0),
-        }),
+    let mut all_match = true;
+    for MetaField { key, value } in expected {
+        match fields.get(&key.0) {
+            None => all_match = false,
+            Some(serde_json::Value::String(actual)) => all_match &= actual == &value.0,
+            Some(_) => {
+                return Err(FaError::MaintenanceConsensusInvalid {
+                    reason: format!("{} consensus metadata is not a string", key.0),
+                });
+            }
+        }
     }
+    Ok(all_match)
 }
 
 fn parse_metadata_object(

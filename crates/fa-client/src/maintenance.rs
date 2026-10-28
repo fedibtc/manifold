@@ -6,7 +6,7 @@ use std::time::Duration;
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
     FaId, FederationMetadataUpdate, GatewayApiUrl, ManifoldGuardianError, ManifoldGuardianService,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, RegisterGatewayRequest,
+    MetaConsensusBase, MetaField, RegisterGatewayRequest,
 };
 use fedimint_core::runtime::Instant;
 use futures::stream::{FuturesUnordered, StreamExt as _};
@@ -14,7 +14,7 @@ use futures::stream::{FuturesUnordered, StreamExt as _};
 use crate::formation::{
     DriverRun, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions, MetaFieldSubmission, MetaFieldSubmissionError, SeatSession,
-    finish_driver_run, meta_field_matches, sleep_for_retry, snapshot_meta_consensus,
+    finish_driver_run, meta_fields_match, sleep_for_retry, snapshot_meta_consensus,
     start_driver_run, validate_consensus_metadata_size,
 };
 use crate::{
@@ -384,21 +384,61 @@ where
         update: FederationMetadataUpdate,
         options: MaintenanceRunOptions,
     ) -> FaResult<()> {
+        self.update_federation_metadata_batch(vec![update], options)
+            .await
+    }
+
+    /// Propose several metadata changes as one guardian vote per seat.
+    ///
+    /// Same protocol, retry, and error contract as
+    /// [`Self::update_federation_metadata`], with every field bound to the
+    /// same consensus base. Success means a fresh consensus read contains
+    /// every requested value. An empty list or two updates for the same key
+    /// return [`FaError::InvalidIntent`] before any driver work.
+    ///
+    /// More than one update is sent as `SetMetaFields`, which MGs released
+    /// before that verb cannot answer; such a seat's reply surfaces as a
+    /// [`FaError::MaintenanceRejected`]. A one-item list uses the
+    /// single-field verb.
+    pub async fn update_federation_metadata_batch(
+        &self,
+        updates: Vec<FederationMetadataUpdate>,
+        options: MaintenanceRunOptions,
+    ) -> FaResult<()> {
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        if updates.is_empty() {
+            return Err(FaError::InvalidIntent(
+                "metadata batch must contain at least one update".to_owned(),
+            ));
+        }
+        let fields = updates
+            .into_iter()
+            .map(|update| {
+                let (key, value) = update.into_field();
+                MetaField { key, value }
+            })
+            .collect::<Vec<_>>();
+        let mut keys = BTreeSet::new();
+        for MetaField { key, .. } in &fields {
+            if !keys.insert(key) {
+                return Err(FaError::InvalidIntent(format!(
+                    "metadata batch updates {} more than once",
+                    key.0
+                )));
+            }
+        }
         let options = options.0;
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
-        let (key, value) = update.into_field();
-        let result = self.update_meta_field_pinned(key, value, fa_id, run).await;
+        let result = self.update_meta_fields_pinned(&fields, fa_id, run).await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    pub(crate) async fn update_meta_field_pinned(
+    pub(crate) async fn update_meta_fields_pinned(
         &self,
-        key: MetaFieldKey,
-        value: MetaFieldValue,
+        fields: &[MetaField],
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -466,7 +506,7 @@ where
                     max_bytes: error.max_bytes,
                 }
             })?;
-            if meta_field_matches(snapshot.meta_value.as_deref(), &key, &value)? {
+            if meta_fields_match(snapshot.meta_value.as_deref(), fields)? {
                 return Ok(());
             }
 
@@ -512,7 +552,7 @@ where
 
             let mut terminal_rejections = BTreeMap::new();
             for (index, result) in self
-                .submit_meta_field_wave(&sessions, fa_id, expected_base, &key, &value, run)
+                .submit_meta_field_wave(&sessions, fa_id, expected_base, fields, run)
                 .await
             {
                 match result {
@@ -575,7 +615,7 @@ where
                             max_bytes: error.max_bytes,
                         },
                     )?;
-                    if meta_field_matches(snapshot.meta_value.as_deref(), &key, &value)? {
+                    if meta_fields_match(snapshot.meta_value.as_deref(), fields)? {
                         return Ok(());
                     }
                     let observed_base = MetaConsensusBase::from_consensus(

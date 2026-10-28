@@ -7,12 +7,19 @@ The contract spans FA RPC admission, metadata validators, durable occurrence pin
 ## Decision
 
 The Federation Ambassador may request a compiled set of post-formation metadata
-changes through the FA-signed, seat-scoped `SetMetaField` verb. Every MG
-independently authorizes the immutable FA/seat binding, validates the key and
-value with a compiled validator, preserves every unrelated consensus field,
+changes through the FA-signed, seat-scoped `SetMetaField` and `SetMetaFields`
+verbs. Every MG
+independently authorizes the immutable FA/seat binding, validates every key and
+value with compiled validators, preserves every unrelated consensus field,
 and casts its own guardian-authenticated meta-module vote. The FA sends the
 same typed mutation to every seat and confirms threshold adoption with a fresh
 consensus read. An acknowledgement means only that one vote was submitted.
+
+`SetMetaFields` groups all edits into one whole-object vote against one
+`expected_base`. Empty batches, repeated keys, or any invalid field reject the
+whole batch before child access. Consensus adopts the combined document, and
+the FA confirms every requested value in one fresh read. This grouping does
+not make the base check and consensus adoption an atomic compare-and-swap.
 
 The display, terms, and fee keys are:
 
@@ -63,7 +70,7 @@ limits are served including `0`: they stop receives but not sends, and the FA
 undoes them by setting a large value.
 `fedi:fedimods` is not served because Fedi loads mods from community metadata.
 
-Serving a key is an MG release decision; the `SetMetaField` wire format does
+Serving a key is an MG release decision; the metadata request formats do
 not change. An MG without a key's validator refuses it as `MetaKeyRefused`.
 The FA skips that seat for the rest of the attempt and continues while enough
 other seats could reach the threshold. It stops early when key refusals make
@@ -73,7 +80,7 @@ capability negotiation.
 
 The formation
 trust directory and guardian-fee recipient list are formation-owned fixed
-fields and are explicitly rejected through `SetMetaField`. Formation installs
+fields and are explicitly rejected through both metadata verbs. Formation installs
 both alongside the initial rate through `ProposeFormationMeta`; see
 [SPEC-guardian-fee-policy](./SPEC-guardian-fee-policy.md).
 The sole dedicated post-formation exception is cooperative guardian transfer:
@@ -94,11 +101,11 @@ consensus revision and exact raw value from one read. The base names an
 occurrence, so byte-identical content readopted at a later revision does not
 re-arm an old request.
 
-`SetMetaField`, formation's `ProposeFormationMeta`, and transfer's
+`SetMetaField`, `SetMetaFields`, formation's `ProposeFormationMeta`, and transfer's
 `ReplaceSeatBinding` enter the same MG
 read/check/merge/canonicalize/submit primitive. A mismatch returns
 `MetaConsensusChanged` without a vote. A matching generic request replaces only
-the validated string field; formation constructs its directory, recipient
+the validated string fields; formation constructs its directory, recipient
 mapping, and rate as one target; transfer derives only its dedicated replacement.
 All preserve unrelated fields and submit
 canonical whole-object bytes.
@@ -127,7 +134,7 @@ the same cap before its proposal wave.
 ## Formation-owned fields during maintenance
 
 The directory and guardian-fee recipient list are absent from the compiled
-generic field registry, so `SetMetaField` rejects requests targeting either
+generic field registry, so both metadata verbs reject requests targeting either
 before child access. For an allowed key, MG carries every other field from
 the exact observed consensus occurrence unchanged; it does not revalidate or
 rewrite formation-owned values as a side effect of an unrelated update.
@@ -138,7 +145,7 @@ the guardian remains outside the current maintenance implementation.
 
 ## Failure and security notes
 
-- Signatures cover timestamp, FA and seat ids, exact base, key, and value.
+- Signatures cover timestamp, FA and seat ids, exact base, and every key/value pair.
   Formation signatures instead cover the paired attestation/proof entries, FA
   and Guardian Verification Fee accounts, and initial rate.
 - Formation returns `FormationMetaAlreadyPublished` when a consensus directory

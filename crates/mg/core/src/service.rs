@@ -30,9 +30,10 @@ use fedi_decentralized_service_manifold_guardian::{
     ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
     QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
     RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
-    RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest,
-    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp,
-    TransferSeatRequest, TransferSeatResponse, VerifiedFaRequest,
+    RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse,
+    SetMetaFieldsRequest, SetMetaFieldsResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse, StatusDetail, Timestamp, TransferSeatRequest, TransferSeatResponse,
+    VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -803,6 +804,31 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .await
             .map_err(|err| map_seat_error("set_meta_field", err))?;
             Ok(SetMetaFieldResponse)
+        })
+        .await
+    }
+
+    async fn set_meta_fields(
+        &self,
+        request: SignedRequest<SetMetaFieldsRequest>,
+    ) -> FmResult<SetMetaFieldsResponse> {
+        trace_formation_rpc("set_meta_fields", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("set_meta_fields", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("set_meta_fields", err))?;
+            seat.submit_meta_fields(
+                request.expected_base,
+                request.fields.clone(),
+                self.min_guardian_fee_ppm(),
+                "set_meta_fields",
+            )
+            .await
+            .map_err(|err| map_seat_error("set_meta_fields", err))?;
+            Ok(SetMetaFieldsResponse)
         })
         .await
     }
