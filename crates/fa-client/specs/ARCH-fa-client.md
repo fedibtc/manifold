@@ -377,7 +377,10 @@ A formed federation has one durable record. Consensus confirmation replaces the
 formation record with it in one transaction, and a backup import writes the
 same record. On restart it starts unsynced. Fresh threshold consensus must
 match the saved federation identity and verified directory before it becomes
-fresh; its seats and any saved liquidity commitment must also match.
+fresh; its seats and any saved liquidity commitment must also match. A
+federation formed on this device also keeps the directory and fee recipients
+that consensus confirmed, and they must stay exact. A backup carries neither,
+so an import has no such check.
 Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
 If the saved invite is unreachable, recovery tries alternative invites from

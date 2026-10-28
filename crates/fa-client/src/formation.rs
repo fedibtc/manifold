@@ -3901,7 +3901,7 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let payload = self.inner.store.formed_federation_payload(fa_id).await?;
+        let (payload, confirmed_meta) = self.inner.store.formed_federation_payload(fa_id).await?;
         if payload.seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
                 "formed FA federation record contains no seats".to_owned(),
@@ -3927,6 +3927,19 @@ where
                     "formed federation has no MG seat-binding directory".to_owned(),
                 )
             })?;
+        // A federation formed here keeps the directory and fee recipients
+        // that consensus confirmed. Later fee-rate changes are allowed.
+        if let Some(confirmed) = &confirmed_meta
+            && (directory != confirmed.seat_bindings
+                || !guardian_fee_recipients_match(
+                    consensus.meta_value.as_deref(),
+                    &confirmed.recipients,
+                )?)
+        {
+            return Err(FaError::InvalidManifoldGuardians(
+                "formed federation changed its immutable directory or fee recipients".to_owned(),
+            ));
+        }
         let bindings = MgSeatBindings::parse_canonical(&directory)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
             .map_err(|error| {

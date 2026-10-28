@@ -140,6 +140,19 @@ struct FormedFederationRecord {
     formation_id: FormationId,
     backup_eligible: bool,
     federation_name: Option<crate::FederationName>,
+    /// The directory and fee recipients that consensus confirmed when this
+    /// device formed the federation. A backup carries neither, so an import
+    /// has none. An older build drops the field when it rewrites the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confirmed_meta: Option<ConfirmedFormationMeta>,
+}
+
+/// The part of the formation metadata that stays fixed after formation.
+/// Reconciliation requires consensus to keep it exactly.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) struct ConfirmedFormationMeta {
+    pub(crate) seat_bindings: String,
+    pub(crate) recipients: String,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -936,12 +949,8 @@ impl FaStore {
             Some(prior) => prior.generation.checked_add(1).ok_or_else(|| {
                 FaError::Storage("FA backup snapshot generation exhausted".to_owned())
             })?,
-            // A formation converted before its first backup has generation 0,
-            // which no backup carries.
             None => match baseline {
-                (generation, formed_hash) if formed_hash == semantic_hash && generation > 0 => {
-                    generation
-                }
+                (generation, formed_hash) if formed_hash == semantic_hash => generation,
                 (generation, _) => generation.checked_add(1).ok_or_else(|| {
                     FaError::Storage("FA backup snapshot generation exhausted".to_owned())
                 })?,
@@ -1060,6 +1069,7 @@ impl FaStore {
                 formation_id,
                 backup_eligible: false,
                 federation_name: None,
+                confirmed_meta: None,
             },
         )
         .await;
@@ -1141,7 +1151,10 @@ impl FaStore {
     pub(crate) async fn formed_federation_payload(
         &self,
         fa_id: FaId,
-    ) -> FaResult<crate::backup::FaBackupPayload> {
+    ) -> FaResult<(
+        crate::backup::FaBackupPayload,
+        Option<ConfirmedFormationMeta>,
+    )> {
         let formed = self
             .database
             .begin_transaction_nc()
@@ -1154,7 +1167,7 @@ impl FaStore {
                 "formed FA federation belongs to another scoped root".to_owned(),
             ));
         }
-        Ok(formed.payload)
+        Ok((formed.payload, formed.confirmed_meta))
     }
 
     pub(crate) async fn record_backup_confirmation(
@@ -4152,10 +4165,16 @@ async fn record_formed_federation(
             "a formed FA federation record already exists".to_owned(),
         ));
     }
+    let target = formation
+        .formation_meta_target
+        .ok_or_else(|| FaError::Storage("formed FA formation has no metadata target".to_owned()))?;
+    // No backup carries generation 0. A formation without a prepared backup
+    // starts at 1, so an older build that reads this record as a restored
+    // backup publishes a valid generation.
     let snapshot_generation = dbtx
         .get_value(&BackupGenerationKey)
         .await
-        .map_or(0, |state| state.generation);
+        .map_or(1, |state| state.generation);
     dbtx.insert_entry(
         &FormedFederationKey,
         &FormedFederationRecord {
@@ -4172,6 +4191,10 @@ async fn record_formed_federation(
             formation_id: formation.formation_id,
             backup_eligible: true,
             federation_name: Some(formation.intent.federation_name),
+            confirmed_meta: Some(ConfirmedFormationMeta {
+                seat_bindings: target.seat_bindings,
+                recipients: target.recipients,
+            }),
         },
     )
     .await;
