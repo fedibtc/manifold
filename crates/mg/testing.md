@@ -103,7 +103,9 @@ In-tree unit and integration tests stop at the `fedimintd` process boundary:
 - Destination tests (`transfer_import.rs`) run the transfer worker against a
   controlled in-process source and a gated validator: pull, retry until the
   source answers, park, same-move replay before and after import,
-  cancellation, installation and the production gate.
+  cancellation, installation, and that a stored transfer resumes without a
+  policy that enables transfer. `transfer_binding` and `transfer_source`
+  tests pin that only that policy lets an MG start a transfer.
 - Binding, backup-format, publication and restore tests cover the metadata
   vote, the transfer document version, single-snapshot publication, and
   restore of imported and retired seats.

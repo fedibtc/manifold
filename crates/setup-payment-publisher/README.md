@@ -48,6 +48,11 @@ nix run .#setup-payment-publisher -- republish \
   --expected-publisher <hex-or-npub>
 ```
 
+To let MGs start guardian transfers, set `"guardian_transfer": true` in the
+policy file; set `false` to stop new transfers. Omitted, each environment's
+default applies: on in development and staging, off in production. Transfers
+MGs already stored continue either way.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files, while old

@@ -285,12 +285,15 @@ async fn transfer_binding_shares_admission_with_ordinary_metadata_and_bounds_tar
     f.fleet.shutdown().await;
 }
 
-/// Guardian transfer is enabled only in development and staging. A
-/// production MG answers each of the four transfer verbs `UnsupportedVerb`,
-/// even for the seat's own FA; a staging MG passes the same requests on to
-/// the verbs' own checks.
+/// The setup-payment policy's `guardian_transfer` flag decides whether an
+/// MG starts a guardian transfer; without the flag, the environment does
+/// (staging on, production off). When starting is off, an MG answers
+/// `PullSeat` and `TransferSeat` for a seat with no stored transfer
+/// `UnsupportedVerb`, even for the seat's own FA. When it is on, the same
+/// requests reach the verbs' own checks. `ReplaceSeatBinding` and
+/// `RemoveSeat` start nothing, so they always reach their own checks.
 #[tokio::test]
-async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
+async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
     use fedi_decentralized_manifold_environment::ManifoldEnvironment;
     use fedi_decentralized_service_manifold_guardian::{
         ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest, PullSeatRequest,
@@ -298,9 +301,22 @@ async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
         TransferSeatRequest,
     };
 
-    for (environment, port) in [
-        (ManifoldEnvironment::Production, 33_200),
-        (ManifoldEnvironment::Staging, 33_212),
+    for (environment, policy, enabled, port) in [
+        (ManifoldEnvironment::Production, None, false, 33_200),
+        (ManifoldEnvironment::Production, Some(None), false, 33_212),
+        (
+            ManifoldEnvironment::Production,
+            Some(Some(true)),
+            true,
+            33_224,
+        ),
+        (ManifoldEnvironment::Staging, None, true, 33_236),
+        (
+            ManifoldEnvironment::Staging,
+            Some(Some(false)),
+            false,
+            33_248,
+        ),
     ] {
         let root = TempDir::new().unwrap();
         let mut config = config(&root, 1, port).await;
@@ -316,7 +332,10 @@ async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
             secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[83; 32]).unwrap();
         let rpc = crate::service::ManifoldGuardianRpc::new(
             fleet.clone(),
-            tokio::sync::watch::channel(None).1,
+            match policy {
+                Some(flag) => policy_with_guardian_transfer(flag),
+                None => tokio::sync::watch::channel(None).1,
+            },
         );
         let grant = SeatTransferGrant {
             ts: Timestamp((crate::db::now_ms() / 1000) as u64),
@@ -394,11 +413,19 @@ async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
             let refused = ManifoldGuardianError::UnsupportedVerb {
                 verb: verb.to_owned(),
             };
-            match environment {
-                ManifoldEnvironment::Production => {
-                    assert_eq!(result, Err(refused), "production {verb}");
-                }
-                _ => assert_ne!(result, Err(refused), "staging {verb}"),
+            let starts = matches!(verb, "PullSeat" | "TransferSeat");
+            if starts && !enabled {
+                assert_eq!(
+                    result,
+                    Err(refused),
+                    "{verb} in {environment:?}, {policy:?}"
+                );
+            } else {
+                assert_ne!(
+                    result,
+                    Err(refused),
+                    "{verb} in {environment:?}, {policy:?}"
+                );
             }
         }
         fleet.shutdown().await;

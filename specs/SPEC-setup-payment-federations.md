@@ -140,9 +140,16 @@ replacement ordering as the new shared high-water mark.
   enough consumers have upgraded;
 - `seat_memory_budget_mib`, the RAM in MiB that each MG reserves per seat when
   it computes its memory seat limit, from 256 to 16,384. Optional: absent
-  means 1,229 (about 1.2 GiB); and
+  means 1,229 (about 1.2 GiB);
 - `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
-  Optional: absent means 12.
+  Optional: absent means 12; and
+- `guardian_transfer`, a boolean that lets MGs start new guardian transfers
+  ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+  Optional: absent means the Manifold environment's default, on in
+  development and staging and off in production. Transfers an MG already stored continue
+  whatever it says. MG and FA releases from 0.1.1 on admit unknown fields
+  and ignore it; only the initial release rejects a publication that sets
+  it.
 
 Neither seat field changes the operator's own maximum. Each MG sells up to
 the lowest of the operator maximum and its runtime limits

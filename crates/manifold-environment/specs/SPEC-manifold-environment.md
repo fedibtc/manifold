@@ -35,16 +35,21 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   JSON of the environment's placeholder issuer (`test_issuer_secret_keys()`;
   `None` for production); and
 - one identity-signed public `IssuerAuthority` document per configured issuer
-  (`pinned_issuer_authorities()`).
+  (`pinned_issuer_authorities()`); and
+- whether MGs start guardian transfers when the setup-payment policy does not
+  say (`ManifoldEnvironment::guardian_transfer`): on in development and
+  staging, off in production. A published `guardian_transfer` flag always
+  wins ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
 
 The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);
 development relay overrides follow the same rule.
 
-The profile exposes `profile_revision()`, currently `9`. Every change to an
+The profile exposes `profile_revision()`, currently `10`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
-Fee account, Bitcoin network, or default Esplora mapping must increment the
+Fee account, Bitcoin network, default Esplora, or default guardian-transfer
+mapping must increment the
 shared revision. The Fedi support key is outside the revision: only the MG
 reads it, so a mixed rollout cannot disagree about anything that another
 component checks.

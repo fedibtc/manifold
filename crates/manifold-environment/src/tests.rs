@@ -342,7 +342,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
                 .profile_with_env(|_| None)
                 .unwrap()
                 .profile_revision(),
-            9
+            10
         );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());
@@ -505,4 +505,19 @@ fn fa_backup_empty_read_quorum_tracks_the_canonical_relay_set() {
             "wss://relay1.example wss://relay2.example wss://relay3.example wss://relay4.example".to_owned()))
         .unwrap();
     assert_eq!(development.fa_backup_empty_read_quorum(), 3);
+}
+
+#[test]
+fn a_published_guardian_transfer_flag_wins_over_the_environment_default() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        assert!(environment.guardian_transfer(Some(true)));
+        assert!(!environment.guardian_transfer(Some(false)));
+    }
+    assert!(ManifoldEnvironment::Development.guardian_transfer(None));
+    assert!(ManifoldEnvironment::Staging.guardian_transfer(None));
+    assert!(!ManifoldEnvironment::Production.guardian_transfer(None));
 }

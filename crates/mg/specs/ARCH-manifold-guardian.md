@@ -303,10 +303,12 @@ serialized decisions
 ([ARCH-manifold-guardian-storage](./ARCH-manifold-guardian-storage.md)); seat facts are loaded
 at startup and operator settings remain database-owned.
 
-Guardian transfer runs only in development and staging environments; a
-production MG refuses the transfer verbs and starts none of the machinery
-below ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md), which also states
-its recovery premises).
+An MG starts a new guardian transfer only while the setup-payment policy it
+holds enables transfer, or, without a published flag, while its environment
+defaults to it (development and staging); a transfer it already stored
+always runs to completion through the machinery below
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md), which states this rule
+and the recovery premises).
 
 On a destination, one fleet-owned transfer supervisor resumes each durable
 incoming transfer still waiting for its source, at startup and on every seat

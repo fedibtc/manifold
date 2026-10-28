@@ -92,19 +92,6 @@ pub struct FleetConfig {
     pub transfer_source: Arc<dyn crate::transfer_source::TransferSource>,
 }
 
-impl FleetConfig {
-    /// Guardian transfer runs only in development and staging. A production
-    /// MG refuses the transfer verbs and resumes no stored transfer work
-    /// ([`SPEC-guardian-transfer`](../specs/SPEC-guardian-transfer.md)).
-    pub(crate) fn guardian_transfer_enabled(&self) -> bool {
-        match self.manifold_environment {
-            fedi_decentralized_manifold_environment::ManifoldEnvironment::Development
-            | fedi_decentralized_manifold_environment::ManifoldEnvironment::Staging => true,
-            fedi_decentralized_manifold_environment::ManifoldEnvironment::Production => false,
-        }
-    }
-}
-
 /// Payment has already been authenticated and verified offline. Fleet owns
 /// only the serialized allocation/refusal decision that follows verification.
 pub struct VerifiedCreateSeat {
