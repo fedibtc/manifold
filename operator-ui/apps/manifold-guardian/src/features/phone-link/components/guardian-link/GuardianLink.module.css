@@ -37,6 +37,27 @@
 .offerBody {
   @apply uStack4 min-w-0 flex-1;
 }
+.steps {
+  @apply m-0 grid list-none gap-4 p-0;
+}
+.step {
+  @apply grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3;
+}
+.stepNumber {
+  @apply flex size-8 items-center justify-center rounded-full border-[1.5px] border-ink bg-surface text-xs font-semibold tabular-nums text-ink;
+}
+.stepText {
+  @apply uStack1 min-w-0 pt-1.5;
+}
+.stepTitle {
+  @apply uLabel;
+}
+.stepDetail {
+  @apply m-0 text-sm text-gray-500;
+}
+.hostName {
+  @apply font-medium text-ink;
+}
 .offerText {
   @apply m-0 text-sm text-ink;
 }

@@ -1,6 +1,6 @@
 import type { GuardianLinkResponse } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PhoneLinkPage } from '@/pages/phone-link/PhoneLinkPage';
 import * as adminCallModule from '@/shared/api/adminCall';
@@ -17,8 +17,14 @@ const phone: NonNullable<GuardianLinkResponse['link']> = {
 const linked: GuardianLinkResponse = { ...unlinked, link: phone };
 const offer = { uri: 'fedi://guardian-link?secret=mock-only', expires_at: 1700004200 };
 
+const onboarding = { fman_name: 'blissful-chiffchaff' };
+const answer = (request: unknown, response: unknown) =>
+  (request === 'Onboarding' ? onboarding : response) as never;
+
 const renderPage = (response: GuardianLinkResponse) => {
-  const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(response);
+  const adminCall = vi
+    .spyOn(adminCallModule, 'adminCall')
+    .mockImplementation(async (request) => answer(request, response));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -46,7 +52,17 @@ it('should mint a code as soon as the page opens with no phone linked', async ()
 it('should show an open offer as a QR with the scan steps and never the URI', async () => {
   renderPage({ ...unlinked, offer });
   expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
-  expect(screen.getByText(/tap Scan/)).toBeInTheDocument();
+  // The steps follow the phone: scan, confirm the host by the name the phone
+  // shows (this host's, from Onboarding), then the notification prompt.
+  const steps = within(screen.getByRole('list')).getAllByRole('listitem');
+  expect(steps.map((step) => within(step).getByRole('heading').textContent)).toEqual([
+    'Scan this code',
+    'Tap Link guardian',
+    'Allow notifications'
+  ]);
+  expect(steps[0]).toHaveTextContent('tap Scan/Paste');
+  expect(steps[1]).toHaveTextContent('shows blissful-chiffchaff, the name of this host');
+  expect(screen.getByText(/expires at 2023-11-14 23:23 UTC/)).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
 });
@@ -100,13 +116,13 @@ it('should show a stopped phone and its new code together', async () => {
 it.each([
   ['delivered', 'Test notification delivered.'],
   ['retryable', 'Test notification could not be delivered. Try again.'],
-  ['terminal', 'Notifications stopped. Link your phone again.']
+  ['terminal', 'Notifications stopped. Link your phone again with the new code below.']
 ] as const)('should show the %s test notification outcome inline', async (outcome, message) => {
   const adminCall = renderPage(linked);
   adminCall.mockImplementation(async (request) =>
     request === 'TestGuardianLinkNotification'
       ? ({ outcome, reason: null } as never)
-      : (linked as never)
+      : answer(request, linked)
   );
   fireEvent.click(await screen.findByRole('button', { name: 'Send test notification' }));
   expect(await screen.findByRole('status')).toHaveTextContent(message);

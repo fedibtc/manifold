@@ -9,8 +9,8 @@ export const PhoneLinkPage = (_props: PhoneLinkPageProps) => (
       <h1 className={styles.heading}>Phone link</h1>
 
       <p className={styles.intro}>
-        Get a notification on your phone when your guardians need attention or guardian support
-        writes to you.
+        Get a notification on your phone when your guardians need attention or support sends you a
+        message.
       </p>
     </div>
 

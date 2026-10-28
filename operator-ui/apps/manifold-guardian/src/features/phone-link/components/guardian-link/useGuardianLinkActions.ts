@@ -1,13 +1,13 @@
+import { useCallback } from 'react';
 import { useCreateGuardianLinkOffer } from '@/features/phone-link/api/hooks/use-create-guardian-link-offer/useCreateGuardianLinkOffer';
 import { useRevokeGuardianLink } from '@/features/phone-link/api/hooks/use-revoke-guardian-link/useRevokeGuardianLink';
 import { useTestGuardianLinkNotification } from '@/features/phone-link/api/hooks/use-test-guardian-link-notification/useTestGuardianLinkNotification';
-import { useCallback } from 'react';
 import { describeActionError } from '@/shared/utils/describeActionError';
 
 const TEST_MESSAGES = {
   delivered: 'Test notification delivered.',
   retryable: 'Test notification could not be delivered. Try again.',
-  terminal: 'Notifications stopped. Link your phone again.'
+  terminal: 'Notifications stopped. Link your phone again with the new code below.'
 };
 
 export const useGuardianLinkActions = (linkedAt: number | undefined, terminal: boolean) => {

@@ -1,9 +1,10 @@
 import { Banner, Button } from '@operator-ui/common-ui';
 import { QRCodeSVG } from 'qrcode.react';
-import { useEffect } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
 import styles from '@/features/phone-link/components/guardian-link/GuardianLink.module.css';
 import { useGuardianLinkActions } from '@/features/phone-link/components/guardian-link/useGuardianLinkActions';
+import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
 import { formatCheckedAt, formatDate } from '@/shared/utils/format';
@@ -11,6 +12,29 @@ import { formatCheckedAt, formatDate } from '@/shared/utils/format';
 interface GuardianLinkProps extends Record<string, never> {}
 
 const formatDay = (seconds: number) => formatDate(seconds * 1000);
+
+// What the host does on the phone, in the order the app asks for it: the main
+// scan button, the confirm screen that names this host, then the system's
+// notification prompt.
+const linkSteps = (hostName: string): { title: string; detail: ReactNode }[] => [
+  {
+    title: 'Scan this code',
+    detail: 'Open the app on your phone, tap Scan/Paste and point the camera here.'
+  },
+  {
+    title: 'Tap Link guardian',
+    detail: (
+      <>
+        First check that your phone shows <strong className={styles.hostName}>{hostName}</strong>,
+        the name of this host.
+      </>
+    )
+  },
+  {
+    title: 'Allow notifications',
+    detail: 'If your phone asks, allow them. This host uses them to reach you.'
+  }
+];
 
 const phoneIcon = (
   <svg aria-hidden="true" viewBox="0 0 24 24" className={styles.emptyIcon}>
@@ -22,12 +46,23 @@ const phoneIcon = (
 
 export const GuardianLink = (_props: GuardianLinkProps) => {
   const status = useGuardianLink();
-  const { disposition, retry } = useQueryDisposition([status]);
+  // The phone's confirm screen names this host, so the steps name it too.
+  const onboarding = useOnboarding();
+  const { disposition, retry } = useQueryDisposition([status, onboarding]);
+  const hostName = onboarding.data?.fman_name;
   const link = status.data?.link;
   const offer = status.data?.offer;
   const terminal = link?.delivery.state === 'terminal';
-  const { busy, creating, createFailed, handleCreate, handleRevoke, handleTest, error, testMessage } =
-    useGuardianLinkActions(link?.linked_at, terminal);
+  const {
+    busy,
+    creating,
+    createFailed,
+    handleCreate,
+    handleRevoke,
+    handleTest,
+    error,
+    testMessage
+  } = useGuardianLinkActions(link?.linked_at, terminal);
   const lastNotified =
     link?.last_notified_at != null ? formatCheckedAt(link.last_notified_at) : 'Never';
   // A phone links by scanning, so the code is simply there whenever one is
@@ -41,6 +76,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   return (
     <QuerySurface disposition={disposition} onRetry={retry}>
       {status.data &&
+        hostName !== undefined &&
         (status.data.available ? (
           <div className={styles.root}>
             {link && (
@@ -53,8 +89,8 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 {terminal && (
                   <div role="alert">
                     <Banner variant="warn" title="Notifications stopped">
-                      The push gateway rejected this phone's notification hook, so this host can't
-                      reach it. Scan the code below to link your phone again.
+                      The push gateway no longer accepts notifications for this phone, so this host
+                      can't reach it. Link it again with the code below.
                     </Banner>
                   </div>
                 )}
@@ -100,7 +136,9 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
             {offer && (
               <section className={styles.card}>
                 <header className={styles.cardHead}>
-                  <h2 className={styles.cardTitle}>Link your phone</h2>
+                  <h2 className={styles.cardTitle}>
+                    {terminal ? 'Link your phone again' : 'Link your phone'}
+                  </h2>
                 </header>
 
                 <div className={styles.offer}>
@@ -115,14 +153,27 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </div>
 
                   <div className={styles.offerBody}>
+                    <ol className={styles.steps}>
+                      {linkSteps(hostName).map((step, index) => (
+                        <li key={step.title} className={styles.step}>
+                          <span className={styles.stepNumber}>{index + 1}</span>
+
+                          <div className={styles.stepText}>
+                            <h3 className={styles.stepTitle}>{step.title}</h3>
+
+                            <p className={styles.stepDetail}>{step.detail}</p>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+
                     <p className={styles.offerText}>
-                      Open the app on your phone, tap Scan and point it at this code. The phone
-                      appears here as soon as it is linked.
+                      Once linked, your phone appears on this page.
                     </p>
 
                     <p className={styles.caption}>
-                      Each code works once and expires at {formatCheckedAt(offer.expires_at)}. A
-                      fresh one takes its place.
+                      This code works once and expires at {formatCheckedAt(offer.expires_at)}. A new
+                      one replaces it then.
                     </p>
                   </div>
                 </div>
@@ -136,7 +187,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   <h2 className={styles.emptyTitle}>No phone linked</h2>
 
                   <p className={styles.emptyText} role="status">
-                    Preparing a code to scan with your phone.
+                    Getting a code for your phone…
                   </p>
                 </div>
               </section>
