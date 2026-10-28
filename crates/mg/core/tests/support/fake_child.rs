@@ -29,9 +29,6 @@ pub(crate) struct FakeApiState {
     /// the child in DKG for lifecycle tests that exercise interruption.
     pub complete_dkg: bool,
     pub consensus_running: bool,
-    /// Consensus sessions completed, served by `status` once consensus is
-    /// running.
-    pub session_count: u64,
     /// Served by `client_config` once consensus is running.
     pub client_config: Option<Value>,
     /// Served by `invite_code` once consensus is running, in place of the
@@ -157,17 +154,7 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
             let mut state = state.lock().unwrap();
             state.probe_calls += 1;
             if state.consensus_running {
-                Ok(json!({
-                    "server": "consensus_running",
-                    "federation": {
-                        "session_count": state.session_count,
-                        "status_by_peer": {},
-                        "peers_online": 0,
-                        "peers_offline": 0,
-                        "peers_flagged": 0,
-                        "scheduled_shutdown": null,
-                    },
-                }))
+                Ok(json!({ "server": "consensus_running", "federation": null }))
             } else {
                 Err(method_not_found())
             }

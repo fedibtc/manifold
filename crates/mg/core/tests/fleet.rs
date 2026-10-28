@@ -1263,7 +1263,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         } else {
             ReadinessOutcome::BitcoinSyncing
         },
-        seats: ReadinessOutcome::NotApplicable,
+        version: ReadinessOutcome::NotApplicable,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -1461,6 +1461,143 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     assert!(fleet.availability_snapshot().await.accepting_seats);
     let (_, seat_id) = create_free_seat(&fleet, 67).await;
     assert!(fleet.seat_by_id(&seat_id).is_some());
+    fleet.shutdown().await;
+}
+
+/// The readiness worker follows the setup-payment policy's minimum release:
+/// raising it above this release stops discovery and quoting at the next
+/// run, and lowering or removing it restores them. The MG still serves its
+/// seats meanwhile, so every one of those runs records an up uptime slot.
+#[tokio::test]
+async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::seat_readiness::{ReadinessProbe, run};
+    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+
+    /// Passing prerequisites, one run per step the test allows, each run in
+    /// the next uptime slot.
+    struct SteppedProbe {
+        slot: Arc<AtomicU64>,
+        steps: tokio::sync::mpsc::Receiver<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for SteppedProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            if self.steps.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
+            ReadinessReport {
+                checked_at_ms: self.slot.fetch_add(1, Ordering::SeqCst) + 1,
+                ..readiness(true)
+            }
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 31_500).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+
+    let policy = |min_mg_version: Option<&str>| {
+        let field = min_mg_version
+            .map(|version| format!(r#","min_mg_version":"{version}""#))
+            .unwrap_or_default();
+        AdmittedSetupPaymentFederations::parse(
+            format!(
+                r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    let first_slot = 3_000_000;
+    let slot = Arc::new(AtomicU64::new(first_slot));
+    let clock = {
+        let slot = slot.clone();
+        move || {
+            std::time::UNIX_EPOCH
+                + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
+        }
+    };
+    let (step, steps) = tokio::sync::mpsc::channel(1);
+    let (publish, policies) = tokio::sync::watch::channel(None);
+    let worker = tokio::spawn(run(
+        SteppedProbe {
+            slot: slot.clone(),
+            steps,
+        },
+        fleet.clone(),
+        policies,
+        clock,
+    ));
+
+    let this = env!("CARGO_PKG_VERSION");
+    let mut previous_day_score = None;
+    for (run_index, (min_mg_version, advertised)) in [
+        (None, true),
+        (Some("999.0.0"), false),
+        (Some(this), true),
+        (Some("999.0.0"), false),
+        (Some("0.0.1"), true),
+        (Some("999.0.0"), false),
+        (None, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Each policy ends the worker's wait, and the step lets one run go.
+        if run_index > 0 {
+            publish.send_replace(Some(policy(min_mg_version)));
+        }
+        step.send(()).await.unwrap();
+        let checked = first_slot + run_index as u64 + 1;
+        // The report is visible before its verdict is stored; the expected
+        // verdict alternates, so the previous run's cannot satisfy this wait.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fleet.seat_readiness().map(|report| report.checked_at_ms) != Some(checked)
+                || fleet.ready_for_new_seats().await != advertised
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{min_mg_version:?}: the run's verdict was not applied"));
+        let report = fleet.seat_readiness().unwrap();
+        assert_eq!(
+            report.version == ReadinessOutcome::MgVersionTooOld,
+            !advertised,
+            "{min_mg_version:?}"
+        );
+        assert_eq!(
+            host.advertisement().await.is_some(),
+            advertised,
+            "{min_mg_version:?}"
+        );
+        assert_eq!(
+            fleet.quote_offer().await.is_some(),
+            advertised,
+            "{min_mg_version:?}"
+        );
+        // An up slot raises the persisted score; a down one would lower it.
+        let day = fleet.uptime().await.unwrap().day;
+        if let Some(previous) = previous_day_score {
+            assert!(day > previous, "{min_mg_version:?}: {day} after {previous}");
+        }
+        previous_day_score = Some(day);
+    }
+    worker.abort();
     fleet.shutdown().await;
 }
 
@@ -2458,103 +2595,6 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(replacement.state().probe_calls, 1);
     assert_eq!(spawner.spawn_count(), spawns + 1);
-    fleet.shutdown().await;
-}
-
-/// A formed seat serves its federation only while its consensus advances:
-/// an answering API is not enough, and a respawned child does not restart
-/// the stall limit.
-#[tokio::test]
-async fn a_seat_serves_only_while_its_consensus_advances() {
-    let temp = TempDir::new().unwrap();
-    let mut config = config(&temp, 1, 31_400).await;
-    config.respawn.initial_backoff = Duration::from_millis(10);
-    config.respawn.consensus_stall_after = Duration::from_millis(1500);
-    let invite = fixture_invite_code(&fixture_client_config(), 0);
-    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
-        vec![],
-        vec![FakeDkgStep::Message(ChildMessage::Hello {
-            proto: PROTOCOL_VERSION,
-            code_version: "fake-fedimintd".to_owned(),
-            state: ChildState::AlreadyConfigured {
-                invite_code: invite,
-            },
-        })],
-    ]]));
-    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
-    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
-    let (_, seat_id) = create_free_seat(&fleet, 145).await;
-    let seat = fleet.seat_by_id(&seat_id).unwrap();
-    // A seat without a federation has nothing to serve.
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::NotApplicable);
-
-    // Formation long after the seat started still gets the full limit.
-    tokio::time::sleep(Duration::from_millis(1600)).await;
-    let fake = fleet
-        .form_fake_child(
-            &seat_id,
-            FakeApiState {
-                session_count: 5,
-                ..running_federation(0, None)
-            },
-        )
-        .await;
-    seat.watchdog_tick_for_test().await;
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
-
-    // Healthy, but stuck in one session past the limit.
-    tokio::time::sleep(Duration::from_millis(1600)).await;
-    seat.watchdog_tick_for_test().await;
-    assert!(matches!(
-        seat.report().await.unwrap(),
-        SeatReport::Active {
-            health: SeatHealth::Healthy,
-            ..
-        }
-    ));
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
-
-    // A completed session restarts the limit.
-    fake.modify_state(|state| state.session_count = 6);
-    seat.watchdog_tick_for_test().await;
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
-    tokio::time::sleep(Duration::from_millis(1600)).await;
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
-
-    // fedimintd exits after its session timeout and is respawned; the
-    // replacement answers at once, still in the same session.
-    let spawns = spawner.spawn_count();
-    fake.exit(255);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while spawner.spawn_count() == spawns {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the exited child is respawned");
-    let replacement = fleet
-        .configure_fake_child(
-            &seat_id,
-            FakeApiState {
-                session_count: 6,
-                ..running_federation(0, None)
-            },
-        )
-        .await;
-    seat.watchdog_tick_for_test().await;
-    seat.watchdog_tick_for_test().await;
-    assert!(matches!(
-        seat.report().await.unwrap(),
-        SeatReport::Active {
-            health: SeatHealth::Healthy,
-            ..
-        }
-    ));
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::SeatsNotServing);
-
-    replacement.modify_state(|state| state.session_count = 7);
-    seat.watchdog_tick_for_test().await;
-    assert_eq!(fleet.seats_outcome(), ReadinessOutcome::Pass);
     fleet.shutdown().await;
 }
 

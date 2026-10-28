@@ -88,8 +88,22 @@ impl Default for MinUptimePercent {
 /// SemVer release of the Manifold Guardian daemon.
 ///
 /// Parsing is the validity gate; the wire representation is a string.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+///
+/// Deliberately not `Ord`: `semver::Version`'s ordering also ranks build
+/// metadata, which SemVer precedence ignores. Compare releases with
+/// [`MgVersion::is_older_than`]; equality stays exact, so a changed build
+/// still reads as a changed policy.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct MgVersion(semver::Version);
+
+impl MgVersion {
+    /// Whether this release has lower SemVer precedence than `other`:
+    /// pre-releases rank below their release, build metadata is ignored.
+    #[must_use]
+    pub fn is_older_than(&self, other: &Self) -> bool {
+        self.0.cmp_precedence(&other.0) == core::cmp::Ordering::Less
+    }
+}
 
 impl FromStr for MgVersion {
     type Err = semver::Error;
@@ -191,6 +205,12 @@ pub struct SetupPaymentFederationsContent {
     /// ([`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_transfer: Option<bool>,
+
+    /// Oldest Manifold Guardian release that may advertise new seats.
+    /// Optional on the wire: absent means no minimum. An MG below it keeps
+    /// running its seats but stops selling new ones until it is updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_mg_version: Option<MgVersion>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -209,6 +229,7 @@ pub struct AdmittedSetupPaymentFederations {
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
     guardian_transfer: Option<bool>,
+    min_mg_version: Option<MgVersion>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -221,7 +242,8 @@ impl AdmittedSetupPaymentFederations {
     /// Returns an error for oversized or malformed content, excessive entries,
     /// invalid, oversized, or secret-bearing invites, duplicate derived
     /// federation IDs, a minimum fee rate above the payer's send-rate
-    /// ceiling, or a minimum uptime above 100%.
+    /// ceiling, a minimum uptime above 100%, or a minimum MG release above
+    /// the latest one.
     pub fn parse(raw_content: &[u8]) -> Result<Self, SetupPaymentFederationsContentError> {
         if raw_content.len() > SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES {
             return Err(SetupPaymentFederationsContentError::ContentTooLarge);
@@ -278,6 +300,13 @@ impl AdmittedSetupPaymentFederations {
         }
 
         let mg_version = content.mg_version;
+        if content
+            .min_mg_version
+            .as_ref()
+            .is_some_and(|minimum| mg_version.is_older_than(minimum))
+        {
+            return Err(SetupPaymentFederationsContentError::MinMgVersionAboveLatest);
+        }
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
             if invite_code.0.is_empty() {
@@ -309,6 +338,7 @@ impl AdmittedSetupPaymentFederations {
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
             guardian_transfer: content.guardian_transfer,
+            min_mg_version: content.min_mg_version,
         })
     }
 
@@ -395,6 +425,13 @@ impl AdmittedSetupPaymentFederations {
     pub fn guardian_transfer(&self) -> Option<bool> {
         self.guardian_transfer
     }
+
+    /// Return the oldest MG release that may advertise new seats, or `None`
+    /// when the event sets no minimum.
+    #[must_use]
+    pub fn min_mg_version(&self) -> Option<&MgVersion> {
+        self.min_mg_version.as_ref()
+    }
 }
 
 /// Failure while parsing or semantically admitting publication content.
@@ -437,6 +474,10 @@ pub enum SetupPaymentFederationsContentError {
 
     /// A published minimum uptime is above 100%, which no MG can reach.
     MinUptimeTooHigh,
+
+    /// The published minimum MG release is above the latest release the
+    /// same event names, which no MG can run.
+    MinMgVersionAboveLatest,
     /// An absence limit must allow a positive amount of time.
     ZeroOfflineDuration,
 }
@@ -468,6 +509,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             Self::ZeroOfflineDuration => "guardian absence limit must be positive",
             Self::MinUptimeTooHigh => {
                 "setup-payment federation set sets a minimum uptime above 100%"
+            }
+            Self::MinMgVersionAboveLatest => {
+                "setup-payment federation set sets a minimum MG release above the latest one"
             }
         };
         formatter.write_str(message)

@@ -142,7 +142,19 @@ replacement ordering as the new shared high-water mark.
   it computes its memory seat limit, from 256 to 16,384. Optional: absent
   means 1,229 (about 1.2 GiB);
 - `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
-  Optional: absent means 12; and
+  Optional: absent means 12;
+- `min_mg_version`, the oldest Manifold Guardian release that may advertise
+  new seats, as a SemVer string no newer than `fman_version` by SemVer
+  precedence. Optional: absent or `null` means no minimum, so a later
+  publication that omits it or sets `null` lifts an earlier minimum. An MG
+  whose release has lower precedence fails its readiness version check
+  ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)):
+  it stops advertising and quoting new seats and keeps running its seats,
+  and the check does not mark uptime down. A value that is neither `null` nor
+  a SemVer string, or one newer than `fman_version`, rejects the publication like any
+  other invalid field, so consumers keep the policy they hold; the publisher
+  refuses to sign it. MG and FA releases from 0.1.1 on admit unknown fields
+  and ignore it, so a 0.1.8 MG keeps advertising; and
 - `guardian_transfer`, a boolean that lets MGs start new guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
   Optional: absent means the Manifold environment's default, on in
@@ -194,7 +206,10 @@ Admission performs all of these checks before the set influences policy:
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` outside 256 to 16,384 or a
     `max_seats_per_mg` above 256;
-13. reject a `min_uptime_percent` window above 100, which no MG can reach.
+13. reject a `min_uptime_percent` window above 100, which no MG can reach;
+14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
+    that has higher SemVer precedence than `fman_version`, which no MG could
+    run.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
@@ -219,6 +234,14 @@ event. After restart it statically revalidates that trusted stored event before
 using it as the opaque high-water mark. An event below that mark cannot replace
 it after restart or relay change. Re-admitting the identical event is idempotent
 even if the local clock moved backwards.
+
+A release retains content it does not interpret, so a stored event can still
+authenticate but fail a later release's content admission, for example a
+`min_mg_version` that is not SemVer, retained by a release that ignored the
+field. MG then starts with no admitted policy, as before its first admission,
+keeps the stored event as the high-water mark, and admits the next higher
+event that passes. Only authentication failures stop startup (see rotation
+below).
 
 Events do not expire. The last admitted event remains authoritative until a
 higher event is admitted. This keeps publisher, relay, network, or clock outages

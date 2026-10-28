@@ -437,6 +437,68 @@ fn setup_payment_admission_retains_only_the_highest_admitted_event() {
     .expect_err("stored event from a previous publisher must not restore");
 }
 
+/// An older release retains content it does not interpret, such as a
+/// `min_mg_version` that is not SemVer. After an upgrade that event no longer
+/// admits; the MG must still start, with no policy, keep the event as its
+/// high-water mark, and take the next higher publication that passes.
+#[test]
+fn a_retained_policy_this_release_rejects_loads_as_none_and_still_bounds_replacement() {
+    let keys = Keys::generate();
+    let signed = |created_at: u64, min_mg_version: &str| {
+        EventBuilder::new(
+            nostr_sdk::Kind::Custom(
+                fedi_decentralized_nostr::setup_payment_federations::
+                    SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
+            ),
+            format!(
+                r#"{{"version":1,"fman_version":"0.1.9","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","min_mg_version":{min_mg_version}}}"#
+            ),
+        )
+        .tag(nostr_sdk::Tag::identifier(
+            fedi_decentralized_nostr::setup_payment_federations::SETUP_PAYMENT_FEDERATIONS_D_TAG,
+        ))
+        .custom_created_at(nostr_sdk::Timestamp::from_secs(created_at))
+        .sign_with_keys(&keys)
+        .unwrap()
+    };
+    let stored = signed(200, r#""0.1""#).as_json();
+    let now = nostr_sdk::Timestamp::from_secs(1_000);
+
+    let startup = admit(Some(stored.clone()), keys.public_key(), Vec::new(), now)
+        .expect("an authentic stored event this release rejects does not stop startup");
+    assert!(startup.admitted.is_none());
+    assert!(
+        startup.retain.is_none(),
+        "the stored event stays the high-water mark"
+    );
+
+    let older = signed(199, r#""0.1.8""#);
+    let rolled_back = admit(Some(stored.clone()), keys.public_key(), vec![older], now).unwrap();
+    assert!(
+        rolled_back.admitted.is_none(),
+        "a publication below the stored one must not replace it"
+    );
+
+    let newer = signed(201, r#""0.1.9""#);
+    let replaced = admit(
+        Some(stored.clone()),
+        keys.public_key(),
+        vec![newer.clone()],
+        now,
+    )
+    .unwrap();
+    assert_eq!(replaced.admitted.unwrap().event().id, newer.id);
+    let (retained, _) = replaced.retain.expect("the newer publication is retained");
+    assert_eq!(
+        serde_json::from_str::<Event>(&retained).unwrap().id,
+        newer.id
+    );
+
+    // Authentication still fails closed.
+    admit(Some(stored), Keys::generate().public_key(), Vec::new(), now)
+        .expect_err("a stored event from another publisher must not load");
+}
+
 /// A completed read that finds nothing is a different fact from not having
 /// looked. The dashboard writes different sentences for the two, so the
 /// projection has to tell them apart.

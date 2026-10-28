@@ -1,7 +1,7 @@
 import type { ReadinessReport } from '@operator-ui/types';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { guidance, labels, outcomes } from '@/shared/utils/seatReadiness';
+import { guidance, labels, outcomes, updateGuidance } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
@@ -11,7 +11,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   relay: 'pass',
   discovery: 'not_applicable',
   bitcoin: 'pass',
-  seats: 'not_applicable',
+  version: 'not_applicable',
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
@@ -25,8 +25,8 @@ describe('SeatReadinessCard', () => {
 
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
     expect(screen.getByText('Not checked in this deployment.')).toBeTruthy();
-    // A host without formed seats is told so, not that the check is off.
-    expect(screen.getByText('This host has no formed seats to check.')).toBeTruthy();
+    // No published minimum is said as such, not as a check that is off.
+    expect(screen.getByText('No minimum set.')).toBeTruthy();
     expect(screen.getByText(/Last checked 2026-10-01 12:34 UTC/)).toBeTruthy();
   });
 
@@ -40,19 +40,24 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
     expect(screen.getByText('Bitcoin Core is still in initial block download.')).toBeTruthy();
     expect(screen.getByText(guidance.bitcoin)).toBeTruthy();
+    expect(screen.queryByText(updateGuidance, { exact: false })).toBeNull();
   });
 
-  it('should explain seats that are not serving their federations', () => {
+  it('should tell the host to update when its version is below the minimum', () => {
     render(
       <SeatReadinessCard
-        readiness={{ ready_for_new_seats: false, report: report({ seats: 'seats_not_serving' }) }}
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({ version: 'mg_version_too_old' })
+        }}
       />
     );
 
-    expect(screen.getByText(labels.seats)).toBeTruthy();
-    expect(screen.getByText(outcomes.seats_not_serving)).toBeTruthy();
-    expect(screen.getByText(guidance.seats)).toBeTruthy();
-    expect(screen.queryByText(guidance.bitcoin)).toBeNull();
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText(labels.version)).toBeTruthy();
+    expect(screen.getByText('Update required.')).toBeTruthy();
+    expect(screen.getByText(updateGuidance, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(guidance.uptime)).toBeNull();
   });
 
   it('should explain a closed gate whose only failure is uptime', () => {

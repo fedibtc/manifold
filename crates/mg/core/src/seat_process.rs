@@ -92,12 +92,6 @@ pub struct RespawnPolicy {
     /// long is killed and respawned. The API is local, so a long outage means
     /// the child is wedged rather than its peers being unreachable.
     pub unresponsive_restart_after: Duration,
-    /// A formed child that has completed no consensus session for this long
-    /// is not serving its federation, even while its local API answers. Twice
-    /// fedimintd's own session timeout: a slow but live federation finishes
-    /// each session within that timeout or fedimintd exits, so a healthy seat
-    /// never goes this long without progress.
-    pub consensus_stall_after: Duration,
 }
 
 impl Default for RespawnPolicy {
@@ -107,7 +101,6 @@ impl Default for RespawnPolicy {
             max_backoff: Duration::from_secs(60),
             backoff_reset_after: Duration::from_secs(60),
             unresponsive_restart_after: Duration::from_secs(15 * 60),
-            consensus_stall_after: 2 * crate::bundled_fedimintd::SESSION_TIMEOUT,
         }
     }
 }
@@ -569,13 +562,7 @@ async fn spawn_child(
         })?;
     command
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(child)))
-        .env("FM_DKG_CTRL", "1")
-        .env(
-            "FM_SESSION_TIMEOUT_SECS",
-            crate::bundled_fedimintd::SESSION_TIMEOUT
-                .as_secs()
-                .to_string(),
-        );
+        .env("FM_DKG_CTRL", "1");
     if local_e2e {
         // The bundled child deliberately starts from an empty environment.
         // Forward only the explicit harness marker so its module registry can

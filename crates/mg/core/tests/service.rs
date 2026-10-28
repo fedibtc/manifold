@@ -103,7 +103,7 @@ async fn rpc_with_network(
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::NotApplicable,
+            version: ReadinessOutcome::NotApplicable,
             uptime: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })

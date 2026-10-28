@@ -70,7 +70,7 @@ const READY: MockState['seatReadiness'] = {
   relay: 'pass',
   discovery: 'pass',
   bitcoin: 'pass',
-  seats: 'pass',
+  version: 'pass',
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -490,40 +490,17 @@ const builders = {
       bitcoin: 'bitcoin_syncing'
     }
   }),
-  // Seats crash-looping or stuck behind their federations close the gate
-  // at once, and the down slots lower the uptime scores.
-  'seats-not-serving': () => ({
+  // The published policy requires a newer release than this host runs.
+  'version-too-old': () => ({
     ...base(),
-    seats: ['seat-stalled-01', 'seat-stalled-02', 'seat-stalled-03'].map((seat_id, index) =>
-      seat({
-        seat_id,
-        report: {
-          state: 'active',
-          health: 'healthy',
-          phase: 'running',
-          invite_code: `fed1stalled${index}${'0'.repeat(51)}`
-        }
-      })
-    ),
-    paymentFederations: [
-      {
-        federation_id: FEDERATION_A,
-        accepted: true,
-        receivable: true,
-        wallet: walletStatus(100_000_000)
-      }
-    ],
+    seats: [],
+    paymentFederations: [],
     price: SEAT_PRICE_MSAT,
     onboarding: authorized,
     readyForNewSeats: false,
     seatReadiness: {
       ...READY,
-      seats: 'seats_not_serving',
-      uptime_comparison: {
-        scores: { '1d': 912, '7d': 975, '30d': 990 },
-        minimums: { '1d': 700, '7d': 900, '30d': 930 },
-        wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
-      }
+      version: 'mg_version_too_old'
     }
   }),
   'uptime-low': () => ({
@@ -805,8 +782,8 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
     affects: ['overview', 'health']
   },
-  'seats-not-serving': {
-    desc: 'Relay, discovery and Bitcoin pass, but most seats have completed no consensus session recently (crash-looping or stuck behind their federations). The daemon has stopped advertising and quoting new seats.',
+  'version-too-old': {
+    desc: 'Every prerequisite passes, but the setup-payment policy requires a newer release than this host runs, so the daemon has stopped advertising and quoting new seats until it is updated. Uptime is not affected.',
     affects: ['overview', 'health']
   },
   'uptime-low': {

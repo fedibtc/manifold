@@ -1,12 +1,20 @@
 //! The daemon's latest verdict on whether a new seat would be served.
 //!
-//! The daemon probes its prerequisites and hands each report to
-//! [`crate::fleet::Fleet::set_seat_readiness`], which gates admission on it.
+//! The daemon probes its prerequisites ([`ReadinessProbe`]) and [`run`] hands
+//! each report to [`crate::fleet::Fleet::set_seat_readiness`], which gates
+//! admission on it.
 //! Only fixed codes and this MG's own uptime figures cross this boundary: the
 //! report is shown to the operator, and the same values are shared as
 //! telemetry.
 
-use fedi_decentralized_domain::MinUptimePercent;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MgVersion, MinUptimePercent};
+use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
+use tokio::sync::watch;
+
+use crate::fleet::Fleet;
 
 /// One uptime slot: the daemon records one per readiness run, and runs at
 /// least once per slot while it is up.
@@ -27,8 +35,8 @@ pub enum ReadinessOutcome {
     BitcoinWrongNetwork,
     BitcoinSyncing,
     BitcoinNoFeeRate,
-    /// Most of this MG's formed seats are not serving their federations.
-    SeatsNotServing,
+    /// This MG's release is older than the setup-payment policy's minimum.
+    MgVersionTooOld,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -56,7 +64,7 @@ impl ReadinessOutcome {
             Self::BitcoinWrongNetwork => "bitcoin_wrong_network",
             Self::BitcoinSyncing => "bitcoin_syncing",
             Self::BitcoinNoFeeRate => "bitcoin_no_fee_rate",
-            Self::SeatsNotServing => "seats_not_serving",
+            Self::MgVersionTooOld => "mg_version_too_old",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -73,7 +81,8 @@ pub struct ReadinessReport {
     pub relay: ReadinessOutcome,
     pub discovery: ReadinessOutcome,
     pub bitcoin: ReadinessOutcome,
-    pub seats: ReadinessOutcome,
+    /// This MG's release against the setup-payment policy's minimum.
+    pub version: ReadinessOutcome,
     pub uptime: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
@@ -144,39 +153,33 @@ pub struct UptimeWaitSecs {
 
 impl ReadinessReport {
     pub fn ready(&self) -> bool {
-        self.prerequisites_passed() && self.uptime.passed()
+        self.prerequisites_passed() && self.version.passed() && self.uptime.passed()
     }
 
     /// Whether the probed prerequisites passed. These decide whether a
-    /// slot counts as up, so the uptime gate cannot keep itself closed.
+    /// slot counts as up, so the uptime gate cannot keep itself closed. The
+    /// version check is not one of them: an MG below the policy's minimum
+    /// release still serves its seats, so it is up.
     pub fn prerequisites_passed(&self) -> bool {
-        self.relay.passed()
-            && self.discovery.passed()
-            && self.bitcoin.passed()
-            && self.seats.passed()
+        self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
     }
 }
 
-/// The seats check over whether each formed seat is serving its federation.
-///
-/// A seat can stall because of its federation rather than this MG, so the
-/// check fails only when most seats are not serving: one bad federation does
-/// not close an MG whose other seats serve, while a host-wide fault that
-/// stalls them all does. With one seat, that seat decides. An MG without
-/// formed seats has nothing to check.
-pub fn seats_outcome(serving: impl IntoIterator<Item = bool>) -> ReadinessOutcome {
-    let (total, not_serving) = serving
-        .into_iter()
-        .fold((0_usize, 0_usize), |(total, not_serving), serving| {
-            (total + 1, not_serving + usize::from(!serving))
-        });
-    if total == 0 {
-        ReadinessOutcome::NotApplicable
-    } else if not_serving * 2 > total {
-        ReadinessOutcome::SeatsNotServing
-    } else {
-        ReadinessOutcome::Pass
+/// The version check: `current` against the policy's minimum release, as
+/// SemVer. Without a minimum the check does not apply.
+pub fn version_outcome(current: &MgVersion, minimum: Option<&MgVersion>) -> ReadinessOutcome {
+    match minimum {
+        None => ReadinessOutcome::NotApplicable,
+        Some(minimum) if current.is_older_than(minimum) => ReadinessOutcome::MgVersionTooOld,
+        Some(_) => ReadinessOutcome::Pass,
     }
+}
+
+/// This daemon's own release.
+pub fn this_mg_version() -> MgVersion {
+    env!("CARGO_PKG_VERSION")
+        .parse()
+        .expect("the workspace version is SemVer")
 }
 
 /// How much of the recent past this MG was up: exponential moving averages
@@ -290,6 +293,130 @@ impl Uptime {
             slot,
         })
     }
+}
+
+/// This MG's own prerequisites for a new seat: relay, discovery and Bitcoin.
+/// The daemon probes them against its endpoint and backend; the run sets the
+/// version and uptime outcomes.
+#[async_trait::async_trait]
+pub trait ReadinessProbe: Send {
+    async fn probe(&mut self) -> ReadinessReport;
+}
+
+const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Run until aborted: probe, record this uptime slot, apply the verdict to
+/// `fleet`, journal it, and wait for the next slot while ready or a minute
+/// while failing, or until the setup-payment policy changes. `clock` is the
+/// wall clock slots are counted in.
+pub async fn run(
+    mut probe: impl ReadinessProbe,
+    fleet: Arc<Fleet>,
+    mut setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    clock: impl Fn() -> SystemTime + Send,
+) {
+    let this_release = this_mg_version();
+    loop {
+        let mut report = probe.probe().await;
+        // Recording this slot also accounts for every slot since the last
+        // record, such as a restart's downtime.
+        let recorded_at = clock();
+        let recorded = match fleet
+            .record_uptime_slot(recorded_at, report.prerequisites_passed())
+            .await
+        {
+            Ok(scores) => Some(scores),
+            Err(error) => {
+                tracing::warn!(%error, "failed to record an uptime slot");
+                None
+            }
+        };
+        let scores = recorded.unwrap_or(UptimeScores {
+            day: 0.0,
+            week: 0.0,
+            month: 0.0,
+        });
+        let (min, version) = {
+            let policy = setup_payment_policy.borrow_and_update();
+            let policy = policy.as_ref();
+            (
+                policy.map_or_else(MinUptimePercent::default, |policy| {
+                    policy.min_uptime_percent()
+                }),
+                version_outcome(
+                    &this_release,
+                    policy.and_then(AdmittedSetupPaymentFederations::min_mg_version),
+                ),
+            )
+        };
+        report.version = version;
+        report.uptime = scores.outcome(min);
+        // The operator sees no figures rather than zeros it cannot trust.
+        report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
+        let ready = report.ready();
+        journal_readiness(&report, scores, min);
+        if let Err(error) = fleet.set_seat_readiness(report).await {
+            tracing::warn!(%error, "failed to apply the seat readiness verdict");
+        }
+        let wait = if ready {
+            until_slot_after(recorded_at, clock())
+        } else {
+            NOT_READY_INTERVAL
+        };
+        wait_for_next_run(wait, &mut setup_payment_policy).await;
+    }
+}
+
+/// Wait `wait`, or less if the setup-payment policy changes first, since a
+/// new policy can change the verdict (its minimum release or uptime). A
+/// policy that can no longer change only leaves the timer.
+async fn wait_for_next_run(
+    wait: Duration,
+    policy: &mut watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+) {
+    tokio::select! {
+        () = tokio::time::sleep(wait) => {}
+        Ok(()) = policy.changed() => {}
+    }
+}
+
+/// The time from now to just past the start of the slot after the one
+/// `recorded_at` falls in, so a ready MG runs once in every slot and misses
+/// none, even when recording crossed a boundary.
+fn until_slot_after(recorded_at: SystemTime, now: SystemTime) -> Duration {
+    let recorded = recorded_at
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_secs();
+    let next =
+        UNIX_EPOCH + Duration::from_secs((recorded / UPTIME_SLOT_SECS + 1) * UPTIME_SLOT_SECS + 1);
+    // A clock set back while recording must not stretch the wait past one
+    // slot, which would leave the last verdict standing unchecked.
+    next.duration_since(now)
+        .unwrap_or(Duration::ZERO)
+        .min(Duration::from_secs(UPTIME_SLOT_SECS + 1))
+}
+
+/// Journal one completed run for telemetry, with each score to the 0.1% the
+/// gate compares at.
+fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUptimePercent) {
+    let pct = |score: f64| (score * 1000.0).round() / 10.0;
+    tracing::info!(
+        safe_to_share = true,
+        ready = report.ready(),
+        relay = report.relay.as_str(),
+        discovery = report.discovery.as_str(),
+        bitcoin = report.bitcoin.as_str(),
+        version = report.version.as_str(),
+        uptime = report.uptime.as_str(),
+        uptime_1d_pct = pct(scores.day),
+        uptime_7d_pct = pct(scores.week),
+        uptime_30d_pct = pct(scores.month),
+        min_uptime_1d_pct = min.day,
+        min_uptime_7d_pct = min.week,
+        min_uptime_30d_pct = min.month,
+        "{SEAT_READINESS_EVENT}"
+    );
 }
 
 #[cfg(test)]
@@ -586,7 +713,7 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
+            version: ReadinessOutcome::NotApplicable,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
@@ -609,7 +736,7 @@ mod tests {
                 "relay": "pass",
                 "discovery": "pass",
                 "bitcoin": "pass",
-                "seats": "pass",
+                "version": "not_applicable",
                 "uptime": "uptime_7d_low",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
@@ -627,42 +754,172 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
+            version: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
         assert!(report.prerequisites_passed());
         assert!(!report.ready());
-        let stalled = ReadinessReport {
-            seats: ReadinessOutcome::SeatsNotServing,
+        // A release below the policy minimum closes the gate, but the MG
+        // still serves its seats, so its slots stay up.
+        let too_old = ReadinessReport {
+            version: ReadinessOutcome::MgVersionTooOld,
             uptime: ReadinessOutcome::Pass,
             ..report
         };
-        assert!(!stalled.prerequisites_passed());
-        assert!(!stalled.ready());
+        assert!(too_old.prerequisites_passed());
+        assert!(!too_old.ready());
+        assert!(
+            ReadinessReport {
+                version: ReadinessOutcome::Pass,
+                ..too_old
+            }
+            .ready()
+        );
     }
 
-    /// Most seats must be serving: neither any one stalled seat nor only all
-    /// of them decides.
+    /// Releases compare by SemVer precedence: 0.1.10 is newer than 0.1.9
+    /// although it sorts before it as text, a pre-release is older than its
+    /// release, and build metadata does not count.
     #[test]
-    fn the_seats_check_fails_only_when_most_seats_are_not_serving() {
-        use ReadinessOutcome::{NotApplicable, Pass, SeatsNotServing};
-        for (serving, expected) in [
-            (&[][..], NotApplicable),
-            (&[true][..], Pass),
-            (&[false][..], SeatsNotServing),
-            (&[true, false][..], Pass),
-            (&[false, false][..], SeatsNotServing),
-            (&[true, false, false][..], SeatsNotServing),
-            (&[false, true, true][..], Pass),
-            (&[true, true, false, false][..], Pass),
-            (&[true, false, false, false, true][..], SeatsNotServing),
+    fn the_version_check_compares_releases_against_the_minimum() {
+        let version = |v: &str| v.parse::<MgVersion>().unwrap();
+        let minimum = version("0.1.9");
+        for (current, expected) in [
+            ("0.1.8", ReadinessOutcome::MgVersionTooOld),
+            ("0.1.9-rc.1", ReadinessOutcome::MgVersionTooOld),
+            ("0.1.9", ReadinessOutcome::Pass),
+            ("0.1.9+build.1", ReadinessOutcome::Pass),
+            ("0.1.10", ReadinessOutcome::Pass),
+            ("1.0.0", ReadinessOutcome::Pass),
         ] {
             assert_eq!(
-                seats_outcome(serving.iter().copied()),
+                version_outcome(&version(current), Some(&minimum)),
                 expected,
-                "{serving:?}"
+                "{current}"
             );
         }
+        assert_eq!(
+            version_outcome(&version("0.1.9"), Some(&version("0.1.9+build.1"))),
+            ReadinessOutcome::Pass
+        );
+        assert_eq!(
+            version_outcome(&version("0.0.1"), None),
+            ReadinessOutcome::NotApplicable
+        );
+        assert_eq!(this_mg_version().to_string(), env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The journaled run decodes as the telemetry collector reads it.
+    #[test]
+    fn a_journaled_run_decodes_as_the_shared_readiness_event() {
+        use fedi_decentralized_service_manifold_guardian::SeatReadinessEvent;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let subscriber =
+            tracing_subscriber::registry().with(safe_tracing::layer(directory.path()).unwrap());
+        let report = ReadinessReport {
+            checked_at_ms: 1,
+            relay: ReadinessOutcome::Pass,
+            discovery: ReadinessOutcome::NotApplicable,
+            bitcoin: ReadinessOutcome::Pass,
+            version: ReadinessOutcome::MgVersionTooOld,
+            uptime: ReadinessOutcome::WeekUptimeLow,
+            uptime_comparison: None,
+        };
+        let scores = UptimeScores {
+            day: 0.9944,
+            week: 0.881,
+            month: 0.95,
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            journal_readiness(&report, scores, MinUptimePercent::default());
+        });
+
+        let mut records = Vec::new();
+        for entry in std::fs::read_dir(directory.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                for line in std::fs::read_to_string(path).unwrap().lines() {
+                    records.push(serde_json::from_str::<serde_json::Value>(line).unwrap());
+                }
+            }
+        }
+        let [record] = records.as_slice() else {
+            panic!("expected one journaled run, got {records:?}");
+        };
+        assert_eq!(record["fields"]["message"], SEAT_READINESS_EVENT);
+        // The collector keeps only records whose timestamp parses as RFC 3339.
+        humantime::parse_rfc3339(record["timestamp"].as_str().unwrap()).unwrap();
+        let min = MinUptimePercent::default();
+        assert_eq!(
+            serde_json::from_value::<SeatReadinessEvent>(record["fields"].clone()).unwrap(),
+            SeatReadinessEvent {
+                ready: false,
+                relay: "pass".into(),
+                discovery: "not_applicable".into(),
+                bitcoin: "pass".into(),
+                version: Some("mg_version_too_old".into()),
+                uptime: Some("uptime_7d_low".into()),
+                uptime_1d_pct: Some(99.4),
+                uptime_7d_pct: Some(88.1),
+                uptime_30d_pct: Some(95.0),
+                min_uptime_1d_pct: Some(f64::from(min.day)),
+                min_uptime_7d_pct: Some(f64::from(min.week)),
+                min_uptime_30d_pct: Some(f64::from(min.month)),
+            }
+        );
+    }
+
+    /// A new policy ends the wait at once, so a changed minimum release takes
+    /// effect without waiting out the slot; a policy that can no longer
+    /// change leaves the timer running instead of spinning.
+    #[tokio::test]
+    async fn a_policy_change_ends_the_wait_for_the_next_run() {
+        let (sender, mut policy) = watch::channel(None);
+        let waiting = tokio::spawn(async move {
+            wait_for_next_run(Duration::from_secs(3600), &mut policy).await;
+            policy
+        });
+        tokio::task::yield_now().await;
+        sender.send_replace(None);
+        let mut policy = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("a policy change ends the wait")
+            .unwrap();
+
+        drop(sender);
+        let started = std::time::Instant::now();
+        wait_for_next_run(Duration::from_millis(200), &mut policy).await;
+        assert!(started.elapsed() >= Duration::from_millis(200));
+    }
+
+    /// The wait ends just past the start of the slot after the recorded one:
+    /// at once when recording crossed into it, and never more than one slot
+    /// when the clock was set back meanwhile.
+    #[test]
+    fn the_wait_ends_in_the_slot_after_the_recorded_one() {
+        let slot = Duration::from_secs(UPTIME_SLOT_SECS);
+        let second = Duration::from_secs(1);
+        let start = UNIX_EPOCH + slot * 3_000_000;
+        let recorded = start + Duration::from_secs(100);
+        assert_eq!(
+            until_slot_after(recorded, recorded),
+            slot - Duration::from_secs(100) + second
+        );
+        assert_eq!(
+            until_slot_after(recorded, start + slot + second * 5),
+            Duration::ZERO
+        );
+        assert_eq!(
+            until_slot_after(recorded, start + slot - second * 2),
+            second * 3
+        );
+        let set_back_an_hour = recorded - Duration::from_secs(3600);
+        assert_eq!(until_slot_after(recorded, set_back_an_hour), slot + second);
     }
 }

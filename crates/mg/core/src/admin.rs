@@ -827,7 +827,7 @@ pub fn onboarding_json(
     let update_required = directory
         .latest_mg_version
         .as_ref()
-        .is_some_and(|latest| current_mg_version < latest);
+        .is_some_and(|latest| current_mg_version.is_older_than(latest));
     // `checked_at` is present on every state that has one, and absent on the
     // two that do not: a dashboard must be able to say "not checked yet"
     // without reading a zero as a timestamp.

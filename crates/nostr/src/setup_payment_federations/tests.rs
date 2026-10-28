@@ -31,6 +31,7 @@ fn content(invites: &[&str]) -> String {
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
         guardian_transfer: None,
+        min_mg_version: None,
     })
     .expect("test content serializes")
 }
@@ -176,6 +177,51 @@ fn admits_unknown_fields_but_rejects_unknown_versions() {
             );
         }
     }
+}
+
+/// A newer signed publication replaces the minimum MG release: an explicit
+/// null removes it, as an absent field would, while a malformed value is
+/// rejected and leaves the earlier minimum in force.
+#[test]
+fn a_signed_update_replaces_the_minimum_mg_release() {
+    let keys = Keys::generate();
+    let signed = |created_at: u64, minimum: serde_json::Value| {
+        let mut policy: serde_json::Value = serde_json::from_str(&content(&[])).unwrap();
+        policy["min_mg_version"] = minimum;
+        // Sign raw JSON: the wire type would drop an explicit null.
+        EventBuilder::new(
+            Kind::from(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+            serde_json::to_string(&policy).unwrap(),
+        )
+        .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
+        .custom_created_at(Timestamp::from_secs(created_at))
+        .sign_with_keys(&keys)
+        .unwrap()
+    };
+    let admit = |event: &Event, current: Option<&AdmittedSetupPaymentFederationsEvent>| {
+        admit_setup_payment_federations_event(
+            event,
+            keys.public_key(),
+            Timestamp::from_secs(2_000),
+            current,
+        )
+    };
+
+    let enforced = admit(&signed(1_000, serde_json::json!("0.1.0")), None).unwrap();
+    assert_eq!(
+        enforced.set().min_mg_version().map(ToString::to_string),
+        Some("0.1.0".to_owned())
+    );
+
+    assert_eq!(
+        admit(&signed(1_001, serde_json::json!("0.1")), Some(&enforced)).unwrap_err(),
+        SetupPaymentFederationsEventError::Content(
+            fedi_decentralized_domain::SetupPaymentFederationsContentError::MalformedContent
+        )
+    );
+
+    let lifted = admit(&signed(1_002, serde_json::Value::Null), Some(&enforced)).unwrap();
+    assert_eq!(lifted.set().min_mg_version(), None);
 }
 
 #[test]
