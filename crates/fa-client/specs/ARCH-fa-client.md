@@ -438,7 +438,15 @@ with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
 submission; its confirmation in consensus ends the formation and publishes
-`FaStatus::Formed`. Reopening preserves these phases. A formation record that an
+`FaStatus::Formed`. Saving that target needs every MG running and attesting; a
+seat that answers `SeatUnavailable` while its guardian restarts is retried
+until the run deadline. Once the target is saved, resume reads consensus
+first and submits the target through each seat it can reach, without waiting
+for every MG. Unreachable, timed-out and restarting seats are retried until
+the deadline. After a consensus threshold of seats acknowledged the current
+base, the run dials no more seats and only reads consensus until the target
+appears or the deadline passes. Before that, a guardian-verification fee
+account refusal ends the run at once. Reopening preserves these phases. A formation record that an
 older build marked formed converts to the formed record when it loads.
 Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is

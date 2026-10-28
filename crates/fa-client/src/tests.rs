@@ -879,6 +879,9 @@ struct MgState {
     /// Wakes cancellation tests after a fake accepts a metadata proposal.
     meta_submission_changed: Notify,
     attestation_calls: AtomicUsize,
+    /// MG index -> attestation requests left that answer `SeatUnavailable`,
+    /// as while the seat's guardian process restarts.
+    unavailable_attestations: Mutex<HashMap<usize, usize>>,
     /// Replacement MG index -> original federation peer id it operates.
     attested_peer_overrides: Mutex<HashMap<usize, usize>>,
     /// MG index -> federation peer id, the position of its guardian code in
@@ -1628,6 +1631,17 @@ impl ManifoldGuardianService for TestMg {
         _request: SignedRequest<GetPeerAttestationRequest>,
     ) -> FmResult<GetPeerAttestationResponse> {
         self.state.attestation_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(left) = self
+            .state
+            .unavailable_attestations
+            .lock()
+            .expect("test lock")
+            .get_mut(&self.index)
+            && *left > 0
+        {
+            *left -= 1;
+            return Err(ManifoldGuardianError::SeatUnavailable);
+        }
         let foreign = self.index == 0 && self.state.attest_foreign_peer.load(Ordering::SeqCst);
         let wrong_fee_account =
             self.index == 0 && self.state.attest_wrong_fee_account.load(Ordering::SeqCst);
@@ -2095,6 +2109,9 @@ struct TestConsensusReader {
     failures: Arc<AtomicUsize>,
     /// Reads that still show the old metadata after enough votes were submitted.
     delayed_meta_reads: Arc<AtomicUsize>,
+    /// Reads that still lack the formation directory after enough votes were
+    /// submitted, as before the federation adopts them.
+    delayed_formation_reads: Arc<AtomicUsize>,
     offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
@@ -2116,6 +2133,7 @@ impl TestConsensusReader {
             guardian_reports: Arc::new(Mutex::new(None)),
             failures: Arc::new(AtomicUsize::new(0)),
             delayed_meta_reads: Arc::new(AtomicUsize::new(0)),
+            delayed_formation_reads: Arc::new(AtomicUsize::new(0)),
             offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
@@ -2340,6 +2358,12 @@ impl FederationConsensusReader for TestConsensusReader {
             if !fields.contains_key(fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY)
                 && let (Some(value), Some((send_ppm, recipients))) =
                     (self.agreed_value(), self.agreed_fee_policy())
+                && self
+                    .delayed_formation_reads
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                        reads.checked_sub(1)
+                    })
+                    .is_err()
             {
                 fields.insert(
                     fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
@@ -9209,7 +9233,17 @@ async fn a_timed_out_post_dkg_consensus_read_is_retried_within_the_run() {
 
 /// A formation stopped in `PublishingSeatBindings`, as when its run timed
 /// out before the metadata vote reached consensus, reopened on a new client.
+/// The earlier votes are gone, so the reopened run has to vote again.
 async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> TestClient {
+    let reopened = reopened_after_unconfirmed_votes(mg_state.clone()).await;
+    mg_state.meta_submissions.lock().unwrap().clear();
+    mg_state.fee_submissions.lock().unwrap().clear();
+    reopened
+}
+
+/// A formation stopped in `PublishingSeatBindings` after every seat voted,
+/// reopened on a new client. Consensus adopts the votes on its next read.
+async fn reopened_after_unconfirmed_votes(mg_state: Arc<MgState>) -> TestClient {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let reader = TestConsensusReader::new(mg_state.clone());
@@ -9232,7 +9266,7 @@ async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> Test
         formation(&reopened.status()).phase,
         FormationPhase::PublishingSeatBindings
     );
-    // Let the fake consensus adopt the submitted directory on the next read.
+    // Drop the forced value, so that the next read adopts the votes.
     *mg_state.meta_consensus_raw.lock().unwrap() = None;
     reopened
 }
@@ -9240,7 +9274,8 @@ async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> Test
 #[tokio::test]
 async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
     // On a poor network single MG connections fail intermittently. The seats
-    // exist, so one failed dial is retried instead of ending the run.
+    // exist, so a failed dial is retried in the next wave instead of ending
+    // the run, even while too few seats voted for consensus.
     let mg_state = Arc::new(MgState::default());
     let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
     let connects = mg_state.connect_calls.load(Ordering::SeqCst);
@@ -9261,7 +9296,8 @@ async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
 #[tokio::test]
 async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial() {
     // A dial that hangs until the request timeout must neither hold back the
-    // other seats' dials nor end the run.
+    // other seats' votes nor end the run. The other six seats are a consensus
+    // threshold, so the hung seat is not needed again.
     let mg_state = Arc::new(MgState::default());
     let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
     let next = mg_state
@@ -9281,8 +9317,8 @@ async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial()
     formed(&reopened.status());
     assert_eq!(
         mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
-        Some(next + 1),
-        "the hung dial was retried once"
+        Some(next),
+        "consensus adopted the vote without the hung seat"
     );
     let connected: Vec<usize> = effect_log
         .lock()
@@ -9293,12 +9329,210 @@ async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial()
             _ => None,
         })
         .collect();
-    let mut others: Vec<usize> = connected[..connected.len() - 1].to_vec();
+    let mut others = connected.clone();
     others.sort_unstable();
     assert_eq!(
-        (others, connected.last().copied()),
-        ((1..locators().len()).collect::<Vec<_>>(), Some(0)),
-        "every other seat connected while seat 0's first dial hung: {connected:?}"
+        others,
+        (1..locators().len()).collect::<Vec<_>>(),
+        "every other seat connected while seat 0's dial hung: {connected:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_resumes_without_every_mg() {
+    // Seven guardians need five matching votes. A proposal that consensus
+    // already carries needs no MG; an unpublished one needs only enough
+    // reachable voters.
+    for (already_adopted, offline) in [
+        (true, vec![0, 1, 2, 3, 4, 5, 6]),
+        (false, vec![0, 6]),
+        (false, vec![0, 3, 6]),
+    ] {
+        let mg_state = Arc::new(MgState::default());
+        let reopened = if already_adopted {
+            reopened_after_unconfirmed_votes(mg_state.clone()).await
+        } else {
+            reopened_while_publishing_seat_bindings(mg_state.clone()).await
+        };
+        let connects = mg_state.connect_calls.load(Ordering::SeqCst);
+        let attestations = mg_state.attestation_calls.load(Ordering::SeqCst);
+        let starts = mg_state.start_callbacks.lock().unwrap().len();
+        mg_state
+            .offline_indices
+            .lock()
+            .unwrap()
+            .extend(offline.iter().copied());
+
+        let result = reopened.resume_with_options(options()).await;
+
+        if offline.len() == 3 {
+            assert!(
+                matches!(
+                    &result,
+                    // A dial the deadline cuts off reports a timeout.
+                    Err(FaError::Mg(MgFailure {
+                        operation: MgOperation::Connect,
+                        cause: MgCause::Transport | MgCause::Timeout,
+                        ..
+                    }))
+                ),
+                "four votes cannot confirm a seven-guardian proposal: {result:?}"
+            );
+            assert_eq!(
+                formation(&reopened.status()).phase,
+                FormationPhase::PublishingSeatBindings
+            );
+            assert!(reopened.inner.store.backup_payload().await.is_err());
+            mg_state.offline_indices.lock().unwrap().remove(&3);
+            reopened.resume_with_options(options()).await.unwrap();
+        } else {
+            result.expect("a saved proposal does not need every MG");
+        }
+        formed(&reopened.status());
+        assert_eq!(
+            mg_state.attestation_calls.load(Ordering::SeqCst),
+            attestations,
+            "the saved proposal is replayed, not rebuilt"
+        );
+        assert_eq!(mg_state.start_callbacks.lock().unwrap().len(), starts);
+        if already_adopted {
+            assert_eq!(
+                mg_state.connect_calls.load(Ordering::SeqCst),
+                connects,
+                "consensus already carried the proposal"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_waits_for_adoption_after_a_threshold_voted() {
+    // Consensus adopts a vote some reads after the guardians accepted it.
+    // Once five of seven seats voted, one failing seat, whether offline or
+    // refusing, must not end the run before the federation adopts.
+    for refusing in [false, true] {
+        let mg_state = Arc::new(MgState::default());
+        let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+        if refusing {
+            mg_state
+                .meta_terminal_errors
+                .lock()
+                .unwrap()
+                .insert(0, ManifoldGuardianError::Unauthorized);
+        } else {
+            mg_state.offline_indices.lock().unwrap().insert(0);
+        }
+        reopened
+            .inner
+            .ports
+            .consensus_reader
+            .delayed_formation_reads
+            .store(3, Ordering::SeqCst);
+
+        reopened
+            .resume_with_options(options())
+            .await
+            .expect("six votes are adopted on a later read");
+
+        formed(&reopened.status());
+        assert_eq!(
+            mg_state.meta_submissions.lock().unwrap().len(),
+            locators().len() - 1
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_stops_dialing_once_a_threshold_voted() {
+    // Six of seven seats vote in the first wave while seat 0's dial fails.
+    // Consensus adopts only some reads later. A later dial to seat 0 would
+    // hang until the deadline, so after a threshold voted the run must only
+    // read consensus.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let next = mg_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *mg_state.fail_connect_on_attempt.lock().unwrap() = Some((0, next));
+    *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next + 1));
+    reopened
+        .inner
+        .ports
+        .consensus_reader
+        .delayed_formation_reads
+        .store(3, Ordering::SeqCst);
+    // A request bound longer than the run lets the hung dial reach the
+    // deadline.
+    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(1),
+        run_timeout: Duration::from_secs(2),
+        request_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+
+    reopened
+        .resume_with_options(options)
+        .await
+        .expect("six votes are adopted without another dial");
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
+        Some(next),
+        "seat 0 was dialed only in the first wave"
+    );
+}
+
+#[tokio::test]
+async fn dkg_recovery_retries_an_attestation_while_a_guardian_restarts() {
+    // A run that stopped at `DkgComplete` has no saved proposal yet, so it
+    // needs every seat's attestation. A guardian process that restarts
+    // answers `SeatUnavailable` for a while; that is retried, not fatal.
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.fail_next(usize::MAX);
+    let client = open_client_with_reader(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    assert_eq!(
+        formation(&client.status()).phase,
+        FormationPhase::DkgComplete
+    );
+    drop(client);
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    mg_state
+        .unavailable_attestations
+        .lock()
+        .unwrap()
+        .insert(3, 2);
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.unavailable_attestations.lock().unwrap()[&3],
+        0,
+        "both unavailable answers were retried"
+    );
+    assert_eq!(
+        mg_state.attestation_calls.load(Ordering::SeqCst),
+        locators().len() + 2
     );
 }
 
@@ -9316,9 +9550,10 @@ async fn a_post_dkg_resume_still_ends_at_the_deadline_when_an_mg_stays_unreachab
     assert!(
         matches!(
             result,
+            // A dial the deadline cuts off reports a timeout.
             Err(FaError::Mg(MgFailure {
                 operation: MgOperation::Connect,
-                cause: MgCause::Transport,
+                cause: MgCause::Transport | MgCause::Timeout,
                 ..
             }))
         ),

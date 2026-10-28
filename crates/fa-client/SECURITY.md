@@ -498,7 +498,12 @@ keeps managing the federation after such a vote even though the FA did not
 consent to it. A guardian vote is not FA consent, so this is a deliberate
 tradeoff: the FA cannot undo the vote, and refusing management would only
 block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
-still requires every manager's health and agreed invite.
+still requires every manager's health, agreed invite, and attestation before the
+complete metadata proposal is saved. Once that validated proposal is durable,
+resume reads consensus first and replays it through whichever managers are
+reachable. Only fresh consensus with the exact saved directory, fee recipients,
+and initial rate confirms publication; acknowledgements or manager liveness
+alone do not.
 Every read of a formed federation dials the saved invite. After it verifies
 consensus, recovery saves the invite of the verified config: the f+1 lowest
 guardians at their current endpoints. It is a dialing hint only, never a

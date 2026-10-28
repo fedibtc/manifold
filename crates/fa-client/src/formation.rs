@@ -3115,9 +3115,7 @@ where
             .await?;
         recovery.snapshot.phase = FormationPhase::DkgComplete;
         self.publish_snapshot(recovery.snapshot.clone());
-        self.publish_seat_bindings(sessions, recovery, fa_id, &invite, run)
-            .await?;
-        self.publish_formed(fa_id).await
+        self.resume_after_dkg(recovery, fa_id, run).await
     }
 
     async fn checkpoint_accepted_seat(
@@ -3889,27 +3887,33 @@ where
         }
     }
 
+    /// Finish setup after DKG from the saved invite and proposal.
+    ///
+    /// Freezing the proposal needs every seat's attestation, so it waits for
+    /// every MG to run. Once the proposal is saved, publication reads
+    /// consensus first and needs only enough reachable MGs to vote.
     async fn resume_after_dkg(
         &self,
         recovery: &mut ActiveFormationRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FaError::Storage("formed FA record contains no persisted invite".to_owned())
+        let invite = recovery.snapshot.invite_code.clone().ok_or_else(|| {
+            FaError::Storage("post-DKG FA record contains no persisted invite".to_owned())
         })?;
-        let manager_connections = self.seat_sessions(recovery, run).await?;
-        self.poll_until_running(&manager_connections, recovery, fa_id, run)
-            .await?;
-        let invite = self
-            .fetch_agreed_invite(&manager_connections, fa_id, run)
-            .await?;
-        if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
-            return Err(FaError::InvalidManifoldGuardians(
-                "formed federation identity changed during reconciliation".to_owned(),
-            ));
-        }
-        self.publish_seat_bindings(&manager_connections, recovery, fa_id, &invite, run)
+        let target = match recovery.formation_meta_target.clone() {
+            Some(target) => target,
+            None => {
+                let sessions = self.seat_sessions(recovery, run).await?;
+                self.poll_until_running(&sessions, recovery, fa_id, run)
+                    .await?;
+                self.freeze_formation_proposal(&sessions, recovery, fa_id, &invite, run)
+                    .await?
+            }
+        };
+        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+        self.publish_snapshot(recovery.snapshot.clone());
+        self.converge_formation_proposal(recovery, fa_id, &invite, &target, run)
             .await?;
         self.publish_formed(fa_id).await
     }
@@ -4095,108 +4099,123 @@ where
         }
     }
 
-    /// Publish the directory and initial fee policy as one formation vote.
-    async fn publish_seat_bindings(
+    /// Validate the complete proposal against consensus and save it before
+    /// any vote, so that every later run replays its exact bytes.
+    async fn freeze_formation_proposal(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
         recovery: &mut ActiveFormationRecovery,
         fa_id: FaId,
         invite: &InviteCode,
         run: DriverRun<'_>,
-    ) -> FaResult<()> {
-        // A new target must be validated against the final config before it is
-        // durable: recovery replays its exact bytes and cannot repair an
-        // invalid directory after pinning it. This read validates the signed
-        // directory only; recipient derivation no longer uses API keys.
-        let formation_config = if recovery.formation_meta_target.is_none() {
-            loop {
-                ensure_time_remaining(run.deadline, "reading the formation config")?;
-                match run
-                    .call_consensus_read("reading the formation config", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-                    })
-                    .await
-                {
-                    Ok(Ok(snapshot)) => break Some(snapshot.config),
-                    Ok(Err(_)) | Err(FaError::Timeout(_)) => {
-                        sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        } else {
-            None
-        };
-        let target = match recovery.formation_meta_target.clone() {
-            Some(target) => target,
-            None => {
-                let (bindings, binding_entries) = self
-                    .assemble_seat_bindings(sessions, recovery, fa_id, run)
-                    .await?;
-                let federation_id = invite_federation_id(invite)?;
-                let fa_account = self
-                    .inner
-                    .ports
-                    .fa_fee_account_provider
-                    .formed_federation_fee_account(&federation_id)
-                    .map_err(|_| {
-                        FaError::CapabilityUnavailable(crate::Capability::FeeArrangement)
-                    })?;
-                let guardian_verification_fee_account =
-                    self.inner.guardian_verification_fee_account.clone().ok_or(
-                        FaError::CapabilityUnavailable(crate::Capability::FeeArrangement),
-                    )?;
-                let recipients = canonical_fee_recipients(
-                    formation_config
-                        .as_ref()
-                        .expect("a new formation target has a downloaded config"),
-                    &bindings,
-                    fa_account.clone(),
-                    guardian_verification_fee_account.clone(),
-                )?;
-                let recipients =
-                    canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {
-                        FaError::InvalidManifoldGuardians(format!(
-                            "guardian-fee recipient accounts cannot form canonical metadata: {error}"
-                        ))
-                    })?;
-                let send_ppm = self
-                    .min_guardian_fee_ppm()
-                    .await
-                    .max(u64::from(GuardianFeePpm::MANIFOLD_DEFAULT.value()));
-                let fa_fee_account = GuardianFeeAccount::try_from(fa_account).map_err(|error| {
-                    FaError::InvalidIntent(format!("FA guardian-fee account is invalid: {error}"))
-                })?;
-                let guardian_verification_fee_account = GuardianFeeAccount::try_from(
-                    guardian_verification_fee_account,
-                )
-                .map_err(|_| FaError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
-                let target = FormationMetaTarget {
-                    seat_bindings: bindings,
-                    binding_entries,
-                    fa_fee_account,
-                    guardian_verification_fee_account,
-                    send_ppm,
-                    recipients,
-                };
-                run.call("recording the formation metadata target", || {
-                    Ok(self.inner.store.record_formation_meta_target(
-                        &recovery.snapshot.formation_id,
-                        target.clone(),
-                    ))
+    ) -> FaResult<FormationMetaTarget> {
+        // Recovery cannot repair an invalid directory after pinning it, so the
+        // signed directory is checked against the final config first.
+        // Recipient derivation does not use API keys.
+        let formation_config = loop {
+            ensure_time_remaining(run.deadline, "reading the formation config")?;
+            match run
+                .call_consensus_read("reading the formation config", || {
+                    Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await??;
-                recovery.formation_meta_target = Some(target.clone());
-                target
+                .await
+            {
+                Ok(Ok(snapshot)) => {
+                    verify_consensus_identity(&snapshot, invite)?;
+                    break snapshot.config;
+                }
+                Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                    sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                }
+                Err(error) => return Err(error),
             }
         };
+        let (bindings, binding_entries) = self
+            .assemble_seat_bindings(sessions, recovery, fa_id, run)
+            .await?;
+        let federation_id = invite_federation_id(invite)?;
+        let fa_account = self
+            .inner
+            .ports
+            .fa_fee_account_provider
+            .formed_federation_fee_account(&federation_id)
+            .map_err(|_| FaError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
+        let guardian_verification_fee_account =
+            self.inner.guardian_verification_fee_account.clone().ok_or(
+                FaError::CapabilityUnavailable(crate::Capability::FeeArrangement),
+            )?;
+        let recipients = canonical_fee_recipients(
+            &formation_config,
+            &bindings,
+            fa_account.clone(),
+            guardian_verification_fee_account.clone(),
+        )?;
+        let recipients = canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {
+            FaError::InvalidManifoldGuardians(format!(
+                "guardian-fee recipient accounts cannot form canonical metadata: {error}"
+            ))
+        })?;
+        let send_ppm = self
+            .min_guardian_fee_ppm()
+            .await
+            .max(u64::from(GuardianFeePpm::MANIFOLD_DEFAULT.value()));
+        let fa_fee_account = GuardianFeeAccount::try_from(fa_account).map_err(|error| {
+            FaError::InvalidIntent(format!("FA guardian-fee account is invalid: {error}"))
+        })?;
+        let guardian_verification_fee_account =
+            GuardianFeeAccount::try_from(guardian_verification_fee_account)
+                .map_err(|_| FaError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
+        let target = FormationMetaTarget {
+            seat_bindings: bindings,
+            binding_entries,
+            fa_fee_account,
+            guardian_verification_fee_account,
+            send_ppm,
+            recipients,
+        };
+        run.call("recording the formation metadata target", || {
+            Ok(self
+                .inner
+                .store
+                .record_formation_meta_target(&recovery.snapshot.formation_id, target.clone()))
+        })
+        .await??;
+        recovery.formation_meta_target = Some(target.clone());
+        Ok(target)
+    }
 
-        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-        self.publish_snapshot(recovery.snapshot.clone());
+    /// Publish the saved directory and initial fee policy as one formation
+    /// vote, until consensus carries them exactly.
+    ///
+    /// Each wave dials and submits through the seats that have not yet
+    /// acknowledged the current base, so an unreachable MG holds up only its
+    /// own vote. An acknowledgement is one guardian's vote, and consensus can
+    /// adopt the value some reads after the votes, so only the readback
+    /// completes publication. A seat that is unreachable, timed out, or
+    /// restarting is retried until the run deadline, which then returns its
+    /// failure. Once a consensus threshold of seats acknowledged the base, the
+    /// run only reads consensus until adoption or the deadline, with no further
+    /// dials. Below that threshold, a guardian-verification fee account refusal
+    /// ends the run at once, and any other seat failure after the next read.
+    async fn converge_formation_proposal(
+        &self,
+        recovery: &ActiveFormationRecovery,
+        fa_id: FaId,
+        invite: &InviteCode,
+        target: &FormationMetaTarget,
+        run: DriverRun<'_>,
+    ) -> FaResult<()> {
         let mut pending_error = None;
+        let mut retrying_error = None;
+        let mut acknowledged_base = None;
+        let mut acknowledged = BTreeSet::new();
 
         loop {
-            ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
+            if let Err(timeout) =
+                ensure_time_remaining(run.deadline, "reading the formation metadata base")
+            {
+                return Err(retrying_error.unwrap_or(timeout));
+            }
             let snapshot = match run
                 .call_consensus_read("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
@@ -4205,11 +4224,16 @@ where
             {
                 Ok(Ok(snapshot)) => snapshot,
                 Ok(Err(_)) | Err(FaError::Timeout(_)) => {
-                    sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    if let Err(timeout) =
+                        sleep_for_retry(run.deadline, run.options.poll_interval).await
+                    {
+                        return Err(retrying_error.unwrap_or(timeout));
+                    }
                     continue;
                 }
                 Err(error) => return Err(error),
             };
+            verify_consensus_identity(&snapshot, invite)?;
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
@@ -4232,28 +4256,54 @@ where
                 .await??;
                 return Ok(());
             }
-            if let Some(error) = pending_error.take() {
-                return Err(error);
-            }
 
             let expected_base = MetaConsensusBase::from_consensus(
                 snapshot_meta_consensus(&snapshot).map_err(FaError::InvalidManifoldGuardians)?,
             );
+            if acknowledged_base != Some(expected_base) {
+                acknowledged_base = Some(expected_base);
+                acknowledged.clear();
+            }
+            let threshold = usize::try_from(
+                federation_seats(&snapshot.config)
+                    .map_err(|error| {
+                        FaError::InvalidManifoldGuardians(format!(
+                            "formation federation config is not usable: {error}"
+                        ))
+                    })?
+                    .consensus_threshold(),
+            )
+            .map_err(|_| FaError::Storage("federation threshold does not fit usize".to_owned()))?;
+            if acknowledged.len() >= threshold {
+                // Enough votes for this base: only adoption is missing, so
+                // read again without dialing the seats that did not vote.
+                pending_error = None;
+                if let Err(timeout) = sleep_for_retry(run.deadline, run.options.poll_interval).await
+                {
+                    return Err(retrying_error.unwrap_or(timeout));
+                }
+                continue;
+            }
+            if let Some(error) = pending_error.take() {
+                return Err(error);
+            }
+
             let results = self
                 .submit_formation_meta_wave(
-                    sessions,
+                    recovery,
+                    &acknowledged,
                     fa_id,
                     expected_base,
-                    &target.binding_entries,
-                    &target.fa_fee_account,
-                    &target.guardian_verification_fee_account,
-                    target.send_ppm,
+                    target,
                     run,
                 )
                 .await;
-            for result in results {
+            let mut wave_retrying = None;
+            for (position, result) in results {
                 match result {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        acknowledged.insert(position);
+                    }
                     Err(FaError::Mg(MgFailure {
                         cause: MgCause::MetaConsensusChanged,
                         ..
@@ -4266,6 +4316,16 @@ where
                             ..
                         }),
                     ) => return Err(error),
+                    Err(
+                        error @ (FaError::Timeout(_)
+                        | FaError::Mg(MgFailure {
+                            cause: MgCause::Timeout | MgCause::Transport | MgCause::SeatUnavailable,
+                            ..
+                        })),
+                    ) => {
+                        log_mg_failure(&recovery.snapshot.formation_id, &error, "retried");
+                        wave_retrying.get_or_insert(error);
+                    }
                     Err(error) => {
                         log_mg_failure(
                             &recovery.snapshot.formation_id,
@@ -4276,7 +4336,61 @@ where
                     }
                 }
             }
-            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+            // A wave the deadline cut short reports the deadline, not the seat.
+            if Instant::now() < run.deadline {
+                retrying_error = wave_retrying;
+            }
+            if let Err(timeout) = sleep_for_retry(run.deadline, run.options.poll_interval).await {
+                return Err(retrying_error.unwrap_or(timeout));
+            }
+        }
+    }
+
+    /// Ask one running seat for its attestation. A seat whose guardian is
+    /// restarting answers `SeatUnavailable`; that is retried until the run
+    /// deadline.
+    async fn get_peer_attestation_with_retry(
+        &self,
+        formation_id: &FormationId,
+        session: &SeatSession<MgClient<F::Client>>,
+        fa_id: FaId,
+        run: DriverRun<'_>,
+    ) -> FaResult<GetPeerAttestationResponse> {
+        loop {
+            ensure_time_remaining(run.deadline, "waiting for an MG attestation")?;
+            let request = GetPeerAttestationRequest {
+                ts: Timestamp(now_secs()?),
+                fa_id,
+                seat_id: session.seat_id.clone(),
+            };
+            let request = run
+                .construct("signing GetPeerAttestation request", || self.sign(&request))
+                .await?;
+            match session
+                .client
+                .call(run, MgOperation::GetPeerAttestation, |client| {
+                    client.get_peer_attestation(request)
+                })
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(
+                    error @ FaError::Mg(MgFailure {
+                        cause: MgCause::SeatUnavailable,
+                        ..
+                    }),
+                ) => {
+                    sleep_for_retry(run.deadline, run.options.poll_interval)
+                        .await
+                        .map_err(|_| {
+                            session
+                                .client
+                                .failure(MgOperation::GetPeerAttestation, MgCause::Timeout)
+                        })?;
+                    log_mg_failure(formation_id, &error, "retried");
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -4288,6 +4402,7 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<(String, Vec<FormationSeatBinding>)> {
+        let formation_id = &recovery.snapshot.formation_id;
         let mut pending = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
             let expected_guardian_fee_account = recovery.seats[position]
@@ -4300,19 +4415,8 @@ where
                 })?;
 
             pending.push(async move {
-                let request = GetPeerAttestationRequest {
-                    ts: Timestamp(now_secs()?),
-                    fa_id,
-                    seat_id: session.seat_id.clone(),
-                };
-                let request = run
-                    .construct("signing GetPeerAttestation request", || self.sign(&request))
-                    .await?;
-                let response = session
-                    .client
-                    .call(run, MgOperation::GetPeerAttestation, |client| {
-                        client.get_peer_attestation(request)
-                    })
+                let response = self
+                    .get_peer_attestation_with_retry(formation_id, session, fa_id, run)
                     .await?;
                 if response
                     .mg_peer_attestation
@@ -4346,44 +4450,62 @@ where
         Ok((bindings, entries))
     }
 
+    /// Submit the saved proposal through every seat not in `acknowledged`.
+    /// Each seat is dialed on its own, so an unreachable MG fails only its
+    /// own result. Results carry the seat's position in `recovery.seats`.
     async fn submit_formation_meta_wave(
         &self,
-        sessions: &[SeatSession<MgClient<F::Client>>],
+        recovery: &ActiveFormationRecovery,
+        acknowledged: &BTreeSet<usize>,
         fa_id: FaId,
         expected_base: MetaConsensusBase,
-        seat_bindings: &[FormationSeatBinding],
-        fa_fee_account: &GuardianFeeAccount,
-        guardian_verification_fee_account: &GuardianFeeAccount,
-        send_ppm: u64,
+        target: &FormationMetaTarget,
         run: DriverRun<'_>,
-    ) -> Vec<FaResult<ProposeFormationMetaResponse>> {
+    ) -> Vec<(usize, FaResult<ProposeFormationMetaResponse>)> {
         let mut pending = FuturesUnordered::new();
-        for session in sessions {
+        for (position, seat) in recovery.seats.iter().enumerate() {
+            if acknowledged.contains(&position) {
+                continue;
+            }
             pending.push(async move {
-                let request = ProposeFormationMetaRequest {
-                    ts: Timestamp(now_secs()?),
-                    fa_id,
-                    seat_id: session.seat_id.clone(),
-                    expected_base,
-                    seat_bindings: seat_bindings.to_vec(),
-                    fa_fee_account: fa_fee_account.clone(),
-                    guardian_verification_fee_account: guardian_verification_fee_account.clone(),
-                    send_ppm,
-                };
-                let request = run
-                    .construct("signing ProposeFormationMeta request", || {
-                        self.sign(&request)
-                    })
+                let result = async {
+                    let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
+                        FaError::Storage(format!("FA seat row {position} has no seat id"))
+                    })?;
+                    let client = MgClient::connect(
+                        self.inner.ports.mg_connector.as_ref(),
+                        &seat.progress.locator,
+                        run,
+                    )
                     .await?;
-                session
-                    .client
-                    .call(run, MgOperation::ProposeFormationMeta, |client| {
-                        client.propose_formation_meta(request)
-                    })
-                    .await
+                    let request = ProposeFormationMetaRequest {
+                        ts: Timestamp(now_secs()?),
+                        fa_id,
+                        seat_id,
+                        expected_base,
+                        seat_bindings: target.binding_entries.clone(),
+                        fa_fee_account: target.fa_fee_account.clone(),
+                        guardian_verification_fee_account: target
+                            .guardian_verification_fee_account
+                            .clone(),
+                        send_ppm: target.send_ppm,
+                    };
+                    let request = run
+                        .construct("signing ProposeFormationMeta request", || {
+                            self.sign(&request)
+                        })
+                        .await?;
+                    client
+                        .call(run, MgOperation::ProposeFormationMeta, |client| {
+                            client.propose_formation_meta(request)
+                        })
+                        .await
+                }
+                .await;
+                (position, result)
             });
         }
-        let mut results = Vec::with_capacity(sessions.len());
+        let mut results = Vec::with_capacity(pending.len());
         while let Some(result) = pending.next().await {
             results.push(result);
         }
