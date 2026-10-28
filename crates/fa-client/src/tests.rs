@@ -8223,14 +8223,13 @@ async fn a_formation_without_a_prepared_backup_records_a_publishable_generation(
         .await
         .unwrap();
 
-    let (stored, confirmed_meta) = client
+    let stored = client
         .inner
         .store
         .formed_federation_payload(TestIdentity::fa_id())
         .await
         .unwrap();
     assert_eq!(stored.snapshot_generation, 1);
-    assert!(confirmed_meta.is_some());
     let prepared = client.inner.store.backup_payload().await.unwrap();
     assert_eq!(prepared.payload.snapshot_generation, 1);
 }
@@ -8249,7 +8248,9 @@ fn edit_consensus_meta(state: &MgState, key: &str, value: Option<&str>) {
 }
 
 #[tokio::test]
-async fn a_formed_federation_keeps_its_fee_recipients_but_not_its_rate() {
+async fn a_formed_federation_accepts_changed_fee_metadata() {
+    // Guardians may vote new fee metadata. The recheck verifies the
+    // federation and its seats, not the economics agreed at formation.
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let state = Arc::new(MgState::default());
@@ -8268,26 +8269,16 @@ async fn a_formed_federation_keeps_its_fee_recipients_but_not_its_rate() {
     tokio::task::yield_now().await;
     let original = state.meta_consensus_raw.lock().unwrap().clone();
 
-    // A later rate change is ordinary maintenance.
-    edit_consensus_meta(&state, "fedi:guardian_fee_send_ppm", Some("12345"));
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        state.clone(),
-        MgConfig::given_away(),
-    )
-    .await;
-    client.resume().await.unwrap();
-    assert_eq!(
-        formed(&client.status()).freshness,
-        FormationFreshness::Fresh
-    );
-    drop(client);
-    tokio::task::yield_now().await;
-
-    for recipients in [Some(r#"{"recipients":[]}"#), None] {
+    for (key, value) in [
+        ("fedi:guardian_fee_send_ppm", Some("12345")),
+        (
+            "fedi:guardian_fee_remittance_account",
+            Some(r#"{"recipients":[]}"#),
+        ),
+        ("fedi:guardian_fee_remittance_account", None),
+    ] {
         *state.meta_consensus_raw.lock().unwrap() = original.clone();
-        edit_consensus_meta(&state, "fedi:guardian_fee_remittance_account", recipients);
+        edit_consensus_meta(&state, key, value);
         let client = open_client(
             database.clone(),
             payments.clone(),
@@ -8295,15 +8286,11 @@ async fn a_formed_federation_keeps_its_fee_recipients_but_not_its_rate() {
             MgConfig::given_away(),
         )
         .await;
-        let result = client.resume().await;
-        assert!(
-            matches!(&result, Err(FaError::InvalidManifoldGuardians(message))
-                if message.contains("fee recipients")),
-            "changed recipients {recipients:?} must fail the recheck, got {result:?}"
-        );
+        client.resume().await.unwrap();
         assert_eq!(
             formed(&client.status()).freshness,
-            FormationFreshness::Unsynced
+            FormationFreshness::Fresh,
+            "{key} = {value:?}"
         );
         drop(client);
         tokio::task::yield_now().await;

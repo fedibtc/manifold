@@ -371,16 +371,15 @@ against final configured endpoint keys, and derives
 the same recipients; FA waits for all three exact consensus fields and durably
 checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
-reconciliation requires the immutable directory and recipients to remain exact,
-accepts later rate changes, and needs no formation account provider.
+reconciliation checks the federation and its seats, not the agreed recipients,
+and needs no formation account provider.
 A formed federation has one durable record. Consensus confirmation replaces the
 formation record with it in one transaction, and a backup import writes the
 same record. On restart it starts unsynced. Fresh threshold consensus must
 match the saved federation identity and verified directory before it becomes
-fresh; its seats and any saved liquidity commitment must also match. A
-federation formed on this device also keeps the directory and fee recipients
-that consensus confirmed, and they must stay exact. A backup carries neither,
-so an import has no such check.
+fresh; its seats and any saved liquidity commitment must also match. The
+directory and fee recipients agreed at formation may change by guardian vote
+(see `SECURITY.md`).
 Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
 If the saved invite is unreachable, recovery tries alternative invites from

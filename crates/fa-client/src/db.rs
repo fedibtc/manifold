@@ -140,19 +140,6 @@ struct FormedFederationRecord {
     formation_id: FormationId,
     backup_eligible: bool,
     federation_name: Option<crate::FederationName>,
-    /// The directory and fee recipients that consensus confirmed when this
-    /// device formed the federation. A backup carries neither, so an import
-    /// has none. An older build drops the field when it rewrites the record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    confirmed_meta: Option<ConfirmedFormationMeta>,
-}
-
-/// The part of the formation metadata that stays fixed after formation.
-/// Reconciliation requires consensus to keep it exactly.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub(crate) struct ConfirmedFormationMeta {
-    pub(crate) seat_bindings: String,
-    pub(crate) recipients: String,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -1069,7 +1056,6 @@ impl FaStore {
                 formation_id,
                 backup_eligible: false,
                 federation_name: None,
-                confirmed_meta: None,
             },
         )
         .await;
@@ -1151,10 +1137,7 @@ impl FaStore {
     pub(crate) async fn formed_federation_payload(
         &self,
         fa_id: FaId,
-    ) -> FaResult<(
-        crate::backup::FaBackupPayload,
-        Option<ConfirmedFormationMeta>,
-    )> {
+    ) -> FaResult<crate::backup::FaBackupPayload> {
         let formed = self
             .database
             .begin_transaction_nc()
@@ -1167,7 +1150,7 @@ impl FaStore {
                 "formed FA federation belongs to another scoped root".to_owned(),
             ));
         }
-        Ok((formed.payload, formed.confirmed_meta))
+        Ok(formed.payload)
     }
 
     pub(crate) async fn record_backup_confirmation(
@@ -4165,9 +4148,6 @@ async fn record_formed_federation(
             "a formed FA federation record already exists".to_owned(),
         ));
     }
-    let target = formation
-        .formation_meta_target
-        .ok_or_else(|| FaError::Storage("formed FA formation has no metadata target".to_owned()))?;
     // No backup carries generation 0. A formation without a prepared backup
     // starts at 1, so an older build that reads this record as a restored
     // backup publishes a valid generation.
@@ -4191,10 +4171,6 @@ async fn record_formed_federation(
             formation_id: formation.formation_id,
             backup_eligible: true,
             federation_name: Some(formation.intent.federation_name),
-            confirmed_meta: Some(ConfirmedFormationMeta {
-                seat_bindings: target.seat_bindings,
-                recipients: target.recipients,
-            }),
         },
     )
     .await;
