@@ -263,7 +263,7 @@ async fn evaluator_reads_presence_support_and_readiness() {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::DiscoveryRecordMissing,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
+            version: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })
@@ -304,7 +304,7 @@ async fn evaluator_reads_presence_support_and_readiness() {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
+            version: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })
