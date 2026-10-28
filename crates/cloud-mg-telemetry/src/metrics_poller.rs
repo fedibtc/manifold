@@ -18,7 +18,7 @@ use fedi_iroh_rpc::{
 };
 
 use crate::{
-    metrics_observability::{AdmissionOutcome, MetricsObservability},
+    metrics_observability::{AdmissionOutcome, CollectionFailure, MetricsObservability},
     metrics_policy::{MetricsIdentity, MetricsPolicy},
     metrics_types::{MetricsCommit, SeatObservation},
     metrics_worker::{
@@ -343,10 +343,13 @@ impl MetricsPoller {
         target: &WorkTarget,
         deadline: tokio::time::Instant,
     ) -> MetricsCommit {
+        let mut failures = FailureRecorder::new(&self.observability, deadline);
         let Some(client) = self.connect(target, deadline).await else {
+            failures.record(CollectionFailure::Connect);
             return failed_commit();
         };
         let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+            failures.record(CollectionFailure::Deadline);
             return failed_commit();
         };
         let Ok(Ok(response)) = tokio::time::timeout(
@@ -357,9 +360,11 @@ impl MetricsPoller {
         )
         .await
         else {
+            failures.record(CollectionFailure::List);
             return failed_commit();
         };
         if response.seats.len() > MAX_SEATS {
+            failures.record(CollectionFailure::List);
             return failed_commit();
         }
         let listed: BTreeSet<String> = response
@@ -368,6 +373,7 @@ impl MetricsPoller {
             .map(|seat| seat.seat_id.to_string())
             .collect();
         if listed.len() != response.seats.len() {
+            failures.record(CollectionFailure::List);
             return failed_commit();
         }
         let mut snapshots = Vec::new();
@@ -384,6 +390,7 @@ impl MetricsPoller {
             };
             let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
             else {
+                failures.record(CollectionFailure::Deadline);
                 complete = false;
                 break;
             };
@@ -396,6 +403,7 @@ impl MetricsPoller {
             )
             .await
             else {
+                failures.record(CollectionFailure::Scrape);
                 complete = false;
                 continue;
             };
@@ -407,6 +415,7 @@ impl MetricsPoller {
                     .is_some_and(|value| value.starts_with("text/plain"))
                 || upstream.body.len() > MAX_GUARDIAN_METRICS_BODY_BYTES
             {
+                failures.record(CollectionFailure::Scrape);
                 complete = false;
                 continue;
             }
@@ -443,12 +452,14 @@ impl MetricsPoller {
                     .record(AdmissionOutcome::InvalidAdmittedDiscarded);
             }
             if tokio::time::Instant::now() >= deadline {
+                failures.record(CollectionFailure::Deadline);
                 complete = false;
                 break;
             }
             let mut bytes = 0usize;
             for sample in &admitted.samples {
                 if tokio::time::Instant::now() >= deadline {
+                    failures.record(CollectionFailure::Deadline);
                     complete = false;
                     break 'seats;
                 }
@@ -464,6 +475,7 @@ impl MetricsPoller {
                 continue;
             };
             if tokio::time::Instant::now() >= deadline {
+                failures.record(CollectionFailure::Deadline);
                 complete = false;
                 break;
             }
@@ -521,6 +533,37 @@ fn seat_federation(
     let mut canonical = String::new();
     let canonical = write!(canonical, "{invite}").is_ok().then_some(canonical);
     Some((invite.federation_id().to_string(), canonical))
+}
+
+/// Counts why one target poll lost data. A failure observed after the target
+/// budget ran out counts as `deadline`, once per poll, because the budget and
+/// not the stage ended it.
+struct FailureRecorder<'a> {
+    observability: &'a MetricsObservability,
+    deadline: tokio::time::Instant,
+    deadline_recorded: bool,
+}
+
+impl<'a> FailureRecorder<'a> {
+    fn new(observability: &'a MetricsObservability, deadline: tokio::time::Instant) -> Self {
+        Self {
+            observability,
+            deadline,
+            deadline_recorded: false,
+        }
+    }
+
+    fn record(&mut self, stage: CollectionFailure) {
+        if stage == CollectionFailure::Deadline || tokio::time::Instant::now() >= self.deadline {
+            if !self.deadline_recorded {
+                self.deadline_recorded = true;
+                self.observability
+                    .record_collection_failure(CollectionFailure::Deadline);
+            }
+        } else {
+            self.observability.record_collection_failure(stage);
+        }
+    }
 }
 
 fn fair_target_budget(cadence: Duration, concurrency: usize, targets: usize) -> Duration {

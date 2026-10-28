@@ -213,9 +213,11 @@ threshold. Grafana queries Prometheus (or its remote-write backend), never this
 `/metrics` endpoint.
 
 The collector exports
-`cloud_fman_telemetry_metrics_admission_total{event=...}` with exactly five
+`cloud_fman_telemetry_metrics_admission_total{event=...}` with exactly six
 events: `admitted`, `known_deny_discarded`, `unknown_discarded`,
-`invalid_admitted_discarded`, and `rejected`. Discard events mean the collector
+`invalid_admitted_discarded`, `rejected`, and `invalid_federation_invite`. The
+last one counts a listed seat that the collector skipped because it had no valid
+current federation invite. Discard events mean the collector
 kept independently valid allowlisted families while omitting the affected
 family; they do not expose the discarded family's name, labels, or values.
 `target_fresh=1` therefore means the target completed a bounded safe projection,
@@ -225,6 +227,16 @@ before changing the inventory. The collector also emits at most one fixed,
 `safe_to_share` projection-degradation warning per five minutes; it never puts
 the target, family, response, label, value, endpoint, or dependency error in that
 diagnostic.
+
+It also exports
+`cloud_fman_telemetry_metrics_collection_failures_total{stage=...}` with exactly
+four stages: `connect` (no connection to the MG), `list` (the seat listing
+failed or was malformed), `scrape` (one seat's scrape failed or returned an
+unusable response), and `deadline` (the target's poll budget ran out, counted
+at most once per target poll). A failure that happens after the budget ran out
+counts as `deadline`. Invite and policy failures are not counted here; they
+have their own admission events. When target snapshots stop advancing, the
+stage that increased shows where polls fail.
 
 ## Read-only staging comparison
 
