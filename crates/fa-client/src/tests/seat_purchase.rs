@@ -153,8 +153,9 @@ async fn open_purchase(client: &TestClient) -> crate::seat_purchase::StoredSeatP
 }
 
 #[tokio::test]
-async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
+async fn a_transfer_buys_its_seat_for_this_federation() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    let source_seat_id = formed(&client.status()).seats[MOVED].seat_id.clone();
     let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
 
     let transfer = start_transfer(&client, &mg_state).await;
@@ -181,8 +182,10 @@ async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
         funded_before + 1
     );
 
+    // The backup names no open move: its seats change only at the rebind.
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert_eq!(backup.seats[MOVED].seat_id, source_seat_id);
 }
 
 #[tokio::test]

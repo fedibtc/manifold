@@ -378,8 +378,9 @@ contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
 
 The encrypted Nostr backup is not a database copy. Its purpose-built payload
-contains only the formed invite, stable seat identities/locators, and an
-optional exact live-liquidity commitment. It excludes quotes, guardian codes,
+contains only the formed invite, stable seat identities/locators, the MG
+identities (and badge holders, when known) that hosted a peer before a
+guardian transfer moved it, and an optional exact live-liquidity commitment. It excludes quotes, guardian codes,
 fee accounts, payment and trust state, signed responses, history, secrets, and
 value. One CBOR item is fixed-frame padded and authenticated under FA-specific
 key/AAD domains; restore ignores invalid candidates and chooses the highest
