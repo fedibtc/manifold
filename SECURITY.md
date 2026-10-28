@@ -971,8 +971,8 @@ and unique derived federation IDs. Checking content without the signed event or
 accepting a self-selected author would let an attacker choose payment policy.
 Transport code must bound the complete event frame before this content-bounded
 admission helper performs cryptography. FA relay and CLI inputs cap a complete
-normalized event at 256 KiB; one relay query observes at most 16 candidates and
-retains at most 4 MiB.
+normalized event at 64 KiB; each common-set relay query observes at most 16 candidates and
+retains at most 1 MiB.
 
 FA must atomically retain the complete highest admitted event, statically
 revalidate that trusted record after restart, and use its opaque admitted value

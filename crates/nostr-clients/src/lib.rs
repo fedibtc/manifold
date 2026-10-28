@@ -29,4 +29,4 @@ pub use nostr_relay_client::NostrRelayClient;
 pub use peer_badge::NostrPeerBadgeClient;
 
 /// Maximum normalized JSON size of one untrusted role-fetched event.
-pub const ROLE_FETCHED_EVENT_MAX_BYTES: usize = 256 * 1024;
+pub const ROLE_FETCHED_EVENT_MAX_BYTES: usize = 64 * 1024;
