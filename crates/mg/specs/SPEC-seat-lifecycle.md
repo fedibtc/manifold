@@ -114,7 +114,7 @@ historical backups or source copies, and does not authorize general cleanup
 from formation, restart or decommission.
 
 Transfers are built in ordinary builds and start only while the setup-payment
-policy enables them. Recovery assumes latest published
+policy, or its per-environment default, enables them. Recovery assumes latest published
 backups and no stale local snapshots, as specified in SPEC-guardian-transfer.
 Publication confirmation does not establish freshness against hostile rollback.
 

@@ -190,5 +190,6 @@ destination ports. A second transfer exports these effective secrets, not the
 first destination's mnemonic-derived seat secrets.
 
 This is the approved imported-key recovery exception. Transfers start only while
-the signed setup-payment policy enables them, under the latest-backup and
+the signed setup-payment policy, or its per-environment default, enables
+them, under the latest-backup and
 no-stale-local-snapshot premises recorded in SPEC-guardian-transfer; imported-key authentication does not prove freshness.

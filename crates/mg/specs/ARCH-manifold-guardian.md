@@ -304,7 +304,8 @@ serialized decisions
 at startup and operator settings remain database-owned.
 
 An MG starts a new guardian transfer only while the setup-payment policy it
-holds enables transfer, in every environment; a transfer it already stored
+holds enables transfer, or, without a published flag, while its environment
+defaults to it (development and staging); a transfer it already stored
 always runs to completion through the machinery below
 ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md), which states this rule
 and the recovery premises).

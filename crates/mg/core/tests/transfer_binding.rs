@@ -285,11 +285,12 @@ async fn transfer_binding_shares_admission_with_ordinary_metadata_and_bounds_tar
     f.fleet.shutdown().await;
 }
 
-/// The setup-payment policy decides whether an MG starts a guardian
-/// transfer, in every environment. Without a policy that enables it, a
-/// production MG answers `PullSeat` and `TransferSeat` for a seat with no
-/// stored transfer `UnsupportedVerb`, even for the seat's own FA. With it,
-/// the same requests reach the verbs' own checks. `ReplaceSeatBinding` and
+/// The setup-payment policy's `guardian_transfer` flag decides whether an
+/// MG starts a guardian transfer; without the flag, the environment does
+/// (staging on, production off). When starting is off, an MG answers
+/// `PullSeat` and `TransferSeat` for a seat with no stored transfer
+/// `UnsupportedVerb`, even for the seat's own FA. When it is on, the same
+/// requests reach the verbs' own checks. `ReplaceSeatBinding` and
 /// `RemoveSeat` start nothing, so they always reach their own checks.
 #[tokio::test]
 async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
@@ -300,10 +301,26 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
         TransferSeatRequest,
     };
 
-    for (enabled, port) in [(false, 33_200), (true, 33_212)] {
+    for (environment, policy, enabled, port) in [
+        (ManifoldEnvironment::Production, None, false, 33_200),
+        (ManifoldEnvironment::Production, Some(None), false, 33_212),
+        (
+            ManifoldEnvironment::Production,
+            Some(Some(true)),
+            true,
+            33_224,
+        ),
+        (ManifoldEnvironment::Staging, None, true, 33_236),
+        (
+            ManifoldEnvironment::Staging,
+            Some(Some(false)),
+            false,
+            33_248,
+        ),
+    ] {
         let root = TempDir::new().unwrap();
         let mut config = config(&root, 1, port).await;
-        config.manifold_environment = ManifoldEnvironment::Production;
+        config.manifold_environment = environment;
         let fleet = Arc::new(open_fleet(config, Arc::new(NoWallet)).await.unwrap());
         let (fa_id, seat_id) = create_free_seat(&fleet, 212).await;
         // `create_free_seat` names the FA `test_key("fi")`.
@@ -315,10 +332,9 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
             secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[83; 32]).unwrap();
         let rpc = crate::service::ManifoldGuardianRpc::new(
             fleet.clone(),
-            if enabled {
-                transfer_policy()
-            } else {
-                tokio::sync::watch::channel(None).1
+            match policy {
+                Some(flag) => policy_with_guardian_transfer(flag),
+                None => tokio::sync::watch::channel(None).1,
             },
         );
         let grant = SeatTransferGrant {
@@ -399,9 +415,17 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
             };
             let starts = matches!(verb, "PullSeat" | "TransferSeat");
             if starts && !enabled {
-                assert_eq!(result, Err(refused), "{verb} without the policy");
+                assert_eq!(
+                    result,
+                    Err(refused),
+                    "{verb} in {environment:?}, {policy:?}"
+                );
             } else {
-                assert_ne!(result, Err(refused), "{verb}, policy enabled: {enabled}");
+                assert_ne!(
+                    result,
+                    Err(refused),
+                    "{verb} in {environment:?}, {policy:?}"
+                );
             }
         }
         fleet.shutdown().await;

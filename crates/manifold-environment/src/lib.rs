@@ -31,7 +31,7 @@ const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 /// Bump this after profiles are released whenever a public deployment mapping
 /// changes so independently released components can expose and compare what
 /// they use.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 9;
+pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 10;
 
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!
@@ -164,6 +164,21 @@ pub const DEV_NOSTR_RELAYS_ENV: &str = "MANIFOLD_DEV_NOSTR_RELAYS";
 pub const DEV_SETUP_PAYMENT_PUBLISHER_ENV: &str = "MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER";
 
 impl ManifoldEnvironment {
+    /// Whether MGs in this environment start guardian transfers, given the
+    /// `guardian_transfer` flag of the admitted setup-payment policy, if any.
+    ///
+    /// A published flag always wins. Without one, development and staging
+    /// start transfers and production does not, so test deployments need no
+    /// policy publication while production waits for Fedi to enable it. MG
+    /// and FA both resolve the flag here.
+    #[must_use]
+    pub fn guardian_transfer(self, published: Option<bool>) -> bool {
+        published.unwrap_or(match self {
+            Self::Development | Self::Staging => true,
+            Self::Production => false,
+        })
+    }
+
     /// Resolve this environment's public configuration, applying the
     /// development-only override environment variables.
     ///

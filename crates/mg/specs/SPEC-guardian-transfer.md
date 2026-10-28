@@ -7,9 +7,10 @@ transfer's seat statuses, the grant's validity rule, and `rebind_transferred_sea
 `fa-client` does not drive a transfer yet. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart. Whether an MG
 starts a new transfer is decided by the signed setup-payment policy it
-holds, in every Manifold environment (see
-[Enabling transfer](#enabling-transfer)). A release can therefore ship this
-code with transfer off, and Fedi turns it on by republishing the policy. Recovery assumes the latest published
+holds, with a per-environment default when the policy does not say (see
+[Enabling transfer](#enabling-transfer)). A production release therefore
+ships this code with transfer off, and Fedi turns it on by republishing the
+policy. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
 
@@ -25,22 +26,26 @@ vote, so no single implementation artifact can own it coherently.
 The setup-payment policy
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
 carries an optional `guardian_transfer` flag. An MG may start a new transfer
-only while the latest policy it admitted sets the flag to `true`. Without an
-admitted policy, or with a policy that omits the flag or sets it to `false`,
-it starts none. The MG reads the flag from the policy it holds when a
-request arrives; it keeps no copy. The same rule holds in development,
-staging and production, so those environments need a policy that sets the
-flag to run transfers.
+only while transfer is on: the latest policy it admitted sets the flag to
+`true`, or, without an admitted policy or a flag in it, its Manifold
+environment's default is on. Development and staging default to on and
+production to off
+([SPEC-manifold-environment](../../manifold-environment/specs/SPEC-manifold-environment.md)),
+so test deployments need no publication and production waits for Fedi to
+publish `true`. A published `false` turns transfer off in any environment.
+The MG reads the flag from the policy it holds when a request arrives; it
+keeps no copy. The FA resolves the same flag the same way before it buys a
+destination seat.
 
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never
 leaves a guardian half moved:
 
 - `PullSeat` to a seat that stores no transfer starts one, and is answered
-  `UnsupportedVerb` without the flag. A seat that stores a transfer answers
+  `UnsupportedVerb` while transfer is off. A seat that stores a transfer answers
   it as usual, which is a replay of the same move or a refusal of another.
 - `TransferSeat` to a source seat that has not stopped for a transfer starts
-  one, and is answered `UnsupportedVerb` without the flag. A source that
+  one, and is answered `UnsupportedVerb` while transfer is off. A source that
   already stopped for a transfer hands over the stopped guardian whatever
   the flag says. A source whose guardian was asked to stop but has not yet
   reached the session boundary still stops there, and then answers.

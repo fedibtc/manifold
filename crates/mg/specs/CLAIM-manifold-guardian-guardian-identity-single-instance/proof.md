@@ -6,7 +6,8 @@ its backup/startup paths, and the approved claim now includes the
 non-conflicting-FA premise. L1/L4/L6 and the conclusion do not cover those paths.
 This maintenance does not verify the expanded claim, resolve hostile stale
 restore freshness, or constitute deployment approval. An MG starts a transfer only
-while the signed setup-payment policy enables it, in any environment, under
+while the signed setup-payment policy enables it, or, without a published
+flag, while its environment's default does, under
 the latest-backup/no-stale-local-snapshot premises. A transferred guardian keeps
 its consensus material and Iroh endpoint keys and runs under the destination's
 own `api_auth`; the native argument below does not cover that split.

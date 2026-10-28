@@ -472,23 +472,25 @@ fn unset_seat_limits_stay_off_the_wire() {
 }
 
 #[test]
-fn guardian_transfer_is_off_unless_the_policy_turns_it_on() {
+fn guardian_transfer_is_absent_unless_the_policy_sets_it() {
     let raw = |field: &str| {
         format!(
             r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert!(!admitted("").unwrap().guardian_transfer());
-    assert!(
-        !admitted(r#","guardian_transfer":false"#)
+    assert_eq!(admitted("").unwrap().guardian_transfer(), None);
+    assert_eq!(
+        admitted(r#","guardian_transfer":false"#)
             .unwrap()
-            .guardian_transfer()
+            .guardian_transfer(),
+        Some(false)
     );
-    assert!(
+    assert_eq!(
         admitted(r#","guardian_transfer":true"#)
             .unwrap()
-            .guardian_transfer()
+            .guardian_transfer(),
+        Some(true)
     );
     assert_eq!(
         admitted(r#","guardian_transfer":"yes""#),

@@ -185,8 +185,9 @@ pub struct SetupPaymentFederationsContent {
     pub max_seats_per_mg: Option<u32>,
 
     /// Whether MGs start new guardian transfers. Optional on the wire:
-    /// absent or `false`, no MG admits a new transfer. Transfers an MG already
-    /// stored run to completion either way
+    /// absent, the Manifold environment's default applies (on in development
+    /// and staging, off in production). Transfers an MG already stored run to
+    /// completion either way
     /// ([`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_transfer: Option<bool>,
@@ -207,7 +208,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
-    guardian_transfer: bool,
+    guardian_transfer: Option<bool>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -307,7 +308,7 @@ impl AdmittedSetupPaymentFederations {
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
-            guardian_transfer: content.guardian_transfer.unwrap_or(false),
+            guardian_transfer: content.guardian_transfer,
         })
     }
 
@@ -387,10 +388,11 @@ impl AdmittedSetupPaymentFederations {
         self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
     }
 
-    /// Return whether MGs start new guardian transfers. An event that omits
-    /// the field yields `false`.
+    /// Return the published guardian-transfer flag. `None` when the event
+    /// omits it; the Manifold environment then supplies the default
+    /// (`ManifoldEnvironment::guardian_transfer`).
     #[must_use]
-    pub fn guardian_transfer(&self) -> bool {
+    pub fn guardian_transfer(&self) -> Option<bool> {
         self.guardian_transfer
     }
 }

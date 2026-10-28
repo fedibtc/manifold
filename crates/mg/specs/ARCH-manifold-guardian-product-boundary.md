@@ -26,8 +26,8 @@ without refund. Production refuses the verb, so the asymmetric bargain above is
 unchanged wherever it is a bargain
 ([SPEC-fa-rpc](./SPEC-fa-rpc.md)). Guardian transfer
 ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)) is gated differently:
-the signed setup-payment policy, not the environment, decides whether an MG
-starts one.
+the signed setup-payment policy decides whether an MG starts one, and the
+environment only supplies the default when the policy does not say.
 
 ## Simpler mechanisms
 

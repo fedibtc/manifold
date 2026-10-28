@@ -145,7 +145,8 @@ replacement ordering as the new shared high-water mark.
   Optional: absent means 12; and
 - `guardian_transfer`, a boolean that lets MGs start new guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
-  Optional: absent means `false`. Transfers an MG already stored continue
+  Optional: absent means the Manifold environment's default, on in
+  development and staging and off in production. Transfers an MG already stored continue
   whatever it says. MG and FA releases from 0.1.1 on admit unknown fields
   and ignore it; only the initial release rejects a publication that sets
   it.
