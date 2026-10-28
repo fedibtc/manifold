@@ -6,7 +6,7 @@ import { GuardianLink } from '@/features/phone-link/components/guardian-link/Gua
 import * as adminCallModule from '@/shared/api/adminCall';
 
 const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };
-const offer = { uri: 'fedi://guardian-link?secret=mock-only', expires_at: 1700004200 };
+const offer = { uri: 'manifold:guardian-link?secret=mock-only', expires_at: 1700004200 };
 
 const renderLink = () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

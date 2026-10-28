@@ -217,7 +217,7 @@ const mockPhone = (): NonNullable<MockState['guardianLink']['link']> => {
 
 // Deliberately not a real offer or secret; only the mock phone can consume it.
 export const mockGuardianLinkOffer = () => ({
-  uri: 'fedi://guardian-link?v=1&fman=mock-fman&node=mock-node&env=development&secret=mock-only',
+  uri: 'manifold:guardian-link?v=1&fman=mock-fman&node=mock-node&env=development&secret=mock-only',
   expires_at: Math.floor(Date.now() / 1000) + 600
 });
 

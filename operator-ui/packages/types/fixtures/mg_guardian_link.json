@@ -16,6 +16,6 @@
   },
   "offer": {
     "expires_at": 1700004200,
-    "uri": "fedi://guardian-link?v=1&fman=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&node=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&env=development&secret=0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+    "uri": "manifold:guardian-link?v=1&fman=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&node=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&env=development&secret=0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
   }
 }

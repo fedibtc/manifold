@@ -15,7 +15,7 @@ const phone: NonNullable<GuardianLinkResponse['link']> = {
   delivery: { state: 'active', reason: null }
 };
 const linked: GuardianLinkResponse = { ...unlinked, link: phone };
-const offer = { uri: 'fedi://guardian-link?secret=mock-only', expires_at: 1700004200 };
+const offer = { uri: 'manifold:guardian-link?secret=mock-only', expires_at: 1700004200 };
 
 const renderPage = (response: GuardianLinkResponse) => {
   const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(response);

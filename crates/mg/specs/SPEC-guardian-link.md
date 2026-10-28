@@ -19,8 +19,9 @@ app created, exactly as it invokes an FI's DKG completion hook.
 
 - **Link offer.** The dashboard (`CreateGuardianLinkOffer`) mints a 32-byte
   secret the daemon keeps in memory for ten minutes and shows as the URI
-  `fedi://guardian-link?v=1&fman=<nostr hex>&node=<iroh endpoint id>&env=<manifold environment>&secret=<hex>`,
-  rendered as a QR code. A new offer replaces the open one. The secret is
+  `manifold:guardian-link?v=1&fman=<nostr hex>&node=<iroh endpoint id>&env=<manifold environment>&secret=<hex>`,
+  rendered as a QR code. The scheme is Manifold's own, so the code names no
+  particular app. A new offer replaces the open one. The secret is
   consumed by the first successful `link_device`; a wrong, used, or expired
   secret is one coarse `InvalidInvite`. The operator may link only through
   the dashboard; nothing on the FI RPC surface creates an offer.

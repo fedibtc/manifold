@@ -22,8 +22,10 @@ pub const GUARDIAN_LINK_ALPN: &[u8] = b"fedi/fman/guardian-link/1";
 /// Longest device label accepted, in characters.
 pub const DEVICE_LABEL_MAX_CHARS: usize = 64;
 
-/// Scheme and host of the link invite the dashboard shows as a QR code.
-pub const GUARDIAN_LINK_URI_PREFIX: &str = "fedi://guardian-link";
+/// Scheme and path of the link invite the dashboard shows as a QR code. The
+/// scheme is Manifold's own, so the invite names no particular app.
+pub const GUARDIAN_LINK_URI_SCHEME: &str = "manifold";
+const GUARDIAN_LINK_URI_PATH: &str = "guardian-link";
 
 /// One-time secret proving the caller read the dashboard's link invite.
 #[derive(Clone, Eq, PartialEq)]
@@ -71,7 +73,7 @@ impl<'de> Deserialize<'de> for LinkSecret {
 }
 
 /// The dashboard's link invite: everything the app needs to find, trust, and
-/// link to one MG. Carried as a `fedi://guardian-link` URI in a QR code.
+/// link to one MG. Carried as a `manifold:guardian-link` URI in a QR code.
 #[derive(Clone, Eq, PartialEq)]
 pub struct GuardianLinkInvite {
     /// The MG's public Nostr identity, which names it in the registry.
@@ -101,10 +103,13 @@ impl core::fmt::Debug for GuardianLinkInvite {
 pub struct InvalidGuardianLinkInvite;
 
 impl GuardianLinkInvite {
-    /// Encode as the `fedi://guardian-link?v=1&...` URI the QR code carries.
+    /// Encode as the `manifold:guardian-link?v=1&...` URI the QR code carries.
     #[must_use]
     pub fn to_uri(&self) -> String {
-        let mut url = url::Url::parse(GUARDIAN_LINK_URI_PREFIX).expect("constant prefix parses");
+        let mut url = url::Url::parse(&format!(
+            "{GUARDIAN_LINK_URI_SCHEME}:{GUARDIAN_LINK_URI_PATH}"
+        ))
+        .expect("constant prefix parses");
         url.query_pairs_mut()
             .append_pair("v", "1")
             .append_pair("fman", &self.fman_nostr_pubkey.to_hex())
@@ -117,7 +122,10 @@ impl GuardianLinkInvite {
     /// Parse a scanned URI. Only version 1 is accepted.
     pub fn parse(uri: &str) -> Result<Self, InvalidGuardianLinkInvite> {
         let url = url::Url::parse(uri).map_err(|_| InvalidGuardianLinkInvite)?;
-        if url.scheme() != "fedi" || url.host_str() != Some("guardian-link") {
+        if url.scheme() != GUARDIAN_LINK_URI_SCHEME
+            || url.host().is_some()
+            || url.path() != GUARDIAN_LINK_URI_PATH
+        {
             return Err(InvalidGuardianLinkInvite);
         }
         let mut version = None;
@@ -417,7 +425,7 @@ mod tests {
     fn invite_uri_round_trips() {
         let invite = invite();
         let uri = invite.to_uri();
-        assert!(uri.starts_with("fedi://guardian-link?v=1&fman="), "{uri}");
+        assert!(uri.starts_with("manifold:guardian-link?v=1&fman="), "{uri}");
         assert_eq!(GuardianLinkInvite::parse(&uri).unwrap(), invite);
     }
 
@@ -428,6 +436,10 @@ mod tests {
         assert!(GuardianLinkInvite::parse(&format!("{uri}&extra=1")).is_err());
         assert!(GuardianLinkInvite::parse(&format!("{uri}&env=production")).is_err());
         assert!(GuardianLinkInvite::parse(&uri.replace("guardian-link", "guardian")).is_err());
+        // The earlier app-specific form and a host-style form are not invites.
+        let query = uri.split_once('?').unwrap().1;
+        assert!(GuardianLinkInvite::parse(&format!("fedi://guardian-link?{query}")).is_err());
+        assert!(GuardianLinkInvite::parse(&format!("manifold://guardian-link?{query}")).is_err());
         assert!(GuardianLinkInvite::parse(&uri.replace("&secret=", "&secret=00")).is_err());
     }
 

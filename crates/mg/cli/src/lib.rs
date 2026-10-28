@@ -187,7 +187,7 @@ pub enum GuardianLinkVerb {
     /// The linked phone, the open link offer, and whether this host can
     /// notify a phone at all.
     Show,
-    /// Open a ten-minute link offer and print the `fedi://guardian-link` URI
+    /// Open a ten-minute link offer and print the `manifold:guardian-link` URI
     /// to scan. The URI carries a one-time secret.
     Offer,
     /// Forget the linked phone and close any open offer.
