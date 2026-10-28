@@ -1474,7 +1474,7 @@ async fn run(
                             }
                             None => {
                                 client
-                                    .start_guardian_transfer(
+                                    .start_guardian_transfer_unchecked(
                                         start.seat_index,
                                         approval,
                                         payer,

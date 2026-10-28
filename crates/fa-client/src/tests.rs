@@ -4119,6 +4119,64 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
 }
 
 #[tokio::test]
+async fn an_invite_fallback_asks_one_mg_at_a_time_after_the_saved_invite() {
+    let (client, _, state, _) = formed_client_for_liquidity().await;
+    // The last MG answers with an invite to another federation.
+    state.disagreeing_invite.store(true, Ordering::SeqCst);
+    let authority = client
+        .post_formed_authority(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    let last = usize::from(MIN_FEDERATION_SIZE) - 1;
+    let remembered = client.consensus_invite(&authority.invite_code).await;
+    let tried = std::sync::Mutex::new(Vec::new());
+
+    // Only the second MG's invite works: the remembered invite and the first MG's
+    // invite fail, and the MGs after the second are never asked.
+    let invite_calls = state.invite_calls.load(Ordering::SeqCst);
+    let answer = client
+        .with_invite_fallback(&authority.invite_code, authority.seat_routes(), |invite| {
+            let tried = &tried;
+            async move {
+                tried.lock().unwrap().push(invite.clone());
+                if invite == test_invite_for_peer(1, 1, 0) {
+                    Ok(invite)
+                } else {
+                    Err(())
+                }
+            }
+        })
+        .await;
+    assert_eq!(answer, Ok(test_invite_for_peer(1, 1, 0)));
+    assert_eq!(
+        *tried.lock().unwrap(),
+        vec![
+            remembered.clone(),
+            test_invite_for_peer(0, 0, 0),
+            test_invite_for_peer(1, 1, 0),
+        ]
+    );
+    assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls + 2);
+
+    // When nothing works, every MG is asked once, the other federation's
+    // invite is skipped, and the remembered invite's failure is returned.
+    tried.lock().unwrap().clear();
+    let answer: Result<(), InviteCode> = client
+        .with_invite_fallback(&authority.invite_code, authority.seat_routes(), |invite| {
+            let tried = &tried;
+            async move {
+                tried.lock().unwrap().push(invite.clone());
+                Err(invite)
+            }
+        })
+        .await;
+    assert_eq!(answer, Err(remembered));
+    let tried = tried.into_inner().unwrap();
+    assert_eq!(tried.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(!tried.contains(&test_invite_for_peer(last, last, 1)));
+}
+
+#[tokio::test]
 async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
     for fault in [
         "identity",

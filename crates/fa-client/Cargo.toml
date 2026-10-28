@@ -34,6 +34,11 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = "0.1"
 
+[features]
+# Lets a test tool move a guardian without a replacement receipt. A consumer
+# app must not enable it.
+unchecked-guardian-transfer = []
+
 [dev-dependencies]
 bitcoin = { version = "0.32.6", features = ["serde"] }
 blind-rsa-signatures = "0.17"

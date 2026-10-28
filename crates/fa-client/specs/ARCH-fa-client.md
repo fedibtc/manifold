@@ -382,10 +382,13 @@ directory and fee recipients agreed at formation may change by guardian vote
 (see `SECURITY.md`).
 Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
-If the saved invite is unreachable, recovery tries alternative invites from
-the saved managers without waiting for every manager. It verifies the same
-federation and remembers multiple guardian addresses in memory for later
-liquidity and gateway reads. Backups and committed request bytes are unchanged.
+If the remembered or saved invite is unreachable, every read of the formed
+federation (recovery, maintenance, liquidity, replacement checks and guardian
+transfer) asks the saved managers for invites, one manager at a time, and
+stops at the first that works. Each working invite queries the whole
+federation, so the managers are only a fallback. An invite to another
+federation is skipped. Recovery remembers multiple guardian addresses in
+memory for later reads. Backups and committed request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
@@ -677,14 +680,19 @@ receipt.
 seat, by the contract in
 [`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
 transfer row owns the whole move, including its destination seat. One
-transfer is open at a time.
+transfer is open at a time. It moves any guardian, so it is crate-private.
+Consumers start a transfer with `request_guardian_replacement`, which needs a
+replacement receipt. Test tools that move a healthy guardian call
+`start_guardian_transfer_unchecked`, behind the `unchecked-guardian-transfer`
+feature.
 
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian
 for its build through the public Fedimint `fedimintd_version` endpoint, by the
 consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
-invite may name the guardian that needs a new host, so the FA also asks each
-seat's MG for its invite and uses the first that reaches the federation. The
+invite may name the guardian that needs a new host, so when it fails the FA
+asks the seats' MGs for their invites, one at a time (see the invite fallback
+below). The
 line most
 of the answering guardians report wins, then the newer line. It does not use
 the advertisements of the federation's own MGs: an MG that is full or offline,

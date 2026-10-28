@@ -22,11 +22,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    FedimintdDkgVersion, FedimintdVersion, GetInviteCodeRequest, GetQuoteResponse, InviteCode,
-    Locator, ManifoldGuardianService as _, SeatId, SignatureVerified, SignedResponse, Timestamp,
+    FedimintdDkgVersion, FedimintdVersion, GetQuoteResponse, InviteCode, Locator, SeatId,
+    SignatureVerified, SignedResponse, Timestamp,
 };
 use fedimint_core::runtime::Instant;
-use futures::stream::{FuturesUnordered, StreamExt as _};
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
@@ -161,7 +160,7 @@ where
         // do: an MG that is full or offline, which is when a guardian needs
         // a new host, advertises nothing.
         let versions = self
-            .guardian_fedimintd_versions(&federation, fa_id, deadline)
+            .guardian_fedimintd_versions(&federation, deadline)
             .await;
         crate::selection::preview_transfer_destination_with(
             &self.inner.ports.registry,
@@ -190,55 +189,28 @@ where
     async fn guardian_fedimintd_versions(
         &self,
         federation: &TransferFederation,
-        fa_id: crate::FaId,
         deadline: Instant,
     ) -> Vec<String> {
-        let expected = crate::formation::invite_federation_id(&federation.invite_code).ok();
-        let read =
-            async |seat: Option<&SeatId>, locator: Option<&Locator>| -> Option<Vec<String>> {
-                let invite = match (seat, locator) {
-                    (Some(seat_id), Some(locator)) => {
-                        let client = self.inner.ports.mg_connector.connect(locator).await.ok()?;
-                        let request = self
-                            .sign(&GetInviteCodeRequest {
-                                ts: Timestamp(now_secs().ok()?),
-                                fa_id,
-                                seat_id: seat_id.clone(),
-                            })
-                            .ok()?;
-                        let invite = client.get_invite_code(request).await.ok()?.invite_code;
-                        (crate::formation::invite_federation_id(&invite).ok() == expected)
-                            .then_some(invite)?
-                    }
-                    _ => self.consensus_invite(&federation.invite_code).await,
-                };
-                let versions = self
-                    .inner
+        let routes = federation
+            .seats
+            .iter()
+            .map(|(_, locator, seat_id)| (seat_id, locator));
+        fedimint_core::runtime::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            self.with_invite_fallback(&federation.invite_code, routes, |invite| async move {
+                self.inner
                     .ports
                     .consensus_reader
                     .read_fedimintd_versions(&invite)
                     .await
-                    .ok()?;
-                (!versions.is_empty()).then_some(versions)
-            };
-        fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
-            // Each working invite queries the whole federation, so the
-            // seats' invites are only a fallback for the saved one.
-            if let Some(versions) = read(None, None).await {
-                return versions;
-            }
-            let mut pending = FuturesUnordered::new();
-            for (_, locator, seat_id) in &federation.seats {
-                pending.push(read(Some(seat_id), Some(locator)));
-            }
-            while let Some(answer) = pending.next().await {
-                if let Some(versions) = answer {
-                    return versions;
-                }
-            }
-            Vec::new()
-        })
+                    .ok()
+                    .filter(|versions| !versions.is_empty())
+                    .ok_or(())
+            }),
+        )
         .await
+        .ok()
+        .and_then(Result::ok)
         .unwrap_or_default()
     }
 

@@ -63,6 +63,8 @@ pub(crate) const MIN_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(1)
 /// Largest duration represented without overflow by native and WASM runtime timers.
 pub(crate) const MAX_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(i32::MAX as u64);
 const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
+/// Budget for asking one saved MG for an invite to its federation.
+const SEAT_INVITE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Budget for one post-DKG consensus read through the new federation's invite.
 ///
 /// One read downloads the client config, agrees it across a threshold of
@@ -509,6 +511,13 @@ pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
     pub(crate) seats: Vec<PostFormedSeat>,
+}
+
+impl PostFormedAuthority {
+    /// Each seat's id and MG locator, the routes for an invite fallback.
+    pub(crate) fn seat_routes(&self) -> impl Iterator<Item = (&SeatId, &Locator)> {
+        self.seats.iter().map(|seat| (&seat.seat_id, &seat.locator))
+    }
 }
 
 /// One guardian's guarded metadata-vote result.
@@ -3936,7 +3945,7 @@ where
             ));
         }
         let consensus = self
-            .read_recovery_consensus(&snapshot.federation_invite, run)
+            .read_formed_consensus(&self.post_formed_authority(fa_id).await?, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
@@ -4519,74 +4528,95 @@ where
         Ok(())
     }
 
-    /// Read fresh consensus, trying saved managers' invites if the first read fails.
-    /// Alternative invites and returned configurations must name the saved
-    /// federation. Calls share the driver deadlines, and remaining attempts are
-    /// dropped once one succeeds. The caller must still verify the directory and
-    /// saved authority before marking recovery fresh.
-    async fn read_recovery_consensus(
+    /// Run `read` with the remembered invite for `saved`. If that fails, ask
+    /// the saved seats' MGs for an invite to the same federation, one MG at a
+    /// time, and run `read` with each until one succeeds. Each working invite
+    /// queries the whole federation, so the MGs are only a fallback. An older
+    /// saved invite can name a single guardian, and this keeps that guardian
+    /// from blocking the read. Returns the first failure when nothing works.
+    pub(crate) async fn with_invite_fallback<T, E, Fut>(
         &self,
         saved: &InviteCode,
-        run: DriverRun<'_>,
-    ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
-        let invite = self.consensus_invite(saved).await;
-        let first = run
-            .call("reading federation recovery consensus", || {
-                Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-            })
-            .await;
-        match &first {
-            Ok(Ok(_)) => return first,
-            Err(error) if !matches!(error, FaError::Timeout(_)) => return first,
-            _ => {}
+        seats: impl IntoIterator<Item = (&SeatId, &Locator)>,
+        mut read: impl FnMut(InviteCode) -> Fut,
+    ) -> Result<T, E>
+    where
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let remembered = self.consensus_invite(saved).await;
+        let mut tried = BTreeSet::from([remembered.0.clone()]);
+        let first = read(remembered).await;
+        if first.is_ok() {
+            return first;
         }
-
-        // A manager supplies another way to dial, never a trust verdict.
-        // Race the saved managers so one unavailable manager cannot hold up the rest.
-        let fa_id = self.fa_id()?;
-        let authority = self.post_formed_authority(fa_id).await?;
-        let expected = invite_federation_id(saved)?;
-        let mut pending = FuturesUnordered::new();
-        for seat in &authority.seats {
-            pending.push(async move {
-                let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
-                let request = run
-                    .construct("signing a recovery invite request", || {
-                        self.sign(&GetInviteCodeRequest {
-                            ts: Timestamp(now_secs()?),
-                            fa_id,
-                            seat_id: seat.seat_id.clone(),
-                        })
-                    })
-                    .await?;
-                let invite = client
-                    .call(run, MgOperation::GetInviteCode, |client| {
-                        client.get_invite_code(request)
-                    })
-                    .await?
-                    .invite_code;
-                if invite_federation_id(&invite)? != expected {
-                    return Err(FaError::InvalidManifoldGuardians(
-                        "recovery invite names another federation".to_owned(),
-                    ));
-                }
-                let snapshot = run
-                    .call("reading alternate recovery consensus", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-                    })
-                    .await?
-                    .map_err(|error| FaError::InvalidManifoldGuardians(error.to_string()))?;
-                verify_consensus_identity(&snapshot, saved)?;
-                Ok::<_, FaError>(snapshot)
-            });
-        }
-        while let Some(result) = pending.next().await {
-            if let Ok(snapshot) = result {
-                return Ok(Ok(snapshot));
+        let (Ok(expected), Ok(fa_id)) = (invite_federation_id(saved), self.fa_id()) else {
+            return first;
+        };
+        for (seat_id, locator) in seats {
+            let Some(invite) = self.seat_invite(fa_id, seat_id, locator).await else {
+                continue;
+            };
+            // A manager supplies another way to dial, never a trust verdict.
+            if invite_federation_id(&invite).ok() != Some(expected)
+                || !tried.insert(invite.0.clone())
+            {
+                continue;
+            }
+            if let Ok(value) = read(invite).await {
+                return Ok(value);
             }
         }
         first
+    }
+
+    /// The invite one saved seat's MG gives for its federation.
+    async fn seat_invite(
+        &self,
+        fa_id: FaId,
+        seat_id: &SeatId,
+        locator: &Locator,
+    ) -> Option<InviteCode> {
+        timeout(SEAT_INVITE_TIMEOUT, async {
+            let client = self.inner.ports.mg_connector.connect(locator).await.ok()?;
+            let request = self
+                .sign(&GetInviteCodeRequest {
+                    ts: Timestamp(now_secs().ok()?),
+                    fa_id,
+                    seat_id: seat_id.clone(),
+                })
+                .ok()?;
+            Some(client.get_invite_code(request).await.ok()?.invite_code)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Read fresh consensus of the formed federation, with the invite
+    /// fallback of [`Self::with_invite_fallback`]. The caller must still
+    /// verify the federation identity, the directory and saved authority.
+    pub(crate) async fn read_formed_consensus(
+        &self,
+        authority: &PostFormedAuthority,
+        run: DriverRun<'_>,
+    ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
+        let saved = &authority.invite_code;
+        let read = self
+            .with_invite_fallback(saved, authority.seat_routes(), |invite| async move {
+                let result = run
+                    .call("reading federation consensus metadata", || {
+                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+                    })
+                    .await;
+                match result {
+                    // Another invite cannot help a run that already failed.
+                    Ok(Ok(_)) => Ok(result),
+                    Err(ref error) if !matches!(error, FaError::Timeout(_)) => Ok(result),
+                    other => Err(other),
+                }
+            })
+            .await;
+        read.unwrap_or_else(|failure| failure)
     }
 
     async fn fetch_agreed_invite(

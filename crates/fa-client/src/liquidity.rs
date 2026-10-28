@@ -1085,17 +1085,19 @@ where
             ));
         }
         let invite_code = authority.invite_code.clone();
-        let read_invite = self.consensus_invite(&invite_code).await;
-        let consensus = timeout(
-            FA_LIQUIDITY_RPC_TIMEOUT,
-            self.inner
-                .ports
-                .consensus_reader
-                .read_consensus(&read_invite),
-        )
-        .await
-        .map_err(|_| FaError::Timeout("reading liquidity federation consensus".to_owned()))?
-        .map_err(|error| FaError::Liquidity(format!("reading federation consensus: {error}")))?;
+        let consensus = self
+            .with_invite_fallback(&invite_code, authority.seat_routes(), |invite| async move {
+                timeout(
+                    FA_LIQUIDITY_RPC_TIMEOUT,
+                    self.inner.ports.consensus_reader.read_consensus(&invite),
+                )
+                .await
+                .map_err(|_| FaError::Timeout("reading liquidity federation consensus".to_owned()))?
+                .map_err(|error| {
+                    FaError::Liquidity(format!("reading federation consensus: {error}"))
+                })
+            })
+            .await?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FaError::Liquidity(format!("deriving final federation seats: {error}"))
         })?;

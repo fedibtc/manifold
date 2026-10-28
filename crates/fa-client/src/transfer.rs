@@ -202,7 +202,12 @@ where
     /// source. The destination keeps asking the source on its own, so the
     /// caller can return later, for example when `completion_callback`
     /// reports that the guardian runs. Only one transfer is open at a time.
-    pub async fn start_guardian_transfer(
+    ///
+    /// This moves any guardian, with no reason to replace it. Consumers start
+    /// a transfer with [`Self::request_guardian_replacement`], which requires
+    /// a replacement receipt. Only test tools reach this directly, through
+    /// the `unchecked-guardian-transfer` feature.
+    pub(crate) async fn start_guardian_transfer(
         &self,
         seat_index: u16,
         approval: TransferDestinationApproval,
@@ -266,6 +271,27 @@ where
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// [`Self::start_guardian_transfer`] for test tools, which move a
+    /// healthy guardian. A consumer app must not enable this feature.
+    #[cfg(feature = "unchecked-guardian-transfer")]
+    pub async fn start_guardian_transfer_unchecked(
+        &self,
+        seat_index: u16,
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
+        completion_callback: Option<DkgCompletionCallback>,
+        options: MaintenanceRunOptions,
+    ) -> FaResult<GuardianTransfer> {
+        self.start_guardian_transfer(
+            seat_index,
+            approval,
+            payment_federation_id,
+            completion_callback,
+            options,
+        )
+        .await
     }
 
     /// Advance the open transfer as far as it goes within `options`.
@@ -634,7 +660,6 @@ where
             .iter()
             .map(|seat| seat.index)
             .collect::<BTreeSet<_>>();
-        let invite = self.consensus_invite(&authority.invite_code).await;
         let mut active_base = None;
         let mut unresolved = all.clone();
         let mut guardian_errors = BTreeMap::new();
@@ -648,7 +673,7 @@ where
                     consensus_error,
                 ));
             }
-            let snapshot = match self.read_metadata_consensus(&invite, run).await {
+            let snapshot = match self.read_formed_consensus(authority, run).await {
                 Ok(Ok(snapshot)) => snapshot,
                 Ok(Err(error)) => {
                     consensus_error = Some(error.to_string());
@@ -728,7 +753,7 @@ where
                 }
             }
 
-            match self.read_metadata_consensus(&invite, run).await {
+            match self.read_formed_consensus(authority, run).await {
                 Ok(Ok(snapshot)) => {
                     consensus_error = None;
                     if moved_binding_adopted(&snapshot, &binding.attestation, transfer)? {

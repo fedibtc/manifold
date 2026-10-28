@@ -444,8 +444,11 @@ consent to it. A guardian vote is not FA consent, so this is a deliberate
 tradeoff: the FA cannot undo the vote, and refusing management would only
 block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
 still requires every manager's health and agreed invite.
-If the saved invite cannot reach consensus, recovery may ask the saved managers
-for alternative invites. They are dialing hints only: reject a different
+If the remembered or saved invite cannot reach the federation, every read of a
+formed federation (recovery, maintenance, liquidity, replacement checks, and
+guardian transfer) asks the saved managers for alternative invites, one at a
+time, because each working invite queries the whole federation. They are
+dialing hints only: reject a different
 federation id and apply the same consensus and directory checks. Retain a
 multi-guardian read invite in memory after verification, never a cached
 consensus result. The original invite, backup, and signed liquidity commitment
