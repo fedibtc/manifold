@@ -270,6 +270,18 @@ async fn current_input(
 /// test's probe.
 /// A data root a fleet can be opened against: onboarded, as a real one is
 /// before its daemon reaches [`Fleet::open`].
+/// A setup-payment policy that lets MGs start guardian transfers.
+fn transfer_policy()
+-> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
+{
+    let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+        br#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","guardian_transfer":true}"#,
+    )
+    .expect("test policy parses");
+    assert!(policy.guardian_transfer());
+    tokio::sync::watch::channel(Some(policy)).1
+}
+
 async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetConfig {
     let db = Db::open(temp.path()).await.unwrap();
     if db.load_identity().await.unwrap().is_none() {

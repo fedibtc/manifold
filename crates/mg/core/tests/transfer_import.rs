@@ -255,10 +255,7 @@ async fn worker_pull_authenticates_imports_and_retries_without_refetching_accept
         Arc::new(crate::transfer_native::tests::CoreConfigValidator),
     )
     .await;
-    let rpc = crate::service::ManifoldGuardianRpc::new(
-        d.fleet.clone(),
-        tokio::sync::watch::channel(None).1,
-    );
+    let rpc = crate::service::ManifoldGuardianRpc::new(d.fleet.clone(), transfer_policy());
     let request = PullSeatRequest {
         ts: Timestamp((crate::db::now_ms() / 1000) as u64),
         fa_id: d.grant.fa_id,
@@ -742,11 +739,11 @@ async fn accepted_import_does_not_overwrite_conflicting_installed_identity() {
     assert_eq!(d.spawner.spawn_count(), 1);
 }
 
-/// Nothing transfer-related runs on a production MG, including work resumed
-/// from its database: its transfer worker never starts, so a stored waiting
-/// transfer neither polls the source nor survives as a job across restart.
+/// The setup-payment policy gates only the start of a transfer. A production
+/// MG that holds no policy that enables transfer still resumes a transfer it
+/// stored: across a restart, its worker asks the source again.
 #[tokio::test]
-async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
+async fn a_stored_incoming_transfer_resumes_without_a_policy_that_enables_transfer() {
     use fedi_decentralized_manifold_environment::ManifoldEnvironment;
     let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
     let source: Arc<dyn crate::transfer_source::TransferSource> =
@@ -760,7 +757,7 @@ async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
         vec![FakeDkgStep::Hang],
     )
     .await;
-    assert!(!d.fleet.transfers.is_running_for_test());
+    assert!(d.fleet.transfers.is_running_for_test());
     // The seat owner stores the transfer as an admitted pull would.
     d.admit().await;
     let seat_id = d.grant.destination_seat_id.clone();
@@ -769,12 +766,13 @@ async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
     } = d;
     fleet.shutdown().await;
     drop(fleet);
+    while calls.try_recv().is_ok() {}
 
     let mut config = config(&root, 1, 32_171).await;
     config.manifold_environment = ManifoldEnvironment::Production;
     config.transfer_source = source;
     let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
-    assert!(!fleet.transfers.is_running_for_test());
+    assert!(fleet.transfers.is_running_for_test());
     assert!(matches!(
         fleet
             .db
@@ -785,11 +783,9 @@ async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
             .state,
         IncomingState::Waiting { .. }
     ));
-    // A development MG asks its source within milliseconds of opening.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        calls.try_recv().is_err(),
-        "a production MG never polls a transfer source"
-    );
+    tokio::time::timeout(Duration::from_secs(10), calls.recv())
+        .await
+        .expect("the reopened MG asks its source again")
+        .expect("source channel open");
     fleet.shutdown().await;
 }

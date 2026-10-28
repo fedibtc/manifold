@@ -189,6 +189,6 @@ harness must also preserve imported keys rather than deriving new keys from
 destination ports. A second transfer exports these effective secrets, not the
 first destination's mnemonic-derived seat secrets.
 
-This is the approved imported-key recovery exception. Transfers are enabled
-under the latest-backup and no-stale-local-snapshot premises recorded in
-SPEC-guardian-transfer; imported-key authentication does not prove freshness.
+This is the approved imported-key recovery exception. Transfers start only while
+the signed setup-payment policy enables them, under the latest-backup and
+no-stale-local-snapshot premises recorded in SPEC-guardian-transfer; imported-key authentication does not prove freshness.

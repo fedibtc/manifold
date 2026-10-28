@@ -116,6 +116,10 @@ pub enum SeatVerbError {
     MetaTargetConflict,
     #[error("seat transfer grant does not match this seat")]
     TransferGrantMismatch,
+    /// The setup-payment policy does not let this MG start a new guardian
+    /// transfer, and the seat stores none to continue.
+    #[error("guardian transfer is not enabled")]
+    TransferDisabled,
     #[error(transparent)]
     Internal(anyhow::Error),
 }
@@ -149,6 +153,7 @@ fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
         SeatVerbError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         SeatVerbError::MetaTargetConflict => "meta_target_conflict",
         SeatVerbError::TransferGrantMismatch => "transfer_grant_mismatch",
+        SeatVerbError::TransferDisabled => "transfer_disabled",
         SeatVerbError::Internal(_) => "internal",
     }
 }
@@ -539,6 +544,11 @@ impl Seat {
             self.state.borrow().process_slot,
             ProcessSlotPhase::Configured
         )
+    }
+    /// The seat's stored transfer, if any: incoming provenance or the
+    /// outgoing retirement fence.
+    pub(crate) fn transfer_phase(&self) -> Option<TransferPhase> {
+        self.state.borrow().transfer_phase
     }
     #[cfg(test)]
     pub(crate) async fn wait_for_transfer_phase_for_test(&self, phase: TransferPhase) {

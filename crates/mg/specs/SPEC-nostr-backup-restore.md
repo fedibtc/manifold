@@ -178,7 +178,9 @@ that records the transfer fence; the confirmed record keeps that fence
 (`confirmed_outgoing`). This proves local read-back
 publication only; it does **not** establish freshness against later hostile
 replay. Recovery assumes the configured relay returns the latest published
-state and operators never restart stale local snapshots. Transfers are enabled
+state and operators never restart stale local snapshots. Transfers start, when the
+setup-payment policy enables them
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md#enabling-transfer)),
 under this premise; stale rollback can resurrect a retired source.
 
 Backups are addressable Nostr events authored by a **dedicated backup identity**

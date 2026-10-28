@@ -103,14 +103,16 @@ pub trait TrustMaterialSource: Send + Sync {
 }
 
 impl ManifoldGuardianRpc {
-    /// A production MG answers the four guardian-transfer verbs
-    /// `UnsupportedVerb`, as it does `DecommissionSeat`.
-    fn require_guardian_transfer(&self, verb: &str) -> FmResult<()> {
-        if self.fleet.config().guardian_transfer_enabled() {
-            Ok(())
-        } else {
-            unsupported(verb)
-        }
+    /// Whether the setup-payment policy this MG holds now lets it start a
+    /// new guardian transfer. Without an admitted policy, or with a policy
+    /// that omits the flag, it does not. A transfer the MG already stored
+    /// continues either way
+    /// ([`SPEC-guardian-transfer`](../specs/SPEC-guardian-transfer.md)).
+    fn may_start_guardian_transfer(&self) -> bool {
+        self.setup_payment_policy
+            .borrow()
+            .as_ref()
+            .is_some_and(AdmittedSetupPaymentFederations::guardian_transfer)
     }
 
     /// Build the service with its deployment policy inputs.
@@ -243,6 +245,9 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
         }
         SeatVerbError::MetaTargetConflict => ManifoldGuardianError::MetaTargetConflict,
         SeatVerbError::TransferGrantMismatch => ManifoldGuardianError::SeatTransferGrantMismatch,
+        SeatVerbError::TransferDisabled => ManifoldGuardianError::UnsupportedVerb {
+            verb: verb.to_owned(),
+        },
         SeatVerbError::Internal(err) => internal_chain(verb, &err),
     }
 }
@@ -914,7 +919,11 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("pull_seat", err))?;
-        self.require_guardian_transfer("PullSeat")?;
+        // A seat that stores a transfer takes the same move again as a
+        // replay; only a pull that would start a transfer needs the policy.
+        if seat.transfer_phase().is_none() && !self.may_start_guardian_transfer() {
+            return unsupported("PullSeat");
+        }
         let callback = self.prepare_completion_callback(request.completion_callback.as_ref())?;
         seat.admit_transfer(
             request.grant.clone(),
@@ -934,11 +943,15 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             tracing::warn!(verb = "transfer_seat", error = %err, "rejecting unauthorized request");
             ManifoldGuardianError::Unauthorized
         })?;
-        self.require_guardian_transfer("TransferSeat")?;
         self.fleet
-            .transfer_seat(request)
+            .transfer_seat(request, self.may_start_guardian_transfer())
             .await
-            .map_err(|err| map_seat_error("transfer_seat", err))
+            .map_err(|err| match err {
+                SeatVerbError::TransferDisabled => ManifoldGuardianError::UnsupportedVerb {
+                    verb: "TransferSeat".to_owned(),
+                },
+                err => map_seat_error("transfer_seat", err),
+            })
     }
 
     async fn replace_seat_binding(
@@ -950,7 +963,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
-        self.require_guardian_transfer("ReplaceSeatBinding")?;
+        // Not gated: the vote names a guardian that the destination MG
+        // already runs, so it starts nothing, and the voters store no
+        // transfer to tell an old move from a new one.
         seat.replace_seat_binding(request.expected_base, request.seat_binding.clone())
             .await
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
@@ -966,7 +981,8 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("remove_seat", err))?;
-        self.require_guardian_transfer("RemoveSeat")?;
+        // Not gated: only a seat that stopped for a stored transfer can be
+        // removed this way.
         let already_removed = self
             .fleet
             .remove_transferred_seat(&seat)

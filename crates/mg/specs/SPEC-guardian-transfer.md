@@ -5,14 +5,11 @@
 `crates/service-manifold-guardian` defines the grant, the four verbs, the
 transfer's seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
 `fa-client` does not drive a transfer yet. Manifold Guardian builds implement
-the four verbs and resume durable transfers after restart, but only
-development and staging deployments run them. Keyed on its Manifold
-environment like `DecommissionSeat`
-([ARCH-manifold-guardian-product-boundary](./ARCH-manifold-guardian-product-boundary.md)),
-a production MG answers all four verbs `UnsupportedVerb`, in both the source
-and the destination role, and never starts the transfer worker, so it
-neither polls a source nor resumes a transfer stored in its database. A
-production release can therefore ship this code without enabling transfer. Recovery assumes the latest published
+the four verbs and resume durable transfers after restart. Whether an MG
+starts a new transfer is decided by the signed setup-payment policy it
+holds, in every Manifold environment (see
+[Enabling transfer](#enabling-transfer)). A release can therefore ship this
+code with transfer off, and Fedi turns it on by republishing the policy. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
 
@@ -21,6 +18,39 @@ below; this implementation does not establish freshness against hostile rollback
 The transfer contract spans the FA's grant and driver, the destination MG's
 pull, the source MG's stop and hand-over, and every guardian's directory
 vote, so no single implementation artifact can own it coherently.
+
+
+## Enabling transfer
+
+The setup-payment policy
+([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
+carries an optional `guardian_transfer` flag. An MG may start a new transfer
+only while the latest policy it admitted sets the flag to `true`. Without an
+admitted policy, or with a policy that omits the flag or sets it to `false`,
+it starts none. The MG reads the flag from the policy it holds when a
+request arrives; it keeps no copy. The same rule holds in development,
+staging and production, so those environments need a policy that sets the
+flag to run transfers.
+
+The flag gates only the start of a transfer. A transfer that an MG already
+stored always runs to completion or recovery, so a policy change never
+leaves a guardian half moved:
+
+- `PullSeat` to a seat that stores no transfer starts one, and is answered
+  `UnsupportedVerb` without the flag. A seat that stores a transfer answers
+  it as usual, which is a replay of the same move or a refusal of another.
+- `TransferSeat` to a source seat that has not stopped for a transfer starts
+  one, and is answered `UnsupportedVerb` without the flag. A source that
+  already stopped for a transfer hands over the stopped guardian whatever
+  the flag says. A source whose guardian was asked to stop but has not yet
+  reached the session boundary still stops there, and then answers.
+- `ReplaceSeatBinding` is not gated. It votes for a guardian that the
+  destination MG already runs, so it starts nothing, and the voting MGs store
+  no transfer to tell an old move from a new one.
+- `RemoveSeat` is not gated. It only removes a seat that already stopped for
+  a stored transfer.
+- The transfer worker always starts, and resumes every stored incoming
+  transfer at startup and on every seat transition.
 
 ## Contract
 

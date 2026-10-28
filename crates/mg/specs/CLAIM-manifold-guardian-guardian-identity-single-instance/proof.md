@@ -5,9 +5,9 @@ identities only. Cooperative transfer adds authenticated imported identity and
 its backup/startup paths, and the approved claim now includes the
 non-conflicting-FA premise. L1/L4/L6 and the conclusion do not cover those paths.
 This maintenance does not verify the expanded claim, resolve hostile stale
-restore freshness, or constitute deployment approval. Transfer is enabled only
-in development and staging environments, under the
-latest-backup/no-stale-local-snapshot premises. A transferred guardian keeps
+restore freshness, or constitute deployment approval. An MG starts a transfer only
+while the signed setup-payment policy enables it, in any environment, under
+the latest-backup/no-stale-local-snapshot premises. A transferred guardian keeps
 its consensus material and Iroh endpoint keys and runs under the destination's
 own `api_auth`; the native argument below does not cover that split.
 

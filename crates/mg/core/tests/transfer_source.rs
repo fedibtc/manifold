@@ -42,7 +42,7 @@ impl Source {
     /// retries.
     async fn pull_awaits_session_end(&self) {
         assert!(matches!(
-            self.fleet.transfer_seat(self.pull()).await,
+            self.fleet.transfer_seat(self.pull(), true).await,
             Err(SeatVerbError::AwaitingSessionEnd)
         ));
     }
@@ -52,7 +52,7 @@ impl Source {
     async fn pull_after_backup(&self) -> TransferSeatResponse {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                match self.fleet.transfer_seat(self.pull()).await {
+                match self.fleet.transfer_seat(self.pull(), true).await {
                     Err(SeatVerbError::AwaitingBackup) => {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
@@ -322,6 +322,20 @@ async fn source_with(
     }
 }
 
+/// Without a policy that enables transfer, a running source with no stored
+/// transfer refuses the pull and keeps running its guardian.
+#[tokio::test]
+async fn a_source_without_the_policy_starts_no_transfer() {
+    let source = running_source(35_500).await;
+    assert!(matches!(
+        source.fleet.transfer_seat(source.pull(), false).await,
+        Err(SeatVerbError::TransferDisabled)
+    ));
+    assert_eq!(source.outgoing().await, None);
+    assert_eq!(source.fleet.db.active_seat_count().await.unwrap(), 1);
+    source.fleet.shutdown().await;
+}
+
 #[tokio::test]
 async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     let source = running_source(31_237).await;
@@ -335,7 +349,7 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     source.sink.fails.store(true, Ordering::SeqCst);
     source.hand_over().await;
     assert!(matches!(
-        source.fleet.transfer_seat(source.pull()).await,
+        source.fleet.transfer_seat(source.pull(), true).await,
         Err(SeatVerbError::AwaitingBackup)
     ));
     assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
@@ -372,6 +386,16 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     );
     source.sink.fails.store(false, Ordering::SeqCst);
     let response = source.pull_after_backup().await;
+    // The guardian stopped for this transfer, so the source hands it over
+    // even when its policy no longer lets it start one.
+    assert!(
+        source
+            .fleet
+            .transfer_seat(source.pull(), false)
+            .await
+            .is_ok(),
+        "a stopped source answers without the policy"
+    );
     let opened = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
     let source_keys = source
         .fleet
@@ -400,7 +424,7 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     assert!(matches!(
         source
             .fleet
-            .transfer_seat(pull_as(source.signed(), &other))
+            .transfer_seat(pull_as(source.signed(), &other), true)
             .await,
         Err(SeatVerbError::TransferGrantMismatch)
     ));
@@ -409,10 +433,10 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     grant.destination_seat_id = SeatId::from(QuoteId([152; 32]));
     let response = source
         .fleet
-        .transfer_seat(pull_as(
-            SignedRequest::create(&grant, &source.fa).unwrap(),
-            &other,
-        ))
+        .transfer_seat(
+            pull_as(SignedRequest::create(&grant, &source.fa).unwrap(), &other),
+            true,
+        )
         .await
         .unwrap();
     let again = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
@@ -457,7 +481,13 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
             .unwrap(),
         Some(OutgoingTransfer::Removed)
     );
-    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
+    assert!(
+        source
+            .fleet
+            .transfer_seat(source.pull(), true)
+            .await
+            .is_err()
+    );
     assert!(
         source
             .fleet
@@ -540,10 +570,13 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
         assert!(
             source
                 .fleet
-                .transfer_seat(pull_as(
-                    SignedRequest::create(&grant, &source.fa).unwrap(),
-                    &source.destination,
-                ))
+                .transfer_seat(
+                    pull_as(
+                        SignedRequest::create(&grant, &source.fa).unwrap(),
+                        &source.destination,
+                    ),
+                    true
+                )
                 .await
                 .is_err()
         );
@@ -560,7 +593,7 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     .await
     .unwrap();
     assert!(matches!(
-        source.fleet.transfer_seat(source.pull()).await,
+        source.fleet.transfer_seat(source.pull(), true).await,
         Err(SeatVerbError::Internal(_))
     ));
     assert_eq!(source.outgoing().await, None);
@@ -574,7 +607,13 @@ async fn unproved_source_exit_forbids_export_and_removal() {
         FakeDkgStep::FailStop,
     ]]]));
     let source = source(31_273, spawner.clone()).await;
-    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
+    assert!(
+        source
+            .fleet
+            .transfer_seat(source.pull(), true)
+            .await
+            .is_err()
+    );
     // No proven exit, no fence: the seat still counts, the guardian is still
     // this host's, and nothing can be exported or removed.
     assert_eq!(
@@ -598,7 +637,13 @@ async fn unproved_source_exit_forbids_export_and_removal() {
     let spawns = spawner.spawn_count();
     source.seat.watchdog_tick_for_test().await;
     assert_eq!(spawner.spawn_count(), spawns);
-    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
+    assert!(
+        source
+            .fleet
+            .transfer_seat(source.pull(), true)
+            .await
+            .is_err()
+    );
     source.fleet.shutdown().await;
 }
 

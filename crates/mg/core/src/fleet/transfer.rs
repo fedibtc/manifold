@@ -3,15 +3,19 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 
 use super::{Fleet, Seat, SeatVerbError};
+use crate::transfer_state::TransferPhase;
 use std::sync::Arc;
 
 impl Fleet {
     /// `request` carries the caller's verified service key. Only a caller
     /// holding the key the FA named in the grant receives the guardian,
-    /// however it obtained the grant.
+    /// however it obtained the grant. Without `may_start`, only a seat that
+    /// already stopped for a transfer answers: a stopped guardian is handed
+    /// over whatever the policy says now.
     pub(crate) async fn transfer_seat(
         &self,
         request: TransferSeatRequest,
+        may_start: bool,
     ) -> Result<TransferSeatResponse, SeatVerbError> {
         let signed = request.grant;
         let grant = signed
@@ -28,6 +32,9 @@ impl Fleet {
         }
         if grant.source.service_pubkey != self.identity.derive_service_pubkey() {
             return Err(SeatVerbError::TransferGrantMismatch);
+        }
+        if !may_start && !matches!(seat.transfer_phase(), Some(TransferPhase::Outgoing(_))) {
+            return Err(SeatVerbError::TransferDisabled);
         }
         let key = self.identity.derive_service_signing_key();
         let material = seat.transfer_out(signed, key).await;

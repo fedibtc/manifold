@@ -91,22 +91,21 @@ impl TransferWorker {
         advertisement: Arc<Notify>,
         wake: TransferWake,
     ) -> Self {
-        // A production MG resumes no stored transfer: it never polls a
-        // source, so nothing transfer-related runs there.
-        let runtime = config.guardian_transfer_enabled().then(|| {
-            let jobs = Arc::new(Jobs {
-                db,
-                config,
-                identity,
-                seats,
-                permits: Semaphore::new(4),
-                advertisement,
-            });
-            let (stop, stop_rx) = watch::channel(false);
-            Runtime {
-                stop,
-                join: tokio::spawn(supervise(jobs, wake.clone(), stop_rx)),
-            }
+        // Stored transfers always resume, whatever the setup-payment policy
+        // says now: the policy gates only the start of a new transfer, so a
+        // guardian is never left half moved.
+        let jobs = Arc::new(Jobs {
+            db,
+            config,
+            identity,
+            seats,
+            permits: Semaphore::new(4),
+            advertisement,
+        });
+        let (stop, stop_rx) = watch::channel(false);
+        let runtime = Some(Runtime {
+            stop,
+            join: tokio::spawn(supervise(jobs, wake.clone(), stop_rx)),
         });
         Self {
             runtime: Mutex::new(runtime),

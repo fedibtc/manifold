@@ -113,7 +113,8 @@ wallets and safe-event journal remain. A failed removal leaves the seat
 historical backups or source copies, and does not authorize general cleanup
 from formation, restart or decommission.
 
-Transfers are enabled in ordinary builds. Recovery assumes latest published
+Transfers are built in ordinary builds and start only while the setup-payment
+policy enables them. Recovery assumes latest published
 backups and no stale local snapshots, as specified in SPEC-guardian-transfer.
 Publication confirmation does not establish freshness against hostile rollback.
 
