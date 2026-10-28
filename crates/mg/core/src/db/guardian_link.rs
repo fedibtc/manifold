@@ -192,17 +192,12 @@ impl Db {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Forget the link. With a device, only that device's link; without one,
-    /// whatever is linked (the operator's revoke). False when nothing matched.
-    pub async fn delete_guardian_link(&self, device_id: Option<&FaId>) -> Result<bool, DbError> {
-        let device_id = device_id.map(|id| id.0.to_string());
-        let result =
-            sqlx::query("DELETE FROM guardian_link WHERE id = ? AND (? IS NULL OR device_id = ?)")
-                .bind(LINK_ID)
-                .bind(&device_id)
-                .bind(&device_id)
-                .execute(self.pool())
-                .await?;
+    /// Forget the link (the operator's revoke). False when nothing was linked.
+    pub async fn delete_guardian_link(&self) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM guardian_link WHERE id = ?")
+            .bind(LINK_ID)
+            .execute(self.pool())
+            .await?;
         Ok(result.rows_affected() == 1)
     }
 

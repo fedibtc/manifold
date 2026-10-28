@@ -591,10 +591,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             // One phone talks to this; a signed verb with a hook URL fits in
             // a few kilobytes.
             IrohProtocol::with_limits_and_request_read_timeout(
-                GuardianLinkServiceServer::new(GuardianLinkRpc::new(
-                    fleet.clone(),
-                    nostr.presence(),
-                )),
+                GuardianLinkServiceServer::new(GuardianLinkRpc::new(fleet.clone())),
                 8 * 1024,
                 4,
                 std::time::Duration::from_secs(5),

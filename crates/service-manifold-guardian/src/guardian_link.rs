@@ -252,30 +252,9 @@ impl core::fmt::Debug for LinkDeviceRequest {
 #[serde(deny_unknown_fields)]
 pub struct LinkDeviceResponse {
     pub version: ProtocolV1,
-    /// The MG's display name, for the app's guardian screen.
+    /// The MG's display name, for the app's confirmation.
     pub fman_name: String,
     pub linked_at: Timestamp,
-}
-
-/// What the MG currently wants the operator to look at.
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GetAttentionRequest {
-    pub ts: Timestamp,
-    pub device_id: FaId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GetAttentionResponse {
-    pub version: ProtocolV1,
-    pub fman_name: String,
-    /// Current reasons, sorted; empty when nothing needs attention.
-    pub reasons: Vec<AttentionReason>,
-    pub checked_at: Timestamp,
-    pub linked_at: Timestamp,
-    pub last_notified_at: Option<Timestamp>,
-    pub callback_expires_at: Timestamp,
 }
 
 /// Replace the hook before it expires, or after the gateway rejected it.
@@ -304,19 +283,6 @@ pub struct RenewCallbackResponse {
     pub version: ProtocolV1,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnlinkDeviceRequest {
-    pub ts: Timestamp,
-    pub device_id: FaId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnlinkDeviceResponse {
-    pub version: ProtocolV1,
-}
-
 /// Device-signed verbs reuse the FI request envelope with their own labels:
 /// the signer field carries the device key the link established, and the
 /// labels keep a device signature from replaying as any FI verb.
@@ -340,9 +306,7 @@ macro_rules! device_signed_requests {
 }
 
 device_signed_requests! {
-    GetAttentionRequest => "guardian_link/get_attention",
     RenewCallbackRequest => "guardian_link/renew_callback",
-    UnlinkDeviceRequest => "guardian_link/unlink_device",
 }
 
 /// Service failures as the app sees them; transport failures fold in through
@@ -389,23 +353,11 @@ pub trait GuardianLinkService {
         request: LinkDeviceRequest,
     ) -> GuardianLinkResult<LinkDeviceResponse>;
 
-    /// Read what currently needs attention.
-    async fn get_attention(
-        &self,
-        request: SignedRequest<GetAttentionRequest>,
-    ) -> GuardianLinkResult<GetAttentionResponse>;
-
     /// Replace the hook the MG invokes.
     async fn renew_callback(
         &self,
         request: SignedRequest<RenewCallbackRequest>,
     ) -> GuardianLinkResult<RenewCallbackResponse>;
-
-    /// Forget this device; the MG stops notifying it.
-    async fn unlink_device(
-        &self,
-        request: SignedRequest<UnlinkDeviceRequest>,
-    ) -> GuardianLinkResult<UnlinkDeviceResponse>;
 }
 
 #[cfg(test)]

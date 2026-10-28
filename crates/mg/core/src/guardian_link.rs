@@ -27,10 +27,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fedi_decentralized_domain::ProtocolV1;
 use fedi_decentralized_service_manifold_guardian::{
     AttentionReason, DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput,
-    FaSignedRequest, GetAttentionRequest, GetAttentionResponse, GuardianLinkError,
-    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, LinkDeviceRequest,
-    LinkDeviceResponse, LinkSecret, MgName, RenewCallbackRequest, RenewCallbackResponse,
-    SeatHealth, SignedRequest, Timestamp, UnlinkDeviceRequest, UnlinkDeviceResponse,
+    FaSignedRequest, GuardianLinkError, GuardianLinkInvite, GuardianLinkResult,
+    GuardianLinkService, LinkDeviceRequest, LinkDeviceResponse, LinkSecret, MgName,
+    RenewCallbackRequest, RenewCallbackResponse, SeatHealth, SignedRequest, Timestamp,
 };
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -196,7 +195,7 @@ impl Fleet {
     /// The operator's revoke: forget the device and close any open offer.
     pub async fn revoke_guardian_link(&self) -> anyhow::Result<bool> {
         *self.guardian_link.offer.lock().expect("offer lock") = None;
-        let removed = self.db().delete_guardian_link(None).await?;
+        let removed = self.db().delete_guardian_link().await?;
         self.guardian_link.changed.notify_one();
         Ok(removed)
     }
@@ -522,12 +521,11 @@ async fn tick(
 #[derive(Clone)]
 pub struct GuardianLinkRpc {
     fleet: Arc<Fleet>,
-    presence: watch::Receiver<DirectoryPresence>,
 }
 
 impl GuardianLinkRpc {
-    pub fn new(fleet: Arc<Fleet>, presence: watch::Receiver<DirectoryPresence>) -> Self {
-        Self { fleet, presence }
+    pub fn new(fleet: Arc<Fleet>) -> Self {
+        Self { fleet }
     }
 
     /// Verify a device-signed verb and require the signer to be the linked
@@ -535,7 +533,7 @@ impl GuardianLinkRpc {
     async fn authorize<T: FaSignedRequest>(
         &self,
         request: &SignedRequest<T>,
-    ) -> GuardianLinkResult<(T, GuardianLinkRecord)> {
+    ) -> GuardianLinkResult<T> {
         let verified = request
             .verify(Timestamp(now_secs()))
             .map_err(|_| GuardianLinkError::Unauthorized)?;
@@ -549,7 +547,7 @@ impl GuardianLinkRpc {
         if link.device_id != *verified.signer() {
             return Err(GuardianLinkError::Unauthorized);
         }
-        Ok((verified.into_inner(), link))
+        Ok(verified.into_inner())
     }
 }
 
@@ -602,35 +600,11 @@ impl GuardianLinkService for GuardianLinkRpc {
         })
     }
 
-    async fn get_attention(
-        &self,
-        request: SignedRequest<GetAttentionRequest>,
-    ) -> GuardianLinkResult<GetAttentionResponse> {
-        let (_, link) = self.authorize(&request).await?;
-        let presence = self.presence.borrow().clone();
-        let reasons = self
-            .fleet
-            .attention_reasons(&presence)
-            .await
-            .map_err(|error| internal("get_attention", &error))?;
-        Ok(GetAttentionResponse {
-            version: ProtocolV1,
-            fman_name: self.fleet.fman_name().to_string(),
-            reasons: reasons.into_iter().collect(),
-            checked_at: Timestamp(now_secs()),
-            linked_at: Timestamp(u64::try_from(link.linked_at_ms / 1000).unwrap_or(0)),
-            last_notified_at: link
-                .last_notified_at_ms
-                .map(|at_ms| Timestamp(u64::try_from(at_ms / 1000).unwrap_or(0))),
-            callback_expires_at: Timestamp(link.callback_expires_at),
-        })
-    }
-
     async fn renew_callback(
         &self,
         request: SignedRequest<RenewCallbackRequest>,
     ) -> GuardianLinkResult<RenewCallbackResponse> {
-        let (request, _) = self.authorize(&request).await?;
+        let request = self.authorize(&request).await?;
         self.fleet
             .validate_guardian_link_callback(&request.callback)?;
         let renewed = self
@@ -648,22 +622,6 @@ impl GuardianLinkService for GuardianLinkRpc {
         }
         self.fleet.guardian_link.changed.notify_one();
         Ok(RenewCallbackResponse {
-            version: ProtocolV1,
-        })
-    }
-
-    async fn unlink_device(
-        &self,
-        request: SignedRequest<UnlinkDeviceRequest>,
-    ) -> GuardianLinkResult<UnlinkDeviceResponse> {
-        let (request, _) = self.authorize(&request).await?;
-        self.fleet
-            .db()
-            .delete_guardian_link(Some(&request.device_id))
-            .await
-            .map_err(|error| internal("unlink_device", &error))?;
-        self.fleet.guardian_link.changed.notify_one();
-        Ok(UnlinkDeviceResponse {
             version: ProtocolV1,
         })
     }

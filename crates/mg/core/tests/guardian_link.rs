@@ -65,7 +65,6 @@ impl CompletionCallbackInvoker for RecordingInvoker {
 struct Harness {
     fleet: Arc<Fleet>,
     invoker: Arc<RecordingInvoker>,
-    presence_tx: watch::Sender<DirectoryPresence>,
     _temp: TempDir,
 }
 
@@ -116,11 +115,9 @@ async fn harness(origin: Option<&str>) -> Harness {
     .unwrap();
     let fleet = Arc::new(fleet);
     fleet.bind_iroh_endpoint_id("e".repeat(52));
-    let (presence_tx, _) = watch::channel(presence(&fleet, OnboardingStatus::Checking));
     Harness {
         fleet,
         invoker,
-        presence_tx,
         _temp: temp,
     }
 }
@@ -163,7 +160,7 @@ fn far_future() -> Timestamp {
 
 /// Link a fresh device through the RPC, the way the app does.
 async fn link(harness: &Harness) -> (GuardianLinkRpc, Keypair, FaId) {
-    let rpc = GuardianLinkRpc::new(harness.fleet.clone(), harness.presence_tx.subscribe());
+    let rpc = GuardianLinkRpc::new(harness.fleet.clone());
     let invite = harness.fleet.create_guardian_link_offer().unwrap();
     let (key, device_id) = device();
     rpc.link_device(LinkDeviceRequest {
@@ -439,7 +436,7 @@ async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
 #[tokio::test]
 async fn link_needs_the_open_offer_and_a_hook_under_the_gateway() {
     let h = harness(Some(ORIGIN)).await;
-    let rpc = GuardianLinkRpc::new(h.fleet.clone(), h.presence_tx.subscribe());
+    let rpc = GuardianLinkRpc::new(h.fleet.clone());
     let (_, device_id) = device();
     let request = |secret: LinkSecret, callback: DkgCompletionCallback| LinkDeviceRequest {
         version: ProtocolV1,
@@ -538,54 +535,36 @@ async fn signed_verbs_accept_only_the_linked_device() {
     let h = harness(Some(ORIGIN)).await;
     let (rpc, key, device_id) = link(&h).await;
     let (other_key, other_id) = device();
-    let signed = |key: &Keypair, device_id: FaId| {
+    let renew = |key: &Keypair, device_id: FaId, ts: u64, path: &str| {
         SignedRequest::create(
-            &GetAttentionRequest {
-                ts: Timestamp(now_secs()),
+            &RenewCallbackRequest {
+                ts: Timestamp(ts),
                 device_id,
+                callback: hook(path),
+                callback_expires_at: Timestamp(now_secs() + 60),
             },
             key,
         )
         .unwrap()
     };
     assert_eq!(
-        rpc.get_attention(signed(&other_key, other_id))
+        rpc.renew_callback(renew(&other_key, other_id, now_secs(), "h9/s9"))
             .await
             .unwrap_err(),
         GuardianLinkError::Unauthorized
     );
     // A stale timestamp is the same coarse refusal.
-    let stale = SignedRequest::create(
-        &GetAttentionRequest {
-            ts: Timestamp(now_secs() - 2 * 3600),
-            device_id,
-        },
-        &key,
-    )
-    .unwrap();
     assert_eq!(
-        rpc.get_attention(stale).await.unwrap_err(),
+        rpc.renew_callback(renew(&key, device_id, now_secs() - 2 * 3600, "h9/s9"))
+            .await
+            .unwrap_err(),
         GuardianLinkError::Unauthorized
     );
-    let attention = rpc.get_attention(signed(&key, device_id)).await.unwrap();
-    assert_eq!(attention.fman_name, h.fleet.fman_name().to_string());
-    assert!(attention.reasons.is_empty());
 
     // Renewal swaps the hook; the next notification uses it.
-    rpc.renew_callback(
-        SignedRequest::create(
-            &RenewCallbackRequest {
-                ts: Timestamp(now_secs()),
-                device_id,
-                callback: hook("h2/s2"),
-                callback_expires_at: Timestamp(now_secs() + 60),
-            },
-            &key,
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
+    rpc.renew_callback(renew(&key, device_id, now_secs(), "h2/s2"))
+        .await
+        .unwrap();
     let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
     assert!(
         link.callback
@@ -595,20 +574,11 @@ async fn signed_verbs_accept_only_the_linked_device() {
     );
     assert_eq!(link.callback_expires_at, now_secs() + 60);
 
-    rpc.unlink_device(
-        SignedRequest::create(
-            &UnlinkDeviceRequest {
-                ts: Timestamp(now_secs()),
-                device_id,
-            },
-            &key,
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
+    // After the host unlinks on the dashboard, the phone learns on its next
+    // renewal that it is no longer linked.
+    h.fleet.revoke_guardian_link().await.unwrap();
     assert_eq!(
-        rpc.get_attention(signed(&key, device_id))
+        rpc.renew_callback(renew(&key, device_id, now_secs(), "h3/s3"))
             .await
             .unwrap_err(),
         GuardianLinkError::NotLinked
