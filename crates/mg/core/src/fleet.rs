@@ -45,6 +45,7 @@ use crate::facts::{PortBase, SeatPorts};
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
+use crate::reach::{ReachLog, ReachReport, SeatPeers, peer_rows};
 use crate::seat::{
     PaymentClaimStatus, Seat, SeatDurableState, SeatReport, SeatRuntimeDependencies, SeatSummary,
     SeatVerbError,
@@ -368,6 +369,8 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// How long federation calls took, for the operator's Reach view.
+    reach: ReachLog,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -574,6 +577,7 @@ impl Fleet {
             telemetry_registration_changed: Notify::new(),
             advertisement_changed,
             seat_readiness: Mutex::new(None),
+            reach: ReachLog::default(),
         };
         Ok(fleet)
     }
@@ -1224,6 +1228,60 @@ impl Fleet {
         }
         self.db.set_payout_destination(destination).await?;
         Ok(())
+    }
+
+    pub fn reach_log(&self) -> &ReachLog {
+        &self.reach
+    }
+
+    /// Call timings, plus how each running seat's `fedimintd` reaches its
+    /// fellow guardians. Seats are asked concurrently, each bounded by the
+    /// API request timeout.
+    pub async fn reach_report(&self) -> ReachReport {
+        let seats: Vec<Arc<Seat>> = self
+            .seats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|seat| !seat.is_decommissioned() && seat.cached_invite_code().is_some())
+            .cloned()
+            .collect();
+        let mut asked: Vec<SeatId> = seats
+            .iter()
+            .map(|seat| seat.facts().seat_id.clone())
+            .collect();
+        let mut probes = tokio::task::JoinSet::new();
+        for seat in seats {
+            probes.spawn(async move { (seat.facts().seat_id.clone(), seat.peer_links().await) });
+        }
+        let mut rows = Vec::new();
+        while let Some(done) = probes.join_next().await {
+            let Ok((seat_id, links)) = done else { continue };
+            asked.retain(|id| *id != seat_id);
+            rows.push(match links {
+                Ok(links) => SeatPeers {
+                    seat_id,
+                    peers: peer_rows(links),
+                    peers_error: None,
+                },
+                Err(error) => SeatPeers {
+                    seat_id,
+                    peers: Vec::new(),
+                    peers_error: Some(error.to_string()),
+                },
+            });
+        }
+        // A probe that panicked answered nothing: say so rather than drop its seat.
+        rows.extend(asked.into_iter().map(|seat_id| SeatPeers {
+            seat_id,
+            peers: Vec::new(),
+            peers_error: Some("the probe failed unexpectedly".to_owned()),
+        }));
+        rows.sort_by(|a, b| a.seat_id.cmp(&b.seat_id));
+        ReachReport {
+            calls: self.reach.snapshot(),
+            seats: rows,
+        }
     }
 
     /// What payers have remitted into this seat's guardian-fee account, and

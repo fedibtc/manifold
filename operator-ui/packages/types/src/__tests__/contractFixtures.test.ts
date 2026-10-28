@@ -276,6 +276,7 @@ const adminRequestsMirror = {
   SetPrice: { SetPrice: { price_msats: 50_000_000 } },
   ShowCapacity: 'ShowCapacity',
   ShowSeatReadiness: 'ShowSeatReadiness',
+  ShowReach: 'ShowReach',
   SetCapacity: { SetCapacity: { max_seats: 4 } },
   ConfigureInitialOffer: {
     ConfigureInitialOffer: { max_seats: 4, price_msats: 50_000_000 }

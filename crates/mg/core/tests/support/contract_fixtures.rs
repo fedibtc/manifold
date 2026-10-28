@@ -344,7 +344,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         },
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
         AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
-        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: Some(4) },
+        AdminRequest::ShowSeatReadiness => AdminRequest::ShowReach,
+        AdminRequest::ShowReach => AdminRequest::SetCapacity { max_seats: Some(4) },
         AdminRequest::SetCapacity { .. } => AdminRequest::ListPaymentFederations,
         AdminRequest::ListPaymentFederations => AdminRequest::PayoutDestination,
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
@@ -410,6 +411,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::SetPrice { .. } => "SetPrice",
         AdminRequest::ShowCapacity => "ShowCapacity",
         AdminRequest::ShowSeatReadiness => "ShowSeatReadiness",
+        AdminRequest::ShowReach => "ShowReach",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",
         AdminRequest::PayoutDestination => "PayoutDestination",

@@ -59,6 +59,9 @@ pub enum AdminRequest {
     ShowCapacity,
     /// The latest new-seat readiness report, absent before the first run.
     ShowSeatReadiness,
+    /// How long recent guardian-fee calls took per seat, and which fellow
+    /// guardians each running seat currently reaches.
+    ShowReach,
     /// Replace the operator's admission ceiling without moving it below
     /// active seats. `null` is automatic: the memory and policy limits decide.
     SetCapacity {
@@ -527,31 +530,66 @@ pub(crate) async fn dispatch(
         | AdminRequest::SendSupportMessage { .. }
         | AdminRequest::MarkSupportRead { .. }) => support.answer(request).await,
         AdminRequest::GuardianFees { seat_id, limit } => {
-            let status = fleet.guardian_fee_status(&seat_id).await?;
-            let policy = fleet.guardian_fee_policy(&seat_id).await;
-            let remittances = fleet
-                .guardian_fee_remittances(&seat_id, limit.unwrap_or(20))
+            let reach = fleet.reach_log();
+            let status = reach
+                .time(&seat_id, "fee_status", fleet.guardian_fee_status(&seat_id))
                 .await?;
-            let wallet = fleet.guardian_fee_drain_status(&seat_id).await?;
+            let policy = fleet.guardian_fee_policy(&seat_id).await;
+            let remittances = reach
+                .time(
+                    &seat_id,
+                    "fee_remittances",
+                    fleet.guardian_fee_remittances(&seat_id, limit.unwrap_or(20)),
+                )
+                .await?;
+            let wallet = reach
+                .time(
+                    &seat_id,
+                    "fee_drain",
+                    fleet.guardian_fee_drain_status(&seat_id),
+                )
+                .await?;
+            let total_remitted = reach
+                .time(
+                    &seat_id,
+                    "fee_total",
+                    fleet.guardian_fee_total_remitted(&seat_id),
+                )
+                .await?;
             Ok(guardian_fees_json(
                 &seat_id,
                 &status,
                 fleet.guardian_fee_account(&seat_id)?,
                 wallet,
-                fleet.guardian_fee_total_remitted(&seat_id).await?.msats,
+                total_remitted.msats,
                 policy,
                 remittances,
             ))
         }
         AdminRequest::CollectGuardianFees { seat_id } => Ok(collect_guardian_fees_json(
-            fleet.guardian_fee_collect(&seat_id).await?,
+            fleet
+                .reach_log()
+                .time(
+                    &seat_id,
+                    "fee_collect",
+                    fleet.guardian_fee_collect(&seat_id),
+                )
+                .await?,
         )),
         AdminRequest::SweepGuardianFees {
             seat_id,
             request_id,
         } => Ok(serde_json::to_value(
-            fleet.payout_guardian_fees(&seat_id, &request_id).await?,
+            fleet
+                .reach_log()
+                .time(
+                    &seat_id,
+                    "fee_sweep",
+                    fleet.payout_guardian_fees(&seat_id, &request_id),
+                )
+                .await?,
         )?),
+        AdminRequest::ShowReach => Ok(serde_json::to_value(fleet.reach_report().await)?),
         AdminRequest::Onboarding => Ok(fleet_status_json(fleet, &directory.borrow())),
         AdminRequest::RefreshHolderAuthorizations => {
             authorizations.refresh().await?;

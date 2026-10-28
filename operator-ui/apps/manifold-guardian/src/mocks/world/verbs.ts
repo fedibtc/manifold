@@ -332,6 +332,37 @@ const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
   };
 };
 
+// One slow federation and one unreachable peer, so the Reach card's warning
+// states are visible in the dev server.
+const showReach: Verb<'ShowReach'> = () => {
+  const seats = getState().seats.filter((seat) => seat.fees !== undefined);
+  return {
+    calls: seats.map((seat, index) => ({
+      seat_id: seat.seat_id,
+      op: 'fee_drain',
+      last_ms: index === 0 ? 64_300 : 700,
+      max_ms: index === 0 ? 65_400 : 900,
+      last_at_ms: Date.now() - 60_000,
+      count: 12,
+      errors: 0,
+      last_ok: true
+    })),
+    seats: seats.map((seat, index) => ({
+      seat_id: seat.seat_id,
+      peers: [
+        { peer_id: 1, connected: true, conn_type: 'direct', rtt_ms: 40 },
+        {
+          peer_id: 2,
+          connected: index !== 1,
+          conn_type: index === 1 ? null : 'relay',
+          rtt_ms: index === 1 ? null : 330
+        }
+      ],
+      peers_error: null
+    }))
+  };
+};
+
 // The durable ceiling never moves below seats that are still active,
 // mirroring Db::set_max_seats and its error text.
 const setCapacity: Verb<'SetCapacity'> = ({ max_seats }) => {
@@ -502,6 +533,7 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
   ShowSeatReadiness: showSeatReadiness,
+  ShowReach: showReach,
   SetCapacity: setCapacity,
   ListPaymentFederations: listPaymentFederations,
   PayoutDestination: payoutDestination,

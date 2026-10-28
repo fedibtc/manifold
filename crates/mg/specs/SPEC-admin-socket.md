@@ -111,6 +111,13 @@ the fleet.
   seconds of unbroken up slots until the gate passes that window (zero when it
   passes), computed by the daemon from the same moving averages so the UI
   holds no copy of the formula.
+- `ShowReach` returns `{ calls, seats }`: per seat and call kind, how long the
+  guardian-fee calls to its federation took (last, longest, count, failures; a
+  call whose caller gave up counts as a failure), and for every running seat
+  how its `fedimintd` reaches each fellow guardian (connected, connection type,
+  round-trip time) or why it could not be asked. In memory only, so it starts
+  empty after a restart; peers are probed when asked, each bounded by the API
+  request timeout.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.

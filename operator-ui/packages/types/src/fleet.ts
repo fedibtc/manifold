@@ -302,6 +302,39 @@ export interface ShowSeatReadinessResponse {
   ready_for_new_seats: boolean;
   report: ReadinessReport | null;
 }
+
+/** How long one kind of guardian-fee call took for a seat. A call whose caller
+ *  gave up counts as an error, with the time it had been running. */
+export interface ReachCall {
+  seat_id: SeatId;
+  op: string;
+  last_ms: number;
+  max_ms: number;
+  last_at_ms: number;
+  count: number;
+  errors: number;
+  last_ok: boolean;
+}
+
+/** One fellow guardian as the seat's own fedimintd sees it. */
+export interface ReachPeer {
+  peer_id: number;
+  connected: boolean;
+  conn_type: string | null;
+  rtt_ms: number | null;
+}
+
+export interface ReachSeat {
+  seat_id: SeatId;
+  peers: ReachPeer[];
+  /** Why the seat could not be asked; null when it answered. */
+  peers_error: string | null;
+}
+
+export interface ShowReachResponse {
+  calls: ReachCall[];
+  seats: ReachSeat[];
+}
 export type SetCapacityResponse = CapacityResponse;
 export interface ConfigureInitialOfferResponse extends ShowPlansResponse {
   onboarding: 'complete';
@@ -480,6 +513,7 @@ export interface AdminResponseByName {
   SetPrice: SetPriceResponse;
   ShowCapacity: ShowCapacityResponse;
   ShowSeatReadiness: ShowSeatReadinessResponse;
+  ShowReach: ShowReachResponse;
   SetCapacity: SetCapacityResponse;
   ListPaymentFederations: ListPaymentFederationsResponse;
   PayoutDestination: PayoutDestinationResponse;

@@ -4,21 +4,24 @@
 //! encoding, endpoint routing, authentication envelopes, and transports are
 //! delegated to Fedimint's `DynGlobalApi` and module API extension traits.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::Duration;
 
 use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _, FederationError, ServerError};
 use fedimint_connectors::ConnectorRegistry;
+use fedimint_core::PeerId;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::endpoint_constants::{
-    CLIENT_CONFIG_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+    CLIENT_CONFIG_ENDPOINT, P2P_CONNECTION_STATUS_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::ADD_GATEWAY_ENDPOINT;
 use fedimint_meta_client::api::MetaFederationApi as _;
 use fedimint_meta_common::{MetaConsensusValue, MetaKey, MetaValue};
+use serde::Deserialize;
 use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,6 +40,16 @@ pub enum FedimintApiError {
     /// The server answered something the native client could not decode.
     #[error("fedimintd returned an invalid {method} response: {detail}")]
     InvalidResponse { method: String, detail: String },
+}
+
+/// The wire shape of fedimint's `P2PConnectionStatus`, which this crate does
+/// not depend on: how this guardian currently reaches one fellow guardian.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PeerLink {
+    /// `direct`, `relay` or `mixed`; absent when unknown.
+    pub conn_type: Option<String>,
+    /// Round-trip time; only iroh connections report one.
+    pub rtt: Option<Duration>,
 }
 
 /// Native-client adapter for one local fedimintd, carrying its durable setup auth.
@@ -94,6 +107,19 @@ impl FedimintApi {
             self.api
                 .clone()
                 .request_admin_no_auth("invite_code", ApiRequestErased::default()),
+        )
+        .await
+    }
+
+    /// Every fellow guardian, `None` while disconnected from it.
+    pub async fn p2p_connection_status(
+        &self,
+    ) -> Result<BTreeMap<PeerId, Option<PeerLink>>, FedimintApiError> {
+        self.request(
+            P2P_CONNECTION_STATUS_ENDPOINT,
+            self.api
+                .clone()
+                .request_admin_no_auth(P2P_CONNECTION_STATUS_ENDPOINT, ApiRequestErased::default()),
         )
         .await
     }

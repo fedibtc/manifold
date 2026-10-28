@@ -31,6 +31,7 @@ pub mod legacy_layout;
 pub mod onboarding;
 pub mod payout_wire;
 pub mod push_callback;
+pub mod reach;
 pub mod remittance_metadata;
 pub mod restore;
 pub mod seat;

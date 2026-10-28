@@ -237,6 +237,9 @@ pub(crate) struct Seat {
     commands: mpsc::Sender<SeatCommand>,
     data_dir: PathBuf,
     state: watch::Sender<SeatRuntimeFacts>,
+    /// A second handle on the loop's `FedimintApi`, for read-only reach probes;
+    /// absent for a seat decommissioned at start.
+    reach_api: Option<FedimintApi>,
 }
 
 /// The sole publisher of an active seat's lifecycle and owner of its
@@ -590,9 +593,10 @@ impl Seat {
         // Keep only the next lifecycle command queued behind the one in progress.
         let (commands, command_rx) = mpsc::channel(1);
 
-        if decommissioned_at_ms.is_none() {
+        let reach_api = if decommissioned_at_ms.is_none() {
             let fedimint_api =
                 FedimintApi::new(fedimint_connectors.clone(), ports.api(), &keys.api_auth);
+            let reach_api = fedimint_api.clone();
             let seat_loop = SeatLoop {
                 facts: facts.clone(),
                 db,
@@ -620,11 +624,13 @@ impl Seat {
             tokio::spawn(async move {
                 seat_loop.run(command_rx).await;
             });
+            Some(reach_api)
         } else {
             // Closing the receiver makes every lifecycle request fail without
             // keeping an otherwise inert task alive.
             drop(command_rx);
-        }
+            None
+        };
 
         Arc::new(Self {
             facts,
@@ -632,7 +638,29 @@ impl Seat {
             commands,
             data_dir,
             state,
+            reach_api,
         })
+    }
+
+    /// How this seat's `fedimintd` currently reaches its fellow guardians.
+    /// Read-only and unauthenticated, so it deliberately bypasses the
+    /// lifecycle command queue: a slow probe must never sit in front of one.
+    pub(crate) async fn peer_links(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<fedimint_core::PeerId, Option<crate::fedimint_api::PeerLink>>,
+        FedimintApiError,
+    > {
+        let running = {
+            let state = self.state.borrow();
+            state.formed_invite.is_some() && matches!(state.health, SeatHealth::Healthy)
+        };
+        match (&self.reach_api, running) {
+            (Some(api), true) => api.p2p_connection_status().await,
+            _ => Err(FedimintApiError::Unreachable(
+                "seat is not running".to_owned(),
+            )),
+        }
     }
 
     pub(crate) fn facts(&self) -> &SeatFacts {

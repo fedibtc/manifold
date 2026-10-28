@@ -1,0 +1,19 @@
+.mono {
+  @apply uMono;
+}
+
+.idRow {
+  @apply uCopyRow whitespace-nowrap;
+}
+
+.cell {
+  @apply flex flex-col gap-1;
+}
+
+.muted {
+  @apply uMutedSm;
+}
+
+.empty {
+  @apply uTableEmpty;
+}
