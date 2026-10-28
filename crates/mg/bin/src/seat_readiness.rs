@@ -2,15 +2,14 @@
 //!
 //! An MG that can advertise and sell a seat but cannot reach its relay,
 //! be discovered, or use its Bitcoin backend becomes the cause of a failed
-//! DKG. Each run probes those prerequisites, hands the verdict to the fleet
-//! (which stops advertising and quoting while it fails), and records the
-//! outcome as one shareable event for telemetry.
+//! DKG. This module probes those prerequisites against the endpoint and the
+//! Bitcoin backend; [`mg_core::seat_readiness::run`] turns each probe into a
+//! verdict for the fleet and a shareable telemetry event.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MinUptimePercent};
-use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
+use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_bitcoin_rpc::bitcoind::BitcoindClient;
@@ -24,12 +23,11 @@ use iroh::{Endpoint, RelayUrl, Watcher as _};
 use mg_core::fleet::Fleet;
 use mg_core::seat_process::{BitcoinBackend, SeatProcessConfig};
 use mg_core::seat_readiness::{
-    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeScores,
+    self, ReadinessOutcome as Outcome, ReadinessProbe, ReadinessReport as Report,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 /// A run retries failed prerequisites for about a minute, which also covers
 /// relay connection and discovery publication after startup.
 const RETRY_BUDGET: Duration = Duration::from_secs(60);
@@ -75,68 +73,19 @@ impl SeatReadiness {
         })
     }
 
-    /// Run until aborted: probe, record this uptime slot, report, and wait
-    /// for the next slot while ready or a minute while failing.
+    /// Run the readiness worker on this MG's probes until aborted
+    /// ([`mg_core::seat_readiness::run`]).
     pub(super) fn spawn(
-        mut self,
+        self,
         fleet: Arc<Fleet>,
         setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            loop {
-                let mut report = self.probe().await;
-                // Recording this slot also accounts for every slot since the
-                // last record, such as a restart's downtime.
-                let recorded_at = SystemTime::now();
-                let recorded = match fleet
-                    .record_uptime_slot(recorded_at, report.prerequisites_passed())
-                    .await
-                {
-                    Ok(scores) => Some(scores),
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to record an uptime slot");
-                        None
-                    }
-                };
-                let scores = recorded.unwrap_or(UptimeScores {
-                    day: 0.0,
-                    week: 0.0,
-                    month: 0.0,
-                });
-                let min = setup_payment_policy
-                    .borrow()
-                    .as_ref()
-                    .map_or_else(MinUptimePercent::default, |policy| {
-                        policy.min_uptime_percent()
-                    });
-                report.uptime = scores.outcome(min);
-                // The operator sees no figures rather than zeros it cannot trust.
-                report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
-                let ready = report.ready();
-                journal_readiness(&report, scores, min);
-                if let Err(error) = fleet.set_seat_readiness(report).await {
-                    tracing::warn!(%error, "failed to apply the seat readiness verdict");
-                }
-                tokio::time::sleep(if ready {
-                    until_slot_after(recorded_at, SystemTime::now())
-                } else {
-                    NOT_READY_INTERVAL
-                })
-                .await;
-            }
-        })
-    }
-
-    /// Probe the prerequisites, retrying failures. The caller sets the
-    /// uptime outcome.
-    async fn probe(&mut self) -> Report {
-        let give_up = Instant::now() + RETRY_BUDGET;
-        let mut report = self.probe_once().await;
-        while !report.prerequisites_passed() && Instant::now() + RETRY_DELAY < give_up {
-            tokio::time::sleep(RETRY_DELAY).await;
-            report = self.probe_once().await;
-        }
-        report
+        tokio::spawn(seat_readiness::run(
+            self,
+            fleet,
+            setup_payment_policy,
+            SystemTime::now,
+        ))
     }
 
     async fn probe_once(&mut self) -> Report {
@@ -167,6 +116,7 @@ impl SeatReadiness {
             relay,
             discovery,
             bitcoin,
+            version: Outcome::NotApplicable,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }
@@ -211,21 +161,18 @@ impl SeatReadiness {
     }
 }
 
-/// The time from now to just past the start of the slot after the one
-/// `recorded_at` falls in, so a ready MG runs once in every slot and misses
-/// none, even when recording crossed a boundary.
-fn until_slot_after(recorded_at: SystemTime, now: SystemTime) -> Duration {
-    let recorded = recorded_at
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is after the Unix epoch")
-        .as_secs();
-    let next =
-        UNIX_EPOCH + Duration::from_secs((recorded / UPTIME_SLOT_SECS + 1) * UPTIME_SLOT_SECS + 1);
-    // A clock set back while recording must not stretch the wait past one
-    // slot, which would leave the last verdict standing unchecked.
-    next.duration_since(now)
-        .unwrap_or(Duration::ZERO)
-        .min(Duration::from_secs(UPTIME_SLOT_SECS + 1))
+#[async_trait::async_trait]
+impl ReadinessProbe for SeatReadiness {
+    /// Probe the prerequisites, retrying failures for about a minute.
+    async fn probe(&mut self) -> Report {
+        let give_up = Instant::now() + RETRY_BUDGET;
+        let mut report = self.probe_once().await;
+        while !report.prerequisites_passed() && Instant::now() + RETRY_DELAY < give_up {
+            tokio::time::sleep(RETRY_DELAY).await;
+            report = self.probe_once().await;
+        }
+        report
+    }
 }
 
 /// Check Bitcoin on a blocking thread with a client built for this attempt.
@@ -290,27 +237,6 @@ fn bitcoin_rpc(backend: &BitcoinBackend) -> Result<DynServerBitcoinRpc, ()> {
     Ok(rpc)
 }
 
-/// Journal one completed run for telemetry, with each score to the 0.1% the
-/// gate compares at.
-fn journal_readiness(report: &Report, scores: UptimeScores, min: MinUptimePercent) {
-    let pct = |score: f64| (score * 1000.0).round() / 10.0;
-    tracing::info!(
-        safe_to_share = true,
-        ready = report.ready(),
-        relay = report.relay.as_str(),
-        discovery = report.discovery.as_str(),
-        bitcoin = report.bitcoin.as_str(),
-        uptime = report.uptime.as_str(),
-        uptime_1d_pct = pct(scores.day),
-        uptime_7d_pct = pct(scores.week),
-        uptime_30d_pct = pct(scores.month),
-        min_uptime_1d_pct = min.day,
-        min_uptime_7d_pct = min.week,
-        min_uptime_30d_pct = min.month,
-        "{SEAT_READINESS_EVENT}"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -321,94 +247,6 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-
-    /// The journaled run decodes as the telemetry collector reads it.
-    #[test]
-    fn a_journaled_run_decodes_as_the_shared_readiness_event() {
-        use fedi_decentralized_service_manifold_guardian::SeatReadinessEvent;
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        let directory = tempfile::tempdir().unwrap();
-        let subscriber =
-            tracing_subscriber::registry().with(safe_tracing::layer(directory.path()).unwrap());
-        let report = Report {
-            checked_at_ms: 1,
-            relay: Outcome::Pass,
-            discovery: Outcome::NotApplicable,
-            bitcoin: Outcome::Pass,
-            uptime: Outcome::WeekUptimeLow,
-            uptime_comparison: None,
-        };
-        let scores = UptimeScores {
-            day: 0.9944,
-            week: 0.881,
-            month: 0.95,
-        };
-        tracing::subscriber::with_default(subscriber, || {
-            journal_readiness(&report, scores, MinUptimePercent::default());
-        });
-
-        let mut records = Vec::new();
-        for entry in std::fs::read_dir(directory.path()).unwrap() {
-            let path = entry.unwrap().path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "jsonl")
-            {
-                for line in std::fs::read_to_string(path).unwrap().lines() {
-                    records.push(serde_json::from_str::<Value>(line).unwrap());
-                }
-            }
-        }
-        let [record] = records.as_slice() else {
-            panic!("expected one journaled run, got {records:?}");
-        };
-        assert_eq!(record["fields"]["message"], SEAT_READINESS_EVENT);
-        // The collector keeps only records whose timestamp parses as RFC 3339.
-        humantime::parse_rfc3339(record["timestamp"].as_str().unwrap()).unwrap();
-        let min = MinUptimePercent::default();
-        assert_eq!(
-            serde_json::from_value::<SeatReadinessEvent>(record["fields"].clone()).unwrap(),
-            SeatReadinessEvent {
-                ready: false,
-                relay: "pass".into(),
-                discovery: "not_applicable".into(),
-                bitcoin: "pass".into(),
-                uptime: Some("uptime_7d_low".into()),
-                uptime_1d_pct: Some(99.4),
-                uptime_7d_pct: Some(88.1),
-                uptime_30d_pct: Some(95.0),
-                min_uptime_1d_pct: Some(f64::from(min.day)),
-                min_uptime_7d_pct: Some(f64::from(min.week)),
-                min_uptime_30d_pct: Some(f64::from(min.month)),
-            }
-        );
-    }
-
-    /// The wait ends just past the start of the slot after the recorded one:
-    /// at once when recording crossed into it, and never more than one slot
-    /// when the clock was set back meanwhile.
-    #[test]
-    fn the_wait_ends_in_the_slot_after_the_recorded_one() {
-        let slot = Duration::from_secs(UPTIME_SLOT_SECS);
-        let second = Duration::from_secs(1);
-        let start = UNIX_EPOCH + slot * 3_000_000;
-        let recorded = start + Duration::from_secs(100);
-        assert_eq!(
-            until_slot_after(recorded, recorded),
-            slot - Duration::from_secs(100) + second
-        );
-        assert_eq!(
-            until_slot_after(recorded, start + slot + second * 5),
-            Duration::ZERO
-        );
-        assert_eq!(
-            until_slot_after(recorded, start + slot - second * 2),
-            second * 3
-        );
-        let set_back_an_hour = recorded - Duration::from_secs(3600);
-        assert_eq!(until_slot_after(recorded, set_back_an_hour), slot + second);
-    }
 
     /// Block 1 of Mutinynet, which fedimintd classifies as Signet.
     const MUTINYNET_BLOCK_1: &str =

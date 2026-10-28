@@ -22,6 +22,7 @@
         "30d": 0,
         "7d": 3000
       }
-    }
+    },
+    "version": "mg_version_too_old"
   }
 }

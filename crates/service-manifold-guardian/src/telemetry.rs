@@ -349,13 +349,16 @@ pub struct SeatCapacityEvent {
 
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
 /// ownership as [`SeatCapacityEvent`]. Releases before 0.1.4 journal no
-/// uptime outcome, scores or minimums.
+/// uptime outcome, scores or minimums, and releases before 0.1.9 no version
+/// outcome.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SeatReadinessEvent {
     pub ready: bool,
     pub relay: String,
     pub discovery: String,
     pub bitcoin: String,
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]

@@ -53,6 +53,11 @@ policy file; set `false` to stop new transfers. Omitted, each environment's
 default applies: on in development and staging, off in production. Transfers
 MGs already stored continue either way.
 
+To stop MGs older than a release from advertising new seats, set
+`"min_mg_version": "0.1.9"` (a SemVer release no newer than `fman_version`).
+Those MGs keep running their seats and show that an update is needed; their
+uptime is not affected. Omitted, there is no minimum.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files, while old
