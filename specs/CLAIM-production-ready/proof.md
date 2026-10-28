@@ -51,6 +51,13 @@ This premise concerns only funds directed through FA-client. The other linked
 component claims remain responsible for funds within their documented
 component-owned boundaries.
 
+## FLIP operational-custody boundary
+
+The FLIP premise supplies operational custody of technically authorized managed
+funds. It does not supply stability investment performance, dependency solvency,
+or legal or economic ownership. The root's funds-protection conclusion retains
+that boundary; this import does not establish the FLIP claim or its premises.
+
 ## Notification boundary
 
 Notifications are non-load-bearing: workflow correctness and recovery do not
