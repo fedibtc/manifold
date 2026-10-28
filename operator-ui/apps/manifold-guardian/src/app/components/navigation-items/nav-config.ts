@@ -12,5 +12,5 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'backup', label: 'Backup', path: '/backup' },
   { key: 'health', label: 'Health', path: '/health' },
   { key: 'support', label: 'Support', path: '/support' },
-  { key: 'fedi-app', label: 'Fedi app', path: '/fedi-app' }
+  { key: 'phone-link', label: 'Phone link', path: '/phone-link' }
 ];

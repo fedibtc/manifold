@@ -692,24 +692,24 @@ export type ScenarioName = keyof typeof builders;
 const notes: Record<ScenarioName, ScenarioNote> = {
   'fedi-app-unavailable': {
     desc: 'No push gateway configured; linking is unavailable.',
-    affects: ['fedi-app']
+    affects: ['phone-link']
   },
-  'fedi-app-unlinked': { desc: 'No linked phone or open offer.', affects: ['fedi-app'] },
+  'fedi-app-unlinked': { desc: 'No linked phone or open offer.', affects: ['phone-link'] },
   'fedi-app-offer': {
     desc: 'An open, mock-only QR offer, expiring in ten minutes.',
-    affects: ['fedi-app']
+    affects: ['phone-link']
   },
   'fedi-app-active': {
-    desc: 'A linked Pixel 8 receiving fleet notifications.',
-    affects: ['fedi-app']
+    desc: 'A linked Pixel 8 receiving notifications.',
+    affects: ['phone-link']
   },
   'fedi-app-terminal': {
     desc: 'The gateway rejected the phone hook; linking again is required.',
-    affects: ['fedi-app']
+    affects: ['phone-link']
   },
   'fedi-app-relinking': {
     desc: 'A stopped link and an open replacement offer coexist.',
-    affects: ['fedi-app']
+    affects: ['phone-link']
   },
   'fresh-fleet': {
     desc: 'Default. Onboarded and authorized, but nothing sold yet: no seats, no payment federations, no price.',

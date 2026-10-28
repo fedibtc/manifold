@@ -2,7 +2,7 @@ import type { GuardianLinkResponse } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { FediAppPage } from '@/pages/fedi-app/FediAppPage';
+import { PhoneLinkPage } from '@/pages/phone-link/PhoneLinkPage';
 import * as adminCallModule from '@/shared/api/adminCall';
 
 const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };
@@ -22,7 +22,7 @@ const renderPage = (response: GuardianLinkResponse) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <FediAppPage />
+      <PhoneLinkPage />
     </QueryClientProvider>
   );
   return adminCall;
@@ -48,7 +48,7 @@ it('should show an open offer and cancel it', async () => {
   const adminCall = renderPage({ ...unlinked, offer });
   expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
   expect(
-    screen.getByText(/Open the Fedi app, go to Guardian link, scan this code/)
+    screen.getByText(/tap Scan/)
   ).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -59,7 +59,7 @@ it('should show the linked device and never claim a notification was sent when n
   renderPage(linked);
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
   expect(screen.getByText('Never')).toBeInTheDocument();
-  expect(screen.getByText('Hook renewal date')).toBeInTheDocument();
+  expect(screen.getByText('Link renews by')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send test notification' })).toBeInTheDocument();
 });
 

@@ -2,7 +2,7 @@ import type { GuardianLinkResponse } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { GuardianLink } from '@/features/fedi-app/components/guardian-link/GuardianLink';
+import { GuardianLink } from '@/features/phone-link/components/guardian-link/GuardianLink';
 import * as adminCallModule from '@/shared/api/adminCall';
 
 const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };

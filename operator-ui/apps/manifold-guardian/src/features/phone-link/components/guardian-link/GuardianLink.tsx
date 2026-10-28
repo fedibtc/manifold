@@ -1,0 +1,186 @@
+import { Banner, Button } from '@operator-ui/common-ui';
+import { QRCodeSVG } from 'qrcode.react';
+import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
+import styles from '@/features/phone-link/components/guardian-link/GuardianLink.module.css';
+import { useGuardianLinkActions } from '@/features/phone-link/components/guardian-link/useGuardianLinkActions';
+import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
+import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
+import { formatCheckedAt, formatDate } from '@/shared/utils/format';
+
+interface GuardianLinkProps extends Record<string, never> {}
+
+const formatDay = (seconds: number) => formatDate(seconds * 1000);
+
+const phoneIcon = (
+  <svg aria-hidden="true" viewBox="0 0 24 24" className={styles.emptyIcon}>
+    <rect x="6" y="2" width="12" height="20" rx="2" />
+
+    <path d="M11 18h2" />
+  </svg>
+);
+
+export const GuardianLink = (_props: GuardianLinkProps) => {
+  const status = useGuardianLink();
+  const { disposition, retry } = useQueryDisposition([status]);
+  const link = status.data?.link;
+  const offer = status.data?.offer;
+  const terminal = link?.delivery.state === 'terminal';
+  const { busy, handleCreate, handleRevoke, handleTest, error, testMessage } =
+    useGuardianLinkActions(link?.linked_at, terminal);
+  const lastNotified =
+    link?.last_notified_at != null ? formatCheckedAt(link.last_notified_at) : 'Never';
+  const linkAgain = (
+    <Button size="small" onClick={handleCreate} disabled={busy}>
+      Link again
+    </Button>
+  );
+
+  return (
+    <QuerySurface disposition={disposition} onRetry={retry}>
+      {status.data &&
+        (status.data.available ? (
+          <div className={styles.root}>
+            {link && (
+              <section className={styles.card}>
+                <header className={styles.cardHead}>
+                  <h2 className={styles.cardTitle}>{link.device_label}</h2>
+
+                  <span className={styles.caption}>Linked phone</span>
+                </header>
+                {terminal && (
+                  <div role="alert">
+                    <Banner
+                      variant="warn"
+                      title="Notifications stopped"
+                      action={linkAgain}
+                    >
+                      The push gateway rejected this phone's notification hook, so this host can't
+                      reach it. Link your phone again to resume notifications.
+                    </Banner>
+                  </div>
+                )}
+
+                <dl className={styles.kv}>
+                  <div className={styles.kvRow}>
+                    <dt className={styles.kvLabel}>Linked since</dt>
+
+                    <dd className={styles.kvValue}>{formatDay(link.linked_at)}</dd>
+                  </div>
+
+                  <div className={styles.kvRow}>
+                    <dt className={styles.kvLabel}>Link renews by</dt>
+
+                    <dd className={styles.kvValue}>{formatDay(link.callback_expires_at)}</dd>
+                  </div>
+
+                  <div className={styles.kvRow}>
+                    <dt className={styles.kvLabel}>Last notification</dt>
+
+                    <dd className={styles.kvValue}>{lastNotified}</dd>
+                  </div>
+                </dl>
+
+                <div className={styles.actions}>
+                  {!terminal && (
+                    <Button onClick={handleTest} disabled={busy}>
+                      Send test notification
+                    </Button>
+                  )}
+
+                  <Button variant="secondary" onClick={handleRevoke} disabled={busy}>
+                    Unlink
+                  </Button>
+                </div>
+                {testMessage && (
+                  <p role="status" className={styles.outcome}>
+                    {testMessage}
+                  </p>
+                )}
+              </section>
+            )}
+            {offer && (
+              <section className={styles.card}>
+                <header className={styles.cardHead}>
+                  <h2 className={styles.cardTitle}>Scan to link your phone</h2>
+                </header>
+
+                <div className={styles.offer}>
+                  <div className={styles.qrBox}>
+                    <QRCodeSVG
+                      value={offer.uri}
+                      size={208}
+                      marginSize={2}
+                      role="img"
+                      aria-label="Guardian link QR code"
+                    />
+                  </div>
+
+                  <div className={styles.offerBody}>
+                    <ol className={styles.steps}>
+                      <li>Open the app on your phone and tap Scan.</li>
+
+                      <li>Scan this code.</li>
+
+                      <li>Wait for the phone to show up on this page. The rest happens on its own.</li>
+                    </ol>
+
+                    <p className={styles.caption}>
+                      This code works once and expires at {formatCheckedAt(offer.expires_at)}.
+                    </p>
+                    {link && (
+                      <p className={styles.caption}>
+                        Canceling also unlinks {link.device_label}.
+                      </p>
+                    )}
+
+                    <div className={styles.actions}>
+                      <Button variant="secondary" onClick={handleRevoke} disabled={busy}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+            {!link && !offer && (
+              <section className={styles.card}>
+                <div className={styles.empty}>
+                  {phoneIcon}
+
+                  <h2 className={styles.emptyTitle}>No phone linked</h2>
+
+                  <p className={styles.emptyText}>
+                    Show a code here and scan it with your phone. The link sets itself up.
+                  </p>
+
+                  <Button onClick={handleCreate} disabled={busy}>
+                    Link a phone
+                  </Button>
+                </div>
+              </section>
+            )}
+            {error && (
+              <p role="alert" className={styles.error}>
+                {error}
+              </p>
+            )}
+          </div>
+        ) : (
+          <section className={styles.card}>
+            <div className={styles.empty}>
+              {phoneIcon}
+
+              <h2 className={styles.emptyTitle}>Phone notifications are off</h2>
+
+              <p className={styles.emptyText}>
+                This host has no push gateway configured, so it can't notify a phone. To turn
+                notifications on, set{' '}
+                <code className={styles.code}>FLEET_MANAGER_PUSH_GATEWAY_ORIGIN</code> and restart
+                Manifold Fedimint Guardian.
+              </p>
+            </div>
+          </section>
+        ))}
+    </QuerySurface>
+  );
+};

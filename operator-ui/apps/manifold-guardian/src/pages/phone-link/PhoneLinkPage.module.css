@@ -7,3 +7,6 @@
 .heading {
   @apply uPageHeading;
 }
+.intro {
+  @apply uIntro;
+}

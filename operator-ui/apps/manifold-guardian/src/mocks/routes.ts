@@ -12,7 +12,7 @@ const ROUTES: readonly { pattern: RegExp; key: RouteKey }[] = [
   { pattern: /^\/authorization\/?$/, key: 'authorization' },
   { pattern: /^\/health\/?$/, key: 'health' },
   { pattern: /^\/support\/?$/, key: 'support' },
-  { pattern: /^\/fedi-app\/?$/, key: 'fedi-app' },
+  { pattern: /^\/phone-link\/?$/, key: 'phone-link' },
   { pattern: /^\/$/, key: 'overview' }
 ];
 

@@ -1,0 +1,66 @@
+.root {
+  @apply uStack6;
+}
+.card {
+  @apply flex flex-col gap-4 rounded-card border border-muted bg-surface p-6;
+}
+.cardHead {
+  @apply flex min-h-8 items-center gap-3;
+}
+.cardTitle {
+  @apply uCardTitle;
+}
+.caption {
+  @apply text-xs text-gray-500;
+}
+.kv {
+  @apply m-0 grid max-w-md gap-3 text-sm;
+}
+.kvRow {
+  @apply flex items-center gap-3;
+}
+.kvLabel {
+  @apply text-gray-500;
+}
+.kvValue {
+  @apply ml-auto text-right font-medium tabular-nums text-ink;
+}
+.actions {
+  @apply flex flex-wrap gap-3;
+}
+.offer {
+  @apply flex flex-wrap items-start gap-6;
+}
+.qrBox {
+  @apply flex-none rounded-card border border-muted bg-surface p-3;
+}
+.offerBody {
+  @apply uStack4 min-w-0 flex-1;
+}
+.steps {
+  @apply m-0 list-decimal space-y-2 pl-5 text-sm text-ink;
+}
+.empty {
+  @apply flex flex-col items-center gap-3 px-6 py-12 text-center;
+}
+.emptyIcon {
+  @apply size-6 fill-none stroke-gray-500;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.emptyTitle {
+  @apply text-base font-semibold text-ink;
+}
+.emptyText {
+  @apply max-w-md text-sm text-gray-500;
+}
+.code {
+  @apply break-words font-mono text-xs text-ink;
+}
+.outcome {
+  @apply uActionOutcome;
+}
+.error {
+  @apply text-sm text-error;
+}
