@@ -49,9 +49,9 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
   // The steps follow the phone: scan, confirm, then the notification prompt.
   const steps = within(screen.getByRole('list')).getAllByRole('listitem');
   expect(steps.map((step) => within(step).getByRole('heading').textContent)).toEqual([
-    'Scan this code',
-    'Tap Link guardian',
-    'Allow notifications'
+    '1. Scan this code',
+    '2. Tap Link guardian',
+    '3. Allow notifications'
   ]);
   expect(steps[0]).toHaveTextContent('tap Scan/Paste');
   expect(screen.getByText(/expires at 2023-11-14 23:23 UTC/)).toBeInTheDocument();

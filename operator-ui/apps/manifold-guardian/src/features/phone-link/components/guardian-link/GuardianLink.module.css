@@ -68,13 +68,7 @@
   @apply m-0 flex list-none flex-col p-0;
 }
 .row {
-  @apply grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2 border-b border-muted py-4 first:pt-0 last:border-b-0;
-}
-.rowNumber {
-  @apply text-sm font-semibold tabular-nums text-gray-500;
-}
-.rowText {
-  @apply uStack1 min-w-0;
+  @apply uStack1 border-b border-muted py-4 first:pt-0 last:border-b-0;
 }
 .footer {
   @apply m-0 text-sm text-gray-500;

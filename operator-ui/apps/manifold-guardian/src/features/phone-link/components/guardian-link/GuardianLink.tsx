@@ -144,13 +144,11 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   <ol className={styles.rows}>
                     {LINK_STEPS.map((step, index) => (
                       <li key={step.title} className={styles.row}>
-                        <span className={styles.rowNumber}>{index + 1}</span>
+                        <h3 className={styles.stepTitle}>
+                          {index + 1}. {step.title}
+                        </h3>
 
-                        <div className={styles.rowText}>
-                          <h3 className={styles.stepTitle}>{step.title}</h3>
-
-                          <p className={styles.stepDetail}>{step.detail}</p>
-                        </div>
+                        <p className={styles.stepDetail}>{step.detail}</p>
                       </li>
                     ))}
                   </ol>
