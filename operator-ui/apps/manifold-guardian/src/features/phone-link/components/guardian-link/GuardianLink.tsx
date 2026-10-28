@@ -1,5 +1,6 @@
 import { Banner, Button } from '@operator-ui/common-ui';
 import { QRCodeSVG } from 'qrcode.react';
+import { useEffect } from 'react';
 import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
 import styles from '@/features/phone-link/components/guardian-link/GuardianLink.module.css';
 import { useGuardianLinkActions } from '@/features/phone-link/components/guardian-link/useGuardianLinkActions';
@@ -25,15 +26,17 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   const link = status.data?.link;
   const offer = status.data?.offer;
   const terminal = link?.delivery.state === 'terminal';
-  const { busy, handleCreate, handleRevoke, handleTest, error, testMessage } =
+  const { busy, creating, createFailed, handleCreate, handleRevoke, handleTest, error, testMessage } =
     useGuardianLinkActions(link?.linked_at, terminal);
   const lastNotified =
     link?.last_notified_at != null ? formatCheckedAt(link.last_notified_at) : 'Never';
-  const linkAgain = (
-    <Button size="small" onClick={handleCreate} disabled={busy}>
-      Link again
-    </Button>
-  );
+  // A phone links by scanning, so the code is simply there whenever one is
+  // needed: no phone yet, or the current phone can no longer be reached. It is
+  // minted again after it expires; a failed mint waits for the next poll.
+  const wantsOffer = status.data?.available === true && (!link || terminal) && !offer;
+  useEffect(() => {
+    if (wantsOffer && !creating && !createFailed) handleCreate();
+  }, [wantsOffer, creating, createFailed, handleCreate]);
 
   return (
     <QuerySurface disposition={disposition} onRetry={retry}>
@@ -49,13 +52,9 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 </header>
                 {terminal && (
                   <div role="alert">
-                    <Banner
-                      variant="warn"
-                      title="Notifications stopped"
-                      action={linkAgain}
-                    >
+                    <Banner variant="warn" title="Notifications stopped">
                       The push gateway rejected this phone's notification hook, so this host can't
-                      reach it. Link your phone again to resume notifications.
+                      reach it. Scan the code below to link your phone again.
                     </Banner>
                   </div>
                 )}
@@ -101,7 +100,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
             {offer && (
               <section className={styles.card}>
                 <header className={styles.cardHead}>
-                  <h2 className={styles.cardTitle}>Scan to link your phone</h2>
+                  <h2 className={styles.cardTitle}>Link your phone</h2>
                 </header>
 
                 <div className={styles.offer}>
@@ -116,46 +115,29 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </div>
 
                   <div className={styles.offerBody}>
-                    <ol className={styles.steps}>
-                      <li>Open the app on your phone and tap Scan.</li>
-
-                      <li>Scan this code.</li>
-
-                      <li>Wait for the phone to show up on this page. The rest happens on its own.</li>
-                    </ol>
+                    <p className={styles.offerText}>
+                      Open the app on your phone, tap Scan and point it at this code. The phone
+                      appears here as soon as it is linked.
+                    </p>
 
                     <p className={styles.caption}>
-                      This code works once and expires at {formatCheckedAt(offer.expires_at)}.
+                      Each code works once and expires at {formatCheckedAt(offer.expires_at)}. A
+                      fresh one takes its place.
                     </p>
-                    {link && (
-                      <p className={styles.caption}>
-                        Canceling also unlinks {link.device_label}.
-                      </p>
-                    )}
-
-                    <div className={styles.actions}>
-                      <Button variant="secondary" onClick={handleRevoke} disabled={busy}>
-                        Cancel
-                      </Button>
-                    </div>
                   </div>
                 </div>
               </section>
             )}
-            {!link && !offer && (
+            {wantsOffer && !createFailed && (
               <section className={styles.card}>
                 <div className={styles.empty}>
                   {phoneIcon}
 
                   <h2 className={styles.emptyTitle}>No phone linked</h2>
 
-                  <p className={styles.emptyText}>
-                    Show a code here and scan it with your phone. The link sets itself up.
+                  <p className={styles.emptyText} role="status">
+                    Preparing a code to scan with your phone.
                   </p>
-
-                  <Button onClick={handleCreate} disabled={busy}>
-                    Link a phone
-                  </Button>
                 </div>
               </section>
             )}

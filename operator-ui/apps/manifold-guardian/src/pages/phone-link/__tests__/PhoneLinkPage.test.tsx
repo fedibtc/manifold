@@ -32,27 +32,23 @@ beforeEach(() => vi.spyOn(Date, 'now').mockReturnValue(1700004000000));
 
 afterEach(() => vi.restoreAllMocks());
 
-it('should explain when no push gateway is configured without offering linking', async () => {
-  renderPage({ ...unlinked, available: false });
+it('should explain when no push gateway is configured without minting a code', async () => {
+  const adminCall = renderPage({ ...unlinked, available: false });
   expect(await screen.findByText(/no push gateway configured/)).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Link a phone' })).not.toBeInTheDocument();
+  expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 
-it('should request a new offer when the operator chooses to link a phone', async () => {
+it('should mint a code as soon as the page opens with no phone linked', async () => {
   const adminCall = renderPage(unlinked);
-  fireEvent.click(await screen.findByRole('button', { name: 'Link a phone' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('CreateGuardianLinkOffer'));
 });
 
-it('should show an open offer and cancel it', async () => {
-  const adminCall = renderPage({ ...unlinked, offer });
+it('should show an open offer as a QR with the scan steps and never the URI', async () => {
+  renderPage({ ...unlinked, offer });
   expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
-  expect(
-    screen.getByText(/tap Scan/)
-  ).toBeInTheDocument();
+  expect(screen.getByText(/tap Scan/)).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  await waitFor(() => expect(adminCall).toHaveBeenCalledWith('RevokeGuardianLink'));
+  expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
 });
 
 it('should show the linked device and never claim a notification was sent when none was', async () => {
@@ -73,22 +69,32 @@ it('should require confirmation before unlinking', async () => {
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('RevokeGuardianLink'));
 });
 
-it('should show the stopped link and allow linking again without forgetting the device', async () => {
+it('should show the stopped link and mint a new code without forgetting the device', async () => {
   const adminCall = renderPage({
     ...linked,
     link: { ...phone, delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } }
   });
   expect(await screen.findByText(/Notifications stopped/)).toBeInTheDocument();
   expect(screen.getByText('Pixel 8')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Link again' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('CreateGuardianLinkOffer'));
+  expect(adminCall).not.toHaveBeenCalledWith('RevokeGuardianLink');
 });
 
-it('should show a linked phone and an open offer together', async () => {
-  renderPage({ ...linked, offer });
+it('should not mint a code while the linked phone can still be reached', async () => {
+  const adminCall = renderPage(linked);
+  expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
+});
+
+it('should show a stopped phone and its new code together', async () => {
+  renderPage({
+    ...linked,
+    link: { ...phone, delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
+    offer
+  });
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
-  expect(screen.getByText(/Canceling also unlinks/)).toBeInTheDocument();
 });
 
 it.each([
