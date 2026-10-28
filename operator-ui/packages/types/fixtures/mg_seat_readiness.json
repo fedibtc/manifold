@@ -5,7 +5,6 @@
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
     "relay": "pass",
-    "seats": "seats_not_serving",
     "uptime": "uptime_7d_low",
     "uptime_comparison": {
       "minimums": {

@@ -140,7 +140,6 @@ const failingReport = {
   relay: 'pass',
   discovery: 'discovery_record_missing',
   bitcoin: 'bitcoin_no_fee_rate',
-  seats: 'seats_not_serving',
   uptime: 'pass',
   uptime_comparison: null
 } as const;
@@ -155,8 +154,7 @@ it('should send the operator to Health when a readiness check fails, naming only
     {
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
-      detail:
-        'Failing: Guardian discovery, Bitcoin backend, Hosted seats. Open Health for what to check.',
+      detail: 'Failing: Guardian discovery, Bitcoin backend. Open Health for what to check.',
       path: '/health'
     }
   ]);
@@ -174,7 +172,6 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     relay: 'not_applicable',
     discovery: 'not_applicable',
     bitcoin: 'pass',
-    seats: 'not_applicable',
     uptime: 'pass',
     uptime_comparison: null
   } as const;

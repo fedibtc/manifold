@@ -1,21 +1,14 @@
 import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'seats' | 'uptime';
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'uptime';
 
-export const CHECKS: readonly ReadinessCheck[] = [
-  'relay',
-  'discovery',
-  'bitcoin',
-  'seats',
-  'uptime'
-];
+export const CHECKS: readonly ReadinessCheck[] = ['relay', 'discovery', 'bitcoin', 'uptime'];
 
 export const labels: Record<ReadinessCheck, string> = {
   relay: 'Relay connection',
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
-  seats: 'Hosted seats',
   uptime: 'Uptime'
 };
 
@@ -29,21 +22,10 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_wrong_network: 'The configured Bitcoin backend is on a different network.',
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
   bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
-  seats_not_serving:
-    'Most of this host’s seats have not completed a consensus session with their federation recently.',
-  uptime_1d_low: 'This host or its seats were down too much recently.',
-  uptime_7d_low: 'This host or its seats were down too much recently.',
-  uptime_30d_low: 'This host or its seats were down too much recently.'
+  uptime_1d_low: 'This host was offline too much recently.',
+  uptime_7d_low: 'This host was offline too much recently.',
+  uptime_30d_low: 'This host was offline too much recently.'
 };
-
-/** What a check that does not apply means for that check. */
-const notApplicable: Partial<Record<ReadinessCheck, string>> = {
-  seats: 'This host has no formed seats to check.'
-};
-
-/** The operator-facing words for one check's outcome. */
-export const describeOutcome = (check: ReadinessCheck, outcome: ReadinessOutcome): string =>
-  (outcome === 'not_applicable' && notApplicable[check]) || outcomes[outcome];
 
 export const guidance: Record<ReadinessCheck, string> = {
   relay:
@@ -52,9 +34,7 @@ export const guidance: Record<ReadinessCheck, string> = {
     'Check outbound DNS and HTTPS from this host. A new record can take a minute to publish after a relay change.',
   bitcoin:
     'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
-  seats:
-    'Check the Seats page and the seat logs. A seat that keeps restarting or falls behind its federation often means this host is short of memory or network.',
-  uptime: 'Keep this host online and its seats serving.'
+  uptime: 'Keep this host online.'
 };
 
 export const passed = (outcome: ReadinessOutcome): boolean =>

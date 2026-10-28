@@ -27,8 +27,6 @@ pub enum ReadinessOutcome {
     BitcoinWrongNetwork,
     BitcoinSyncing,
     BitcoinNoFeeRate,
-    /// Most of this MG's formed seats are not serving their federations.
-    SeatsNotServing,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -56,7 +54,6 @@ impl ReadinessOutcome {
             Self::BitcoinWrongNetwork => "bitcoin_wrong_network",
             Self::BitcoinSyncing => "bitcoin_syncing",
             Self::BitcoinNoFeeRate => "bitcoin_no_fee_rate",
-            Self::SeatsNotServing => "seats_not_serving",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -73,7 +70,6 @@ pub struct ReadinessReport {
     pub relay: ReadinessOutcome,
     pub discovery: ReadinessOutcome,
     pub bitcoin: ReadinessOutcome,
-    pub seats: ReadinessOutcome,
     pub uptime: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
@@ -150,32 +146,7 @@ impl ReadinessReport {
     /// Whether the probed prerequisites passed. These decide whether a
     /// slot counts as up, so the uptime gate cannot keep itself closed.
     pub fn prerequisites_passed(&self) -> bool {
-        self.relay.passed()
-            && self.discovery.passed()
-            && self.bitcoin.passed()
-            && self.seats.passed()
-    }
-}
-
-/// The seats check over whether each formed seat is serving its federation.
-///
-/// A seat can stall because of its federation rather than this MG, so the
-/// check fails only when most seats are not serving: one bad federation does
-/// not close an MG whose other seats serve, while a host-wide fault that
-/// stalls them all does. With one seat, that seat decides. An MG without
-/// formed seats has nothing to check.
-pub fn seats_outcome(serving: impl IntoIterator<Item = bool>) -> ReadinessOutcome {
-    let (total, not_serving) = serving
-        .into_iter()
-        .fold((0_usize, 0_usize), |(total, not_serving), serving| {
-            (total + 1, not_serving + usize::from(!serving))
-        });
-    if total == 0 {
-        ReadinessOutcome::NotApplicable
-    } else if not_serving * 2 > total {
-        ReadinessOutcome::SeatsNotServing
-    } else {
-        ReadinessOutcome::Pass
+        self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
     }
 }
 
@@ -586,7 +557,6 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
@@ -609,7 +579,6 @@ mod tests {
                 "relay": "pass",
                 "discovery": "pass",
                 "bitcoin": "pass",
-                "seats": "pass",
                 "uptime": "uptime_7d_low",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
@@ -627,42 +596,10 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
-            seats: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
         assert!(report.prerequisites_passed());
         assert!(!report.ready());
-        let stalled = ReadinessReport {
-            seats: ReadinessOutcome::SeatsNotServing,
-            uptime: ReadinessOutcome::Pass,
-            ..report
-        };
-        assert!(!stalled.prerequisites_passed());
-        assert!(!stalled.ready());
-    }
-
-    /// Most seats must be serving: neither any one stalled seat nor only all
-    /// of them decides.
-    #[test]
-    fn the_seats_check_fails_only_when_most_seats_are_not_serving() {
-        use ReadinessOutcome::{NotApplicable, Pass, SeatsNotServing};
-        for (serving, expected) in [
-            (&[][..], NotApplicable),
-            (&[true][..], Pass),
-            (&[false][..], SeatsNotServing),
-            (&[true, false][..], Pass),
-            (&[false, false][..], SeatsNotServing),
-            (&[true, false, false][..], SeatsNotServing),
-            (&[false, true, true][..], Pass),
-            (&[true, true, false, false][..], Pass),
-            (&[true, false, false, false, true][..], SeatsNotServing),
-        ] {
-            assert_eq!(
-                seats_outcome(serving.iter().copied()),
-                expected,
-                "{serving:?}"
-            );
-        }
     }
 }

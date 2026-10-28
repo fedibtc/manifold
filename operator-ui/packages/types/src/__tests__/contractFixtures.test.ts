@@ -343,7 +343,6 @@ const mgSeatReadinessMirror = {
     relay: 'pass',
     discovery: 'discovery_record_missing',
     bitcoin: 'bitcoin_syncing',
-    seats: 'seats_not_serving',
     uptime: 'uptime_7d_low',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },
