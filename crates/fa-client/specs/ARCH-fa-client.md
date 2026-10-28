@@ -198,7 +198,10 @@ with joined wallet state for selection/refill UI. Ids alone describe only the
 members a consumer has already joined, because an id cannot be turned back
 into an invite; a consumer that offers joining an unjoined member needs the
 join material the publication already carries. Operations that need a payer
-reject the empty set before consulting the wallet.
+check its policy membership, which rejects the empty set, before consulting the
+wallet: a payer the policy removed requires reauthorization even while the
+wallet cannot answer, and a wallet failure for an admitted payer stays a
+retryable payment error.
 `pay_and_create` separately requires the explicit payer to be admitted and
 Ready before persisting the formation or requesting the first quote.
 `create_without_payer` bypasses that paid capability only by failing closed on
@@ -430,6 +433,14 @@ the status watch publishes the ready state only after releasing the mutation
 guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
+
+Formation `last_error` carries a runtime-only error code and retry disposition.
+Manifold classifies the cause; consumers must not infer retry policy from the
+coarse code. `Terminal` stops automatic resume until an explicit command or a
+fresh launch. It neither permits abandonment nor means funds are unrecoverable.
+Reopen clears the verdict and rechecks durable facts once; no error verdict is
+stored in the database or backup. Concrete user actions still come from the
+durable formation state.
 
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
 `DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`; status is

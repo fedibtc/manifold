@@ -187,54 +187,70 @@ where
 
     /// Validate one consumer-selected payer against authenticated policy and
     /// current wallet readiness without changing the caller's choice.
+    ///
+    /// Policy membership is checked before the wallet is asked: a payer the
+    /// policy removed needs fresh authorization even while the wallet cannot
+    /// answer, and a wallet failure alone stays a retryable payment error.
     pub(crate) async fn require_setup_payment_federation(
         &self,
         requested: &FederationId,
         run: DriverRun<'_>,
     ) -> FaResult<FederationId> {
-        let (policy_ids, payable) =
-            self.payable_setup_payment_federations(run)
-                .await
-                .map_err(|error| match error {
-                    FaError::Payment(_) => FaError::SelectionReauthorizationRequired {
-                        reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-                        failure: None,
-                    },
-                    error => error,
-                })?;
-        if !policy_ids.contains(requested) || !payable.contains(requested) {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-                failure: None,
-            });
+        let unavailable = || FaError::SelectionReauthorizationRequired {
+            reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+            failure: None,
+        };
+        let policy_ids = self.setup_payment_policy_ids(run).await?;
+        if !policy_ids.contains(requested) {
+            return Err(unavailable());
+        }
+        if !self
+            .payable_policy_members(&policy_ids, run)
+            .await?
+            .contains(requested)
+        {
+            return Err(unavailable());
         }
         Ok(requested.clone())
     }
 
+    #[cfg(test)]
     pub(crate) async fn payable_setup_payment_federations(
         &self,
         run: DriverRun<'_>,
     ) -> FaResult<(Vec<FederationId>, HashSet<FederationId>)> {
-        let policy_ids = self
+        let policy_ids = self.setup_payment_policy_ids(run).await?;
+        let payable = self.payable_policy_members(&policy_ids, run).await?;
+        Ok((policy_ids, payable))
+    }
+
+    async fn setup_payment_policy_ids(&self, run: DriverRun<'_>) -> FaResult<Vec<FederationId>> {
+        Ok(self
             .refresh_setup_payment_federations(run)
             .await?
             .into_iter()
             .map(|member| member.federation_id)
-            .collect::<Vec<_>>();
+            .collect())
+    }
+
+    /// Ask the wallet which members of the authenticated policy set it can
+    /// pay from.
+    async fn payable_policy_members(
+        &self,
+        policy_ids: &[FederationId],
+        run: DriverRun<'_>,
+    ) -> FaResult<HashSet<FederationId>> {
         if policy_ids.is_empty() {
-            return Err(FaError::Payment(
-                "the authenticated setup-payment federation set is empty".to_owned(),
-            ));
+            return Ok(HashSet::new());
         }
-        let payable = run
+        Ok(run
             .call("selecting a payable federation", || {
-                Ok(self.inner.ports.payments.payable_federations(&policy_ids))
+                Ok(self.inner.ports.payments.payable_federations(policy_ids))
             })
             .await?
             .map_err(|error| FaError::Payment(error.to_string()))?
             .into_iter()
-            .collect::<HashSet<_>>();
-        Ok((policy_ids, payable))
+            .collect())
     }
 
     async fn refresh_setup_payment_federations(
