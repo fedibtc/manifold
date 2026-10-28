@@ -32,13 +32,16 @@ app created, exactly as it invokes an FI's DKG completion hook.
   device is linked at a time: `link_device` replaces the previous device.
 - **Hook.** `link_device` carries a hook URL under the deployment's
   configured push-gateway origin, else `PushGatewayUnusable`. The app creates
-  the hook with its own fixed title and body and the gateway's longest TTL,
-  one year. The daemon's invocation carries no `data`: nothing about the
-  host's seats, federations, amounts, messages, or reasons leaves it. The
-  gateway's production cap is two accepted invocations per hook per hour, and that is the cadence
-  this design accepts: every notification is one generic "look at your
-  dashboard". The app shows no guardian status of its own; the dashboard is
-  where the host sees why.
+  the hook with its own fixed title and body, workflow `guardian_link`, and
+  the gateway's longest TTL, one year. The daemon's invocation carries no
+  `data`: nothing about the host's seats, federations, amounts, messages, or
+  reasons leaves it. The delivered push still holds the gateway's own `pg.*`
+  fields, taken from the hook the app created; the app recognizes the push by
+  `pg.workflow`, not by an empty payload. The gateway's production cap is two
+  accepted invocations per hook per hour, and that is the cadence this design
+  accepts: every notification is one generic "look at your dashboard". The
+  app shows no guardian status of its own; the dashboard is where the host
+  sees why.
 - **Reasons.** `seat_failed` (a formed seat lost its data), `seat_unavailable`
   (a formed seat's child has been down for ten minutes),
   `not_ready_for_new_seats` (the latest readiness report fails),
