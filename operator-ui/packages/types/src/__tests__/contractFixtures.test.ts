@@ -39,6 +39,9 @@ import mgCollectGuardianFeesIncompleteRefreshJson from '../../fixtures/mg_collec
 import mgDecommissionSeatJson from '../../fixtures/mg_decommission_seat.json';
 import mgGuardianFeesJson from '../../fixtures/mg_guardian_fees.json';
 import mgGuardianFeesPolicyErrorJson from '../../fixtures/mg_guardian_fees_policy_error.json';
+import mgGuardianLinkJson from '../../fixtures/mg_guardian_link.json';
+import mgGuardianLinkTestJson from '../../fixtures/mg_guardian_link_test.json';
+import mgGuardianLinkUnlinkedJson from '../../fixtures/mg_guardian_link_unlinked.json';
 import mgHolderAuthorizationRefreshJson from '../../fixtures/mg_holder_authorization_refresh.json';
 import mgMarkSupportReadJson from '../../fixtures/mg_mark_support_read.json';
 import mgMnemonicJson from '../../fixtures/mg_mnemonic.json';
@@ -74,6 +77,8 @@ import type {
   GetFundsResponse,
   GetHealthResponse,
   GuardianFeesResponse,
+  GuardianLinkResponse,
+  GuardianLinkTestResponse,
   ListPaymentFederationsResponse,
   ListSeatsResponse,
   ListWalletOperationsResponse,
@@ -295,6 +300,10 @@ const adminRequestsMirror = {
   SeatStatus: { SeatStatus: { seat_id: SEAT_ID } },
   DecommissionSeat: { DecommissionSeat: { seat_id: SEAT_ID } },
   ReenrollTelemetry: 'ReenrollTelemetry',
+  GuardianLink: 'GuardianLink',
+  CreateGuardianLinkOffer: 'CreateGuardianLinkOffer',
+  RevokeGuardianLink: 'RevokeGuardianLink',
+  TestGuardianLinkNotification: 'TestGuardianLinkNotification',
   SupportChat: 'SupportChat',
   SendSupportMessage: { SendSupportMessage: { body: 'Seat 2 stopped after the update.' } },
   MarkSupportRead: { MarkSupportRead: { ids: ['c'.repeat(64)] } },
@@ -752,7 +761,43 @@ describe('committed fixtures match their type-checked mirrors', () => {
   });
 });
 
+const guardianLinkMirror = {
+  available: true,
+  link: {
+    callback_expires_at: 1702592000,
+    delivery: { reason: 'hook_expired_or_revoked', state: 'terminal' },
+    device_label: 'Pixel 8',
+    last_notified_at: 1700003600,
+    linked_at: 1700000000,
+    notified_reasons: ['seat_failed', 'support_message']
+  },
+  offer: {
+    // Keep the one-time QR secret out of test output, including failed equality assertions.
+    uri: '',
+    expires_at: 1700004200
+  }
+} satisfies GuardianLinkResponse;
+const guardianLinkUnlinkedMirror = {
+  available: false,
+  link: null,
+  offer: null
+} satisfies GuardianLinkResponse;
+const guardianLinkTestMirror = {
+  outcome: 'retryable',
+  reason: 'max_uses_exceeded'
+} satisfies GuardianLinkTestResponse;
+
 describe('committed MG fixtures match their type-checked mirrors', () => {
+  it('should keep guardian-link status and notification outcomes equal to the typed mirrors', () => {
+    const redacted = {
+      ...mgGuardianLinkJson,
+      offer: { ...mgGuardianLinkJson.offer, uri: '' }
+    };
+    expect(redacted).toEqual(guardianLinkMirror);
+    expect(mgGuardianLinkUnlinkedJson).toEqual(guardianLinkUnlinkedMirror);
+    expect(mgGuardianLinkTestJson).toEqual(guardianLinkTestMirror);
+  });
+
   it('should keep mg_admin_requests.json equal to the typed mirror', () => {
     expect(adminRequestsJson).toEqual(adminRequestsMirror);
   });
