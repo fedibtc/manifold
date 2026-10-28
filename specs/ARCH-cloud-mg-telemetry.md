@@ -174,9 +174,12 @@ and lease expiry suppress snapshots from every scrape ordered after that
 lifecycle transition. A scrape that overlaps the transition may finish with its
 coherent pre-transition body; it never combines lifecycle states from opposite
 sides of the transition. Renewal after expiry starts without the previous
-snapshot. The collector bounds all persisted metric state to 32 MiB and 100,000
-samples and admits one aggregate scrape at a time. It retains latest snapshots
-only; Prometheus retains metrics history.
+snapshot. The collector bounds all persisted metric state to 64 MiB and 200,000
+samples. A commit that would exceed the bound stores the snapshots that fit.
+Within one commit it applies replacements of already stored seats before new
+seats, so new seats do not take capacity ahead of them. A snapshot that does not
+fit, new or replacement, is skipped, and its seat keeps its old observation
+time. The collector admits one aggregate scrape at a time. It retains latest snapshots only; Prometheus retains metrics history.
 
 ## Seat reports from safe journals
 

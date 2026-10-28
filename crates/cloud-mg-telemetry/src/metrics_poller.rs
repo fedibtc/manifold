@@ -20,7 +20,7 @@ use fedi_iroh_rpc::{
 use crate::{
     metrics_observability::{AdmissionOutcome, CollectionFailure, MetricsObservability},
     metrics_policy::{MetricsIdentity, MetricsPolicy},
-    metrics_types::{MetricsCommit, SeatObservation},
+    metrics_types::{MetricsCommit, MetricsCommitOutcome, SeatObservation},
     metrics_worker::{
         CollectionTarget, CommitOutcome, MetricsCollector, TargetCatalog, WorkTarget,
     },
@@ -101,7 +101,7 @@ impl MetricsCatalog {
         &self,
         target: WorkTarget,
         commit: MetricsCommit,
-    ) -> Result<CommitOutcome, MetricsPollError> {
+    ) -> Result<MetricsCommitOutcome, MetricsPollError> {
         let now = unix_seconds().map_err(|_| MetricsPollError::Clock)?;
         self.store
             .commit_metrics(&target, commit, now)
@@ -143,9 +143,13 @@ impl TargetCatalog for MetricsCatalog {
         target: WorkTarget,
         commit: Self::Commit,
     ) -> Result<CommitOutcome, Box<dyn std::error::Error + Send + Sync>> {
-        self.commit(target, commit)
-            .await
-            .map_err(|error| Box::new(error) as _)
+        match self.commit(target, commit).await {
+            Ok(MetricsCommitOutcome::Committed | MetricsCommitOutcome::Saturated) => {
+                Ok(CommitOutcome::Committed)
+            }
+            Ok(MetricsCommitOutcome::Stale) => Ok(CommitOutcome::Stale),
+            Err(error) => Err(Box::new(error) as _),
+        }
     }
 }
 
@@ -296,7 +300,11 @@ impl MetricsPoller {
                     };
                     // Once started, durability is a join barrier just like journal
                     // cursor commit. Shutdown and sibling errors cannot cancel it.
-                    catalog.commit(work, commit).await?;
+                    if catalog.commit(work, commit).await? == MetricsCommitOutcome::Saturated {
+                        poller
+                            .observability
+                            .record_collection_failure(CollectionFailure::Saturated);
+                    }
                     Ok(())
                 });
             }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -17,12 +18,12 @@ use crate::{
     journal_types::{JournalStreamId, ReceptionDay, ValidatedJournalBatch},
     metrics_policy::{MetricsIdentity, MetricsPolicy},
     metrics_snapshot::{MetricsSnapshot, MetricsTargetHealth},
-    metrics_types::MetricsCommit,
+    metrics_types::{MetricsCommit, MetricsCommitOutcome},
     mg_reports::{MgReport, Stated},
 };
 
-const MAX_METRIC_STATE_BYTES: i64 = 32 * 1024 * 1024;
-const MAX_METRIC_STATE_SAMPLES: i64 = 100_000;
+const MAX_METRIC_STATE_BYTES: i64 = 64 * 1024 * 1024;
+const MAX_METRIC_STATE_SAMPLES: i64 = 200_000;
 const MAX_METRIC_SNAPSHOT_ROWS: i64 = MAX_TARGETS * 64;
 
 /// One federation whose invite an authenticated MG asserted for a current seat.
@@ -870,12 +871,20 @@ impl Store {
     }
 
     /// Atomically replace successful seat snapshots if the target fence is still current.
+    ///
+    /// Persisted metric state is capped across all targets. A snapshot that
+    /// would take the total over the cap is skipped: the seat keeps its previous
+    /// snapshot, which ages into staleness, and the commit is not complete.
+    /// Within one commit, snapshots of seats that already have one are applied
+    /// before new seats, so new seats do not take capacity ahead of existing
+    /// replacements. A replacement that itself grows past the remaining
+    /// capacity is skipped the same way and keeps its old observation time.
     pub(crate) async fn commit_metrics(
         &self,
         target: &WorkTarget,
         commit: MetricsCommit,
         now: i64,
-    ) -> Result<CommitOutcome, StoreError> {
+    ) -> Result<MetricsCommitOutcome, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
             "DELETE FROM metric_snapshots WHERE target_id IN
@@ -885,14 +894,7 @@ impl Store {
         .execute(&mut *transaction)
         .await?;
         if !target_is_current(&mut transaction, target, now).await? {
-            return Ok(CommitOutcome::Stale);
-        }
-        if commit.complete {
-            sqlx::query("UPDATE metric_poll_state SET last_complete_at=? WHERE target_id=?")
-                .bind(now)
-                .bind(target.target_id())
-                .execute(&mut *transaction)
-                .await?;
+            return Ok(MetricsCommitOutcome::Stale);
         }
         if let Some(listed_seats) = &commit.listed_seats {
             let existing: Vec<String> = sqlx::query_scalar(
@@ -914,13 +916,45 @@ impl Store {
                 }
             }
         }
-        for snapshot in commit.snapshots {
+        let (mut stored_bytes, mut stored_samples): (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(length(samples_json)),0),COALESCE(SUM(sample_count),0)
+             FROM metric_snapshots",
+        )
+        .fetch_one(&mut *transaction)
+        .await?;
+        let existing: BTreeMap<String, (i64, i64)> = sqlx::query_as(
+            "SELECT guardian_seat_id,length(samples_json),sample_count
+             FROM metric_snapshots WHERE target_id = ?",
+        )
+        .bind(target.target_id())
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .map(|(seat, bytes, samples)| (seat, (bytes, samples)))
+        .collect();
+        let mut snapshots = commit.snapshots;
+        snapshots.sort_by_key(|snapshot| !existing.contains_key(&snapshot.guardian_seat_id));
+        let mut saturated = false;
+        for snapshot in snapshots {
             let sample_count =
                 i64::try_from(snapshot.samples.len()).map_err(|_| StoreError::Saturated)?;
             let samples = serde_json::to_vec(&snapshot.samples).map_err(|_| StoreError::Corrupt)?;
             if samples.len() > 4 * 1024 * 1024 {
                 return Err(StoreError::Saturated);
             }
+            let row_bytes = i64::try_from(samples.len()).map_err(|_| StoreError::Saturated)?;
+            let (old_bytes, old_samples) = existing
+                .get(&snapshot.guardian_seat_id)
+                .copied()
+                .unwrap_or((0, 0));
+            let next_bytes = stored_bytes - old_bytes + row_bytes;
+            let next_samples = stored_samples - old_samples + sample_count;
+            if next_bytes > MAX_METRIC_STATE_BYTES || next_samples > MAX_METRIC_STATE_SAMPLES {
+                saturated = true;
+                continue;
+            }
+            stored_bytes = next_bytes;
+            stored_samples = next_samples;
             let invite_aad = seat_invite_aad(
                 &self.trust_profile,
                 &self.key_id,
@@ -961,14 +995,12 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         }
-        let (stored_bytes, stored_samples): (i64, i64) = sqlx::query_as(
-            "SELECT COALESCE(SUM(length(samples_json)),0),COALESCE(SUM(sample_count),0)
-             FROM metric_snapshots",
-        )
-        .fetch_one(&mut *transaction)
-        .await?;
-        if stored_bytes > MAX_METRIC_STATE_BYTES || stored_samples > MAX_METRIC_STATE_SAMPLES {
-            return Err(StoreError::Saturated);
+        if commit.complete && !saturated {
+            sqlx::query("UPDATE metric_poll_state SET last_complete_at=? WHERE target_id=?")
+                .bind(now)
+                .bind(target.target_id())
+                .execute(&mut *transaction)
+                .await?;
         }
         sqlx::query("UPDATE metric_exposition_revision SET revision=revision+1 WHERE singleton=1")
             .execute(&mut *transaction)
@@ -976,7 +1008,11 @@ impl Store {
         #[cfg(test)]
         wait_test_hook(&self.metric_commit_hook);
         transaction.commit().await?;
-        Ok(CommitOutcome::Committed)
+        Ok(if saturated {
+            MetricsCommitOutcome::Saturated
+        } else {
+            MetricsCommitOutcome::Committed
+        })
     }
 
     /// Federations of the current seats' latest admitted snapshots, one entry per
@@ -2088,6 +2124,7 @@ mod tests {
         metrics_policy::{MetricsIdentity, MetricsPolicy},
         metrics_types::SeatObservation,
     };
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     fn data_dir(dir: &TempDir) -> PathBuf {
@@ -2160,9 +2197,14 @@ mod tests {
     }
 
     fn stored_peer_samples(seat: &str) -> Vec<String> {
+        stored_counter_samples(seat, 9_999)
+    }
+
+    /// One start sample plus `peers` per-peer counter samples.
+    fn stored_counter_samples(seat: &str, peers: usize) -> Vec<String> {
         let mut body =
             "fm_app_start_ts{version=\"test-version\",version_hash=\"test-hash\"} 1\n".to_owned();
-        for peer_id in 0..9_999 {
+        for peer_id in 0..peers {
             body.push_str(&format!(
                 "fm_consensus_items_processed_total{{peer_id=\"{peer_id}\"}} 1\n"
             ));
@@ -2581,7 +2623,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CommitOutcome::Committed
+            MetricsCommitOutcome::Committed
         );
         drop(first);
 
@@ -2627,7 +2669,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CommitOutcome::Stale
+            MetricsCommitOutcome::Stale
         );
         assert_eq!(
             restarted
@@ -2787,7 +2829,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CommitOutcome::Committed
+            MetricsCommitOutcome::Committed
         );
         assert_eq!(
             store
@@ -2801,7 +2843,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CommitOutcome::Committed
+            MetricsCommitOutcome::Committed
         );
         let loaded = store
             .metric_snapshots(&metrics_policy(), 100, 101_000)
@@ -3091,7 +3133,9 @@ mod tests {
             .configure_metrics_policy(&metrics_policy().fingerprint())
             .await
             .unwrap();
-        for index in 0..11 {
+        // Each peer snapshot holds 10,000 samples; one more than fits.
+        let seats = MAX_METRIC_STATE_SAMPLES / 10_000 + 1;
+        for index in 0..seats {
             let seat = format!("seat-{index:02}");
             insert_snapshot(&store, &seat, 100_000, &stored_peer_samples(&seat)).await;
         }
@@ -3106,9 +3150,210 @@ mod tests {
                 .iter()
                 .map(|snapshot| snapshot.samples.len())
                 .sum::<usize>(),
-            100_000
+            usize::try_from(MAX_METRIC_STATE_SAMPLES).unwrap()
         );
         assert_eq!(loaded.rejected, 1);
+    }
+
+    #[tokio::test]
+    async fn byte_cap_skips_a_grown_replacement_and_applies_a_later_one_that_fits() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory).await;
+        store
+            .reserve_auth(&auth("metrics", 100), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("metrics", 100), target(1), 100)
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_metric_work(&scheduled, 100, 1_800)
+            .await
+            .unwrap()
+            .unwrap();
+        let samples = |count: usize, length: usize| vec!["a".repeat(length); count];
+        let stored_bytes = |store: Store| async move {
+            sqlx::query_scalar::<_, i64>("SELECT SUM(length(samples_json)) FROM metric_snapshots")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap()
+        };
+        // Fill the byte cap to within 10,000 bytes with few samples, so the
+        // byte cap and not the sample cap is the binding limit.
+        let row = samples(1_000, 4_000);
+        let rows = MAX_METRIC_STATE_BYTES / 4_100_000;
+        for index in 0..rows {
+            insert_snapshot(&store, &format!("seat-{index:02}"), 90_000, &row).await;
+        }
+        let remaining = MAX_METRIC_STATE_BYTES - stored_bytes(store.clone()).await;
+        let filler_samples = usize::try_from((remaining - 10_000) / 4_003).unwrap();
+        insert_snapshot(&store, "filler", 90_000, &samples(filler_samples, 4_000)).await;
+        let headroom = MAX_METRIC_STATE_BYTES - stored_bytes(store.clone()).await;
+        assert!((1..20_000).contains(&headroom), "headroom {headroom}");
+        let total_samples: i64 =
+            sqlx::query_scalar("SELECT SUM(sample_count) FROM metric_snapshots")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert!(total_samples + 2 < MAX_METRIC_STATE_SAMPLES);
+
+        let observation = |seat: &str, samples: Vec<String>| SeatObservation {
+            guardian_seat_id: seat.to_owned(),
+            federation_id: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            invite_code: None,
+            observed_at_ms: 100_000,
+            samples,
+        };
+        // seat-00 grows by more than the headroom; seat-01 is refreshed at its
+        // stored size and comes after it.
+        let mut grown = row.clone();
+        grown.push("b".repeat(usize::try_from(headroom).unwrap()));
+        assert_eq!(
+            store
+                .commit_metrics(
+                    &work,
+                    MetricsCommit {
+                        listed_seats: None,
+                        snapshots: vec![
+                            observation("seat-00", grown),
+                            observation("seat-01", row.clone()),
+                        ],
+                        complete: true,
+                    },
+                    100,
+                )
+                .await
+                .unwrap(),
+            MetricsCommitOutcome::Saturated
+        );
+        let observed: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT guardian_seat_id,observed_at_ms FROM metric_snapshots
+             WHERE guardian_seat_id IN ('seat-00','seat-01') ORDER BY guardian_seat_id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            observed,
+            vec![
+                ("seat-00".to_owned(), 90_000),
+                ("seat-01".to_owned(), 100_000)
+            ]
+        );
+        assert!(stored_bytes(store.clone()).await <= MAX_METRIC_STATE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn saturated_commit_refreshes_existing_seats_and_skips_what_does_not_fit() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory).await;
+        store
+            .reserve_auth(&auth("metrics", 100), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("metrics", 100), target(1), 100)
+            .await
+            .unwrap();
+        store
+            .configure_metrics_policy(&metrics_policy().fingerprint())
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_metric_work(&scheduled, 100, 1_800)
+            .await
+            .unwrap()
+            .unwrap();
+        // Fill the store to 10,000 samples below the cap, plus seat "aa" with 2.
+        let full_seats = MAX_METRIC_STATE_SAMPLES / 10_000 - 1;
+        let mut listed: BTreeSet<String> = ["aa".to_owned(), "new".to_owned()].into();
+        for index in 0..full_seats {
+            let seat = format!("seat-{index:02}");
+            insert_snapshot(&store, &seat, 90_000, &stored_peer_samples(&seat)).await;
+            listed.insert(seat);
+        }
+        insert_snapshot(&store, "aa", 90_000, &stored_samples("aa", 1)).await;
+        let headroom = 10_000 - 2;
+        let observation = |seat: &str, samples: Vec<String>| SeatObservation {
+            guardian_seat_id: seat.to_owned(),
+            federation_id: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            invite_code: None,
+            observed_at_ms: 100_000,
+            samples,
+        };
+        // Either growth fits the headroom alone; both together do not. The new
+        // seat comes first, so applying in arrival order would starve "aa".
+        let grown = stored_counter_samples("aa", 5_999);
+        let new_seat = stored_counter_samples("new", 5_999);
+        assert!(grown.len() - 2 <= headroom && new_seat.len() <= headroom);
+        assert!(grown.len() - 2 + new_seat.len() > headroom);
+
+        assert_eq!(
+            store
+                .commit_metrics(
+                    &work,
+                    MetricsCommit {
+                        listed_seats: Some(listed),
+                        snapshots: vec![observation("new", new_seat), observation("aa", grown)],
+                        complete: true,
+                    },
+                    100,
+                )
+                .await
+                .unwrap(),
+            MetricsCommitOutcome::Saturated
+        );
+
+        let stored: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT guardian_seat_id,observed_at_ms,sample_count FROM metric_snapshots
+             WHERE guardian_seat_id IN ('aa','new')",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, vec![("aa".to_owned(), 100_000, 6_000)]);
+        let completed: Option<i64> =
+            sqlx::query_scalar("SELECT last_complete_at FROM metric_poll_state")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(completed, None, "a saturated commit is not complete");
+        let total: i64 = sqlx::query_scalar("SELECT SUM(sample_count) FROM metric_snapshots")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert!(total <= MAX_METRIC_STATE_SAMPLES);
+
+        // A same-size refresh of a stored seat always fits, even near the cap.
+        assert!(MAX_METRIC_STATE_SAMPLES - total < 6_000);
+        assert_eq!(
+            store
+                .commit_metrics(
+                    &work,
+                    MetricsCommit {
+                        listed_seats: None,
+                        snapshots: vec![observation("aa", stored_counter_samples("aa", 5_999))],
+                        complete: false,
+                    },
+                    100,
+                )
+                .await
+                .unwrap(),
+            MetricsCommitOutcome::Committed
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3154,7 +3399,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CommitOutcome::Committed
+            MetricsCommitOutcome::Committed
         );
 
         let hook = std::sync::Arc::new(TestCommitHook {

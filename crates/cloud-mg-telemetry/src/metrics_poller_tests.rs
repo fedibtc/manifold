@@ -340,7 +340,7 @@ async fn assert_healthy_seat_survives(
 fn assert_collection_failures(poller: &MetricsPoller, stage: Option<&str>) {
     let mut rendered = String::new();
     poller.observability().render(&mut rendered, 0).unwrap();
-    for label in ["connect", "list", "scrape", "deadline"] {
+    for label in ["connect", "list", "scrape", "deadline", "saturated"] {
         let count = u64::from(stage == Some(label));
         let line = format!(
             "cloud_fman_telemetry_metrics_collection_failures_total{{stage=\"{label}\"}} {count} 0"
