@@ -4,7 +4,8 @@
 
 use super::{Db, DbError, now_ms};
 use crate::facts::CompletionCallbackReason;
-use fedi_decentralized_service_manifold_guardian::{AttentionReason, DkgCompletionCallback, FaId};
+use crate::guardian_link::AttentionReason;
+use fedi_decentralized_service_manifold_guardian::DkgCompletionCallback;
 
 const LINK_ID: i64 = 1;
 
@@ -12,14 +13,14 @@ const LINK_ID: i64 = 1;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuardianLinkDelivery {
     Active,
-    /// The gateway rejected the hook for good; the device must renew it.
+    /// The gateway rejected the hook for good (it expired, or the app was
+    /// reinstalled); the host must link the phone again.
     Terminal(CompletionCallbackReason),
 }
 
 /// The durable link. `callback` is `None` once delivery is terminal.
 #[derive(Clone)]
 pub struct GuardianLinkRecord {
-    pub device_id: FaId,
     pub device_label: String,
     pub callback: Option<DkgCompletionCallback>,
     pub callback_expires_at: u64,
@@ -34,7 +35,6 @@ impl std::fmt::Debug for GuardianLinkRecord {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GuardianLinkRecord")
-            .field("device_id", &self.device_id)
             .field("device_label", &self.device_label)
             .field("callback", &self.callback.as_ref().map(|_| "<redacted>"))
             .field("callback_expires_at", &self.callback_expires_at)
@@ -49,7 +49,6 @@ impl std::fmt::Debug for GuardianLinkRecord {
 
 #[derive(sqlx::FromRow)]
 struct GuardianLinkRow {
-    device_id: String,
     device_label: String,
     callback: Option<String>,
     callback_expires_at: i64,
@@ -73,11 +72,6 @@ impl TryFrom<GuardianLinkRow> for GuardianLinkRecord {
     type Error = DbError;
 
     fn try_from(row: GuardianLinkRow) -> Result<Self, DbError> {
-        let device_id = FaId(
-            row.device_id
-                .parse()
-                .map_err(|_| corrupt("device_id is not an x-only key"))?,
-        );
         let callback = row
             .callback
             .as_deref()
@@ -102,7 +96,6 @@ impl TryFrom<GuardianLinkRow> for GuardianLinkRecord {
             return Err(corrupt("active delivery without a callback"));
         }
         Ok(Self {
-            device_id,
             device_label: row.device_label,
             callback,
             callback_expires_at: u64::try_from(row.callback_expires_at)
@@ -129,7 +122,7 @@ impl Db {
     /// The linked device, if any.
     pub async fn guardian_link(&self) -> Result<Option<GuardianLinkRecord>, DbError> {
         sqlx::query_as::<_, GuardianLinkRow>(
-            "SELECT device_id, device_label, callback, callback_expires_at, linked_at_ms, \
+            "SELECT device_label, callback, callback_expires_at, linked_at_ms, \
              notification_seq, notified_reasons, last_notified_at_ms, delivery, delivery_reason \
              FROM guardian_link WHERE id = ?",
         )
@@ -144,11 +137,10 @@ impl Db {
     /// the previous link accumulated is discarded with it.
     pub async fn replace_guardian_link(
         &self,
-        device_id: &FaId,
         device_label: &str,
         callback: &DkgCompletionCallback,
         callback_expires_at: u64,
-    ) -> Result<i64, DbError> {
+    ) -> Result<(), DbError> {
         let linked_at_ms = now_ms();
         let mut tx = self.begin_write().await?;
         sqlx::query("DELETE FROM guardian_link WHERE id = ?")
@@ -156,11 +148,10 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO guardian_link (id, device_id, device_label, callback, \
-             callback_expires_at, linked_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO guardian_link (id, device_label, callback, callback_expires_at, \
+             linked_at_ms) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(LINK_ID)
-        .bind(device_id.0.to_string())
         .bind(device_label)
         .bind(callback_json(callback))
         .bind(i64::try_from(callback_expires_at).unwrap_or(i64::MAX))
@@ -168,28 +159,7 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(linked_at_ms)
-    }
-
-    /// Replace the linked device's hook and make delivery active again. False
-    /// when that device is not the linked one.
-    pub async fn renew_guardian_link_callback(
-        &self,
-        device_id: &FaId,
-        callback: &DkgCompletionCallback,
-        callback_expires_at: u64,
-    ) -> Result<bool, DbError> {
-        let result = sqlx::query(
-            "UPDATE guardian_link SET callback = ?, callback_expires_at = ?, \
-             delivery = 'active', delivery_reason = NULL WHERE id = ? AND device_id = ?",
-        )
-        .bind(callback_json(callback))
-        .bind(i64::try_from(callback_expires_at).unwrap_or(i64::MAX))
-        .bind(LINK_ID)
-        .bind(device_id.0.to_string())
-        .execute(self.pool())
-        .await?;
-        Ok(result.rows_affected() == 1)
+        Ok(())
     }
 
     /// Forget the link (the operator's revoke). False when nothing was linked.

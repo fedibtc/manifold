@@ -63,7 +63,7 @@ it('should show the linked device and never claim a notification was sent when n
   renderPage(linked);
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
   expect(screen.getByText('Never')).toBeInTheDocument();
-  expect(screen.getByText('Link renews by')).toBeInTheDocument();
+  expect(screen.getByText('Link expires')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send test notification' })).toBeInTheDocument();
 });
 

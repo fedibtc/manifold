@@ -407,7 +407,6 @@ export interface GuardianLinkResponse {
       | 'payment_federation_not_receivable'
       | 'not_approved'
       | 'support_message'
-      | 'test'
     )[];
     delivery: { state: 'active' | 'terminal'; reason: string | null };
   } | null;

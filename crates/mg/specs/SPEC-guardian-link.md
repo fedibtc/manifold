@@ -25,23 +25,17 @@ app created, exactly as it invokes an FI's DKG completion hook.
   consumed by the first successful `link_device`; a wrong, used, or expired
   secret is one coarse `InvalidInvite`. The operator may link only through
   the dashboard; nothing on the FI RPC surface creates an offer.
-- **Device identity.** The app signs later verbs with a per-installation
-  BIP-340 key (`device_id`), using the FI signed-request envelope
-  ([SPEC-signed-envelopes](../../service-manifold-guardian/specs/SPEC-signed-envelopes.md))
-  with the label `guardian_link/renew_callback`. The daemon accepts a signed
-  verb only from the linked device; any other signer, a bad signature, or a stale
-  timestamp is `Unauthorized`. One device is linked at a time: `link_device`
-  replaces the previous device.
 - **Transport.** The app dials the MG's Iroh endpoint with ALPN
   `fedi/fman/guardian-link/1`, the `node` of the URI, and checks that the
-  `fman` key is the one the dashboard showed.
-- **Hook.** `link_device` and `renew_callback` carry a hook URL under the
-  deployment's configured push-gateway origin, else `PushGatewayUnusable`.
-  The app creates the hook with its own fixed title and body and
-  `pg.workflow = guardian_link`; the daemon's invocation `data` carries only
-  `reasons`, a comma-separated list of reason codes. No seat id, federation
-  id, amount, or message text leaves the host. The gateway's production cap
-  is two accepted invocations per hook per hour, and that is the cadence
+  `fman` key is the one the dashboard showed. `link_device` is the app's only
+  call; it carries no device key, since nothing after it needs one. One
+  device is linked at a time: `link_device` replaces the previous device.
+- **Hook.** `link_device` carries a hook URL under the deployment's
+  configured push-gateway origin, else `PushGatewayUnusable`. The app creates
+  the hook with its own fixed title and body and the gateway's longest TTL,
+  one year. The daemon's invocation carries no `data`: nothing about the
+  host's seats, federations, amounts, messages, or reasons leaves it. The
+  gateway's production cap is two accepted invocations per hook per hour, and that is the cadence
   this design accepts: every notification is one generic "look at your
   dashboard". The app shows no guardian status of its own; the dashboard is
   where the host sees why.
@@ -50,9 +44,9 @@ app created, exactly as it invokes an FI's DKG completion hook.
   `not_ready_for_new_seats` (the latest readiness report fails),
   `payment_federation_not_receivable` (a plan is offered and an accepted
   payment federation cannot receive), `not_approved` (the directory shows no
-  Holder authorization), `support_message` (unread Fedi support message), and
-  `test` (the operator's test). A seat still waiting on its FI's DKG is idle,
-  not a reason.
+  Holder authorization), and `support_message` (unread Fedi support message).
+  The operator's test notification carries no reason. A seat still waiting on
+  its FI's DKG is idle, not a reason.
 - **Edge triggering.** The daemon notifies when a reason is present that the
   device has not been told about, sending every current reason in one
   invocation. It remembers the reasons it told; a reason that clears is
@@ -66,13 +60,15 @@ app created, exactly as it invokes an FI's DKG completion hook.
   clears the hook; the dashboard shows that the phone must be linked again,
   and the daemon sends nothing until it is. Max-uses and rate limiting are
   transient: the next tick after the window sends again.
-- **Renewal.** A hook has a bounded TTL (the gateway's maximum is a year; the
-  app uses 30 days). The app renews before expiry with `renew_callback`,
-  which replaces the hook and its expiry and reactivates a parked link.
+- **Expiry.** Nothing renews the hook. When it expires, or the app is
+  reinstalled, the gateway rejects the next invocation for good and the link
+  parks as `terminal`; the dashboard then shows a fresh code to link the phone
+  again. A host relinks about once a year in exchange for the phone holding no
+  key and making no calls after linking.
 - **Unlink.** Only the host ends the link, with `RevokeGuardianLink` on the
-  dashboard; the daemon then holds no device and no hook, and the app's next
-  `renew_callback` answers `NotLinked`. The app has no unlink of its own:
-  linking the phone to another MG replaces its link there.
+  dashboard; the daemon then holds no device and no hook. The app has no
+  unlink of its own; when it links to another MG it revokes its previous
+  hook at the gateway.
 
 The link is one row (`guardian_link`) in the daemon's database; the open offer
 is memory only and does not survive a restart. The admin verbs `GuardianLink`,

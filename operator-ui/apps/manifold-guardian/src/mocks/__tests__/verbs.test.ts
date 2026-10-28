@@ -244,8 +244,7 @@ describe('guardian link', () => {
     expect(dispatch('TestGuardianLinkNotification')).toEqual({
       Ok: { outcome: 'delivered', reason: null }
     });
-    expect(getState().guardianLink.link?.notified_reasons).toEqual(['test']);
-    resetState('fedi-app-active');
+    // The test notification carries no reason, so the told reasons stay.
     expect(getState().guardianLink.link?.notified_reasons).toEqual([
       'seat_failed',
       'support_message'

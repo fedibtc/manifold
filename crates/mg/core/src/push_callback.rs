@@ -100,7 +100,6 @@ impl PushGatewayOrigin {
         }
         Ok(ValidatedDkgCompletionCallback {
             callback: callback.clone(),
-            data: serde_json::Map::new(),
         })
     }
 }
@@ -119,8 +118,6 @@ fn host_is_loopback(url: &Url) -> bool {
 #[derive(Clone, Eq, PartialEq)]
 pub struct ValidatedDkgCompletionCallback {
     callback: DkgCompletionCallback,
-    /// Caller-supplied invocation `data`; empty for FI completion hooks.
-    data: serde_json::Map<String, serde_json::Value>,
 }
 
 impl std::fmt::Debug for ValidatedDkgCompletionCallback {
@@ -141,17 +138,6 @@ impl ValidatedDkgCompletionCallback {
     /// Stable invocation key supplied by the FA.
     pub fn idempotency_key(&self) -> &str {
         self.callback.idempotency_key()
-    }
-
-    /// Non-reserved reference data the invocation carries to the gateway.
-    pub fn data(&self) -> &serde_json::Map<String, serde_json::Value> {
-        &self.data
-    }
-
-    /// Attach invocation data (guardian-link reason codes).
-    pub fn with_data(mut self, data: serde_json::Map<String, serde_json::Value>) -> Self {
-        self.data = data;
-        self
     }
 
     pub(crate) fn into_inner(self) -> DkgCompletionCallback {

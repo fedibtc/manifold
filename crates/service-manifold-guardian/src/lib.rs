@@ -48,10 +48,9 @@ pub use fedi_decentralized_services::domain::{
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use guardian_link::{
-    AttentionReason, DEVICE_LABEL_MAX_CHARS, GUARDIAN_LINK_ALPN, GuardianLinkError,
-    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, GuardianLinkServiceClient,
-    GuardianLinkServiceServer, InvalidGuardianLinkInvite, LinkDeviceRequest, LinkDeviceResponse,
-    LinkSecret, RenewCallbackRequest, RenewCallbackResponse,
+    DEVICE_LABEL_MAX_CHARS, GUARDIAN_LINK_ALPN, GuardianLinkError, GuardianLinkInvite,
+    GuardianLinkResult, GuardianLinkService, GuardianLinkServiceClient, GuardianLinkServiceServer,
+    InvalidGuardianLinkInvite, LinkDeviceRequest, LinkDeviceResponse, LinkSecret,
 };
 pub use locator::{
     InvalidEndpointAddrPair, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,

@@ -1,9 +1,8 @@
 use std::sync::Mutex;
 
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallbackInput, FaId, InviteCode, SeatId,
+    DkgCompletionCallbackInput, InviteCode, SeatId, Timestamp,
 };
-use secp256k1::Keypair;
 use tempfile::TempDir;
 
 use super::*;
@@ -23,7 +22,7 @@ const ORIGIN: &str = "https://push.example.com";
 
 /// Records every invocation and answers with whatever outcome is queued.
 struct RecordingInvoker {
-    calls: Mutex<Vec<(String, String)>>,
+    calls: Mutex<Vec<String>>,
     outcome: Mutex<CallbackAttemptOutcome>,
 }
 
@@ -39,8 +38,8 @@ impl RecordingInvoker {
         *self.outcome.lock().unwrap() = outcome;
     }
 
-    /// `(idempotency_key, reasons)` per call so far.
-    fn calls(&self) -> Vec<(String, String)> {
+    /// The idempotency key of each call so far.
+    fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 }
@@ -48,16 +47,10 @@ impl RecordingInvoker {
 #[async_trait::async_trait]
 impl CompletionCallbackInvoker for RecordingInvoker {
     async fn invoke(&self, callback: &ValidatedDkgCompletionCallback) -> CallbackAttemptOutcome {
-        let reasons = callback
-            .data()
-            .get("reasons")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_owned();
         self.calls
             .lock()
             .unwrap()
-            .push((callback.idempotency_key().to_owned(), reasons));
+            .push(callback.idempotency_key().to_owned());
         *self.outcome.lock().unwrap()
     }
 }
@@ -149,31 +142,28 @@ fn hook(path: &str) -> DkgCompletionCallback {
     .unwrap()
 }
 
-fn device() -> (Keypair, FaId) {
-    let key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
-    (key, FaId(key.x_only_public_key().0))
+fn a_year_from_now() -> Timestamp {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    Timestamp(now + 365 * 24 * 3600)
 }
 
-fn far_future() -> Timestamp {
-    Timestamp(now_secs() + 30 * 24 * 3600)
-}
-
-/// Link a fresh device through the RPC, the way the app does.
-async fn link(harness: &Harness) -> (GuardianLinkRpc, Keypair, FaId) {
+/// Link a phone through the RPC, the way the app does.
+async fn link(harness: &Harness) -> GuardianLinkRpc {
     let rpc = GuardianLinkRpc::new(harness.fleet.clone());
     let invite = harness.fleet.create_guardian_link_offer().unwrap();
-    let (key, device_id) = device();
     rpc.link_device(LinkDeviceRequest {
         version: ProtocolV1,
         secret: invite.secret,
-        device_id,
         device_label: "Pixel".to_owned(),
         callback: hook("h1/s1"),
-        callback_expires_at: far_future(),
+        callback_expires_at: a_year_from_now(),
     })
     .await
     .unwrap();
-    (rpc, key, device_id)
+    rpc
 }
 
 fn seat(n: u8) -> SeatId {
@@ -332,7 +322,7 @@ async fn evaluator_reads_presence_support_and_readiness() {
 #[tokio::test]
 async fn notifier_sends_once_per_new_reason_and_again_after_it_clears() {
     let h = harness(Some(ORIGIN)).await;
-    let (_, _, _) = link(&h).await;
+    link(&h).await;
     let mut backoff = None;
     let not_observed = presence(&h.fleet, OnboardingStatus::NotObserved { checked_at: 1 });
     assert!(tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
@@ -362,18 +352,16 @@ async fn notifier_sends_once_per_new_reason_and_again_after_it_clears() {
     assert_eq!(
         calls,
         vec![
-            (
-                format!("guardian-link:{linked}:0"),
-                "not_approved".to_owned()
-            ),
-            (
-                format!("guardian-link:{linked}:1"),
-                "not_approved,support_message".to_owned()
-            ),
-            (
-                format!("guardian-link:{linked}:2"),
-                "not_approved,support_message".to_owned()
-            ),
+            format!("guardian-link:{linked}:0"),
+            format!("guardian-link:{linked}:1"),
+            format!("guardian-link:{linked}:2"),
+        ]
+    );
+    assert_eq!(
+        link.notified_reasons,
+        vec![
+            AttentionReason::NotApproved,
+            AttentionReason::SupportMessage
         ]
     );
     assert_eq!(link.notification_seq, 3);
@@ -401,7 +389,7 @@ async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
     // The retry reuses the sequence number, so the gateway deduplicates.
     let calls = h.invoker.calls();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].0, calls[1].0);
+    assert_eq!(calls[0], calls[1]);
     assert!(backoff.is_none());
 
     // A terminal rejection parks the link until the phone relinks.
@@ -437,14 +425,12 @@ async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
 async fn link_needs_the_open_offer_and_a_hook_under_the_gateway() {
     let h = harness(Some(ORIGIN)).await;
     let rpc = GuardianLinkRpc::new(h.fleet.clone());
-    let (_, device_id) = device();
     let request = |secret: LinkSecret, callback: DkgCompletionCallback| LinkDeviceRequest {
         version: ProtocolV1,
         secret,
-        device_id,
         device_label: "Pixel".to_owned(),
         callback,
-        callback_expires_at: far_future(),
+        callback_expires_at: a_year_from_now(),
     };
     // No offer open.
     assert_eq!(
@@ -481,13 +467,9 @@ async fn link_needs_the_open_offer_and_a_hook_under_the_gateway() {
             .unwrap_err(),
         GuardianLinkError::PushGatewayUnusable(_)
     ));
-    assert_eq!(
-        rpc.link_device(request(invite.secret.clone(), hook("h/s")))
-            .await
-            .unwrap()
-            .fman_name,
-        h.fleet.fman_name().to_string()
-    );
+    rpc.link_device(request(invite.secret.clone(), hook("h/s")))
+        .await
+        .unwrap();
     // The secret is single use and the offer is gone.
     assert_eq!(
         rpc.link_device(request(invite.secret, hook("h/s")))
@@ -531,87 +513,32 @@ async fn offers_need_a_gateway_and_expire() {
 }
 
 #[tokio::test]
-async fn signed_verbs_accept_only_the_linked_device() {
+async fn relinking_replaces_the_phone_and_test_notifies_it() {
     let h = harness(Some(ORIGIN)).await;
-    let (rpc, key, device_id) = link(&h).await;
-    let (other_key, other_id) = device();
-    let renew = |key: &Keypair, device_id: FaId, ts: u64, path: &str| {
-        SignedRequest::create(
-            &RenewCallbackRequest {
-                ts: Timestamp(ts),
-                device_id,
-                callback: hook(path),
-                callback_expires_at: Timestamp(now_secs() + 60),
-            },
-            key,
-        )
-        .unwrap()
-    };
-    assert_eq!(
-        rpc.renew_callback(renew(&other_key, other_id, now_secs(), "h9/s9"))
-            .await
-            .unwrap_err(),
-        GuardianLinkError::Unauthorized
-    );
-    // A stale timestamp is the same coarse refusal.
-    assert_eq!(
-        rpc.renew_callback(renew(&key, device_id, now_secs() - 2 * 3600, "h9/s9"))
-            .await
-            .unwrap_err(),
-        GuardianLinkError::Unauthorized
-    );
-
-    // Renewal swaps the hook; the next notification uses it.
-    rpc.renew_callback(renew(&key, device_id, now_secs(), "h2/s2"))
-        .await
-        .unwrap();
-    let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
-    assert!(
-        link.callback
-            .unwrap()
-            .callback_url()
-            .ends_with("/hooks/h2/s2")
-    );
-    assert_eq!(link.callback_expires_at, now_secs() + 60);
-
-    // After the host unlinks on the dashboard, the phone learns on its next
-    // renewal that it is no longer linked.
-    h.fleet.revoke_guardian_link().await.unwrap();
-    assert_eq!(
-        rpc.renew_callback(renew(&key, device_id, now_secs(), "h3/s3"))
-            .await
-            .unwrap_err(),
-        GuardianLinkError::NotLinked
-    );
-    assert!(h.fleet.guardian_link_status().await.unwrap().link.is_none());
-    h.fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn relinking_replaces_the_device_and_test_notifies_it() {
-    let h = harness(Some(ORIGIN)).await;
-    let (rpc, _, first) = link(&h).await;
-    let (_, second_id) = device();
+    let rpc = link(&h).await;
     let invite = h.fleet.create_guardian_link_offer().unwrap();
     rpc.link_device(LinkDeviceRequest {
         version: ProtocolV1,
         secret: invite.secret,
-        device_id: second_id,
         device_label: "  iPhone  ".to_owned(),
         callback: hook("h3/s3"),
-        callback_expires_at: far_future(),
+        callback_expires_at: a_year_from_now(),
     })
     .await
     .unwrap();
     let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
-    assert_eq!(link.device_id, second_id);
-    assert_ne!(link.device_id, first);
     assert_eq!(link.device_label, "iPhone");
+    assert!(
+        link.callback
+            .unwrap()
+            .callback_url()
+            .ends_with("/hooks/h3/s3")
+    );
     assert_eq!(
         h.fleet.test_guardian_link_notification().await.unwrap(),
         CallbackAttemptOutcome::Delivered
     );
-    assert_eq!(h.invoker.calls()[0].1, "test");
+    assert_eq!(h.invoker.calls().len(), 1);
     // A test is not a reason the phone was told about.
     let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
     assert!(link.notified_reasons.is_empty());

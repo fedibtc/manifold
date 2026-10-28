@@ -24,8 +24,8 @@
 use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
 use fedi_decentralized_domain::MgVersion;
 use fedi_decentralized_service_manifold_guardian::{
-    AttentionReason, DkgCompletionCallback, DkgCompletionCallbackInput, FaId, FederationId,
-    GuardianLinkInvite, InviteCode, LinkSecret, Plan, QuoteId, SeatHealth, SeatId,
+    DkgCompletionCallback, DkgCompletionCallbackInput, FaId, FederationId, GuardianLinkInvite,
+    InviteCode, LinkSecret, Plan, QuoteId, SeatHealth, SeatId,
 };
 use fedimint_core::Amount;
 use mg_core::admin::{self, AdminError, AdminErrorKind, AdminRequest};
@@ -38,7 +38,7 @@ use mg_core::guardian_fee::{
     Collected, CollectionFailure, CollectionFailurePhase, FederationFeeStatus, FeePolicy,
     Remittance,
 };
-use mg_core::guardian_link::{GuardianLinkStatus, LinkOfferStatus};
+use mg_core::guardian_link::{AttentionReason, GuardianLinkStatus, LinkOfferStatus};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
@@ -762,7 +762,6 @@ pub fn guardian_link_fixture() -> Value {
     admin::guardian_link_json(GuardianLinkStatus {
         available: true,
         link: Some(GuardianLinkRecord {
-            device_id: FaId("a".repeat(64).parse().unwrap()),
             device_label: "Pixel 8".to_owned(),
             callback: Some(callback),
             callback_expires_at: 1_702_592_000,

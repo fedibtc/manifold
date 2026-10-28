@@ -26,7 +26,7 @@
   @apply ml-auto text-right font-medium tabular-nums text-ink;
 }
 .actions {
-  @apply flex flex-wrap gap-3;
+  @apply uActionsRow flex-wrap;
 }
 .qrBox {
   @apply flex-none rounded-card border border-muted bg-surface p-3;
@@ -34,7 +34,7 @@
 .stepTitle {
   @apply uLabel;
 }
-.stepDetail {
+.note {
   @apply m-0 text-sm text-gray-500;
 }
 .empty {
@@ -42,9 +42,9 @@
 }
 .emptyIcon {
   @apply size-6 fill-none stroke-gray-500;
-  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
+  stroke-width: 1.75;
 }
 .emptyTitle {
   @apply text-base font-semibold text-ink;
@@ -69,7 +69,4 @@
 }
 .row {
   @apply uStack1 border-b border-muted py-4 first:pt-0 last:border-b-0;
-}
-.footer {
-  @apply m-0 text-sm text-gray-500;
 }

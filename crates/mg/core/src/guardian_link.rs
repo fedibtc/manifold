@@ -8,29 +8,29 @@
 //!   fleet keeps in memory for ten minutes and shows as a QR code. The app
 //!   dials the [`GUARDIAN_LINK_ALPN`] service with that secret and its
 //!   push-gateway hook; [`GuardianLinkRpc`] consumes the secret and stores
-//!   the link. Later verbs are signed by the device key the link recorded.
+//!   the link. That is the phone's only call: the hook lives a year and is
+//!   not renewed, so when it expires the host links the phone again.
 //! - **Attention.** [`Fleet::attention_reasons`] derives the coarse set of
 //!   reasons the operator should look, from what the daemon already knows:
 //!   seat health, readiness, payment-federation receivability, directory
 //!   presence, and unread support messages.
 //! - **Notifying.** [`spawn_notifier`] runs the edge detector: when a reason
 //!   appears that the device has not been told about, it invokes the hook
-//!   once with every current reason, through the same origin-pinned
-//!   capability the FI completion callbacks use. The push payload carries only
-//!   reason codes; title and body are fixed by the app when it creates the
-//!   hook.
+//!   once, through the same origin-pinned capability the FI completion
+//!   callbacks use. The invocation carries no data: title and body are fixed
+//!   by the app when it creates the hook, and the dashboard shows why.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use fedi_decentralized_domain::ProtocolV1;
 use fedi_decentralized_service_manifold_guardian::{
-    AttentionReason, DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput,
-    FaSignedRequest, GuardianLinkError, GuardianLinkInvite, GuardianLinkResult,
-    GuardianLinkService, LinkDeviceRequest, LinkDeviceResponse, LinkSecret, MgName,
-    RenewCallbackRequest, RenewCallbackResponse, SeatHealth, SignedRequest, Timestamp,
+    DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, GuardianLinkError,
+    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, LinkDeviceRequest,
+    LinkDeviceResponse, LinkSecret, SeatHealth,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -40,6 +40,26 @@ use crate::facts::CompletionCallbackReason;
 use crate::fleet::Fleet;
 use crate::push_callback::{CallbackAttemptOutcome, retry_delay};
 use crate::seat::{SeatPhase, SeatReport};
+
+/// Why the MG wants the host to look. Coarse on purpose; the dashboard has the
+/// detail. Persisted (as snake_case codes) so a restart does not repeat a
+/// notification for a reason already told.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionReason {
+    /// A seat's child gave up; the host must act.
+    SeatFailed,
+    /// A seat has been unavailable for longer than a restart should take.
+    SeatUnavailable,
+    /// The daemon stopped advertising and quoting new seats.
+    NotReadyForNewSeats,
+    /// An accepted payment federation cannot receive while seats are priced.
+    PaymentFederationNotReceivable,
+    /// The host has no Holder authorization, so it is not advertised.
+    NotApproved,
+    /// Support wrote to the host.
+    SupportMessage,
+}
 
 /// How long a link offer stays scannable.
 pub const LINK_OFFER_VALIDITY: Duration = Duration::from_secs(10 * 60);
@@ -64,7 +84,7 @@ pub(crate) struct GuardianLinkState {
     offer: Mutex<Option<LinkOffer>>,
     unavailable_since:
         Mutex<HashMap<fedi_decentralized_service_manifold_guardian::SeatId, Instant>>,
-    /// Edge trigger for the notifier after a link, renewal, or revoke.
+    /// Edge trigger for the notifier after a link or revoke.
     pub(crate) changed: tokio::sync::Notify,
 }
 
@@ -100,23 +120,7 @@ pub struct LinkOfferStatus {
     pub expires_at: u64,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is after Unix epoch")
-        .as_secs()
-}
-
 impl Fleet {
-    /// This MG's display name, as the app shows it.
-    pub fn fman_name(&self) -> MgName {
-        let pubkey = self.identity().derive_service_nostr_pubkey();
-        MgName::from_mg_id(
-            nostr_sdk::PublicKey::from_slice(&pubkey.serialize())
-                .expect("an x-only key is a Nostr public key"),
-        )
-    }
-
     /// Hand out a fresh link offer, replacing any open one. Needs the Iroh
     /// endpoint id the daemon binds once its router is up.
     pub fn create_guardian_link_offer(&self) -> anyhow::Result<GuardianLinkInvite> {
@@ -298,13 +302,12 @@ impl Fleet {
         Ok(reasons)
     }
 
-    /// Invoke the linked device's hook once with these reasons. The
-    /// idempotency key is minted from the durable notification sequence, so a
-    /// retry after a transient failure deduplicates at the gateway.
+    /// Invoke the linked device's hook once. The idempotency key is minted
+    /// from the durable notification sequence, so a retry after a transient
+    /// failure deduplicates at the gateway.
     async fn send_guardian_link_notification(
         &self,
         link: &GuardianLinkRecord,
-        reasons: &BTreeSet<AttentionReason>,
     ) -> CallbackAttemptOutcome {
         let Some(callback) = link.callback.as_ref() else {
             return CallbackAttemptOutcome::Terminal(
@@ -329,28 +332,17 @@ impl Fleet {
                 CompletionCallbackReason::GatewayOriginMismatch,
             );
         };
-        let mut data = serde_json::Map::new();
-        data.insert(
-            "reasons".to_owned(),
-            serde_json::Value::String(
-                reasons
-                    .iter()
-                    .map(|reason| reason.as_str())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
-        );
         let invoker = &self.config().completion_callback_invoker;
         if !invoker.is_available() {
             return CallbackAttemptOutcome::Retryable(
                 CompletionCallbackReason::HttpClientUnavailable,
             );
         }
-        invoker.invoke(&validated.with_data(data)).await
+        invoker.invoke(&validated).await
     }
 
-    /// The operator's test: notify the linked device now with the `test`
-    /// reason. Consumes one of the gateway's hourly invocations.
+    /// The host's test: notify the linked device now. Consumes one of the
+    /// gateway's hourly invocations and tells it nothing new.
     pub async fn test_guardian_link_notification(&self) -> anyhow::Result<CallbackAttemptOutcome> {
         let link = self
             .db()
@@ -359,11 +351,9 @@ impl Fleet {
             .ok_or_else(|| anyhow::anyhow!("no phone is linked"))?;
         anyhow::ensure!(
             link.delivery == GuardianLinkDelivery::Active,
-            "the linked phone's hook was rejected by the gateway; relink the phone"
+            "the linked phone's hook was rejected by the gateway; link the phone again"
         );
-        let outcome = self
-            .send_guardian_link_notification(&link, &BTreeSet::from([AttentionReason::Test]))
-            .await;
+        let outcome = self.send_guardian_link_notification(&link).await;
         self.record_guardian_link_outcome(
             &link,
             outcome,
@@ -495,7 +485,7 @@ async fn tick(
     {
         return Ok(false);
     }
-    let outcome = fleet.send_guardian_link_notification(&link, &current).await;
+    let outcome = fleet.send_guardian_link_notification(&link).await;
     fleet
         .record_guardian_link_outcome(&link, outcome, &current)
         .await?;
@@ -526,28 +516,6 @@ pub struct GuardianLinkRpc {
 impl GuardianLinkRpc {
     pub fn new(fleet: Arc<Fleet>) -> Self {
         Self { fleet }
-    }
-
-    /// Verify a device-signed verb and require the signer to be the linked
-    /// device. Every failure is the same coarse `Unauthorized`.
-    async fn authorize<T: FaSignedRequest>(
-        &self,
-        request: &SignedRequest<T>,
-    ) -> GuardianLinkResult<T> {
-        let verified = request
-            .verify(Timestamp(now_secs()))
-            .map_err(|_| GuardianLinkError::Unauthorized)?;
-        let link = self
-            .fleet
-            .db()
-            .guardian_link()
-            .await
-            .map_err(|error| internal("guardian_link", &error))?
-            .ok_or(GuardianLinkError::NotLinked)?;
-        if link.device_id != *verified.signer() {
-            return Err(GuardianLinkError::Unauthorized);
-        }
-        Ok(verified.into_inner())
     }
 }
 
@@ -580,11 +548,9 @@ impl GuardianLinkService for GuardianLinkRpc {
         if !self.fleet.consume_guardian_link_offer(&request.secret) {
             return Err(GuardianLinkError::InvalidInvite);
         }
-        let linked_at_ms = self
-            .fleet
+        self.fleet
             .db()
             .replace_guardian_link(
-                &request.device_id,
                 request.device_label.trim(),
                 &request.callback,
                 request.callback_expires_at.0,
@@ -594,34 +560,6 @@ impl GuardianLinkService for GuardianLinkRpc {
         self.fleet.guardian_link.changed.notify_one();
         tracing::info!("guardian link established");
         Ok(LinkDeviceResponse {
-            version: ProtocolV1,
-            fman_name: self.fleet.fman_name().to_string(),
-            linked_at: Timestamp(u64::try_from(linked_at_ms / 1000).unwrap_or(0)),
-        })
-    }
-
-    async fn renew_callback(
-        &self,
-        request: SignedRequest<RenewCallbackRequest>,
-    ) -> GuardianLinkResult<RenewCallbackResponse> {
-        let request = self.authorize(&request).await?;
-        self.fleet
-            .validate_guardian_link_callback(&request.callback)?;
-        let renewed = self
-            .fleet
-            .db()
-            .renew_guardian_link_callback(
-                &request.device_id,
-                &request.callback,
-                request.callback_expires_at.0,
-            )
-            .await
-            .map_err(|error| internal("renew_callback", &error))?;
-        if !renewed {
-            return Err(GuardianLinkError::NotLinked);
-        }
-        self.fleet.guardian_link.changed.notify_one();
-        Ok(RenewCallbackResponse {
             version: ProtocolV1,
         })
     }

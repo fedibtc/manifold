@@ -4,17 +4,15 @@
 //!
 //! This is its own Iroh ALPN beside the FI-facing service and the telemetry
 //! service: the caller is the operator's phone, not an FI, and nothing here
-//! grants seat authority. Linking is authorized by a one-time secret the
-//! dashboard shows as a QR code; every later verb is signed by the device key
-//! the link established, using the exact-byte [`SignedRequest`] envelope with
-//! its own per-verb labels.
+//! grants seat authority. The phone makes one call, `link_device`, authorized
+//! by the one-time secret the dashboard shows as a QR code; nothing after
+//! that, so the phone holds no key for this MG.
 
 use fedi_decentralized_services::domain::{ProtocolV1, Timestamp};
 use fedi_iroh_rpc::service;
 use serde::{Deserialize, Serialize};
 
-use crate::signing::FaSignedRequest;
-use crate::{DkgCompletionCallback, FaId, SignedRequest};
+use crate::DkgCompletionCallback;
 
 /// Dedicated Iroh ALPN for the operator's app to reach its own MG.
 pub const GUARDIAN_LINK_ALPN: &[u8] = b"fedi/fman/guardian-link/1";
@@ -165,75 +163,18 @@ impl GuardianLinkInvite {
     }
 }
 
-/// Why the MG wants the operator to look. Coarse on purpose: these codes
-/// travel through the push provider, so they name a condition and never a
-/// seat, federation, amount, or message.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Deserialize,
-    Serialize,
-    strum::EnumIter,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum AttentionReason {
-    /// A seat's child gave up; the operator must act.
-    SeatFailed,
-    /// A seat has been unavailable for longer than a restart should take.
-    SeatUnavailable,
-    /// The daemon stopped advertising and quoting new seats.
-    NotReadyForNewSeats,
-    /// An accepted payment federation cannot receive while seats are priced.
-    PaymentFederationNotReceivable,
-    /// The host has no Holder authorization, so it is not advertised.
-    NotApproved,
-    /// Fedi support wrote to the operator.
-    SupportMessage,
-    /// The operator asked the dashboard for a test notification.
-    Test,
-}
-
-impl AttentionReason {
-    /// The stable wire code, which is also the push payload token.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SeatFailed => "seat_failed",
-            Self::SeatUnavailable => "seat_unavailable",
-            Self::NotReadyForNewSeats => "not_ready_for_new_seats",
-            Self::PaymentFederationNotReceivable => "payment_federation_not_receivable",
-            Self::NotApproved => "not_approved",
-            Self::SupportMessage => "support_message",
-            Self::Test => "test",
-        }
-    }
-
-    /// Parse one wire code.
-    pub fn parse(value: &str) -> Option<Self> {
-        use strum::IntoEnumIterator as _;
-        Self::iter().find(|reason| reason.as_str() == value)
-    }
-}
-
 /// Link the calling device. Unsigned: the one-time secret authorizes it.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkDeviceRequest {
     pub version: ProtocolV1,
     pub secret: LinkSecret,
-    /// The key every later verb from this device is signed with.
-    pub device_id: FaId,
     /// Operator-facing name of the phone, at most [`DEVICE_LABEL_MAX_CHARS`].
     pub device_label: String,
     /// The push-gateway hook the MG invokes, under its configured origin.
     pub callback: DkgCompletionCallback,
-    /// When the hook expires at the gateway; the app renews before then.
+    /// When the hook expires at the gateway. Nothing renews it: once it has
+    /// expired, the host links the phone again.
     pub callback_expires_at: Timestamp,
 }
 
@@ -241,7 +182,6 @@ impl core::fmt::Debug for LinkDeviceRequest {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("LinkDeviceRequest")
-            .field("device_id", &self.device_id)
             .field("device_label", &self.device_label)
             .field("callback_expires_at", &self.callback_expires_at)
             .finish_non_exhaustive()
@@ -252,61 +192,6 @@ impl core::fmt::Debug for LinkDeviceRequest {
 #[serde(deny_unknown_fields)]
 pub struct LinkDeviceResponse {
     pub version: ProtocolV1,
-    /// The MG's display name, for the app's confirmation.
-    pub fman_name: String,
-    pub linked_at: Timestamp,
-}
-
-/// Replace the hook before it expires, or after the gateway rejected it.
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenewCallbackRequest {
-    pub ts: Timestamp,
-    pub device_id: FaId,
-    pub callback: DkgCompletionCallback,
-    pub callback_expires_at: Timestamp,
-}
-
-impl core::fmt::Debug for RenewCallbackRequest {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("RenewCallbackRequest")
-            .field("device_id", &self.device_id)
-            .field("callback_expires_at", &self.callback_expires_at)
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenewCallbackResponse {
-    pub version: ProtocolV1,
-}
-
-/// Device-signed verbs reuse the FI request envelope with their own labels:
-/// the signer field carries the device key the link established, and the
-/// labels keep a device signature from replaying as any FI verb.
-macro_rules! device_signed_requests {
-    ($($ty:ty => $label:literal,)+) => {
-        $(impl FaSignedRequest for $ty {
-            const LABEL: &'static str = $label;
-
-            fn ts(&self) -> Timestamp {
-                self.ts
-            }
-
-            fn fa_id(&self) -> &FaId {
-                &self.device_id
-            }
-        })+
-
-        #[cfg(test)]
-        pub(crate) const DEVICE_REQUEST_LABELS: &[&str] = &[$($label),+];
-    };
-}
-
-device_signed_requests! {
-    RenewCallbackRequest => "guardian_link/renew_callback",
 }
 
 /// Service failures as the app sees them; transport failures fold in through
@@ -317,12 +202,6 @@ pub enum GuardianLinkError {
     /// The secret is unknown, used, or expired: scan a fresh code.
     #[error("link invite is not valid")]
     InvalidInvite,
-    /// The signature failed or the signer is not the linked device.
-    #[error("unauthorized")]
-    Unauthorized,
-    /// No device is linked right now.
-    #[error("no device is linked")]
-    NotLinked,
     /// The daemon cannot invoke hooks: no push gateway origin is configured,
     /// or the hook is not under it.
     #[error("push gateway not usable: {0}")]
@@ -352,12 +231,6 @@ pub trait GuardianLinkService {
         &self,
         request: LinkDeviceRequest,
     ) -> GuardianLinkResult<LinkDeviceResponse>;
-
-    /// Replace the hook the MG invokes.
-    async fn renew_callback(
-        &self,
-        request: SignedRequest<RenewCallbackRequest>,
-    ) -> GuardianLinkResult<RenewCallbackResponse>;
 }
 
 #[cfg(test)]
@@ -403,30 +276,5 @@ mod tests {
         assert_eq!(serde_json::from_str::<LinkSecret>(&json).unwrap(), secret);
         assert!(serde_json::from_str::<LinkSecret>("\"abcd\"").is_err());
         assert!(!format!("{secret:?}").contains("abab"));
-    }
-
-    #[test]
-    fn reasons_round_trip_through_their_codes() {
-        use strum::IntoEnumIterator as _;
-        for reason in AttentionReason::iter() {
-            assert_eq!(AttentionReason::parse(reason.as_str()), Some(reason));
-            assert_eq!(
-                serde_json::to_string(&reason).unwrap(),
-                format!("\"{}\"", reason.as_str())
-            );
-        }
-        assert_eq!(AttentionReason::parse("seat_exploded"), None);
-    }
-
-    #[test]
-    fn device_labels_never_collide_with_fi_labels() {
-        for label in DEVICE_REQUEST_LABELS {
-            assert!(label.starts_with("guardian_link/"), "{label}");
-            assert!(!label.contains('\0'));
-        }
-        let mut sorted = DEVICE_REQUEST_LABELS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), DEVICE_REQUEST_LABELS.len());
     }
 }

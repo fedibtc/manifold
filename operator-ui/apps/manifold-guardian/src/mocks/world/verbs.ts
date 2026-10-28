@@ -449,7 +449,6 @@ const testGuardianLinkNotification: Verb<'TestGuardianLinkNotification'> = () =>
     return { outcome: 'terminal', reason: link.delivery.reason };
   }
   link.last_notified_at = Math.floor(Date.now() / 1000);
-  link.notified_reasons = ['test'];
   return { outcome: 'delivered', reason: null };
 };
 

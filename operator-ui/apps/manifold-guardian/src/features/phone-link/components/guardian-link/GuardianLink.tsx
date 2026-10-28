@@ -92,7 +92,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </div>
 
                   <div className={styles.kvRow}>
-                    <dt className={styles.kvLabel}>Link renews by</dt>
+                    <dt className={styles.kvLabel}>Link expires</dt>
 
                     <dd className={styles.kvValue}>{formatDay(link.callback_expires_at)}</dd>
                   </div>
@@ -148,13 +148,13 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                           {index + 1}. {step.title}
                         </h3>
 
-                        <p className={styles.stepDetail}>{step.detail}</p>
+                        <p className={styles.note}>{step.detail}</p>
                       </li>
                     ))}
                   </ol>
                 </div>
 
-                <p className={styles.footer}>
+                <p className={styles.note}>
                   Once linked, your phone appears on this page. This code works once and expires at{' '}
                   {formatCheckedAt(offer.expires_at)}. A new one replaces it then.
                 </p>
