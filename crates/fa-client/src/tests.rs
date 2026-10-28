@@ -8701,6 +8701,50 @@ async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
 }
 
 #[tokio::test]
+async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial() {
+    // A dial that hangs until the request timeout must neither hold back the
+    // other seats' dials nor end the run.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let next = mg_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
+    let effect_log = Arc::new(Mutex::new(Vec::new()));
+    *mg_state.effect_log.lock().unwrap() = Some(effect_log.clone());
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
+        Some(next + 1),
+        "the hung dial was retried once"
+    );
+    let connected: Vec<usize> = effect_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|effect| match effect {
+            TestEffect::MgConnected(index) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let mut others: Vec<usize> = connected[..connected.len() - 1].to_vec();
+    others.sort_unstable();
+    assert_eq!(
+        (others, connected.last().copied()),
+        ((1..locators().len()).collect::<Vec<_>>(), Some(0)),
+        "every other seat connected while seat 0's first dial hung: {connected:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_post_dkg_resume_still_ends_at_the_deadline_when_an_mg_stays_unreachable() {
     let mg_state = Arc::new(MgState::default());
     let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
