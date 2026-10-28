@@ -348,6 +348,7 @@ struct FcmError {
 struct FcmErrorDetail {
     #[serde(rename = "@type")]
     kind: Option<String>,
+    #[serde(rename = "errorCode")]
     error_code: Option<String>,
 }
 

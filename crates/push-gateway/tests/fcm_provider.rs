@@ -577,7 +577,7 @@ async fn send_handler(
                         "status": "NOT_FOUND",
                         "details": [{
                             "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-                            "error_code": "UNREGISTERED"
+                            "errorCode": "UNREGISTERED"
                         }]
                     }
                 })),
@@ -589,7 +589,7 @@ async fn send_handler(
                         "status": "PERMISSION_DENIED",
                         "details": [{
                             "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-                            "error_code": "SENDER_ID_MISMATCH"
+                            "errorCode": "SENDER_ID_MISMATCH"
                         }]
                     }
                 })),
@@ -609,7 +609,7 @@ async fn send_handler(
                     "status": "NOT_FOUND",
                     "details": [{
                         "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-                        "error_code": "UNREGISTERED"
+                        "errorCode": "UNREGISTERED"
                     }]
                 }
             })),
@@ -621,7 +621,7 @@ async fn send_handler(
                     "status": "INVALID_ARGUMENT",
                     "details": [{
                         "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-                        "error_code": "INVALID_ARGUMENT"
+                        "errorCode": "INVALID_ARGUMENT"
                     }]
                 }
             })),
