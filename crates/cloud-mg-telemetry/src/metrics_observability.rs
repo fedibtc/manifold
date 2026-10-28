@@ -63,10 +63,19 @@ pub(crate) enum CollectionFailure {
     Scrape,
     /// The target budget ran out; recorded at most once per target poll.
     Deadline,
+    /// The persisted-state cap left at least one observation unstored;
+    /// recorded at most once per target poll.
+    Saturated,
 }
 
 impl CollectionFailure {
-    const ALL: [Self; 4] = [Self::Connect, Self::List, Self::Scrape, Self::Deadline];
+    const ALL: [Self; 5] = [
+        Self::Connect,
+        Self::List,
+        Self::Scrape,
+        Self::Deadline,
+        Self::Saturated,
+    ];
 
     fn index(self) -> usize {
         match self {
@@ -74,6 +83,7 @@ impl CollectionFailure {
             Self::List => 1,
             Self::Scrape => 2,
             Self::Deadline => 3,
+            Self::Saturated => 4,
         }
     }
 
@@ -83,6 +93,7 @@ impl CollectionFailure {
             Self::List => "list",
             Self::Scrape => "scrape",
             Self::Deadline => "deadline",
+            Self::Saturated => "saturated",
         }
     }
 }
@@ -96,7 +107,7 @@ pub(crate) struct MetricsObservability {
 #[derive(Default)]
 struct MetricsObservabilityInner {
     counts: [AtomicU64; 6],
-    collection_failures: [AtomicU64; 4],
+    collection_failures: [AtomicU64; 5],
     last_rejection_diagnostic: Mutex<Option<Instant>>,
 }
 

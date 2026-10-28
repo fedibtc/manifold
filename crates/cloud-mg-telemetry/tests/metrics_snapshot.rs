@@ -238,7 +238,13 @@ fn exposes_fixed_collection_failure_stages() {
     let output =
         metrics_snapshot::render_metrics(vec![], vec![], 0, 2_000, 60_000, false, &observability)
             .unwrap();
-    for (stage, count) in [("connect", 0), ("list", 0), ("scrape", 2), ("deadline", 1)] {
+    for (stage, count) in [
+        ("connect", 0),
+        ("list", 0),
+        ("scrape", 2),
+        ("deadline", 1),
+        ("saturated", 0),
+    ] {
         let line = format!(
             "cloud_fman_telemetry_metrics_collection_failures_total{{stage=\"{stage}\"}} {count} 2000\n"
         );
@@ -248,6 +254,6 @@ fn exposes_fixed_collection_failure_stages() {
         output
             .matches("cloud_fman_telemetry_metrics_collection_failures_total{")
             .count(),
-        4
+        5
     );
 }

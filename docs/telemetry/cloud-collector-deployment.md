@@ -230,11 +230,15 @@ diagnostic.
 
 It also exports
 `cloud_fman_telemetry_metrics_collection_failures_total{stage=...}` with exactly
-four stages: `connect` (no connection to the MG), `list` (the seat listing
+five stages: `connect` (no connection to the MG), `list` (the seat listing
 failed or was malformed), `scrape` (one seat's scrape failed or returned an
-unusable response), and `deadline` (the target's poll budget ran out, counted
-at most once per target poll). A failure that happens after the budget ran out
-counts as `deadline`, including a policy admission that ran out of the budget. Invite and policy failures are not counted here; they
+unusable response), `deadline` (the target's poll budget ran out, counted
+at most once per target poll), and `saturated` (the persisted-state cap left
+at least one seat snapshot unstored, counted at most once per target poll).
+A steadily increasing `saturated` count means the fleet has outgrown the cap. A
+failure that happens after the budget ran out counts as `deadline`, including a
+policy admission that ran out of the budget. Invite and policy failures are not
+counted here; they
 have their own admission events. When target snapshots stop advancing, the
 stage that increased shows where polls fail.
 

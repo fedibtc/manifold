@@ -402,7 +402,9 @@ the process readiness route fail. Readiness covers the local database and
 ability to serve. Quarantined/expired targets are suppressed immediately and
 their latest metric snapshots are deleted rather than reappearing after renewal.
 
-Metrics persistence is capped globally at 32 MiB and 100,000 samples. One
+Metrics persistence is capped globally at 64 MiB and 200,000 samples. A
+commit stores the snapshots that fit, refreshing already stored seats first,
+and leaves the other seats on their previous, aging snapshot. One
 immutable exposition generation may be live at a time; concurrent scrapes
 share it, while a changed revision gets HTTP 429 until slow readers release the
 old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization stays
