@@ -53,15 +53,7 @@ async fn run_restart() -> anyhow::Result<()> {
     run_expect_success(init, "fa-cli init", Duration::from_secs(10)).await?;
     let account_file = write_fa_fee_account_fixture(&state_dir)?;
     let mg_endpoints = mg_endpoint_addrs(&locators);
-    wait_for_mg_selection(
-        &fa_cli_bin,
-        &relay.url,
-        &mg_endpoints,
-        GUARDIAN_COUNT,
-        &[],
-        0,
-    )
-    .await?;
+    wait_for_mg_selection(&fa_cli_bin, &relay.url, &mg_endpoints, GUARDIAN_COUNT, 0).await?;
     let command = |verb: &str| {
         let mut command = Command::new(&fa_cli_bin);
         command

@@ -447,7 +447,6 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoint_addrs(&locators),
         &iroh_overrides,
-        None,
     )
     .await?;
 
@@ -678,7 +677,6 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoint_addrs(&locators),
         &iroh_overrides,
-        None,
     )
     .await?;
 
@@ -741,7 +739,6 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoint_addrs(&locators),
         &iroh_overrides,
-        None,
     )
     .await?;
     let mut b_locators = locators.clone();
@@ -752,7 +749,6 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoint_addrs(&b_locators),
         &iroh_overrides,
-        None,
     )
     .await?;
     wait_for_settled_backup(&manifold_guardian_bin, &host_a, 2).await?;
@@ -892,7 +888,6 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoints,
         &iroh_overrides,
-        None,
     )
     .await?;
 
@@ -1166,7 +1161,6 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         &nostr_relay.url,
         &mg_endpoints,
         &iroh_overrides,
-        upgrade_from.map(|_| ("0.11.2+fedi", "0.11.3+fedi")),
     )
     .await?;
 
@@ -2475,31 +2469,12 @@ async fn form_federation_in_state(
     relay_url: &str,
     mg_endpoints: &str,
     iroh_overrides: &str,
-    version_range: Option<(&str, &str)>,
 ) -> anyhow::Result<String> {
     let mut init = Command::new(fa_cli_bin);
     init.arg("--state-dir").arg(state_dir).arg("init");
     run_expect_success(init, "fa-cli init", Duration::from_secs(10)).await?;
     let fa_fee_account_file = write_fa_fee_account_fixture(state_dir)?;
-    let version_args = version_range
-        .map(|(minimum, maximum)| {
-            vec![
-                "--fedimintd-version-minimum",
-                minimum,
-                "--fedimintd-version-maximum-exclusive",
-                maximum,
-            ]
-        })
-        .unwrap_or_default();
-    wait_for_mg_selection(
-        fa_cli_bin,
-        relay_url,
-        mg_endpoints,
-        GUARDIAN_COUNT,
-        &version_args,
-        0,
-    )
-    .await?;
+    wait_for_mg_selection(fa_cli_bin, relay_url, mg_endpoints, GUARDIAN_COUNT, 0).await?;
 
     let mut create = Command::new(fa_cli_bin);
     create
@@ -2513,7 +2488,6 @@ async fn form_federation_in_state(
         .arg(GUARDIAN_COUNT.to_string())
         .arg("--poll-timeout-secs")
         .arg("120")
-        .args(&version_args)
         .env("MG_E2E_LOCAL_IROH", "1")
         .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
         .env(
@@ -2640,7 +2614,6 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         &nostr_relay.url,
         &mg_endpoints,
         GUARDIAN_COUNT,
-        &[],
         0,
     )
     .await?;
@@ -4730,7 +4703,6 @@ async fn wait_for_mg_selection(
     relay_url: &str,
     mg_endpoints: &str,
     federation_size: usize,
-    version_args: &[&str],
     total_msats: u64,
 ) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -4741,7 +4713,6 @@ async fn wait_for_mg_selection(
             .arg("preview")
             .arg("--federation-size")
             .arg(federation_size.to_string())
-            .args(version_args)
             .arg("--timeout-secs")
             .arg("10")
             .env("MG_E2E_LOCAL_IROH", "1")
@@ -4810,7 +4781,6 @@ async fn run_fa_cli(
         relay_url,
         mg_endpoints,
         guardian_count,
-        &[],
         total_msats,
     )
     .await?;
