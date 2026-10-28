@@ -2452,6 +2452,8 @@ fn setup_payment_keys() -> Keys {
         .expect("fixed test setup-payment key is valid")
 }
 
+/// A setup-payment policy over `invites` that lets MGs start guardian
+/// transfers.
 fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
     setup_payment_raw_event(
         created_at,
@@ -2461,6 +2463,7 @@ fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
             "federations": invites,
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
+            "guardian_transfer": true,
         })
         .to_string(),
     )
@@ -4395,6 +4398,7 @@ async fn open_client_that_cannot_pay(
         test_peer_badge_verifier(),
         None,
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client")
@@ -4498,6 +4502,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client")
@@ -4532,6 +4537,7 @@ async fn open_client_with_verifier(
         verifier,
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client with explicit verifier")
@@ -4581,6 +4587,8 @@ async fn open_client_with_store_and_registry(
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
+            manifold_environment:
+                fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
             backup_tasks: fedimint_core::task::TaskGroup::new(),
             replacement_checks: replacement_checks::ReplacementChecks::default(),
         }),

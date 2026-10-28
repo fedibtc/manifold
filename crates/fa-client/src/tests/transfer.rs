@@ -1051,3 +1051,51 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
         }
     );
 }
+
+/// The newest policy does not enable transfer, so the FA neither buys a seat
+/// nor opens a transfer: the MG would refuse to start it.
+#[tokio::test]
+async fn a_policy_without_transfer_buys_no_seat() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    client
+        .inner
+        .ports
+        .registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_raw_event(
+            test_now_secs() + 1,
+            serde_json::json!({
+                "version": 1,
+                "fman_version": "0.1.0",
+                "federations": [PAYMENT_INVITE],
+                "telemetry_registration_url":
+                    "https://push.fedi.example/v1/telemetry/registrations",
+            })
+            .to_string(),
+        ));
+    let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
+    let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
+
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, FaError::GuardianTransferDisabled),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), FaErrorCode::CapabilityUnavailable);
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        funded_before
+    );
+    assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+}

@@ -253,6 +253,11 @@ where
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
+            // An MG refuses to start a transfer that the policy does not
+            // enable, so the FA does not pay for a seat it could not use.
+            if !self.guardian_transfer_enabled(run).await? {
+                return Err(FaError::GuardianTransferDisabled);
+            }
             lease
                 .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer.clone()))
                 .await?;

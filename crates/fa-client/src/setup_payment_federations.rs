@@ -80,6 +80,24 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
+    /// Whether MGs start a guardian transfer now: the newest authenticated
+    /// setup-payment policy's flag, or, without one, the Manifold
+    /// environment's default, resolved as the MG resolves it. A relay
+    /// timeout falls back to the retained policy, as the replacement check
+    /// does.
+    pub(crate) async fn guardian_transfer_enabled(&self, run: DriverRun<'_>) -> FaResult<bool> {
+        match self.refresh_setup_payment_federations(run).await {
+            Ok(_) | Err(FaError::Timeout(_)) => {}
+            Err(error) => return Err(error),
+        }
+        let published = self
+            .replacement_policy()
+            .await
+            .ok()
+            .and_then(|policy| policy.guardian_transfer());
+        Ok(self.inner.manifold_environment.guardian_transfer(published))
+    }
+
     pub(crate) async fn replacement_policy(
         &self,
     ) -> FaResult<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {

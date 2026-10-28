@@ -1923,6 +1923,7 @@ async fn open_client_with_fee_account_provider(
             fa_fee_account_provider,
             publisher,
             profile.guardian_verification_fee_account().cloned(),
+            profile.environment(),
         )
         .await
         .context("open FA client"),

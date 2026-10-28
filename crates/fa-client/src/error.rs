@@ -416,6 +416,11 @@ pub enum FaError {
         /// Semantic id of the live operation to resume.
         operation_id: crate::LiquidityOperationId,
     },
+    /// The setup-payment policy this FA holds does not let MGs start a
+    /// guardian transfer, so the FA does not buy a seat for one. Fedi turns
+    /// transfer on by republishing the policy.
+    #[error("the setup-payment policy does not enable guardian transfer")]
+    GuardianTransferDisabled,
     /// A post-formation maintenance verb was attempted in another phase.
     #[error("federation maintenance requires formed state, found {phase:?}")]
     MaintenanceWrongState {
@@ -511,7 +516,11 @@ impl FaError {
             Self::SelectionReauthorizationRequired { .. } => {
                 FaErrorCode::SelectionReauthorizationRequired
             }
-            Self::CapabilityUnavailable(_) => FaErrorCode::CapabilityUnavailable,
+            // An existing category, so consumers need no new code; the Rust
+            // variant tells the two apart.
+            Self::CapabilityUnavailable(_) | Self::GuardianTransferDisabled => {
+                FaErrorCode::CapabilityUnavailable
+            }
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
             Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
             Self::Payment(_) => FaErrorCode::Payment,

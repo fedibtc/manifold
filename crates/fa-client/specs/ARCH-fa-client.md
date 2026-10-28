@@ -698,7 +698,15 @@ are unknown, so the preview excludes their MGs but not their holders.
 explicit payer. Before it asks any MG, it refuses an approval previewed for
 another federation, checks the same custody rule, checks that the destination
 shares no service key with a current guardian, and refuses a priced preview
-without a payer. Then it records the transfer.
+without a payer. It then refreshes the setup-payment policy, falling back to
+the retained one on a relay timeout, and refuses with
+`FaError::GuardianTransferDisabled` (category `capability_unavailable`)
+unless transfer is enabled: the policy's `guardian_transfer` flag, or, when
+the policy omits it, the default of the client's Manifold environment, the
+same resolution the MG uses
+([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+MGs start no transfer otherwise, so the FA buys no seat for one. A client
+opened without a Manifold profile takes the production default. Then it records the transfer.
 
 The transfer first buys the destination seat with the normal `GetQuote` and
 `CreateSeat` for the federation's size. The purchase follows the formation
