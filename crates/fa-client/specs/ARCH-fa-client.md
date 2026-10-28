@@ -373,10 +373,12 @@ checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
 reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
-On restart, both a local `Formed` record and a restored backup start unsynced.
-Fresh threshold consensus must match the saved federation identity and verified
-directory before either becomes fresh; restored seats and any saved liquidity
-commitment must also match. This check needs no live Manifold Guardian and does not
+A formed federation has one durable record. Consensus confirmation replaces the
+formation record with it in one transaction, and a backup import writes the
+same record. On restart it starts unsynced. Fresh threshold consensus must
+match the saved federation identity and verified directory before it becomes
+fresh; its seats and any saved liquidity commitment must also match.
+Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
 If the saved invite is unreachable, recovery tries alternative invites from
 the saved managers without waiting for every manager. It verifies the same
@@ -391,7 +393,7 @@ the stored signed directory and compiled split before voting.
 ## Public state and concurrency
 
 The engine exposes `FaStatus::Recovery` while an opened restored-mnemonic FA
-has an unfinished backup check; `Idle`, `Formation`, and `Restored` mean the
+has an unfinished backup check; `Idle`, `Formation`, and `Formed` mean the
 check is complete or not required. A formation always carries its formation id
 and fully resolved persisted intent. Recovery lookup failures remain retryable;
 the status watch publishes the ready state only after releasing the mutation
@@ -400,14 +402,15 @@ persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
-`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
+`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
 with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
-submission; `Formed` records its confirmation in consensus. Reopening preserves
-these phases, and later checks keep `Formed` visible with freshness and errors
-reported separately. Inconsistent storage fails closed before status is published.
+submission; its confirmation in consensus ends the formation and publishes
+`FaStatus::Formed`. Reopening preserves these phases. A formation record that an
+older build marked formed converts to the formed record when it loads.
+Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
@@ -486,7 +489,7 @@ may be locked to quote-bound nonces; safe teardown needs recovery and refund
 handling before any state can be destroyed.
 
 `decommission_seats` is a testing-only developer command sitting outside all of
-that, not a second abandon. It reads the recorded formation, asks every MG
+that, not a second abandon. It reads the formation or formed record, asks every MG
 that accepted a seat to decommission it in one pass, and reports per seat
 whether the MG decommissioned it, had already done so, or refused. It takes
 no driver lease and writes nothing, so durable FA state is unchanged and a
@@ -546,15 +549,15 @@ connection, or network effects; every MG repeats the same authoritative
 validation. The API does not accept raw metadata keys, upload image bytes, or
 widen the MG allowlist. A setting is turned off with its explicit off value,
 never by deleting the field. The operation requires
-the durable FA formation to be `Formed`, reconstructs every FA-owned seat from
+a fresh formed record, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
 
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked
 `MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
-as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
-must first resume/reconcile to `Formed`.
+as `fedi:tos_url`; the result confirms fresh consensus adoption. After a restart or a
+backup import, the FA must first resume to reconcile the formed record.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
 removal of the former fixed terms URL. URL errors now use `InvalidUrl`

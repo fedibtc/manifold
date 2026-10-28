@@ -2172,7 +2172,7 @@ async fn register_gateway_with_every_guardian(
     mg_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["formation"]["seats"]
+    let seats = status["formed"]["seats"]
         .as_array()
         .context("formed FA status carries seats")?;
     anyhow::ensure!(
@@ -2506,10 +2506,7 @@ async fn form_federation_in_state(
 /// The invite of a formed `fa-cli --json` status, or `None` before formation
 /// completes.
 fn formed_invite(status: &serde_json::Value) -> Option<&str> {
-    if status["formation"]["phase"] != "formed" {
-        return None;
-    }
-    status["formation"]["invite_code"].as_str()
+    status["formed"]["federation_invite"].as_str()
 }
 
 async fn wait_for_replacement_child(parent: u32, old_pid: u32) -> anyhow::Result<u32> {
@@ -4901,7 +4898,7 @@ async fn run_fa_cli(
                 .with_context(|| format!("paid formation did not reach Formed: {status}"))?;
             if let Some(recovery_formation_id) = recovery_formation_id {
                 anyhow::ensure!(
-                    status["formation"]["formation_id"].as_str()
+                    status["formed"]["formation_id"].as_str()
                         == Some(recovery_formation_id.as_str()),
                     "paid resume changed formation identity: {status}"
                 );

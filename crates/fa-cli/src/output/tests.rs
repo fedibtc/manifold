@@ -71,23 +71,22 @@ fn active_status_json_has_exact_schema_on_stdout() {
 }
 
 #[test]
-fn restored_text_status_reports_current_freshness() {
+fn formed_text_status_reports_current_freshness() {
     for (freshness, expected) in [
         (fa_client::FormationFreshness::Unsynced, "unsynced"),
         (fa_client::FormationFreshness::Fresh, "fresh"),
     ] {
-        let status = FaStatus::Restored(fa_client::RestoredFormationSnapshot {
+        let status = FaStatus::Formed(fa_client::FormedFederationSnapshot {
             snapshot_generation: 1,
-            formation_id: fa_client::FormationId("restored-formation".to_owned()),
+            formation_id: fa_client::FormationId("formed-federation".to_owned()),
             federation_invite: fa_client::InviteCode("invite".to_owned()),
             federation_name: None,
             seats: Vec::new(),
-            phase: fa_client::FormationPhase::Formed,
             freshness,
             backup_eligible: false,
         });
         let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
-        assert_eq!(stdout, format!("invite\nrecovery state: {expected}\n"));
+        assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
         assert_eq!(stderr, "");
     }
 }

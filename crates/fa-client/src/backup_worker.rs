@@ -274,7 +274,7 @@ pub(crate) async fn restore_from_relays(
 ) -> FaResult<BackupRestoreOutcome> {
     if store.recovery_completed(recovery).await {
         return Ok(
-            if matches!(store.load_status(fa_id).await?, FaStatus::Restored(_)) {
+            if matches!(store.load_status(fa_id).await?, FaStatus::Formed(_)) {
                 BackupRestoreOutcome::Restored
             } else {
                 BackupRestoreOutcome::NoBackup

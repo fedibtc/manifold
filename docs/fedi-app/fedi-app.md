@@ -129,8 +129,9 @@ its id and fully resolved persisted intent. The front end does not reconstruct
 these values from nullable fields.
 
 The active phase is one of `Preparing`, `AwaitingPaymentReadiness`,
-`AcquiringSeats`, `PreparingDkg`, `DkgUnderway`, `PublishingSeatBindings`, or
-`Formed`. Immediate command
+`AcquiringSeats`, `PreparingDkg`, `DkgUnderway`, `DkgComplete`, or
+`PublishingSeatBindings`. `FaStatus::Formed` replaces the formation when it
+completes, and carries the invite, seats, and freshness. Immediate command
 failures and the snapshot's last operation error use stable typed categories;
 UI behavior must not parse human-readable Rust error strings.
 

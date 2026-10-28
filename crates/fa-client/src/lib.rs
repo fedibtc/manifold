@@ -96,12 +96,11 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
     FaStatus, FedimintdVersionRange, FormationActionRequired, FormationFreshness, FormationId,
-    FormationIntent, FormationPhase, FormationSnapshot, GuardianReplacementId,
-    GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
-    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
+    FormationIntent, FormationPhase, FormationSnapshot, FormedFederationSnapshot, FormedSeat,
+    GuardianReplacementId, GuardianReplacementRequirements, GuardianReplacementSeat,
+    MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
-    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
-    SeatPhase, SeatProgress,
+    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
@@ -454,11 +453,10 @@ where
     /// unchanged; changed terms expose a new payment action, which needs a new
     /// authorization.
     ///
-    /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reads fresh federation consensus and verifies
-    /// the saved identity, directory, and fee recipients. Restored backups likewise
-    /// verify their saved seats against the signed consensus directory. Neither
-    /// path requires every manager online; if the saved invite is unreachable,
+    /// A stored [`FaStatus::Formed`] federation is not treated as proof of
+    /// current remote state: resume reads fresh federation consensus and
+    /// verifies the saved seats against the signed consensus directory. It does
+    /// not require every manager online; if the saved invite is unreachable,
     /// recovery asks saved managers for alternative invites to the same federation.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
@@ -466,9 +464,10 @@ where
     /// After [`FormationPhase::DkgComplete`], resume finishes directory and
     /// initial fee publication without repeating DKG. The exact target is saved
     /// with [`FormationPhase::PublishingSeatBindings`] before submission, and
-    /// `Formed` is saved only after consensus confirms it. Reopening preserves
-    /// these checkpoints. Once confirmed, later checks keep `Formed` visible;
-    /// freshness and errors report the result separately.
+    /// the formed federation is saved only after consensus confirms it.
+    /// Reopening preserves these checkpoints. Once formed, later checks keep
+    /// [`FaStatus::Formed`] visible; freshness and errors report the result
+    /// separately.
     ///
     /// The returned [`std::future::Future`] owns no background task. Dropping it
     /// cancels local work, but completed durable checkpoints remain recoverable:
@@ -503,16 +502,16 @@ where
                     self.resume_formation(*recovery, options, deadline, &lease)
                         .await
                 }
-                db::FaRecovery::Restored(snapshot)
+                db::FaRecovery::Formed(snapshot)
                     if snapshot.freshness == FormationFreshness::Fresh =>
                 {
                     Ok(())
                 }
-                db::FaRecovery::Restored(snapshot) => {
+                db::FaRecovery::Formed(snapshot) => {
                     self.inner
                         .progress
-                        .send_replace(FaStatus::Restored(snapshot.clone()));
-                    self.reconcile_restored(
+                        .send_replace(FaStatus::Formed(snapshot.clone()));
+                    self.reconcile_formed(
                         snapshot,
                         fa_id,
                         formation::DriverRun::new(options, deadline, &lease),

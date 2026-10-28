@@ -45,8 +45,8 @@ use crate::formation::{DriverRun, federation_name};
 use crate::ports::FaIdentityExt as _;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FormationFreshness, FormationId, FormationPhase, FormationRunOptions,
-    LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
+    FormationFreshness, FormationId, FormationRunOptions, LiquidityProviderConnector, Locator,
+    ManifoldGuardianConnector, SeatId,
 };
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -919,14 +919,14 @@ where
     ) -> FaResult<Option<LiquidityOperationSnapshot>> {
         let formation_id = match self.status() {
             crate::FaStatus::Formation(snapshot) => snapshot.formation_id,
-            crate::FaStatus::Restored(snapshot)
+            crate::FaStatus::Formed(snapshot)
                 if snapshot.freshness == FormationFreshness::Fresh =>
             {
                 snapshot.formation_id
             }
             crate::FaStatus::Idle
             | crate::FaStatus::Recovery { .. }
-            | crate::FaStatus::Restored(_) => return Ok(None),
+            | crate::FaStatus::Formed(_) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await
@@ -1050,13 +1050,8 @@ where
         expected_formation_id: &FormationId,
     ) -> FaResult<FormedLiquidityContext> {
         match self.status() {
-            crate::FaStatus::Formation(snapshot)
+            crate::FaStatus::Formed(snapshot)
                 if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
-                    && snapshot.freshness == FormationFreshness::Fresh => {}
-            crate::FaStatus::Restored(snapshot)
-                if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
                     && snapshot.freshness == FormationFreshness::Fresh => {}
             _ => {
                 return Err(FaError::Liquidity(

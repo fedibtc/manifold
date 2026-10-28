@@ -3255,7 +3255,7 @@ async fn formed_client_for_liquidity() -> (
         )
         .await
         .expect("form selected test federation");
-    let formation_id = formation(&client.status()).formation_id.clone();
+    let formation_id = formed(&client.status()).formation_id.clone();
     let provider = TestLiquidityProviderState::new(client.inner.store.clone());
     (
         client,
@@ -3313,12 +3313,22 @@ async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() 
         ])
     );
 
-    client
-        .inner
-        .store
-        .unconfirm_formation_meta_target_for_test()
-        .await;
-    assert!(client.inner.store.backup_payload().await.is_err());
+    // A formation that is not formed has no backup.
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    mg_state.disagreeing_invite.store(true, Ordering::SeqCst);
+    let unformed = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state,
+        MgConfig::given_away(),
+    )
+    .await;
+    unformed
+        .create_at(intent(), locators(), options())
+        .await
+        .expect_err("guardians that disagree on the federation do not form it");
+    assert!(unformed.inner.store.backup_payload().await.is_err());
 }
 
 async fn open_with_backup_recovery_hint(
@@ -3513,7 +3523,7 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             .await,
         "the authenticated import and completion record commit together"
     );
-    let FaStatus::Restored(snapshot) = restored.status() else {
+    let FaStatus::Formed(snapshot) = restored.status() else {
         panic!("restored status");
     };
     assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
@@ -3578,7 +3588,7 @@ async fn backup_import_keeps_cached_policy_and_waits_only_for_live_lease() {
         .restore_backup_payload_with_completion(TestIdentity::fa_id(), payload, Some(&key))
         .await
         .unwrap();
-    assert!(matches!(status, FaStatus::Restored(_)));
+    assert!(matches!(status, FaStatus::Formed(_)));
     assert!(store.recovery_completed(&key).await);
     assert_eq!(
         store
@@ -3617,7 +3627,7 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
         .unwrap();
     restored.inner.progress.send_replace(status);
 
-    let FaRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
+    let FaRecovery::Formed(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
     else {
         panic!("expected restored recovery");
     };
@@ -3626,11 +3636,11 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
     restored
         .inner
         .store
-        .reconcile_restored_backup(fa_id, None)
+        .reconcile_formed_federation(fa_id, None)
         .await
         .unwrap();
 
-    let FaRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
+    let FaRecovery::Formed(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
     else {
         panic!("expected restored recovery");
     };
@@ -3669,7 +3679,7 @@ async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
             .unwrap();
         restored.inner.progress.send_replace(status);
         restored.resume().await.unwrap();
-        let FaStatus::Restored(snapshot) = restored.status() else {
+        let FaStatus::Formed(snapshot) = restored.status() else {
             panic!("restored status");
         };
         assert_eq!(
@@ -3763,11 +3773,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .await
         .unwrap();
     restored.inner.progress.send_replace(status);
-    let FaStatus::Restored(imported) = restored.status() else {
+    let FaStatus::Formed(imported) = restored.status() else {
         panic!("restored status");
     };
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
-    assert_eq!(imported.phase, FormationPhase::Formed);
     let restored_formation_id = imported.formation_id.clone();
     let restored_generation = imported.snapshot_generation;
     assert!(
@@ -3787,7 +3796,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .resume()
         .await
         .expect("verify restored seats through consensus while managers are unreachable");
-    let FaStatus::Restored(reconciled) = restored.status() else {
+    let FaStatus::Formed(reconciled) = restored.status() else {
         panic!("reconciled restored status");
     };
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
@@ -3795,7 +3804,6 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         reconciled.backup_eligible,
         "reconciliation must publish backup_eligible on the live status"
     );
-    assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
@@ -3875,7 +3883,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .resume()
         .await
         .expect_err("a failed fresh reconciliation invalidates prior authority");
-    let FaStatus::Restored(invalidated) = restored.status() else {
+    let FaStatus::Formed(invalidated) = restored.status() else {
         panic!("invalidated restored status");
     };
     assert_eq!(invalidated.freshness, FormationFreshness::Unsynced);
@@ -3950,10 +3958,9 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
                     .contains("identity differs from the saved invite")
             );
         }
-        let FaStatus::Restored(snapshot) = restored.status() else {
+        let FaStatus::Formed(snapshot) = restored.status() else {
             panic!("expected restored status");
         };
-        assert_eq!(snapshot.phase, FormationPhase::Formed);
         assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
         assert!(!snapshot.backup_eligible);
         assert!(
@@ -4396,8 +4403,17 @@ async fn open_client_with_store_and_registry(
 fn formation(status: &FaStatus) -> &FormationSnapshot {
     match status {
         FaStatus::Formation(snapshot) => snapshot,
-        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Restored(_) => {
+        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Formed(_) => {
             panic!("expected active formation")
+        }
+    }
+}
+
+fn formed(status: &FaStatus) -> &crate::FormedFederationSnapshot {
+    match status {
+        FaStatus::Formed(snapshot) => snapshot,
+        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Formation(_) => {
+            panic!("expected a formed federation")
         }
     }
 }
@@ -4415,7 +4431,7 @@ fn payment_requirements(status: &FaStatus) -> &PaymentRequirements {
 fn active_recovery(recovery: FaRecovery) -> crate::db::ActiveFormationRecovery {
     match recovery {
         FaRecovery::Formation(recovery) => *recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("expected active formation"),
+        FaRecovery::Idle | FaRecovery::Formed(_) => panic!("expected active formation"),
     }
 }
 
@@ -5107,14 +5123,7 @@ async fn an_fa_that_cannot_pay_forms_against_seats_offered_at_zero() {
         .unwrap();
 
     let status = client.status();
-    let formed = formation(&status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_formed_test_invite(
-        formed
-            .invite_code
-            .as_ref()
-            .expect("formed federation has an invite"),
-    );
+    assert_formed_test_invite(&formed(&status).federation_invite);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -5174,32 +5183,19 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
         .unwrap();
 
     let formed_status = client.status();
-    let formed = formation(&formed_status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(formed.freshness, FormationFreshness::Fresh);
-    assert!(formed.action_required.is_none());
-    assert_formed_test_invite(
-        formed
-            .invite_code
-            .as_ref()
-            .expect("formed federation has an invite"),
-    );
-    assert!(
-        formed
-            .seats
-            .iter()
-            .all(|seat| seat.phase == SeatPhase::Running)
-    );
-    let generated_name = formed.intent.federation_name.clone();
+    let snapshot = formed(&formed_status);
+    assert_eq!(snapshot.freshness, FormationFreshness::Fresh);
+    assert!(snapshot.backup_eligible);
+    assert_formed_test_invite(&snapshot.federation_invite);
+    let generated_name = snapshot
+        .federation_name
+        .clone()
+        .expect("a formation names its federation");
     assert_eq!(generated_name.0.split_whitespace().count(), 2);
 
     let json = serde_json::to_value(&formed_status).unwrap();
-    assert_eq!(json["formation"]["phase"], "formed");
-    assert_eq!(
-        json["formation"]["intent"]["federation_name"],
-        generated_name.0
-    );
-    assert_eq!(json["formation"]["seats"][0]["phase"], "running");
+    assert_eq!(json["formed"]["federation_name"], generated_name.0);
+    assert!(json["formed"].get("phase").is_none());
     assert_eq!(
         serde_json::from_value::<FaStatus>(json).unwrap(),
         formed_status
@@ -5215,23 +5211,20 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
         .store(usize::MAX, Ordering::SeqCst);
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
     let reloaded_status = reopened.status();
-    let reloaded = formation(&reloaded_status);
-    assert_eq!(reloaded.phase, FormationPhase::Formed);
+    let reloaded = formed(&reloaded_status);
     assert_eq!(reloaded.freshness, FormationFreshness::Unsynced);
-    assert_eq!(reloaded.intent.federation_name, generated_name);
-    assert!(
-        reloaded
-            .seats
-            .iter()
-            .all(|seat| seat.freshness == FormationFreshness::Unsynced)
-    );
+    assert_eq!(reloaded.federation_name.as_ref(), Some(&generated_name));
 
     reopened.resume().await.unwrap();
     let reconciled_status = reopened.status();
-    let reconciled = formation(&reconciled_status);
-    assert_eq!(reconciled.phase, FormationPhase::Formed);
+    let reconciled = formed(&reconciled_status);
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
-    assert_eq!(reconciled.intent.federation_name, generated_name);
+    // Reconciliation takes the name from consensus, which the test reader
+    // fixes.
+    assert_eq!(
+        reconciled.federation_name.as_ref(),
+        Some(&crate::FederationName("Test Federation".to_owned()))
+    );
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), create_calls);
     assert_eq!(mg_state.status_calls.load(Ordering::SeqCst), status_calls);
@@ -5259,11 +5252,92 @@ async fn an_already_started_reply_resumes_through_status_instead_of_stranding_fo
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         mg_state.start_callbacks.lock().expect("test lock").len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
+}
+
+/// Stop a formation after it published its metadata, and mark it formed
+/// in place as builds before the formed record did.
+async fn legacy_formed_formation(
+    database: Database,
+    payments: TestPayments,
+    mg_state: Arc<MgState>,
+) -> crate::FormationSnapshot {
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.force_value("{}");
+    let client =
+        open_client_with_reader(database, payments, mg_state, MgConfig::given_away(), reader).await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    assert_eq!(
+        formation(&client.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+    let snapshot = formation(&client.status()).clone();
+    client.inner.store.mark_formation_formed_for_test().await;
+    snapshot
+}
+
+#[tokio::test]
+async fn formed_formation_record_from_an_older_build_converts_on_load() {
+    let database = MemDatabase::new().into_database();
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let legacy =
+        legacy_formed_formation(database.clone(), payments.clone(), mg_state.clone()).await;
+    let create_calls = mg_state.create_calls.load(Ordering::SeqCst);
+
+    let reopened = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let status = reopened.status();
+    let snapshot = formed(&status);
+    assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
+    assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert_eq!(snapshot.formation_id, legacy.formation_id);
+    assert_eq!(
+        Some(&snapshot.federation_invite),
+        legacy.invite_code.as_ref()
+    );
+    assert!(snapshot.federation_name.is_some());
+    assert!(!reopened.inner.store.has_formation_record_for_test().await);
+    // The converted record was never published, so its first backup is
+    // generation 1.
+    assert_eq!(
+        reopened
+            .inner
+            .store
+            .backup_payload()
+            .await
+            .unwrap()
+            .payload
+            .snapshot_generation,
+        1
+    );
+    let formation_id = snapshot.formation_id.clone();
+    drop(reopened);
+
+    // The conversion is durable: a second load reads the formed record.
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    assert_eq!(formed(&reopened.status()).formation_id, formation_id);
+
+    *mg_state.meta_consensus_raw.lock().unwrap() = None;
+    reopened.resume().await.unwrap();
+    assert_eq!(
+        formed(&reopened.status()).freshness,
+        FormationFreshness::Fresh
+    );
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), create_calls);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -5281,26 +5355,13 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
         let database = MemDatabase::new().into_database();
         let (payments, _) = TestPayments::new();
         let mg_state = Arc::new(MgState::default());
-        let client = open_client(
-            database.clone(),
-            payments.clone(),
-            mg_state.clone(),
-            MgConfig::given_away(),
-        )
-        .await;
-        client
-            .create_at(intent(), locators(), options())
-            .await
-            .unwrap();
-
-        client
-            .inner
-            .store
-            .remove_formed_fact_for_test(missing_fact)
-            .await;
+        legacy_formed_formation(database.clone(), payments.clone(), mg_state.clone()).await;
+        let store = FaStore::new(database.clone());
+        store.remove_formed_fact_for_test(missing_fact).await;
+        drop(store);
 
         let reopened = FaClient::open(
-            database,
+            database.clone(),
             TestIdentity,
             payments,
             TestRegistry::default(),
@@ -5317,6 +5378,8 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
             matches!(reopened, Err(FaError::Storage(_))),
             "corrupted terminal fact {missing_fact:?} was accepted"
         );
+        // A failed conversion leaves the old record for a fixed build.
+        assert!(FaStore::new(database).has_formation_record_for_test().await);
     }
 }
 
@@ -5325,16 +5388,19 @@ async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
+    // Guardians that disagree on the federation stop the formation before
+    // its DKG completes.
+    mg_state.disagreeing_invite.store(true, Ordering::SeqCst);
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
     client
         .create_at(intent(), locators(), options())
         .await
-        .unwrap();
+        .expect_err("guardians that disagree on the federation do not form it");
     let formation_id = formation(&client.status()).formation_id.clone();
     client
         .inner
         .store
-        .rewind_formed_without_guardian_for_test()
+        .remove_first_guardian_code_for_test()
         .await;
 
     assert!(matches!(
@@ -6548,7 +6614,7 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
     // refreshes every one of them before the run self-authorizes and spends.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     let refreshed = quote_ids(&mg_state.quote_records.lock().expect("test lock"));
     assert_eq!(refreshed.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(required.is_disjoint(&refreshed));
@@ -6616,7 +6682,7 @@ async fn one_ecash_note_pays_every_seat_and_returns_change_sequentially() {
         .await
         .expect("one note is reused only after each accepted payment returns spendable change");
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         payment_state
             .single_note_balance_msats
@@ -6847,7 +6913,7 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
     );
     assert!(formation(&recovered_status).action_required.is_none());
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -7084,7 +7150,7 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_after_funding
@@ -7272,7 +7338,7 @@ async fn lost_free_create_seat_response_replays_exact_quote_and_allocation() {
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_before_resume
@@ -7317,10 +7383,8 @@ async fn formed_fa_proposes_and_confirms_the_fixed_4_1_1_policy() {
         .unwrap();
 
     let formed_status = client.status();
-    let formed_invite = formation(&formed_status)
-        .invite_code
-        .as_ref()
-        .expect("formed FA persisted its invite");
+    let formed_invite = formed(&formed_status).federation_invite.clone();
+
     let formed_federation_id = formed_invite
         .0
         .parse::<FedimintInviteCode>()
@@ -7845,7 +7909,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
     .await;
     reopened.resume().await.unwrap();
 
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_before_resume,
@@ -7939,7 +8003,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
         )
         .await
         .expect("a newly approved selection can start a fresh formation");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state
             .create_records
@@ -8035,7 +8099,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         // Let the fake consensus adopt the submitted directory on the next read.
         *state.meta_consensus_raw.lock().unwrap() = None;
         reopened.resume().await.unwrap();
-        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        formed(&reopened.status());
         assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
         assert_eq!(state.create_calls.load(Ordering::SeqCst), seats);
         assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
@@ -8043,7 +8107,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
 }
 
 #[tokio::test]
-async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
+async fn completed_setup_stays_formed_through_failed_rechecks() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let state = Arc::new(MgState::default());
@@ -8070,23 +8134,13 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         reader.clone(),
     )
     .await;
-    // Cancel after the first failed consensus read, while resume waits to retry.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            result = client.resume() => panic!("recheck unexpectedly finished: {result:?}"),
-            () = async {
-                while reader.failures.load(Ordering::SeqCst) == usize::MAX {
-                    tokio::task::yield_now().await;
-                }
-            } => {}
-        }
-    })
-    .await
-    .unwrap();
+    // An unreachable federation fails the recheck. The caller retries.
+    assert!(matches!(
+        client.resume().await,
+        Err(FaError::InvalidManifoldGuardians(message)) if message.contains("unreachable")
+    ));
     let status = client.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert_eq!(formation(&status).freshness, FormationFreshness::Unsynced);
-    assert_eq!(formation(&status).last_error, None);
+    assert_eq!(formed(&status).freshness, FormationFreshness::Unsynced);
     drop(client);
     // Let the cancelled driver's lease cleanup finish before reopening.
     tokio::task::yield_now().await;
@@ -8115,9 +8169,8 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
             reader,
         )
         .await;
-        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
         assert_eq!(
-            formation(&client.status()).freshness,
+            formed(&client.status()).freshness,
             FormationFreshness::Unsynced
         );
         let mut observed = client.observe();
@@ -8129,7 +8182,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
                     biased;
                     changed = observed.changed() => {
                         changed.unwrap();
-                        assert_eq!(formation(&observed.borrow_and_update()).phase, FormationPhase::Formed);
+                        formed(&observed.borrow_and_update());
                     }
                     result = &mut operation => break result,
                 }
@@ -8137,9 +8190,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         };
         assert_eq!(result.is_err(), fail);
         let status = client.status();
-        let snapshot = formation(&status);
-        assert_eq!(snapshot.phase, FormationPhase::Formed);
-        assert_eq!(snapshot.last_error.is_some(), fail);
+        let snapshot = formed(&status);
         assert_eq!(
             snapshot.freshness,
             if fail {
@@ -8154,7 +8205,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
             .load_status(TestIdentity::fa_id())
             .await
             .unwrap();
-        assert_eq!(formation(&saved).phase, FormationPhase::Formed);
+        formed(&saved);
     }
 }
 
@@ -8187,7 +8238,7 @@ async fn an_mg_claiming_a_foreign_peer_is_not_pinned_for_recovery() {
 
     mg_state.attest_foreign_peer.store(false, Ordering::SeqCst);
     client.resume().await.unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8279,7 +8330,7 @@ async fn formed_resume_accepts_a_later_rate_without_fee_account_capabilities() {
     )
     .await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
 }
 
 #[tokio::test]
@@ -8365,7 +8416,7 @@ async fn exact_formation_readback_wins_over_late_already_published() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8423,7 +8474,7 @@ async fn a_transient_consensus_read_failure_is_retried() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8468,7 +8519,7 @@ async fn pre_payment_abandon_wipes_a_parked_paid_formation_to_idle() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
 }
 
 #[tokio::test]
@@ -8620,21 +8671,10 @@ async fn completed_payment_is_durable_before_the_next_funding_call_starts() {
     );
     drop(effects);
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(
-        recovery
-            .snapshot
-            .seats
-            .iter()
-            .all(|seat| seat.seat_id.is_some()),
+    // A formed federation records a seat id for every seat.
+    assert_eq!(
+        formed(&client.status()).seats.len(),
+        usize::from(MIN_FEDERATION_SIZE),
         "every paid seat is durable after the blocked next payment resumes",
     );
 }
@@ -8952,7 +8992,7 @@ async fn abandon_after_formed_is_a_typed_error() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 
     let error = client.abandon_formation(options()).await.unwrap_err();
     assert!(
@@ -8962,7 +9002,7 @@ async fn abandon_after_formed_is_a_typed_error() {
         ),
         "{error}"
     );
-    assert!(matches!(client.status(), FaStatus::Formation(_)));
+    assert!(matches!(client.status(), FaStatus::Formed(_)));
 }
 
 #[tokio::test]
@@ -9173,7 +9213,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
                 .resume()
                 .await
                 .expect("recover signatures without another payment");
-            assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+            formed(&reopened.status());
             assert_eq!(
                 payment_state
                     .created_quotes
@@ -9186,7 +9226,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             );
         } else {
             result.expect("payment preparation can outlast a network request");
-            assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+            formed(&client.status());
         }
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
@@ -9213,27 +9253,13 @@ async fn under_cap_paid_formation_self_authorizes_and_forms() {
         .unwrap();
 
     let status = client.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert!(formation(&status).action_required.is_none());
+    formed(&status);
+
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE),
         "the self-authorized run funded every paid seat without an explicit call",
     );
-    // The self-authorization recorded the same durable quote-bound
-    // authorization an explicit call would have written.
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    let (_, authorized) = recovery
-        .test_payment_authorization()
-        .expect("durable aggregate authorization exists");
-    assert_eq!(authorized.len(), usize::from(MIN_FEDERATION_SIZE));
 }
 
 #[tokio::test]
@@ -9254,8 +9280,7 @@ async fn pay_and_create_uses_the_explicit_ready_payer_and_arms_outputs() {
         .await
         .unwrap();
 
-    let status = formation(&client.status()).clone();
-    assert_eq!(status.phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(
         mg_state
             .quote_records
@@ -9265,7 +9290,6 @@ async fn pay_and_create_uses_the_explicit_ready_payer_and_arms_outputs() {
             .all(|record| record.payment_federation_id.as_ref() == Some(&payment_federation_id())),
         "every paid quote must name the explicitly selected payer",
     );
-    assert!(status.payment_outputs_started);
     assert!(payment_state.readiness_calls.load(Ordering::SeqCst) >= 1);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -9292,20 +9316,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
         .await
         .expect("every live MG offers a build in the sealed cohort");
 
-    let formed = formation(&client.status()).clone();
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(
-        formed.intent.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
-    );
-    assert_eq!(
-        formed
-            .intent
-            .fedimintd_versions
-            .maximum_exclusive()
-            .to_string(),
-        "0.12.3"
-    );
+    formed(&client.status());
     assert!(
         mg_state
             .quote_records
@@ -9420,7 +9431,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
         .resume()
         .await
         .expect("reopen accepts patch skew inside the persisted DKG identity");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -9519,7 +9530,7 @@ async fn selected_connection_failure_retries_before_requesting_replacement() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.connect_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9549,7 +9560,7 @@ async fn selected_availability_transport_failure_reconnects_before_payment() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.availability_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9579,7 +9590,7 @@ async fn selected_quote_transport_failure_reconnects_before_payment() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.quote_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9655,7 +9666,7 @@ async fn selected_acquisition_connection_failure_retries_before_output_generatio
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.connect_calls.load(Ordering::SeqCst) > 2 * usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9687,7 +9698,7 @@ async fn selected_connection_timeouts_retry_in_quote_and_acquisition_phases() {
             .await
             .unwrap();
 
-        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+        formed(&client.status());
         assert!(state.connect_attempts.lock().unwrap()[&3] > attempt);
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
@@ -10403,7 +10414,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .authorize_payments(authorization_id, options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE) + 1,
@@ -10542,7 +10553,7 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
     .await;
     reopened.resume().await.unwrap();
 
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         spends_before_resume,
@@ -10603,7 +10614,7 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
         .pay_and_create(intent(), approval, payment_federation_id(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -10665,7 +10676,7 @@ async fn selected_lost_reservation_result_reconstructs_the_same_wallet_journal()
         .resume()
         .await
         .expect("resume reconstructs the wallet capability under the same id");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.reservations.lock().expect("test lock").len(),
         1,
@@ -11155,7 +11166,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
         .resume()
         .await
         .expect("post-output recovery uses persisted admission facts");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert!(payment_state.create_calls.load(Ordering::SeqCst) > 0);
 }
 
@@ -12637,8 +12648,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     reopened.resume().await.unwrap();
     let status = reopened.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert_eq!(formation(&status).intent.max_total_msats, Some(cap));
+    formed(&status);
 }
 
 #[tokio::test]
@@ -13672,7 +13682,7 @@ async fn liquidity_reopen_resumes_the_exact_persisted_commitment() {
         )
         .await
         .expect("form selected test federation");
-    let formation_id = formation(&client.status()).formation_id.clone();
+    let formation_id = formed(&client.status()).formation_id.clone();
     let connector =
         TestLiquidityConnector(TestLiquidityProviderState::new(client.inner.store.clone()));
     connector.0.fail_next_connect.store(true, Ordering::SeqCst);
@@ -13790,7 +13800,7 @@ async fn late_stale_base_responses_do_not_fail_an_adopted_directory() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         mg_state.meta_submissions.lock().expect("test lock").len(),
         threshold,
@@ -13824,7 +13834,7 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     let bases = mg_state.meta_request_bases.lock().expect("test lock");
     let seats = usize::from(MIN_FEDERATION_SIZE);
     assert_eq!(bases.len(), seats * 2, "one all-stale wave and one retry");
@@ -14331,7 +14341,7 @@ async fn eligibility_missing_reports_and_unverified_holder_do_not_create_candida
     assert!(result.candidates.is_empty());
     assert_eq!(
         result.federation_id.0,
-        formation::invite_federation_id(formation(&client.status()).invite_code.as_ref().unwrap())
+        formation::invite_federation_id(&formed(&client.status()).federation_invite)
             .unwrap()
             .to_string()
     );

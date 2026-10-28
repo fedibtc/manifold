@@ -1137,7 +1137,15 @@ where
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
-            let mut recovery = self.active_recovery(fa_id).await?;
+            let mut recovery = match self.inner.store.load_recovery(fa_id).await? {
+                FaRecovery::Idle => return Err(FaError::NoActiveFormation),
+                FaRecovery::Formed(_) => {
+                    return Err(FaError::AbandonUnavailable(
+                        crate::AbandonUnavailableReason::DkgComplete,
+                    ));
+                }
+                FaRecovery::Formation(recovery) => *recovery,
+            };
             self.release_and_abandon_pre_output(
                 &mut recovery,
                 fa_id,
@@ -3078,11 +3086,7 @@ where
         self.publish_snapshot(recovery.snapshot.clone());
         self.publish_seat_bindings(sessions, recovery, fa_id, &invite, run)
             .await?;
-        recovery.snapshot.phase = FormationPhase::Formed;
-        recovery.snapshot.freshness = FormationFreshness::Fresh;
-        recovery.snapshot.last_error = None;
-        self.publish_snapshot(recovery.snapshot.clone());
-        Ok(())
+        self.publish_formed(fa_id).await
     }
 
     async fn checkpoint_accepted_seat(
@@ -3832,10 +3836,7 @@ where
                     waiting.push(&sessions[position]);
                 }
             }
-            // A completed formation stays unsynced until its full recheck succeeds.
-            if recovery.snapshot.phase != FormationPhase::Formed {
-                recovery.snapshot.freshness = FormationFreshness::Fresh;
-            }
+            recovery.snapshot.freshness = FormationFreshness::Fresh;
             self.publish_snapshot(recovery.snapshot.clone());
             if running == sessions.len() {
                 return Ok(());
@@ -3866,43 +3867,44 @@ where
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FaError::Storage("formed FA record contains no persisted invite".to_owned())
         })?;
-        let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
-            // Consensus already confirmed formation. Recheck that proof without
-            // requiring every manager to be online again.
-            (Vec::new(), stored)
-        } else {
-            let manager_connections = self.seat_sessions(recovery, run).await?;
-            self.poll_until_running(&manager_connections, recovery, fa_id, run)
-                .await?;
-            let invite = self
-                .fetch_agreed_invite(&manager_connections, fa_id, run)
-                .await?;
-            if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "formed federation identity changed during reconciliation".to_owned(),
-                ));
-            }
-            (manager_connections, invite)
-        };
+        let manager_connections = self.seat_sessions(recovery, run).await?;
+        self.poll_until_running(&manager_connections, recovery, fa_id, run)
+            .await?;
+        let invite = self
+            .fetch_agreed_invite(&manager_connections, fa_id, run)
+            .await?;
+        if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
+            return Err(FaError::InvalidManifoldGuardians(
+                "formed federation identity changed during reconciliation".to_owned(),
+            ));
+        }
         self.publish_seat_bindings(&manager_connections, recovery, fa_id, &invite, run)
             .await?;
-        recovery.snapshot.phase = FormationPhase::Formed;
-        recovery.snapshot.freshness = FormationFreshness::Fresh;
-        recovery.snapshot.last_error = None;
-        self.publish_snapshot(recovery.snapshot.clone());
+        self.publish_formed(fa_id).await
+    }
+
+    /// Report the formed federation, which this run checked against
+    /// consensus.
+    async fn publish_formed(&self, fa_id: FaId) -> FaResult<()> {
+        let mut status = self.inner.store.load_status(fa_id).await?;
+        if let FaStatus::Formed(snapshot) = &mut status {
+            snapshot.freshness = FormationFreshness::Fresh;
+        }
+        self.inner.progress.send_replace(status);
         Ok(())
     }
 
-    pub(crate) async fn reconcile_restored(
+    /// Check the saved seats of a formed federation against consensus.
+    pub(crate) async fn reconcile_formed(
         &self,
-        snapshot: crate::RestoredFormationSnapshot,
+        snapshot: crate::FormedFederationSnapshot,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let payload = self.inner.store.restored_backup_payload(fa_id).await?;
+        let payload = self.inner.store.formed_federation_payload(fa_id).await?;
         if payload.seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
-                "restored FA backup contains no seats".to_owned(),
+                "formed FA federation record contains no seats".to_owned(),
             ));
         }
         let consensus = self
@@ -3910,26 +3912,26 @@ where
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
-                    "reading restored federation consensus failed: {error}"
+                    "reading formed federation consensus failed: {error}"
                 ))
             })?;
         verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
-                "restored federation config is not usable: {error}"
+                "formed federation config is not usable: {error}"
             ))
         })?;
         let directory = crate::liquidity::liquidity_seat_bindings_field(&consensus.meta_value)?
             .ok_or_else(|| {
                 FaError::InvalidManifoldGuardians(
-                    "restored federation has no MG seat-binding directory".to_owned(),
+                    "formed federation has no MG seat-binding directory".to_owned(),
                 )
             })?;
         let bindings = MgSeatBindings::parse_canonical(&directory)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
-                    "restored federation seat-binding directory is invalid: {error}"
+                    "formed federation seat-binding directory is invalid: {error}"
                 ))
             })?;
         let federation_name = federation_name(&consensus)?;
@@ -3960,7 +3962,7 @@ where
         };
         context.fleet_seat_hints().map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
-                "restored seats do not match federation consensus: {error}"
+                "saved seats do not match federation consensus: {error}"
             ))
         })?;
         if let Some(commitment) = &payload.liquidity {
@@ -3971,15 +3973,9 @@ where
             .await?;
         self.inner
             .store
-            .reconcile_restored_backup(fa_id, federation_name)
+            .reconcile_formed_federation(fa_id, federation_name)
             .await?;
-        let mut status = self.inner.store.load_status(fa_id).await?;
-        if let FaStatus::Restored(snapshot) = &mut status {
-            snapshot.freshness = FormationFreshness::Fresh;
-            snapshot.backup_eligible = true;
-        }
-        self.inner.progress.send_replace(status);
-        Ok(())
+        self.publish_formed(fa_id).await
     }
 
     async fn seat_sessions(
@@ -4014,8 +4010,6 @@ where
         invite: &InviteCode,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let confirmed = recovery.snapshot.phase == FormationPhase::Formed;
-
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
         // invalid directory after pinning it. This read validates the signed
@@ -4100,60 +4094,43 @@ where
             }
         };
 
-        if !confirmed {
-            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-            self.publish_snapshot(recovery.snapshot.clone());
-        }
+        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+        self.publish_snapshot(recovery.snapshot.clone());
         let mut pending_error = None;
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = if confirmed {
-                self.read_recovery_consensus(invite, run).await?
-            } else {
-                run.call("reading the formation metadata base", || {
+            let snapshot = run
+                .call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?
-            };
+                .await?;
             let Ok(snapshot) = snapshot else {
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
             };
-            if confirmed {
-                verify_consensus_identity(&snapshot, invite)?;
-            }
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
                     error.actual_bytes, error.max_bytes
                 ))
             })?;
-            let immutable_matches = self.seat_bindings_match(&snapshot, &target.seat_bindings)?
+            let exact_matches = self.seat_bindings_match(&snapshot, &target.seat_bindings)?
                 && guardian_fee_recipients_match(
                     snapshot.meta_value.as_deref(),
                     &target.recipients,
-                )?;
-            let exact_matches = immutable_matches
+                )?
                 && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?;
-            if (confirmed && immutable_matches) || exact_matches {
-                if !confirmed {
-                    run.call("confirming formation metadata consensus", || {
-                        Ok(self
-                            .inner
-                            .store
-                            .confirm_formation_meta_target(&recovery.snapshot.formation_id))
-                    })
-                    .await??;
-                }
+            if exact_matches {
+                run.call("confirming formation metadata consensus", || {
+                    Ok(self
+                        .inner
+                        .store
+                        .confirm_formation_meta_target(&recovery.snapshot.formation_id))
+                })
+                .await??;
                 self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
-            }
-            if confirmed {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "formed federation changed its immutable directory or fee recipients"
-                        .to_owned(),
-                ));
             }
             if let Some(error) = pending_error.take() {
                 return Err(error);
@@ -4570,69 +4547,35 @@ where
 
     pub(crate) async fn active_recovery(&self, fa_id: FaId) -> FaResult<ActiveFormationRecovery> {
         match self.inner.store.load_recovery(fa_id).await? {
-            FaRecovery::Idle | FaRecovery::Restored(_) => Err(FaError::NoActiveFormation),
+            FaRecovery::Idle | FaRecovery::Formed(_) => Err(FaError::NoActiveFormation),
             FaRecovery::Formation(recovery) => Ok(*recovery),
         }
     }
 
     pub(crate) async fn post_formed_authority(&self, fa_id: FaId) -> FaResult<PostFormedAuthority> {
-        match self.inner.store.load_recovery(fa_id).await? {
-            FaRecovery::Idle => Err(FaError::NoActiveFormation),
-            FaRecovery::Formation(recovery) => {
-                let recovery = *recovery;
-                if recovery.snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-                    FaError::Storage("formed FA record has no federation invite".to_owned())
-                })?;
-                let seats = recovery
-                    .seats
-                    .into_iter()
-                    .map(|seat| {
-                        Ok(PostFormedSeat {
-                            index: seat.progress.index,
-                            mg_id: seat.admission.mg_id(),
-                            locator: seat.progress.locator,
-                            seat_id: seat.progress.seat_id.ok_or_else(|| {
-                                FaError::Storage("formed FA seat has no seat id".to_owned())
-                            })?,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id: recovery.snapshot.formation_id,
-                    invite_code,
-                    seats,
+        let FaRecovery::Formed(snapshot) = self.inner.store.load_recovery(fa_id).await? else {
+            return Err(FaError::NoActiveFormation);
+        };
+        let seats = snapshot
+            .seats
+            .into_iter()
+            .enumerate()
+            .map(|(index, seat)| {
+                Ok(PostFormedSeat {
+                    index: u16::try_from(index).map_err(|_| {
+                        FaError::Storage("formed FA seat index overflow".to_owned())
+                    })?,
+                    mg_id: seat.mg_identity,
+                    locator: seat.locator,
+                    seat_id: seat.seat_id,
                 })
-            }
-            FaRecovery::Restored(snapshot) => {
-                if snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let formation_id = snapshot.formation_id;
-                let seats = snapshot
-                    .seats
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, seat)| {
-                        Ok(PostFormedSeat {
-                            index: u16::try_from(index).map_err(|_| {
-                                FaError::Storage("restored FA seat index overflow".to_owned())
-                            })?,
-                            mg_id: seat.mg_identity,
-                            locator: seat.locator,
-                            seat_id: seat.seat_id,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id,
-                    invite_code: snapshot.federation_invite,
-                    seats,
-                })
-            }
-        }
+            })
+            .collect::<FaResult<Vec<_>>>()?;
+        Ok(PostFormedAuthority {
+            formation_id: snapshot.formation_id,
+            invite_code: snapshot.federation_invite,
+            seats,
+        })
     }
 
     fn publish_snapshot(&self, snapshot: FormationSnapshot) {

@@ -1,10 +1,10 @@
 //! Testing-only FA-initiated decommission of the FA's own seats.
 //!
 //! Not a product capability, and deliberately the thinnest thing that works:
-//! it sends one `DecommissionSeat` per seat of the recorded formation and
+//! it sends one `DecommissionSeat` per recorded seat and
 //! reports what each MG said. It takes no driver lease, records nothing, and
 //! leaves local FA state exactly as it found it — a decommissioned federation
-//! still reads as `Formed` until the caller abandons or overwrites it. Every
+//! still reads as formed until the caller overwrites it. Every
 //! MG outside development and staging refuses the underlying verb, and the
 //! seat is forfeited, exactly as an operator decommission would leave it.
 
@@ -17,6 +17,7 @@ use fedi_decentralized_service_manifold_guardian::{
 use fedimint_core::runtime::timeout;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
+use crate::db::FaRecovery;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     ManifoldGuardianConnector, Timestamp,
@@ -52,16 +53,28 @@ where
     /// reached is reported, and its operator has to decommission it by hand.
     pub async fn decommission_seats(&self) -> FaResult<DecommissionOutcome> {
         let fa_id = self.fa_id()?;
-        let recovery = self.active_recovery(fa_id).await?;
-        let mut pending = FuturesUnordered::new();
-        for seat in &recovery.seats {
-            let index = seat.progress.index;
+        let seats = match self.inner.store.load_recovery(fa_id).await? {
+            FaRecovery::Idle => return Err(FaError::NoActiveFormation),
             // A seat row without an id was never accepted by its MG, so
             // there is nothing on the other side to release.
-            let Some(seat_id) = seat.progress.seat_id.clone() else {
-                continue;
-            };
-            let locator = seat.progress.locator.clone();
+            FaRecovery::Formation(recovery) => recovery
+                .seats
+                .into_iter()
+                .filter_map(|seat| {
+                    let seat_id = seat.progress.seat_id?;
+                    Some((seat.progress.index, seat.progress.locator, seat_id))
+                })
+                .collect::<Vec<_>>(),
+            FaRecovery::Formed(_) => self
+                .post_formed_authority(fa_id)
+                .await?
+                .seats
+                .into_iter()
+                .map(|seat| (seat.index, seat.locator, seat.seat_id))
+                .collect(),
+        };
+        let mut pending = FuturesUnordered::new();
+        for (index, locator, seat_id) in seats {
             pending.push(async move {
                 let result = timeout(DECOMMISSION_REQUEST_TIMEOUT, async {
                     let client = self

@@ -11,8 +11,8 @@ use tokio::sync::{Mutex, watch};
 use crate::formation::{PostFormedAuthority, invite_federation_id};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
-    FederationId, FormationFreshness, FormationId, FormationPhase, ManifoldGuardianConnector,
-    ReplacementCandidate, ReplacementCheck,
+    FederationId, FormationFreshness, FormationId, ManifoldGuardianConnector, ReplacementCandidate,
+    ReplacementCheck,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -39,13 +39,7 @@ impl Default for ReplacementChecks {
 // Ignore progress details that do not change which formed federation is ready.
 fn ready_federation(status: &FaStatus) -> Option<(FormationId, FederationId)> {
     let (formation, invite) = match status {
-        FaStatus::Formation(state) if state.phase == FormationPhase::Formed => {
-            (&state.formation_id, state.invite_code.as_ref()?)
-        }
-        FaStatus::Restored(state)
-            if state.phase == FormationPhase::Formed
-                && state.freshness == FormationFreshness::Fresh =>
-        {
+        FaStatus::Formed(state) if state.freshness == FormationFreshness::Fresh => {
             (&state.formation_id, &state.federation_invite)
         }
         _ => return None,
