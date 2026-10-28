@@ -12,6 +12,5 @@ test('should show a one-time QR code as soon as the Phone link page opens', asyn
   await expect(page.getByRole('img', { name: 'Guardian link QR code' })).toBeVisible();
   await expect(page.getByText(/This code works once and expires at/)).toBeVisible();
   await expect(page.getByText(/tap Scan\/Paste and point the camera here/)).toBeVisible();
-  await expect(page.getByText(/shows mutual-hamster, the name of this host/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
 });

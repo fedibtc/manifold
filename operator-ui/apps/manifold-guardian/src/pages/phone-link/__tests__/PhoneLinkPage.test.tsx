@@ -17,14 +17,8 @@ const phone: NonNullable<GuardianLinkResponse['link']> = {
 const linked: GuardianLinkResponse = { ...unlinked, link: phone };
 const offer = { uri: 'fedi://guardian-link?secret=mock-only', expires_at: 1700004200 };
 
-const onboarding = { fman_name: 'blissful-chiffchaff' };
-const answer = (request: unknown, response: unknown) =>
-  (request === 'Onboarding' ? onboarding : response) as never;
-
 const renderPage = (response: GuardianLinkResponse) => {
-  const adminCall = vi
-    .spyOn(adminCallModule, 'adminCall')
-    .mockImplementation(async (request) => answer(request, response));
+  const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(response);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -40,7 +34,7 @@ afterEach(() => vi.restoreAllMocks());
 
 it('should explain when no push gateway is configured without minting a code', async () => {
   const adminCall = renderPage({ ...unlinked, available: false });
-  expect(await screen.findByText(/no push gateway configured/)).toBeInTheDocument();
+  expect(await screen.findByText(/isn't set up to send phone notifications/)).toBeInTheDocument();
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 
@@ -52,8 +46,7 @@ it('should mint a code as soon as the page opens with no phone linked', async ()
 it('should show an open offer as a QR with the scan steps and never the URI', async () => {
   renderPage({ ...unlinked, offer });
   expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
-  // The steps follow the phone: scan, confirm the host by the name the phone
-  // shows (this host's, from Onboarding), then the notification prompt.
+  // The steps follow the phone: scan, confirm, then the notification prompt.
   const steps = within(screen.getByRole('list')).getAllByRole('listitem');
   expect(steps.map((step) => within(step).getByRole('heading').textContent)).toEqual([
     'Scan this code',
@@ -61,7 +54,6 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
     'Allow notifications'
   ]);
   expect(steps[0]).toHaveTextContent('tap Scan/Paste');
-  expect(steps[1]).toHaveTextContent('shows blissful-chiffchaff, the name of this host');
   expect(screen.getByText(/expires at 2023-11-14 23:23 UTC/)).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
@@ -122,7 +114,7 @@ it.each([
   adminCall.mockImplementation(async (request) =>
     request === 'TestGuardianLinkNotification'
       ? ({ outcome, reason: null } as never)
-      : answer(request, linked)
+      : (linked as never)
   );
   fireEvent.click(await screen.findByRole('button', { name: 'Send test notification' }));
   expect(await screen.findByRole('status')).toHaveTextContent(message);

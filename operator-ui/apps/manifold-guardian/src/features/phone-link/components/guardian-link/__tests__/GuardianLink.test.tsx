@@ -6,7 +6,6 @@ import { GuardianLink } from '@/features/phone-link/components/guardian-link/Gua
 import * as adminCallModule from '@/shared/api/adminCall';
 
 const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };
-const onboarding = { fman_name: 'blissful-chiffchaff' };
 const offer = { uri: 'fedi://guardian-link?secret=mock-only', expires_at: 1700004200 };
 
 const renderLink = () => {
@@ -26,7 +25,7 @@ it('should mint a code on its own when no phone is linked and show it as a QR', 
   let status = unlinked;
   const call = vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request) => {
     if (request === 'CreateGuardianLinkOffer') status = { ...unlinked, offer };
-    return (request === 'Onboarding' ? onboarding : status) as never;
+    return status as never;
   });
   renderLink();
 
@@ -40,7 +39,7 @@ it('should mint a code on its own when no phone is linked and show it as a QR', 
 it('should report a failed mint inline once, without claiming there is a code', async () => {
   const call = vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request) => {
     if (request === 'CreateGuardianLinkOffer') throw new Error('gateway offline');
-    return (request === 'Onboarding' ? onboarding : unlinked) as never;
+    return unlinked as never;
   });
   renderLink();
 
@@ -57,7 +56,7 @@ it('should treat an expired code the daemon still returns as missing and mint a 
   let status: GuardianLinkResponse = { ...unlinked, offer: { ...offer, expires_at: 1 } };
   const call = vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request) => {
     if (request === 'CreateGuardianLinkOffer') status = { ...unlinked, offer };
-    return (request === 'Onboarding' ? onboarding : status) as never;
+    return status as never;
   });
   renderLink();
 

@@ -1,10 +1,9 @@
 import { Banner, Button } from '@operator-ui/common-ui';
 import { QRCodeSVG } from 'qrcode.react';
-import { type ReactNode, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
 import styles from '@/features/phone-link/components/guardian-link/GuardianLink.module.css';
 import { useGuardianLinkActions } from '@/features/phone-link/components/guardian-link/useGuardianLinkActions';
-import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
 import { formatCheckedAt, formatDate } from '@/shared/utils/format';
@@ -14,21 +13,15 @@ interface GuardianLinkProps extends Record<string, never> {}
 const formatDay = (seconds: number) => formatDate(seconds * 1000);
 
 // What the host does on the phone, in the order the app asks for it: the main
-// scan button, the confirm screen that names this host, then the system's
-// notification prompt.
-const linkSteps = (hostName: string): { title: string; detail: ReactNode }[] => [
+// scan button, the confirm screen, then the system's notification prompt.
+const LINK_STEPS: { title: string; detail: string }[] = [
   {
     title: 'Scan this code',
     detail: 'Open the app on your phone, tap Scan/Paste and point the camera here.'
   },
   {
     title: 'Tap Link guardian',
-    detail: (
-      <>
-        First check that your phone shows <strong className={styles.hostName}>{hostName}</strong>,
-        the name of this host.
-      </>
-    )
+    detail: 'The app shows a confirm screen right after the scan.'
   },
   {
     title: 'Allow notifications',
@@ -46,10 +39,7 @@ const phoneIcon = (
 
 export const GuardianLink = (_props: GuardianLinkProps) => {
   const status = useGuardianLink();
-  // The phone's confirm screen names this host, so the steps name it too.
-  const onboarding = useOnboarding();
-  const { disposition, retry } = useQueryDisposition([status, onboarding]);
-  const hostName = onboarding.data?.fman_name;
+  const { disposition, retry } = useQueryDisposition([status]);
   const link = status.data?.link;
   const offer = status.data?.offer;
   const terminal = link?.delivery.state === 'terminal';
@@ -76,7 +66,6 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   return (
     <QuerySurface disposition={disposition} onRetry={retry}>
       {status.data &&
-        hostName !== undefined &&
         (status.data.available ? (
           <div className={styles.root}>
             {link && (
@@ -89,8 +78,8 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 {terminal && (
                   <div role="alert">
                     <Banner variant="warn" title="Notifications stopped">
-                      The push gateway no longer accepts notifications for this phone, so this host
-                      can't reach it. Link it again with the code below.
+                      Your phone stopped getting notifications from this host. This happens when the
+                      app is reinstalled or the link runs out. Link it again with the code below.
                     </Banner>
                   </div>
                 )}
@@ -141,7 +130,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </h2>
                 </header>
 
-                <div className={styles.offer}>
+                <div className={styles.split}>
                   <div className={styles.qrBox}>
                     <QRCodeSVG
                       value={offer.uri}
@@ -152,31 +141,25 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                     />
                   </div>
 
-                  <div className={styles.offerBody}>
-                    <ol className={styles.steps}>
-                      {linkSteps(hostName).map((step, index) => (
-                        <li key={step.title} className={styles.step}>
-                          <span className={styles.stepNumber}>{index + 1}</span>
+                  <ol className={styles.rows}>
+                    {LINK_STEPS.map((step, index) => (
+                      <li key={step.title} className={styles.row}>
+                        <span className={styles.rowNumber}>{index + 1}</span>
 
-                          <div className={styles.stepText}>
-                            <h3 className={styles.stepTitle}>{step.title}</h3>
+                        <div className={styles.rowText}>
+                          <h3 className={styles.stepTitle}>{step.title}</h3>
 
-                            <p className={styles.stepDetail}>{step.detail}</p>
-                          </div>
-                        </li>
-                      ))}
-                    </ol>
-
-                    <p className={styles.offerText}>
-                      Once linked, your phone appears on this page.
-                    </p>
-
-                    <p className={styles.caption}>
-                      This code works once and expires at {formatCheckedAt(offer.expires_at)}. A new
-                      one replaces it then.
-                    </p>
-                  </div>
+                          <p className={styles.stepDetail}>{step.detail}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
                 </div>
+
+                <p className={styles.footer}>
+                  Once linked, your phone appears on this page. This code works once and expires at{' '}
+                  {formatCheckedAt(offer.expires_at)}. A new one replaces it then.
+                </p>
               </section>
             )}
             {wantsOffer && !createFailed && (
@@ -206,8 +189,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
               <h2 className={styles.emptyTitle}>Phone notifications are off</h2>
 
               <p className={styles.emptyText}>
-                This host has no push gateway configured, so it can't notify a phone. To turn
-                notifications on, set{' '}
+                This host isn't set up to send phone notifications yet. To turn them on, set{' '}
                 <code className={styles.code}>FLEET_MANAGER_PUSH_GATEWAY_ORIGIN</code> and restart
                 Manifold Fedimint Guardian.
               </p>

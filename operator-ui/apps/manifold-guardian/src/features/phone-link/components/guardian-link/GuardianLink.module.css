@@ -28,38 +28,14 @@
 .actions {
   @apply flex flex-wrap gap-3;
 }
-.offer {
-  @apply flex flex-wrap items-start gap-6;
-}
 .qrBox {
   @apply flex-none rounded-card border border-muted bg-surface p-3;
-}
-.offerBody {
-  @apply uStack4 min-w-0 flex-1;
-}
-.steps {
-  @apply m-0 grid list-none gap-4 p-0;
-}
-.step {
-  @apply grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3;
-}
-.stepNumber {
-  @apply flex size-8 items-center justify-center rounded-full border-[1.5px] border-ink bg-surface text-xs font-semibold tabular-nums text-ink;
-}
-.stepText {
-  @apply uStack1 min-w-0 pt-1.5;
 }
 .stepTitle {
   @apply uLabel;
 }
 .stepDetail {
   @apply m-0 text-sm text-gray-500;
-}
-.hostName {
-  @apply font-medium text-ink;
-}
-.offerText {
-  @apply m-0 text-sm text-ink;
 }
 .empty {
   @apply flex flex-col items-center gap-3 px-6 py-12 text-center;
@@ -84,4 +60,22 @@
 }
 .error {
   @apply text-sm text-error;
+}
+.split {
+  @apply grid grid-cols-[auto_minmax(0,1fr)] items-start gap-8;
+}
+.rows {
+  @apply m-0 flex list-none flex-col p-0;
+}
+.row {
+  @apply grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2 border-b border-muted py-4 first:pt-0 last:border-b-0;
+}
+.rowNumber {
+  @apply text-sm font-semibold tabular-nums text-gray-500;
+}
+.rowText {
+  @apply uStack1 min-w-0;
+}
+.footer {
+  @apply m-0 text-sm text-gray-500;
 }
