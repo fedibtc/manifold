@@ -178,6 +178,8 @@ pub enum MgOperation {
     GetPeerAttestation,
     ProposeFormationMeta,
     WaitForRunning,
+    PullSeat,
+    RemoveSeat,
 }
 impl MgOperation {
     pub(crate) fn as_str(self) -> &'static str {
@@ -194,6 +196,8 @@ impl MgOperation {
             Self::GetPeerAttestation => "get_peer_attestation",
             Self::ProposeFormationMeta => "propose_formation_meta",
             Self::WaitForRunning => "wait_for_running",
+            Self::PullSeat => "pull_seat",
+            Self::RemoveSeat => "remove_seat",
         }
     }
 }

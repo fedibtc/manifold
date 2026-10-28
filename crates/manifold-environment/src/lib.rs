@@ -404,11 +404,19 @@ impl ManifoldEnvironmentProfile {
         &self.nostr_relays
     }
 
-    /// Complete relay reads required to report that no FA backup was found.
-    /// A development relay override uses the same majority rule.
+    /// Complete relay reads required before an FA backup lookup reports a
+    /// backup or no backup. A development relay override uses the same
+    /// majority rule.
     #[must_use]
-    pub fn fa_backup_empty_read_quorum(&self) -> usize {
+    pub fn fa_backup_read_quorum(&self) -> usize {
         self.nostr_relays.as_urls().len() / 2 + 1
+    }
+
+    /// Relays that must confirm an FA backup so that every read quorum
+    /// includes one of them.
+    #[must_use]
+    pub fn fa_backup_publish_quorum(&self) -> usize {
+        self.nostr_relays.as_urls().len() + 1 - self.fa_backup_read_quorum()
     }
 
     /// Return environment-configured PeerBadge issuer identities.

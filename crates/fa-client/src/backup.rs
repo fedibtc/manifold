@@ -10,7 +10,9 @@ use chacha20poly1305::{
     aead::{Aead as _, AeadCore as _, KeyInit as _, OsRng, Payload},
 };
 use fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1;
-use fedi_decentralized_service_manifold_guardian::{InviteCode, Locator, SeatId};
+use fedi_decentralized_service_manifold_guardian::{
+    DkgCompletionCallback, InviteCode, Locator, SeatId,
+};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use nostr_sdk::{Keys, PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,36 @@ pub(crate) struct FaBackupPayload {
     pub(crate) seats: Vec<FaBackupSeat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) liquidity: Option<RequestLiquidityDetailsCommitmentV1>,
+    /// The open guardian transfer whose destination seat exists but is not in
+    /// `seats` yet. Omitted when absent, so a payload without one keeps its
+    /// earlier bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) transfer: Option<FaBackupTransfer>,
+    /// MGs that hosted a peer before a guardian transfer moved it away.
+    /// Omitted when empty, like `transfer`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) past_hosts: Vec<FaBackupPastHost>,
+}
+
+/// A guardian moving from `seats[seat_index]` onto `destination`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FaBackupTransfer {
+    pub(crate) seat_index: u16,
+    pub(crate) destination: FaBackupSeat,
+    /// The completion callback the move started with, or `None` when it had
+    /// none. A destination accepts the move again only with the same one.
+    pub(crate) completion_callback: Option<DkgCompletionCallback>,
+}
+
+/// An MG that may still hold the key share of a peer it no longer hosts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FaBackupPastHost {
+    #[serde(rename = "fman_identity")]
+    pub(crate) mg_identity: PublicKey,
+    /// Verified badge holder, when this device knew it.
+    pub(crate) holder: Option<PublicKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -108,6 +140,9 @@ impl FaBackupKeys {
     }
 
     pub(crate) fn seal(&self, payload: &FaBackupPayload) -> FaResult<EncryptedFaBackup> {
+        // Publishing replaces the last recovery document, so never publish
+        // one that `open` would refuse.
+        validate_payload(payload)?;
         let mut encoded = Vec::new();
         ciborium::into_writer(payload, &mut encoded)
             .map_err(|_| invalid("could not encode recovery payload"))?;
@@ -210,6 +245,14 @@ fn validate_payload(payload: &FaBackupPayload) -> FaResult<()> {
             return Err(invalid("backup seats are not unique"));
         }
     }
+    if let Some(transfer) = &payload.transfer
+        && (usize::from(transfer.seat_index) >= payload.seats.len()
+            || identities.contains(&transfer.destination.mg_identity)
+            || seat_ids.contains(&transfer.destination.seat_id)
+            || service_keys.contains(&transfer.destination.locator.service_pubkey))
+    {
+        return Err(invalid("backup transfer does not fit its seats"));
+    }
     Ok(())
 }
 
@@ -246,6 +289,8 @@ mod tests {
             federation_invite: InviteCode("invite".into()),
             seats: vec![],
             liquidity: None,
+            transfer: None,
+            past_hosts: Vec::new(),
         };
         let mut payload = payload;
         // Payload validation happens on open; use a fixture seat in DB-level tests.
@@ -282,6 +327,36 @@ mod tests {
     }
 
     #[test]
+    fn a_payload_that_restore_refuses_is_not_sealed() {
+        let seat = FaBackupSeat {
+            mg_identity: keys(3).public_key(),
+            seat_id: SeatId::from(QuoteId([1; 32])),
+            locator: Locator::new(
+                EndpointAddr::new(IrohSecretKey::from_bytes(&[2; 32]).public()),
+                secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[3; 32])
+                    .unwrap()
+                    .x_only_public_key()
+                    .0,
+            ),
+        };
+        let payload = FaBackupPayload {
+            schema_version: BACKUP_SCHEMA_VERSION,
+            snapshot_generation: 4,
+            federation_invite: InviteCode("invite".into()),
+            seats: vec![seat.clone()],
+            liquidity: None,
+            // The destination is in the seat list already.
+            transfer: Some(FaBackupTransfer {
+                seat_index: 0,
+                destination: seat,
+                completion_callback: None,
+            }),
+            past_hosts: Vec::new(),
+        };
+        assert!(keys(7).seal(&payload).is_err());
+    }
+
+    #[test]
     fn oversize_is_rejected_without_slicing() {
         let payload = FaBackupPayload {
             schema_version: 1,
@@ -289,6 +364,8 @@ mod tests {
             federation_invite: InviteCode("x".repeat(PADDED_PLAINTEXT_LEN)),
             seats: vec![],
             liquidity: None,
+            transfer: None,
+            past_hosts: Vec::new(),
         };
         assert!(keys(1).seal(&payload).is_err());
     }

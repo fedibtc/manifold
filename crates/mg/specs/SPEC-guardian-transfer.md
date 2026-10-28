@@ -4,7 +4,7 @@
 
 `crates/service-manifold-guardian` defines the grant, the four verbs, the
 transfer's seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
-`fa-client` does not drive a transfer yet. Manifold Guardian builds implement
+`fa-client` drives the FA side of every step. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart. Whether an MG
 starts a new transfer is decided by the signed setup-payment policy it
 holds, with a per-environment default when the policy does not say (see
