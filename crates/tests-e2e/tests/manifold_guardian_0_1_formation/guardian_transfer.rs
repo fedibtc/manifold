@@ -446,6 +446,33 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     );
     progress("moved guardian restored from the destination mnemonic");
 
+    // The restored guardian catches up while every guardian runs. The
+    // guardians that dial it keep their connection to the stopped destination
+    // until its QUIC idle timeout (60 s) and only then reach the restored one,
+    // so with two guardians stopped first, consensus could not move it to the
+    // latest session before the read below gave up.
+    let moved_peer = guardian_peer_id(&restored_dir)?;
+    let reference_peer = guardian_peer_id(&temp.join(format!("mg-{}", kept[2])))?;
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            match (
+                peer_meta(&fedimint_cli, &moved_peer).await,
+                peer_meta(&fedimint_cli, &reference_peer).await,
+            ) {
+                (Ok(moved), Ok(reference)) if !moved.is_null() && moved == reference => {
+                    return;
+                }
+                (moved, reference) => {
+                    eprintln!("moved guardian has not caught up: {moved:?} vs {reference:?}");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("the restored moved guardian did not catch up with consensus")?;
+    progress("moved guardian caught up");
+
     // With two other guardians stopped, a read needs five of seven answers,
     // so the restored moved guardian must serve the consensus that set the
     // name.
@@ -586,6 +613,37 @@ fn guardian_config(root: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
             Ok(serde_json::from_slice(&bytes)?)
         })
         .collect()
+}
+
+/// The peer id of the guardian on the MG's one seat.
+fn guardian_peer_id(root: &Path) -> anyhow::Result<String> {
+    Ok(guardian_config(root)?[0]["identity"]
+        .as_u64()
+        .context("local.json names the guardian's peer id")?
+        .to_string())
+}
+
+/// The meta consensus value one guardian answers, read from that guardian
+/// alone.
+async fn peer_meta(
+    fedimint_cli: &FedimintCli<'_>,
+    peer: &str,
+) -> anyhow::Result<serde_json::Value> {
+    fedimint_cli
+        .run_json(
+            &[
+                "dev",
+                "api",
+                "--peer-id",
+                peer,
+                "--module",
+                "meta",
+                "get_consensus",
+                "0",
+            ],
+            FEDIMINT_CLI_META_TIMEOUT,
+        )
+        .await
 }
 
 /// `overrides` with the Iroh ids of the guardian that ran on the seat at
