@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::ensure;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, GuardianMaterial, InviteCode, SEAT_TRANSFER_MATERIAL_MAX_BYTES,
+    FederationId, FedimintdVersion, GuardianMaterial, InviteCode, SEAT_TRANSFER_MATERIAL_MAX_BYTES,
 };
 use fedimint_server::config::ServerConfig;
 
@@ -250,6 +250,16 @@ fn validate_blocking(
             .all(|(id, private)| { private.kind() == &config.consensus.modules[id].kind })
     );
     ensure!(config.calculate_federation_id().to_string() == federation.0);
+    let own = crate::service::supported_fedimintd_version();
+    if !can_run_config(&own, &config.consensus.code_version) {
+        // The operator fixes this by updating the MG. A restart retries.
+        tracing::warn!(
+            config_version = %config.consensus.code_version,
+            fedimintd_version = %own,
+            "refusing a moved guardian: its federation needs a newer fedimintd"
+        );
+        anyhow::bail!("moved guardian needs a newer fedimintd");
+    }
     validator.validate(&config, network)?;
     let invite = fedimint_core::invite_code::InviteCode::new(
         config.consensus.api_endpoints()[&config.local.identity]
@@ -263,6 +273,26 @@ fn validate_blocking(
         invite: InviteCode(invite.to_string()),
         material,
     })
+}
+
+/// Whether `own` can run a guardian whose config DKG wrote with
+/// `code_version`.
+///
+/// A config never changes after DKG, and the new guardian syncs consensus
+/// from its peers. So a newer line runs an older federation, but an older
+/// line cannot run a newer one. A new config names `M.m+fedi`. A config from
+/// a Fedi build before the vendor suffix names a full version such as
+/// `0.11.1-fedi15`, with no vendor.
+fn can_run_config(own: &FedimintdVersion, code_version: &str) -> bool {
+    let (line, vendor) = code_version
+        .split_once('+')
+        .map_or((code_version, None), |(line, vendor)| (line, Some(vendor)));
+    let mut numbers = line.split(['.', '-']).map(str::parse::<u64>);
+    let (Some(Ok(major)), Some(Ok(minor))) = (numbers.next(), numbers.next()) else {
+        return false;
+    };
+    let own = own.dkg_version();
+    matches!(vendor, None | Some("fedi")) && own.is_fedi() && (major, minor) <= own.major_minor()
 }
 
 #[cfg(test)]

@@ -2076,18 +2076,6 @@ impl FederationConsensusReader for CliConsensusReader {
             .await
             .map_err(|error| FederationConsensusError::new(error.to_string()))
     }
-
-    async fn read_fedimintd_versions(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<Vec<String>, FederationConsensusError> {
-        fedi_decentralized_federation_preview::read_fedimintd_versions(
-            &self.connectors,
-            invite_code,
-        )
-        .await
-        .map_err(|error| FederationConsensusError::new(error.to_string()))
-    }
 }
 
 #[derive(Clone)]

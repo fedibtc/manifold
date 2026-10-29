@@ -30,8 +30,8 @@ use fedi_decentralized_peer_badge_verifier::{
     PeerBadgeVerificationError, PeerBadgeVerifier, PeerBadgeVerifierProvenance,
 };
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
-    GetAvailabilityRequest, GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
+    FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, GetAvailabilityRequest,
+    GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
 use futures::future::{Either, select};
@@ -788,6 +788,54 @@ pub(crate) struct MatchedAvailability<'a> {
     pub(crate) plan: &'a Plan,
 }
 
+/// Which `fedimintd` builds may host a seat.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FedimintdRequirement {
+    /// A seat of a new federation. Every guardian of one DKG runs one line.
+    DkgLine {
+        versions: FedimintdVersionRange,
+        line: FedimintdDkgVersion,
+    },
+    /// A new host for an existing guardian: any Fedi build. The destination
+    /// MG checks that it can run the guardian's config before installing it.
+    Fedi,
+}
+
+impl FedimintdRequirement {
+    pub(crate) fn accepts(&self, version: &FedimintdVersion) -> bool {
+        match self {
+            Self::DkgLine { versions, line } => {
+                version.dkg_version() == *line && versions.contains(version)
+            }
+            Self::Fedi => version.dkg_version().is_fedi(),
+        }
+    }
+}
+
+/// What the MG of one seat, and every quote it signs, must match.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SeatTerms {
+    pub(crate) federation_size: FederationSize,
+    pub(crate) plan: PlanPreference,
+    pub(crate) fedimintd: FedimintdRequirement,
+}
+
+impl SeatTerms {
+    /// The terms of one seat of a new federation on `line`.
+    pub(crate) fn dkg_line(request: &MgSelectionRequest, line: &FedimintdDkgVersion) -> Self {
+        Self {
+            federation_size: request.federation_size,
+            plan: request.plan,
+            fedimintd: FedimintdRequirement::DkgLine {
+                versions: request.fedimintd_versions.clone(),
+                line: line.clone(),
+            },
+        }
+    }
+}
+
 /// The one definition of "this live availability serves the request".
 ///
 /// Shared by the selection walk's probe and formation's quote-time gate so
@@ -799,27 +847,25 @@ pub(crate) struct MatchedAvailability<'a> {
 /// still surfaces at quote time, not here.
 pub(crate) fn match_requested_availability<'a>(
     availability: &'a GetAvailabilityResponse,
-    federation_size: FederationSize,
-    fedimintd_versions: &FedimintdVersionRange,
-    fedimintd_dkg_version: &FedimintdDkgVersion,
-    plan: PlanPreference,
+    terms: &SeatTerms,
 ) -> Result<MatchedAvailability<'a>, AvailabilityMismatch> {
     if !availability.accepting_seats {
         return Err(AvailabilityMismatch::NotAcceptingSeats);
     }
-    if !availability.federation_sizes.contains(&federation_size) {
+    if !availability
+        .federation_sizes
+        .contains(&terms.federation_size)
+    {
         return Err(AvailabilityMismatch::FederationSize);
     }
     let fedimintd_version = &availability.fedimintd_version;
-    if fedimintd_version.dkg_version() != *fedimintd_dkg_version
-        || !fedimintd_versions.contains(fedimintd_version)
-    {
+    if !terms.fedimintd.accepts(fedimintd_version) {
         return Err(AvailabilityMismatch::FedimintdVersion);
     }
     let plan = availability
         .plans
         .iter()
-        .find(|offered| plan.matches(offered))
+        .find(|offered| terms.plan.matches(offered))
         .ok_or(AvailabilityMismatch::Plan)?;
     Ok(MatchedAvailability {
         fedimintd_version,
@@ -1022,8 +1068,7 @@ pub(crate) async fn preview_mg_selection_with(
         let seats = select_mg_seats(
             verifier,
             prober,
-            request,
-            &dkg_version,
+            &SeatTerms::dkg_line(request, &dkg_version),
             candidates,
             request.federation_size,
             BTreeMap::new(),
@@ -1111,8 +1156,7 @@ pub(crate) async fn preview_mg_replacements_with(
     let seats = select_mg_seats(
         verifier,
         prober,
-        request,
-        fedimintd_dkg_version,
+        &SeatTerms::dkg_line(request, fedimintd_dkg_version),
         discovery.candidates,
         FederationSize(requested),
         retained_service_pubkeys,
@@ -1153,7 +1197,6 @@ pub struct TransferDestinationPreview {
     /// The federation whose guardian moves onto the selected seat.
     federation_id: FederationId,
     verifier_provenance: PeerBadgeVerifierProvenance,
-    fedimintd_dkg_version: FedimintdDkgVersion,
     seat: SelectedMgSeat,
     valid_until: Timestamp,
 }
@@ -1189,7 +1232,6 @@ impl TransferDestinationPreview {
         Ok(TransferDestinationApproval {
             federation_id: self.federation_id,
             verifier_provenance: self.verifier_provenance,
-            fedimintd_dkg_version: self.fedimintd_dkg_version,
             advertised_price_msats: self.seat.advertised_price_msats(),
             seat: self.seat.into(),
             max_msats,
@@ -1205,8 +1247,6 @@ pub struct TransferDestinationApproval {
     /// other federation with this approval fails.
     pub(crate) federation_id: FederationId,
     pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
-    /// The Fedimint line the federation ran at preview time.
-    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     pub(crate) seat: ApprovedMgSeat,
     pub(crate) advertised_price_msats: u64,
     pub(crate) max_msats: u64,
@@ -1227,25 +1267,7 @@ impl TransferDestinationApproval {
     }
 }
 
-/// Every release of the Fedimint major/minor line a DKG identity names.
-pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdVersionRange> {
-    let (major, minor) = dkg_version.major_minor();
-    FedimintdVersionRange::from_cores(
-        FedimintdVersionCore {
-            major,
-            minor,
-            patch: 0,
-        },
-        FedimintdVersionCore {
-            major,
-            minor: minor.saturating_add(1),
-            patch: 0,
-        },
-    )
-}
-
-/// Select one fresh MG, outside `excluded`, that advertises the Fedimint
-/// line the federation runs.
+/// Select one fresh MG, outside `excluded`, that runs a Fedi `fedimintd`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn preview_transfer_destination_with(
     registry: &impl FaNostrClient,
@@ -1254,7 +1276,6 @@ pub(crate) async fn preview_transfer_destination_with(
     verifier_provenance: PeerBadgeVerifierProvenance,
     federation_id: FederationId,
     federation_size: FederationSize,
-    fedimintd_dkg_version: FedimintdDkgVersion,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
@@ -1262,29 +1283,25 @@ pub(crate) async fn preview_transfer_destination_with(
     now: u64,
     completed_at: impl FnOnce() -> u64,
 ) -> FaResult<TransferDestinationPreview> {
-    // Only MGs on the federation's DKG line can host one of its guardians.
     let discovery_requirements = MgCandidateRequirements {
         federation_size,
-        fedimintd_versions: dkg_line(&fedimintd_dkg_version)?,
+        fedimintd_versions: FedimintdVersionRange::all(),
     };
     let mut discovery =
         discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;
-    let request = MgSelectionRequest::new(
-        federation_size,
-        dkg_line(&fedimintd_dkg_version)?,
-        PlanPreference::default(),
-    )?;
-    discovery.candidates.retain(|candidate| {
-        !excluded.contains(&candidate.mg_id)
-            && candidate.fedimintd_dkg_version == fedimintd_dkg_version
-    });
+    discovery
+        .candidates
+        .retain(|candidate| !excluded.contains(&candidate.mg_id));
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let seat = select_mg_seats(
         verifier,
         prober,
-        &request,
-        &fedimintd_dkg_version,
+        &SeatTerms {
+            federation_size,
+            plan: PlanPreference::default(),
+            fedimintd: FedimintdRequirement::Fedi,
+        },
         discovery.candidates,
         FederationSize(1),
         retained_service_pubkeys,
@@ -1308,7 +1325,6 @@ pub(crate) async fn preview_transfer_destination_with(
     Ok(TransferDestinationPreview {
         federation_id,
         verifier_provenance,
-        fedimintd_dkg_version,
         seat,
         valid_until: Timestamp(valid_until),
     })
@@ -1337,8 +1353,7 @@ pub(crate) async fn preview_transfer_destination_with(
 pub(crate) async fn select_mg_seats(
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
-    request: &MgSelectionRequest,
-    fedimintd_dkg_version: &FedimintdDkgVersion,
+    terms: &SeatTerms,
     candidates: Vec<EligibleMgCandidate>,
     seats_to_fill: FederationSize,
     mut selected_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
@@ -1397,14 +1412,8 @@ pub(crate) async fn select_mg_seats(
                         }
                         // Probe after the duplicate check so a candidate that
                         // can never seat is not dialed at all.
-                        if let Err(reason) = probe_reached_candidate(
-                            prober,
-                            &candidate,
-                            request,
-                            fedimintd_dkg_version,
-                            deadline,
-                        )
-                        .await
+                        if let Err(reason) =
+                            probe_reached_candidate(prober, &candidate, terms, deadline).await
                         {
                             let expired = matches!(reason, AdvertisementRejection::DeadlineExpired);
                             rejected.push(RejectedAdvertisement {
@@ -1519,8 +1528,7 @@ async fn verify_bound_badge(
 async fn probe_reached_candidate(
     prober: &impl SelectionAvailabilityProber,
     candidate: &EligibleMgCandidate,
-    request: &MgSelectionRequest,
-    fedimintd_dkg_version: &FedimintdDkgVersion,
+    terms: &SeatTerms,
     deadline: Instant,
 ) -> Result<(), AdvertisementRejection> {
     if Instant::now() >= deadline {
@@ -1551,14 +1559,10 @@ async fn probe_reached_candidate(
         LiveProbeOutcome::Unreachable(message) => {
             Err(AdvertisementRejection::ProbeFailed { message })
         }
-        LiveProbeOutcome::Available(availability) => match_requested_availability(
-            &availability,
-            request.federation_size,
-            &request.fedimintd_versions,
-            fedimintd_dkg_version,
-            request.plan,
-        )
-        .map(|_availability| ())
-        .map_err(AdvertisementRejection::from),
+        LiveProbeOutcome::Available(availability) => {
+            match_requested_availability(&availability, terms)
+                .map(|_availability| ())
+                .map_err(AdvertisementRejection::from)
+        }
     }
 }

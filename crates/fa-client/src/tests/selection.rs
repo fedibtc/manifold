@@ -25,9 +25,9 @@ use super::discovery::{
 use super::*;
 use crate::discovery::discover_mg_candidates_with;
 use crate::selection::{
-    LiveAvailabilityProber, LiveProbeOutcome, SelectionAvailabilityProber, SelectionBadgeVerifier,
-    preview_mg_replacements_with, preview_mg_selection_until, preview_mg_selection_with,
-    select_mg_seats,
+    LiveAvailabilityProber, LiveProbeOutcome, SeatTerms, SelectionAvailabilityProber,
+    SelectionBadgeVerifier, preview_mg_replacements_with, preview_mg_selection_until,
+    preview_mg_selection_with, select_mg_seats,
 };
 
 /// Ad-only walk for tests that pin pre-probe selection semantics: no
@@ -229,8 +229,10 @@ async fn select(
     let selected = select_mg_seats(
         verifier,
         &AdOnlySelection,
-        &preview_request(MIN_FEDERATION_SIZE),
-        &fedimintd_version().dkg_version(),
+        &SeatTerms::dkg_line(
+            &preview_request(MIN_FEDERATION_SIZE),
+            &fedimintd_version().dkg_version(),
+        ),
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
@@ -254,8 +256,10 @@ async fn select_probed(
     let selected = select_mg_seats(
         verifier,
         prober,
-        &preview_request(MIN_FEDERATION_SIZE),
-        &fedimintd_version().dkg_version(),
+        &SeatTerms::dkg_line(
+            &preview_request(MIN_FEDERATION_SIZE),
+            &fedimintd_version().dkg_version(),
+        ),
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
@@ -1300,8 +1304,10 @@ async fn one_holder_cannot_fill_multiple_seats_even_across_issuers() {
         let seats = select_mg_seats(
             &StubBadgeVerifier::default(),
             &prober,
-            &preview_request(MIN_FEDERATION_SIZE),
-            &fedimintd_version().dkg_version(),
+            &SeatTerms::dkg_line(
+                &preview_request(MIN_FEDERATION_SIZE),
+                &fedimintd_version().dkg_version(),
+            ),
             eligible(events).await,
             FederationSize(3),
             BTreeMap::new(),
@@ -1874,8 +1880,10 @@ async fn hung_probe_at_the_walk_deadline_is_deadline_expired() {
     let seats = select_mg_seats(
         &StubBadgeVerifier::default(),
         &prober,
-        &preview_request(MIN_FEDERATION_SIZE),
-        &fedimintd_version().dkg_version(),
+        &SeatTerms::dkg_line(
+            &preview_request(MIN_FEDERATION_SIZE),
+            &fedimintd_version().dkg_version(),
+        ),
         candidates,
         FederationSize(1),
         BTreeMap::new(),
@@ -1949,8 +1957,10 @@ async fn deadline_expiry_stops_the_walk_with_a_typed_rejection() {
     let seats = select_mg_seats(
         &verifier,
         &AdOnlySelection,
-        &preview_request(MIN_FEDERATION_SIZE),
-        &fedimintd_version().dkg_version(),
+        &SeatTerms::dkg_line(
+            &preview_request(MIN_FEDERATION_SIZE),
+            &fedimintd_version().dkg_version(),
+        ),
         candidates,
         FederationSize(1),
         BTreeMap::new(),

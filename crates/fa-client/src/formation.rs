@@ -27,7 +27,7 @@ use crate::db::{
 };
 use crate::mg::MgClient;
 use crate::ports::FaIdentityExt as _;
-use crate::selection::AvailabilityMismatch;
+use crate::selection::{AvailabilityMismatch, SeatTerms};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
     FederationConsensusSnapshot, FormationActionRequired, FormationFreshness, FormationId,
@@ -1817,7 +1817,7 @@ where
                 usize::from(seat.progress.index),
                 &signed_quote,
                 &seat.progress.locator,
-                &intent,
+                &intent.seat_terms(),
                 fa_id,
                 expected_payer.as_ref(),
             )?;
@@ -1855,7 +1855,7 @@ where
                         formation_id,
                         position,
                         &locator,
-                        intent,
+                        &intent.seat_terms(),
                         fa_id,
                         policy,
                         expected_payer.as_ref(),
@@ -2024,7 +2024,7 @@ where
                 usize::from(requirement.index),
                 signed,
                 &seat.progress.locator,
-                &recovery.snapshot.intent,
+                &recovery.snapshot.intent.seat_terms(),
                 fa_id,
                 expected_payer.as_ref(),
             )?;
@@ -2100,7 +2100,7 @@ where
         formation_id: &FormationId,
         index: usize,
         locator: &Locator,
-        intent: &ResolvedFormationIntent,
+        terms: &SeatTerms,
         fa_id: FaId,
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
@@ -2127,7 +2127,7 @@ where
                     index,
                     &client,
                     locator,
-                    intent,
+                    terms,
                     fa_id,
                     policy,
                     expected_payer,
@@ -2222,7 +2222,7 @@ where
                 position,
                 signed_quote,
                 &seat.progress.locator,
-                &intent,
+                &intent.seat_terms(),
                 fa_id,
                 expected_payer.as_ref(),
             )?;
@@ -2282,7 +2282,7 @@ where
                 position,
                 signed_quote,
                 &locator,
-                &intent,
+                &intent.seat_terms(),
                 fa_id,
                 expected_payer.as_ref(),
             )?;
@@ -2512,7 +2512,7 @@ where
                                 position,
                                 signed_quote,
                                 &locator,
-                                &intent,
+                                &intent.seat_terms(),
                                 fa_id,
                                 expected_payer.as_ref(),
                             )?,
@@ -2843,7 +2843,7 @@ where
                         position,
                         signed,
                         &locator,
-                        intent,
+                        &intent.seat_terms(),
                         fa_id,
                         expected_payer.as_ref(),
                     )
@@ -2869,7 +2869,7 @@ where
                 position,
                 old_signed_quote,
                 &locator,
-                intent,
+                &intent.seat_terms(),
                 fa_id,
                 expected_payer.as_ref(),
             )?;
@@ -2883,7 +2883,7 @@ where
                         formation_id,
                         position,
                         &locator,
-                        &intent,
+                        &intent.seat_terms(),
                         fa_id,
                         policy,
                         expected_payer.as_ref(),
@@ -3167,7 +3167,7 @@ where
             position,
             signed_quote,
             &recovery.seats[position].progress.locator,
-            &recovery.snapshot.intent,
+            &recovery.snapshot.intent.seat_terms(),
             fa_id,
             recovery.payment_federation_id.as_ref(),
         )?;
@@ -3401,7 +3401,7 @@ where
         index: usize,
         client: &MgClient<F::Client>,
         locator: &Locator,
-        intent: &ResolvedFormationIntent,
+        terms: &SeatTerms,
         fa_id: FaId,
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
@@ -3425,13 +3425,7 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let matched = match crate::selection::match_requested_availability(
-            &availability,
-            intent.federation_size,
-            &intent.fedimintd_versions,
-            &intent.fedimintd_dkg_version,
-            intent.plan,
-        ) {
+        let matched = match crate::selection::match_requested_availability(&availability, terms) {
             Ok(matched) => matched,
             Err(mismatch) => {
                 let cause = match mismatch {
@@ -3512,7 +3506,7 @@ where
         let quote_request = GetQuoteRequest {
             fa_id,
             fedimintd_version,
-            federation_size: intent.federation_size,
+            federation_size: terms.federation_size,
             plan,
             payment_federation_id,
             refund_issuance,
@@ -3530,7 +3524,7 @@ where
                 })
                 .await?;
             let quote = self
-                .verify_quote(index, &signed_quote, locator, intent, fa_id, expected_payer)
+                .verify_quote(index, &signed_quote, locator, terms, fa_id, expected_payer)
                 .map_err(|_| client.failure(MgOperation::GetQuote, MgCause::InvalidResponse))?;
             if quote.terms.request != quote_request {
                 return Err(client
@@ -3567,7 +3561,7 @@ where
         index: usize,
         signed_quote: &SignedResponse<GetQuoteResponse>,
         locator: &Locator,
-        intent: &ResolvedFormationIntent,
+        terms: &SeatTerms,
         fa_id: FaId,
         expected_payer: Option<&FederationId>,
     ) -> FaResult<SignatureVerified<GetQuoteResponse>> {
@@ -3576,12 +3570,9 @@ where
             .map_err(|error| mg_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fa_id != fa_id
-            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
-            || !intent
-                .fedimintd_versions
-                .contains(&request.fedimintd_version)
-            || request.federation_size != intent.federation_size
-            || !intent.plan.matches(&request.plan)
+            || !terms.fedimintd.accepts(&request.fedimintd_version)
+            || request.federation_size != terms.federation_size
+            || !terms.plan.matches(&request.plan)
         {
             return Err(mg_error(
                 index,
@@ -3612,11 +3603,11 @@ where
         index: usize,
         signed: SignedResponse<GetQuoteResponse>,
         locator: &Locator,
-        intent: &ResolvedFormationIntent,
+        terms: &SeatTerms,
         fa_id: FaId,
         expected_payer: Option<&FederationId>,
     ) -> FaResult<FreeSeatQuote> {
-        let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
+        let verified = self.verify_quote(index, &signed, locator, terms, fa_id, expected_payer)?;
         if verified.terms.payment.is_some() {
             return Err(FaError::Storage(format!(
                 "paid FA seat row {index} had no authorized payment action"
@@ -3630,11 +3621,11 @@ where
         index: usize,
         signed: SignedResponse<GetQuoteResponse>,
         locator: &Locator,
-        intent: &ResolvedFormationIntent,
+        terms: &SeatTerms,
         fa_id: FaId,
         expected_payer: Option<&FederationId>,
     ) -> FaResult<PaidSeatQuote> {
-        let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
+        let verified = self.verify_quote(index, &signed, locator, terms, fa_id, expected_payer)?;
         if verified.terms.payment.is_none() {
             return Err(FaError::Storage(format!(
                 "free FA seat row {index} had a paid acquisition action"

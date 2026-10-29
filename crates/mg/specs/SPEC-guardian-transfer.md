@@ -89,7 +89,13 @@ online once. The FA does not have to be online at the same time.
      them confidential. It answers every later valid grant for the seat with
      the same guardian.
 4. The destination validates the guardian against the grant, durably
-   stores it, and starts it. From then on the seat is a formed seat that
+   stores it, and starts it. It also checks that its own `fedimintd` can
+   run the guardian's config. The config never changes after DKG and names
+   its Fedimint line in `code_version`. The guardian gets no consensus
+   database and syncs from its peers, so a newer line runs an older
+   federation. When the destination's line is older, it refuses the
+   guardian, logs both versions, and retries until its operator updates
+   it. The FA does not filter destinations by line. From then on the seat is a formed seat that
    reports `Running`: its backup follows asynchronously as for a natively
    formed seat, and it accepts a grant for the same move as a replay. It
    refuses a grant for a federation it already hosts, but its own pending

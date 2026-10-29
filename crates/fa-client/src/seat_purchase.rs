@@ -22,8 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    FedimintdDkgVersion, FedimintdVersion, GetQuoteResponse, InviteCode, Locator, SeatId,
-    SignatureVerified, SignedResponse, Timestamp,
+    GetQuoteResponse, InviteCode, Locator, SeatId, SignatureVerified, SignedResponse, Timestamp,
 };
 use fedimint_core::runtime::Instant;
 use nostr_sdk::PublicKey;
@@ -37,14 +36,15 @@ use crate::formation::{
 };
 use crate::mg::MgClient;
 use crate::selection::{
-    SelectionBadgeVerifier, TransferDestinationApproval, TransferDestinationPreview, dkg_line,
+    FedimintdRequirement, SeatTerms, SelectionBadgeVerifier, TransferDestinationApproval,
+    TransferDestinationPreview,
 };
 use crate::transfer::{StoredGuardianTransfer, TransferStage};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationId,
-    FederationName, FederationSize, FormationId, ManifoldGuardianConnector, MgDiscoveryOptions,
-    PaymentRequirements, PaymentReservationRecovery, PlanPreference, ResolvedFormationIntent,
-    SeatPaymentRecovery, SeatPaymentRequirement,
+    FederationSize, FormationId, ManifoldGuardianConnector, MgDiscoveryOptions,
+    PaymentRequirements, PaymentReservationRecovery, PlanPreference, SeatPaymentRecovery,
+    SeatPaymentRequirement,
 };
 
 /// The seat a transfer moves the guardian onto.
@@ -70,9 +70,8 @@ pub(crate) struct StoredSeatPurchase {
     pub(crate) mg_id: PublicKey,
     pub(crate) holder: PublicKey,
     pub(crate) locator: Locator,
-    /// What every quote must match: the federation's size and the Fedimint
-    /// line it ran when the seat was selected.
-    pub(crate) terms: ResolvedFormationIntent,
+    /// What every quote must match.
+    pub(crate) terms: SeatTerms,
     /// Spending cap the user approved for this seat.
     pub(crate) max_msats: u64,
     /// Current quote. Replaced only while it is free of value effects.
@@ -88,7 +87,6 @@ pub(crate) struct StoredSeatPurchase {
 pub(crate) struct TransferFederation {
     pub(crate) formation_id: FormationId,
     invite_code: InviteCode,
-    federation_name: FederationName,
     federation_size: FederationSize,
     /// MG identity, locator, and seat id of every guardian seat.
     pub(crate) seats: Vec<(PublicKey, Locator, SeatId)>,
@@ -156,12 +154,6 @@ where
         let deadline = Instant::now()
             .checked_add(options.timeout())
             .expect("clamped discovery timeout fits the monotonic deadline domain");
-        // The guardians report their own build. MG advertisements would not
-        // do: an MG that is full or offline, which is when a guardian needs
-        // a new host, advertises nothing.
-        let versions = self
-            .guardian_fedimintd_versions(&federation, deadline)
-            .await;
         crate::selection::preview_transfer_destination_with(
             &self.inner.ports.registry,
             verifier,
@@ -171,7 +163,6 @@ where
             self.inner.peer_badge_verifier.provenance(),
             federation.federation_id()?,
             federation.federation_size,
-            federation_dkg_line(&versions)?,
             excluded,
             retained_service_pubkeys,
             federation.holders,
@@ -180,27 +171,6 @@ where
             || fedimint_core::time::duration_since_epoch().as_secs(),
         )
         .await
-    }
-
-    /// What the guardians report from `fedimintd_version`, read through the
-    /// saved invite. It names f+1 guardians, so the guardian that needs a new
-    /// host does not block the read.
-    async fn guardian_fedimintd_versions(
-        &self,
-        federation: &TransferFederation,
-        deadline: Instant,
-    ) -> Vec<String> {
-        fedimint_core::runtime::timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            self.inner
-                .ports
-                .consensus_reader
-                .read_fedimintd_versions(&federation.invite_code),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default()
     }
 
     /// The purchase the approval allows, before any network call.
@@ -254,13 +224,10 @@ where
             mg_id: approval.seat.mg_id,
             holder: approval.seat.holder,
             locator: approval.seat.locator,
-            terms: ResolvedFormationIntent {
-                federation_name: federation.federation_name.clone(),
+            terms: SeatTerms {
                 federation_size: federation.federation_size,
                 plan: PlanPreference::default(),
-                fedimintd_versions: dkg_line(&approval.fedimintd_dkg_version)?,
-                fedimintd_dkg_version: approval.fedimintd_dkg_version,
-                max_total_msats: Some(approval.max_msats),
+                fedimintd: FedimintdRequirement::Fedi,
             },
             max_msats: approval.max_msats,
             signed_quote: None,
@@ -281,11 +248,6 @@ where
                     federation_size: FederationSize(u16::try_from(snapshot.seats.len()).map_err(
                         |_| FaError::Storage("formed federation has too many seats".to_owned()),
                     )?),
-                    federation_name: snapshot.federation_name.unwrap_or_else(|| {
-                        // Only a restored federation without a name in
-                        // consensus gets here; no creation time is known.
-                        crate::formation::default_federation_name(fa_id, 0)
-                    }),
                     formation_id: snapshot.formation_id,
                     seats: snapshot
                         .seats
@@ -649,24 +611,4 @@ fn purchase_requirements(
         max_total_msats: Some(purchase.max_msats),
         seats,
     })
-}
-
-/// The Fedimint line most of the answering guardians run, and the newer one
-/// on a tie. During an upgrade the guardians can disagree.
-fn federation_dkg_line(versions: &[String]) -> FaResult<FedimintdDkgVersion> {
-    let mut lines = BTreeMap::<FedimintdDkgVersion, usize>::new();
-    for version in versions {
-        if let Ok(version) = version.parse::<FedimintdVersion>() {
-            *lines.entry(version.dkg_version()).or_default() += 1;
-        }
-    }
-    lines
-        .into_iter()
-        .max_by(|(left_line, left), (right_line, right)| {
-            left.cmp(right).then_with(|| left_line.cmp(right_line))
-        })
-        .map(|(line, _)| line)
-        .ok_or_else(|| {
-            FaError::Selection("no guardian reported the fedimintd version it runs".to_owned())
-        })
 }

@@ -3765,10 +3765,10 @@ fn payment_requirements(
         let request = &quote.terms.request;
         let plan_matches = intent.plan.matches(&request.plan);
         if request.fa_id != fa_id
-            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
             || !intent
-                .fedimintd_versions
-                .contains(&request.fedimintd_version)
+                .seat_terms()
+                .fedimintd
+                .accepts(&request.fedimintd_version)
             || request.federation_size != intent.federation_size
             || !plan_matches
         {

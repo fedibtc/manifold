@@ -30,7 +30,7 @@ pub(crate) fn native_config() -> ServerConfig {
     let broadcast = fedimint_core::secp256k1::SecretKey::from_slice(&[33; 32]).unwrap();
     ServerConfig {
         consensus: ServerConfigConsensus {
-            code_version: "0.12.0".into(),
+            code_version: "0.12+fedi".into(),
             version: fedimint_core::module::CORE_CONSENSUS_VERSION,
             broadcast_public_keys: BTreeMap::from([(
                 peer,
@@ -211,5 +211,43 @@ async fn native_identity_and_policy_errors_are_sanitized() {
         )
         .await
         .is_err()
+    );
+}
+
+#[test]
+fn a_guardian_moves_only_to_a_fedimintd_line_that_can_run_its_config() {
+    let own: FedimintdVersion = "0.12.0+fedi".parse().unwrap();
+    for (config, runs) in [
+        ("0.12+fedi", true),
+        ("0.11+fedi", true),
+        // A config from a Fedi build before the vendor suffix.
+        ("0.11.1-fedi15", true),
+        ("0.13+fedi", false),
+        ("1.0+fedi", false),
+        ("0.12+other", false),
+        ("fake-fedimintd", false),
+    ] {
+        assert_eq!(can_run_config(&own, config), runs, "{config}");
+    }
+}
+
+#[tokio::test]
+async fn an_mg_refuses_a_guardian_of_a_newer_fedimintd_line() {
+    let root = tempfile::tempdir().unwrap();
+    let process = process(root.path());
+    let mut config = native_config();
+    config.consensus.code_version = "0.13+fedi".into();
+    let error = validate_material(
+        &process,
+        material(&config),
+        FederationId(config.calculate_federation_id().to_string()),
+        Arc::new(CoreConfigValidator),
+    )
+    .await
+    .err()
+    .expect("an older fedimintd cannot run the config");
+    assert_eq!(
+        format!("{error:?}: {error}"),
+        "InvalidGuardian: invalid guardian transfer material"
     );
 }

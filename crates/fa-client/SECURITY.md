@@ -241,7 +241,7 @@ A transfer destination approval is a public, cloneable value, so a caller
 can hand one client's approval to another. The approval names the federation
 it was previewed for, and the start refuses an approval of another
 federation, before it asks any MG, opens a transfer, or reserves a payment:
-that approval's Fedimint line, size, and exclusions describe other
+that approval's size and exclusions describe other
 guardians. The start also checks again, against the guardians it has now,
 that the destination is no MG or badge holder that hosts or hosted a peer
 of the federation, and that it shares no service key with a current

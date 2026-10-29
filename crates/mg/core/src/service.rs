@@ -357,7 +357,7 @@ pub(crate) fn sign_peer_attestation(
     })
 }
 
-fn supported_fedimintd_version() -> FedimintdVersion {
+pub(crate) fn supported_fedimintd_version() -> FedimintdVersion {
     FEDIMINTD_VERSION_0_1
         .parse()
         .expect("FEDIMINTD_VERSION_0_1 must be valid SemVer")

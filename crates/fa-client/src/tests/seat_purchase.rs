@@ -60,7 +60,6 @@ pub(super) fn destination_approval(max_msats: u64) -> TransferDestinationApprova
     TransferDestinationApproval {
         federation_id: formed_federation_id(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
-        fedimintd_dkg_version: fedimintd_version().dkg_version(),
         seat: ApprovedMgSeat {
             mg_id: test_mg_id(DESTINATION),
             holder: test_mg_id(DESTINATION),
@@ -526,9 +525,9 @@ async fn a_free_destination_that_starts_to_charge_closes_the_transfer() {
 async fn a_destination_that_stops_selling_closes_the_transfer() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     let reservations_before = payment_state.readiness_calls.load(Ordering::SeqCst);
-    // After the preview, the destination moves to a Fedimint line this
-    // federation does not run.
-    set_mg_version(&mg_state, DESTINATION, "0.13.0+fedi");
+    // After the preview, the destination moves to a build that is not
+    // Fedi's.
+    set_mg_version(&mg_state, DESTINATION, "0.13.0");
 
     let error = start_transfer_with(
         &client,
@@ -672,17 +671,23 @@ async fn eligible_destination_mgs(client: &TestClient) -> usize {
 }
 
 #[tokio::test]
-async fn a_restored_fa_buys_a_destination_on_the_federation_line() {
-    // Neither a guardian of the federation nor an MG on another Fedimint
-    // line may receive the guardian.
+async fn a_restored_fa_buys_a_destination_on_any_fedi_line() {
+    // The destination MG checks that it can run the guardian's config, so
+    // the FA takes an MG on an older or a newer Fedi line. It never takes a
+    // guardian of the federation or a build that is not Fedi's.
     let (_, payment_state, mg_state, restored) = restored_client(vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
+        mg_ad(21, PAYMENT_AMOUNT_MSATS, "0.11.2+fedi"),
+        mg_ad(22, PAYMENT_AMOUNT_MSATS, "0.13.0"),
     ])
     .await;
-    assert_eq!(eligible_destination_mgs(&restored).await, 0);
+    assert_eq!(eligible_destination_mgs(&restored).await, 2);
     restored.resume().await.unwrap();
 
+    // The live availability and the quote name a newer line than the
+    // federation's, and the purchase still goes through.
+    set_mg_version(&mg_state, DESTINATION, "0.13.0+fedi");
     let transfer = start_transfer(&restored, &mg_state).await;
 
     assert_eq!(transfer.destination_mg_id, test_mg_id(DESTINATION));
@@ -698,68 +703,9 @@ async fn a_restored_fa_buys_a_destination_on_the_federation_line() {
         FederationSize(MIN_FEDERATION_SIZE)
     );
     assert_eq!(
-        quote.terms.request.fedimintd_version.dkg_version(),
-        fedimintd_version().dkg_version()
+        quote.terms.request.fedimintd_version.to_string(),
+        "0.13.0+fedi"
     );
-}
-
-#[tokio::test]
-async fn the_destination_line_is_the_one_most_guardians_report() {
-    let older = FEDIMINTD_VERSION_0_1.to_string();
-    let newer = "0.13.0+fedi".to_owned();
-    // No MG of the federation advertises: they are full or offline. Only
-    // the guardians' own answers name the line.
-    let eligible = async |guardians: Vec<String>| {
-        let (_, _, mg_state, restored) =
-            restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
-        *mg_state.guardian_versions.lock().expect("test lock") = Some(guardians);
-        eligible_destination_mgs(&restored).await
-    };
-
-    // A tie between lines picks the newer one. An answer that does not
-    // parse counts for no line.
-    assert_eq!(
-        eligible(vec![older.clone(), newer.clone(), "garbage".to_owned()]).await,
-        1
-    );
-    // A majority outweighs the newer line.
-    assert_eq!(
-        eligible(vec![older.clone(), newer.clone(), older.clone()]).await,
-        0
-    );
-
-    // The saved invite names f+1 guardians, so the MGs are not asked. When
-    // no guardian it names answers, the preview names no line.
-    let (_, _, mg_state, restored) =
-        restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
-    *mg_state.guardian_versions.lock().expect("test lock") = Some(vec![newer.clone()]);
-    let FaStatus::Formed(snapshot) = restored.status() else {
-        panic!("restored status");
-    };
-    mg_state
-        .unreachable_version_invites
-        .lock()
-        .expect("test lock")
-        .insert(snapshot.federation_invite.0.clone());
-    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
-    assert!(matches!(
-        restored
-            .preview_transfer_destination(crate::MgDiscoveryOptions::default())
-            .await,
-        Err(FaError::Selection(_))
-    ));
-    assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
-
-    // With no answer, the preview names no line rather than guess one.
-    let (_, _, mg_state, restored) =
-        restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
-    *mg_state.guardian_versions.lock().expect("test lock") = Some(vec!["garbage".to_owned()]);
-    assert!(matches!(
-        restored
-            .preview_transfer_destination(crate::MgDiscoveryOptions::default())
-            .await,
-        Err(FaError::Selection(_))
-    ));
 }
 
 /// Badge verifier that reports a chosen holder for some MGs, and the MG

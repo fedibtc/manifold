@@ -75,6 +75,23 @@ impl FedimintdVersionRange {
         Ok(())
     }
 
+    /// Every release.
+    #[must_use]
+    pub fn all() -> Self {
+        Self {
+            minimum: FedimintdVersionCore {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            },
+            maximum_exclusive: FedimintdVersionCore {
+                major: u64::MAX,
+                minor: u64::MAX,
+                patch: u64::MAX,
+            },
+        }
+    }
+
     /// Range containing exactly one patch release.
     pub fn one_core(core: FedimintdVersionCore) -> FaResult<Self> {
         let maximum_exclusive = FedimintdVersionCore {
@@ -367,6 +384,20 @@ pub struct ResolvedFormationIntent {
     /// the FA storage schema rather than migrated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_msats: Option<u64>,
+}
+
+impl ResolvedFormationIntent {
+    /// What the MG of every seat, and every quote it signs, must match.
+    pub(crate) fn seat_terms(&self) -> crate::selection::SeatTerms {
+        crate::selection::SeatTerms {
+            federation_size: self.federation_size,
+            plan: self.plan,
+            fedimintd: crate::selection::FedimintdRequirement::DkgLine {
+                versions: self.fedimintd_versions.clone(),
+                line: self.fedimintd_dkg_version.clone(),
+            },
+        }
+    }
 }
 
 /// Consumer-observed aggregate formation phase.

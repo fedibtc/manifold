@@ -690,17 +690,12 @@ replacement receipt. Test tools that move a healthy guardian call
 feature.
 
 The FA can transfer a guardian of a federation it formed on this device or
-restored from a backup. `preview_transfer_destination` asks every guardian
-for its build through the public Fedimint `fedimintd_version` endpoint, by the
-consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
-invite names f+1 guardians, so the guardian that needs a new host does not
-block the read (see the formed reads above). The
-line most
-of the answering guardians report wins, then the newer line. It does not use
-the advertisements of the federation's own MGs: an MG that is full or offline,
-which is when a guardian needs a new host, advertises nothing. The preview
-then selects one MG on that line that does not host, and never
-hosted, a peer of the federation, and with a badge holder that holds none of
+restored from a backup. `preview_transfer_destination` selects one MG that
+runs any Fedi `fedimintd`. The destination itself checks that it can run the
+guardian's config
+([`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md), step 4).
+The MG must not host, and never
+have hosted, a peer of the federation, and must have a badge holder that holds none of
 its seats. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.

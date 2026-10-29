@@ -689,22 +689,6 @@ pub trait FederationConsensusReader: Send + Sync + 'static {
         &self,
         invite_code: &InviteCode,
     ) -> Result<Vec<fedi_decentralized_domain::GatewayApiUrl>, FederationConsensusError>;
-
-    /// Ask each guardian for the `fedimintd` version it runs, through its
-    /// public `fedimintd_version` endpoint.
-    ///
-    /// Return one raw version string for each guardian that answered;
-    /// leave out a guardian that is offline or fails. The answers are not
-    /// threshold-agreed: each one is one guardian's claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FederationConsensusError`] when the invite or config is
-    /// invalid or cannot be read.
-    async fn read_fedimintd_versions(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<Vec<String>, FederationConsensusError>;
 }
 
 pub(crate) struct FaClientPorts<I, P, N, F, C> {
