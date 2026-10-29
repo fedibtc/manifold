@@ -20,8 +20,8 @@
     "state": "active"
   },
   {
+    "federation_id": "15c7c0a1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d",
     "health": "unavailable",
-    "invite_code": "fed11fixturelostinvite",
     "phase": "data_loss",
     "state": "active"
   }

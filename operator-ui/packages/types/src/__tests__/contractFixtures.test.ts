@@ -528,7 +528,7 @@ const mgSeatReportsMirror = [
     state: 'active',
     health: 'unavailable',
     phase: 'data_loss',
-    invite_code: 'fed11fixturelostinvite'
+    federation_id: '15c7c0a1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d'
   }
 ] satisfies SeatReport[];
 

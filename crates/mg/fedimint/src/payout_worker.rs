@@ -53,7 +53,12 @@ impl PayoutWorker {
 #[async_trait::async_trait]
 trait PayoutNative: Send + Sync {
     /// Start a native payout or recover its prior native commit by request id.
-    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout>;
+    /// `invite` joins a guardian-fee wallet the job's seat never joined.
+    async fn start_or_recover(
+        &self,
+        job: &PayoutJob,
+        invite: Option<&InviteCode>,
+    ) -> anyhow::Result<Payout>;
 
     /// Find a native payout by its request id without starting one.
     async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>>;
@@ -85,7 +90,7 @@ impl EcashPayoutWorker for PayoutWorker {
         let scope = PayoutScope::PaymentFederation {
             federation_id: federation_id.clone(),
         };
-        let job = self.start_job(request_id, scope).await?;
+        let job = self.start_job(request_id, scope, None).await?;
         Ok(job.to_wire())
     }
     async fn sweep_guardian_fees(
@@ -94,27 +99,27 @@ impl EcashPayoutWorker for PayoutWorker {
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobWire> {
-        let invite: InviteCode = invite
-            .0
-            .parse()
-            .context("invalid guardian federation invite")?;
+        let invite = parse_guardian_invite(invite)?;
         let scope = PayoutScope::GuardianFee {
             federation_id: FederationId(invite.federation_id().to_string()),
             seat_id: seat_id.clone(),
-            invite_code: invite.clone(),
         };
-        let job = self.start_job(request_id, scope).await?;
+        let job = self.start_job(request_id, scope, Some(&invite)).await?;
         Ok(job.to_wire())
     }
     async fn resume_guardian_sweep(
         &self,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        invite: Option<&WireInviteCode>,
     ) -> anyhow::Result<Option<PayoutJobWire>> {
         let Some(job) = stored_guardian_job(&self.db, seat_id, request_id).await? else {
             return Ok(None);
         };
-        let job = self.start_job(request_id, job.scope.clone()).await?;
+        let invite = invite.map(parse_guardian_invite).transpose()?;
+        let job = self
+            .start_job(request_id, job.scope.clone(), invite.as_ref())
+            .await?;
         Ok(Some(job.to_wire()))
     }
     async fn payout_status(
@@ -144,19 +149,10 @@ impl EcashPayoutWorker for PayoutWorker {
         invite: &WireInviteCode,
         seat_id: &SeatId,
     ) -> anyhow::Result<WalletDrainStatusWire> {
-        let invite: InviteCode = invite
-            .0
-            .parse()
-            .context("invalid guardian federation invite")?;
+        let invite = parse_guardian_invite(invite)?;
         let Some(wallet) = &self.wallet else {
             return Ok(WalletDrainStatus::unavailable().to_wire());
         };
-        let scope = PayoutScope::GuardianFee {
-            federation_id: FederationId(invite.federation_id().to_string()),
-            seat_id: seat_id.clone(),
-            invite_code: invite.clone(),
-        };
-        validate_scope(&scope)?;
         let key = (self.guardian_key)(seat_id);
         match wallet.guardian_fee_client(&invite, seat_id, &key).await {
             Ok(c) => Ok(crate::drain_status::wallet_drain_status(&c).await.to_wire()),
@@ -175,18 +171,18 @@ async fn stored_guardian_job(
     };
     match &job.scope {
         PayoutScope::GuardianFee {
-            federation_id,
             seat_id: stored_seat_id,
-            invite_code,
-        } if stored_seat_id == seat_id => {
-            anyhow::ensure!(
-                federation_id.0 == invite_code.federation_id().to_string(),
-                "payout request wallet scope no longer matches the seat federation"
-            );
-            Ok(Some(job))
-        }
+            ..
+        } if stored_seat_id == seat_id => Ok(Some(job)),
         _ => anyhow::bail!("payout request id is already bound to a different scope"),
     }
+}
+
+fn parse_guardian_invite(invite: &WireInviteCode) -> anyhow::Result<InviteCode> {
+    invite
+        .0
+        .parse()
+        .context("invalid guardian federation invite")
 }
 
 #[cfg(test)]
@@ -199,13 +195,23 @@ mod tests {
         payouts: Mutex<HashMap<PayoutRequestId, Payout>>,
         lose_next_response: AtomicBool,
         starts: AtomicUsize,
+        /// The invite each start or recovery was handed.
+        invites: Mutex<Vec<Option<String>>>,
         statuses: AtomicUsize,
         awaits: AtomicUsize,
     }
 
     #[async_trait::async_trait]
     impl PayoutNative for FakeNative {
-        async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+        async fn start_or_recover(
+            &self,
+            job: &PayoutJob,
+            invite: Option<&InviteCode>,
+        ) -> anyhow::Result<Payout> {
+            self.invites
+                .lock()
+                .await
+                .push(invite.map(ToString::to_string));
             if let Some(payout) = self.payouts.lock().await.get(&job.request_id).cloned() {
                 return Ok(payout);
             }
@@ -277,11 +283,9 @@ mod tests {
     }
 
     fn guardian_scope(seat_id: &SeatId, federation: &str) -> PayoutScope {
-        let invite_code = invite(federation);
         PayoutScope::GuardianFee {
-            federation_id: FederationId(invite_code.federation_id().to_string()),
+            federation_id: FederationId(federation.to_owned()),
             seat_id: seat_id.clone(),
-            invite_code,
         }
     }
 
@@ -293,8 +297,12 @@ mod tests {
             .unwrap();
     }
 
+    /// A stored guardian job is the seat's alone, and the seat invite it may
+    /// join through must name the job's federation: the invite is the
+    /// seat's current one, so one for another federation means the request
+    /// no longer describes this seat's wallet.
     #[tokio::test]
-    async fn guardian_stored_scope_requires_matching_invite_federation() {
+    async fn guardian_resume_joins_only_through_an_invite_for_the_job_federation() {
         let temp = tempfile::tempdir().unwrap();
         let db = Db::open(temp.path()).await.unwrap();
         let seat_id = SeatId::new("01".repeat(32)).unwrap();
@@ -311,30 +319,33 @@ mod tests {
                 .scope,
             scope
         );
-
-        let mismatch = PayoutRequestId::parse("guardian-mismatched-scope").unwrap();
-        let PayoutScope::GuardianFee {
-            seat_id,
-            invite_code,
-            ..
-        } = guardian_scope(&seat_id, &"02".repeat(32))
-        else {
-            unreachable!()
-        };
-        let malformed = PayoutScope::GuardianFee {
-            federation_id: FederationId("03".repeat(32)),
-            seat_id,
-            invite_code,
-        };
-        crate::payout_store::create(&db, &mismatch, &malformed, "operator@example.com")
-            .await
-            .unwrap();
         assert!(
-            stored_guardian_job(&db, &SeatId::new("01".repeat(32)).unwrap(), &mismatch)
+            stored_guardian_job(&db, &SeatId::new("03".repeat(32)).unwrap(), &request_id)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("different scope")
+        );
+
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(db, native.clone());
+        assert!(
+            worker
+                .start_job(&request_id, scope.clone(), Some(&invite(&"03".repeat(32))))
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("no longer matches")
+        );
+        assert_eq!(native.starts.load(Ordering::SeqCst), 0);
+        let seat_invite = invite(&"02".repeat(32));
+        worker
+            .start_job(&request_id, scope, Some(&seat_invite))
+            .await
+            .unwrap();
+        assert_eq!(
+            *native.invites.lock().await,
+            [Some(seat_invite.to_string())]
         );
     }
 
@@ -353,7 +364,7 @@ mod tests {
         };
         assert!(
             worker(db.clone(), native.clone())
-                .start_job(&request_id, scope.clone())
+                .start_job(&request_id, scope.clone(), None)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -364,7 +375,7 @@ mod tests {
         let reopened = Db::open(temp.path()).await.unwrap();
         set_destination(&reopened, "changed@example.com").await;
         let job = worker(reopened, native.clone())
-            .start_job(&request_id, scope)
+            .start_job(&request_id, scope, None)
             .await
             .unwrap();
         assert_eq!(native.starts.load(Ordering::SeqCst), 1);
@@ -384,8 +395,8 @@ mod tests {
             federation_id: FederationId("payment-federation".into()),
         };
         let (left, right) = tokio::join!(
-            worker.start_job(&request_id, scope.clone()),
-            worker.start_job(&request_id, scope),
+            worker.start_job(&request_id, scope.clone(), None),
+            worker.start_job(&request_id, scope, None),
         );
         assert_eq!(left.unwrap(), right.unwrap());
         assert_eq!(native.starts.load(Ordering::SeqCst), 1);
@@ -429,7 +440,7 @@ mod tests {
         let current = worker(db.clone(), native.clone());
         assert!(
             current
-                .start_job(&request_id, scope)
+                .start_job(&request_id, scope, None)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -449,10 +460,13 @@ mod tests {
     }
 }
 impl PayoutWorker {
+    /// `invite` is the job's seat's, when the caller has one: needed only to
+    /// join a guardian-fee wallet for the first time.
     async fn start_job(
         &self,
         request_id: &PayoutRequestId,
         scope: PayoutScope,
+        invite: Option<&InviteCode>,
     ) -> anyhow::Result<PayoutJob> {
         let job = match crate::payout_store::get(&self.db, request_id).await? {
             Some(j) if j.scope == scope => j,
@@ -464,12 +478,11 @@ impl PayoutWorker {
                 crate::payout_store::create(&self.db, request_id, &scope, &dest).await?
             }
         };
-        validate_scope(&job.scope)?;
         if job.operation.is_some() {
             return Ok(job);
         }
         let _start = self.start_exclusion(&job.scope).await;
-        let payout = self.start_native(&job).await?;
+        let payout = self.start_native(&job, invite).await?;
         if matches!(job.scope, PayoutScope::GuardianFee { .. }) {
             pause_after_guardian_fee_payout_start_for_e2e().await?;
         }
@@ -502,12 +515,21 @@ impl PayoutWorker {
             .clone();
         lock.lock_owned().await
     }
-    async fn start_native(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
-        validate_scope(&job.scope)?;
-        self.native.start_or_recover(job).await
+    async fn start_native(
+        &self,
+        job: &PayoutJob,
+        invite: Option<&InviteCode>,
+    ) -> anyhow::Result<Payout> {
+        if let (PayoutScope::GuardianFee { federation_id, .. }, Some(invite)) = (&job.scope, invite)
+        {
+            anyhow::ensure!(
+                federation_id.0 == invite.federation_id().to_string(),
+                "payout request wallet scope no longer matches the seat federation"
+            );
+        }
+        self.native.start_or_recover(job, invite).await
     }
     async fn reconcile(&self, job: PayoutJob) -> anyhow::Result<PayoutJob> {
-        validate_scope(&job.scope)?;
         if job.operation.is_some() {
             return Ok(job);
         }
@@ -541,31 +563,47 @@ impl PayoutWorker {
         id: crate::payout_operation_id::PayoutOperationId,
         wait: bool,
     ) -> anyhow::Result<OutgoingOperation> {
-        validate_scope(&job.scope)?;
         self.native.observe(job, id, wait).await
     }
 }
 
-/// Reject a restored guardian row whose redundant public federation identity
-/// does not agree with its retained invite before it can select a wallet.
-fn validate_scope(scope: &PayoutScope) -> anyhow::Result<()> {
-    if let PayoutScope::GuardianFee {
-        federation_id,
-        invite_code,
-        ..
-    } = scope
-    {
-        anyhow::ensure!(
-            federation_id.0 == invite_code.federation_id().to_string(),
-            "payout request wallet scope no longer matches the seat federation"
-        );
+impl WalletPayoutNative {
+    /// A guardian-fee job's wallet client: joined through `invite` if the
+    /// wallet never joined it, `None` if it never did and no invite is
+    /// supplied.
+    async fn guardian_client(
+        &self,
+        federation_id: &FederationId,
+        seat_id: &SeatId,
+        invite: Option<&InviteCode>,
+    ) -> anyhow::Result<Option<fedimint_client::ClientHandleArc>> {
+        let key = (self.guardian_key)(seat_id);
+        match invite {
+            Some(invite) => Ok(Some(
+                self.wallet
+                    .guardian_fee_client(invite, seat_id, &key)
+                    .await?,
+            )),
+            None => {
+                let federation_id = federation_id
+                    .0
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("malformed federation id"))?;
+                self.wallet
+                    .joined_guardian_fee_client(federation_id, seat_id, &key)
+                    .await
+            }
+        }
     }
-    Ok(())
 }
 
 #[async_trait::async_trait]
 impl PayoutNative for WalletPayoutNative {
-    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+    async fn start_or_recover(
+        &self,
+        job: &PayoutJob,
+        invite: Option<&InviteCode>,
+    ) -> anyhow::Result<Payout> {
         match &job.scope {
             PayoutScope::PaymentFederation { federation_id } => {
                 let id = federation_id
@@ -583,22 +621,25 @@ impl PayoutNative for WalletPayoutNative {
                 }
             }
             PayoutScope::GuardianFee {
-                invite_code,
+                federation_id,
                 seat_id,
-                ..
             } => {
-                let key = (self.guardian_key)(seat_id);
                 let _lock = self
                     .wallet
                     .payout_exclusion(ClientScope::Guardian {
-                        federation_id: invite_code.federation_id(),
+                        federation_id: federation_id
+                            .0
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("malformed federation id"))?,
                         seat_id: seat_id.to_string(),
                     })
                     .await;
                 let client = self
-                    .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
-                    .await?;
+                    .guardian_client(federation_id, seat_id, invite)
+                    .await?
+                    .context(
+                        "the seat has no installed config to join its guardian-fee wallet with",
+                    )?;
                 if let Some(payout) =
                     crate::payout_for_request(&client, &job.request_id, &job.destination).await?
                 {
@@ -617,15 +658,13 @@ impl PayoutNative for WalletPayoutNative {
                 crate::payout_for_request(&client, &job.request_id, &job.destination).await
             }
             PayoutScope::GuardianFee {
-                invite_code,
+                federation_id,
                 seat_id,
-                ..
             } => {
-                let key = (self.guardian_key)(seat_id);
-                let client = self
-                    .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
-                    .await?;
+                // A wallet never joined holds no payout for this request.
+                let Some(client) = self.guardian_client(federation_id, seat_id, None).await? else {
+                    return Ok(None);
+                };
                 crate::payout_for_request(&client, &job.request_id, &job.destination).await
             }
         }
@@ -642,15 +681,12 @@ impl PayoutNative for WalletPayoutNative {
                 self.wallet.client(federation_id.0.parse()?).await?
             }
             PayoutScope::GuardianFee {
-                invite_code,
+                federation_id,
                 seat_id,
-                ..
-            } => {
-                let key = (self.guardian_key)(seat_id);
-                self.wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
-                    .await?
-            }
+            } => self
+                .guardian_client(federation_id, seat_id, None)
+                .await?
+                .context("a committed guardian-fee payout's wallet was never joined")?,
         };
         if wait {
             crate::await_payout(&client, &job.request_id, &job.destination, &id).await

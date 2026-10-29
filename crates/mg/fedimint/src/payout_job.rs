@@ -32,11 +32,11 @@ pub enum PayoutScope {
     GuardianFee {
         /// Federation guarded by the seat when the request was created.
         federation_id: FederationId,
-        /// Seat whose separately derived wallet is swept.
+        /// Seat whose separately derived wallet is swept. Joining that wallet
+        /// for the first time takes the seat's invite, built from its
+        /// installed config; an already joined wallet needs none, so
+        /// decommission cannot orphan the job.
         seat_id: SeatId,
-        /// Validated public client invite retained so decommission cannot orphan the job.
-        #[serde(serialize_with = "serialize_invite_code")]
-        invite_code: fedimint_core::invite_code::InviteCode,
     },
 }
 
@@ -67,16 +67,6 @@ pub struct PayoutJobOperation {
     pub committed_at_ms: u64,
 }
 
-fn serialize_invite_code<Serializer>(
-    invite_code: &fedimint_core::invite_code::InviteCode,
-    serializer: Serializer,
-) -> Result<Serializer::Ok, Serializer::Error>
-where
-    Serializer: serde::Serializer,
-{
-    serializer.serialize_str(&invite_code.to_string())
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -91,13 +81,9 @@ impl PayoutScope {
             Self::GuardianFee {
                 federation_id,
                 seat_id,
-                invite_code,
             } => mg_core::payout_wire::PayoutScopeWire::GuardianFee {
                 federation_id: federation_id.clone(),
                 seat_id: seat_id.clone(),
-                invite_code: fedi_decentralized_service_manifold_guardian::InviteCode(
-                    invite_code.to_string(),
-                ),
             },
         }
     }

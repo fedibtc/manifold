@@ -8,6 +8,53 @@ use fedi_decentralized_service_manifold_guardian::{
     FaId, FederationSize, GuardianCode, Plan, SeatId,
 };
 
+/// Which guardian a formed seat is: the federation it guards and its own peer
+/// in it. This, not an invite, is the durable formed fact. An invite is only
+/// a way to dial the guardian, built from the installed config whenever one is
+/// handed out ([`crate::guardian_config`]).
+///
+/// Serialized with the federation id as its hex string in every format, as
+/// `formed_seats` stores it, rather than in `FederationId`'s format-dependent
+/// encoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FederationPeer {
+    #[serde(with = "federation_id_hex")]
+    pub federation_id: fedimint_core::config::FederationId,
+    pub peer_id: fedimint_core::PeerId,
+}
+
+mod federation_id_hex {
+    use fedimint_core::config::FederationId;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(id: &FederationId, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(id)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<FederationId, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl FederationPeer {
+    /// The guardian a `fedimintd` invite names. `fedimintd` builds its invite
+    /// around its own identity alone, so an invite naming any other number of
+    /// peers is not one a seat's child handed out.
+    pub fn from_invite(invite: &fedimint_core::invite_code::InviteCode) -> Option<Self> {
+        let peers = invite.peers();
+        let mut peer_ids = peers.keys();
+        match (peer_ids.next(), peer_ids.next()) {
+            (Some(&peer_id), None) => Some(Self {
+                federation_id: invite.federation_id(),
+                peer_id,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// The immutable creation-time facts of a seat. They are inserted together
 /// after payment verification and readable without a lock once loaded into
 /// the in-memory registry. This struct contains only public lifecycle facts;

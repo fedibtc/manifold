@@ -60,16 +60,7 @@ impl SeatLoop {
             .map_err(|_| SeatVerbError::TransferGrantMismatch)?
             .into_inner();
         let state = self.state.borrow();
-        let federation = state
-            .formed_invite
-            .as_ref()
-            .and_then(|invite| {
-                invite
-                    .0
-                    .parse::<fedimint_core::invite_code::InviteCode>()
-                    .ok()
-            })
-            .map(|invite| invite.federation_id().to_string());
+        let federation = state.formed.map(|peer| peer.federation_id.to_string());
         if grant.fa_id != self.facts.fa_id
             || grant.source_seat_id != self.facts.seat_id
             || grant.source.service_pubkey != service_key.x_only_public_key().0

@@ -64,8 +64,9 @@ material in Nostr remain rejected alternatives.
 
 All requests carry `TelemetryCapability`. `list_guardian_telemetry_seats`
 returns every seat known to the fleet, sorted by `SeatId`, as
-`{ seat_id, invite_code: Option<InviteCode> }`. An unavailable or
-not-yet-formed seat is still discoverable with no invite.
+`{ seat_id, invite_code: Option<InviteCode> }`. The invite is built from the
+seat's installed config. An unavailable, data-loss, or not-yet-formed seat, or
+one whose installed config is unreadable, is still discoverable with no invite.
 
 `scrape_guardian_metrics` additionally names a `SeatId`. After global
 capability verification, MG permits only a Running seat, connects only to that

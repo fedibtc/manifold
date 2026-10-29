@@ -162,7 +162,7 @@ archive beside it is the guardian. Recovery writes the guardian into the seat da
 directory and restores the accepted row; the seat starts like any formed seat,
 and expiry cannot cancel an accepted guardian.
 
-A retired source carries a permanent transfer fence and formed federation invite.
+A retired source carries a permanent transfer fence and formed guardian identity.
 The narrow FA-authorized transfer-removal operation removes only local guardian
 material and records the removal; the seat's next publication is the
 archive-less removal tombstone. A restore between the two resurrects at most a
@@ -204,14 +204,16 @@ it is read back.
 
 - **One event per seat**, carrying that seat's durable facts, its accepted
   payment material, and — once the ceremony has produced one — a *reference* to
-  its guardian archive: the archive's digest and the formed federation's invite
-  code. No config bytes are in it. A retired seat's event carries its
+  its guardian archive: the archive's digest and the formed guardian identity
+  (federation id and peer id). No config bytes are in it. Documents published
+  before that identity existed carried the federation invite instead; restore
+  still reads them and accepts only an invite naming exactly one guardian. A retired seat's event carries its
   decommission time, so a restore does not resurrect a guardian into a
   federation the operator deliberately left.
 
   The archive is not in the document because the two have opposite lifetimes.
-  A seat's document is mutable — republished when lifecycle facts change, when the
-  invite is observed, when the seat is decommissioned — while `fedimintd`
+  A seat's document is mutable — republished when lifecycle facts change, when
+  formation is recorded, when the seat is decommissioned — while `fedimintd`
   writes its config files once, at the end of the ceremony, and never again.
   Welding the immutable payload into the mutable document would re-publish a
   hundred kilobytes of key shares on every state change, for no new
@@ -248,12 +250,13 @@ it is read back.
   events, so the publisher chooses neither the contents nor the encoding, and
   cannot express a partial document.
 
-  The invite code is the seat's link to the federation it guards. It is written
-  set-once with the immutable formed-seat row when the driven child reports its
-  final configuration persisted ([ARCH-manifold-guardian](./ARCH-manifold-guardian.md)).
-  The same row serves document assembly, `GetInviteCode`, and status
-  ([SPEC-seat-lifecycle](./SPEC-seat-lifecycle.md)). Restore reconstructs that
-  row from an authenticated guardian archive reference.
+  The formed identity is the seat's link to the federation it guards. It is
+  written set-once with the immutable formed-seat row, read from the installed
+  config, when the driven child reports its final configuration persisted
+  ([ARCH-manifold-guardian](./ARCH-manifold-guardian.md)). The same row serves
+  document assembly; `GetInviteCode` and status build the invite from the
+  installed config ([SPEC-seat-lifecycle](./SPEC-seat-lifecycle.md)). Restore
+  reconstructs that row from an authenticated guardian archive reference.
 
   The document carries the seat id and FA id directly. The seat id is the
   canonical hex of the quote id. The FA id is an independent seat fact because
@@ -437,9 +440,9 @@ share-less document is in flight leaves the seat pending — recording that
 publication would suppress the very republish that adds the archive.
 
 Publications converge rather than being atomic with the writes they
-describe: a document assembled a moment before the federation invite was
-recorded carries the config without it, and the next scan — cut short by the
-mark that recorded the invite — republishes.
+describe: a document assembled a moment before formation was recorded
+carries no archive reference, and the next scan — cut short by the mark that
+recorded formation — republishes.
 
 The guarantee this leaves is that the relay converges on each seat's current
 document, promptly after a change and verifiably at each confirmation. A
@@ -535,8 +538,8 @@ Three constraints, and two of them are enforced rather than documented:
 A restored guardian archive installs the same set-once formed record as driven
 DKG, so a later ceremony cannot replace the recovered federation
 ([SPEC-seat-lifecycle](./SPEC-seat-lifecycle.md)). The backup deliberately carries
-no ceremony state; the formed invite is the only lifecycle fact restoration
-needs to reconstruct.
+no ceremony state; the formed guardian identity is the only lifecycle fact
+restoration needs to reconstruct.
 
 A restored seat *without* a guardian config takes the opposite treatment: it is
 restored as a paid-but-unformed seat, and a later DKG ceremony is accepted. That

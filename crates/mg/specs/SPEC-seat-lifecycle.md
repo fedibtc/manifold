@@ -13,7 +13,7 @@ A guardian seat has three lifecycle facts:
 1. its immutable `seats` identity row (owner, quote, plan, federation size,
    never-reused seat number, and creation time);
 2. an optional set-once `formed_seats` row containing
-   `{ federation_invite, formed_at_ms }`; and
+   `{ federation_id, peer_id, formed_at_ms }` naming the guardian it hosts; and
 3. an optional terminal `decommissioned_seats` row.
 
 The complete validated guardian-code set for an accepted `StartDkg` or
@@ -107,7 +107,7 @@ then the source answers "not yet" without waiting.
 guardian-transfer work subtree of a `Transferred` seat, then commits the
 removal fence that rejects all later exports; the archive-less tombstone is the
 seat's next publication. The accepted import's Iroh-key row is dropped with
-that fence, but the outgoing tombstone, formed invite, seat/payment facts, fee
+that fence, but the outgoing tombstone, formed identity, seat/payment facts, fee
 wallets and safe-event journal remain. A failed removal leaves the seat
 `Transferred`, and the FA's retry deletes again. This does not prove erasure of
 historical backups or source copies, and does not authorize general cleanup
@@ -125,7 +125,10 @@ The FA-facing lifecycle statuses are:
 - `New`: no formed record and no live DKG session;
 - `DkgInProcess`: the current in-memory session has acknowledged start;
 - `Running { invite }`: a formed record exists and the final directory exists;
-- `DataLoss`: a formed record exists but the final directory is absent; and
+  the invite is built from the installed config in that directory;
+- `DataLoss { federation_id }`: a formed record exists but the final directory
+  is absent; the federation id comes from the formed record and no invite is
+  reported; and
 - `Decommissioned`: the terminal record exists.
 
 At startup, every non-decommissioned seat spawns a child. An unformed child
@@ -146,10 +149,15 @@ A configured child whose local API fails every probe for 15 minutes is killed
 and respawned: the API is local, so such an outage means a wedged child, which
 would otherwise never exit on its own.
 
-`GetInviteCode` reads the formed record alone and remains available while the
-child is down. A configured child's `Hello` is the sole repair path for a
-missing formed record: every spawn reports `AlreadyConfigured { invite_code }`
-before serving, and the seat loop records that invite. The watchdog never
+`GetInviteCode`, status, telemetry discovery, and guardian-fee payout build the
+invite from the config installed in the final directory: that guardian's own
+API endpoint, peer id, and federation id. They never contact the child, so the
+invite remains available while the child is down and follows an endpoint
+change in the config. A formed seat whose final directory exists without that
+config is an error, not `DataLoss`. A configured child's `Hello` is the sole
+repair path for a missing formed record: every spawn reports
+`AlreadyConfigured` before serving, and the seat loop records the guardian named
+by the installed config, ignoring the child's invite string. The watchdog never
 writes the formed record. A formed record whose directory is absent is never
 treated as a new seat.
 
@@ -214,6 +222,6 @@ child merely to establish liveness.
 The watchdog's only lifecycle side effect is that unresponsive-child restart; it
 never writes the formed record. `ConfigPersisted`, restore, and an
 already-configured child's `Hello` are the only formed-record writers; every
-spawn therefore repairs a missing record without an FA status request. Durable
-invite reads use only that record. Callback delivery uses its own durable work
+spawn therefore repairs a missing record without an FA status request. Invite
+reads combine that record with the installed config. Callback delivery uses its own durable work
 row and begins only after formation is durable.

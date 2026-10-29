@@ -18,9 +18,16 @@ impl Fleet {
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobWire> {
+        // An existing job needs the seat's invite only to join a fee wallet
+        // it never joined, so any installed config will do, whatever the
+        // seat's phase: a decommissioned seat still has one.
+        let installed = match self.seat_by_id(seat_id) {
+            Some(seat) => seat.installed_invite().await?,
+            None => None,
+        };
         if let Some(job) = self
             .payouts
-            .resume_guardian_sweep(seat_id, request_id)
+            .resume_guardian_sweep(seat_id, request_id, installed.as_ref())
             .await?
         {
             return Ok(job);

@@ -85,7 +85,8 @@ pub struct GuardianTelemetryRegistrationResponse {
 #[serde(deny_unknown_fields)]
 pub struct GuardianTelemetrySeat {
     pub seat_id: SeatId,
-    /// Present after formation; absent for seats that do not yet have an invite.
+    /// Present while a formed seat's installed config can build its invite;
+    /// absent before formation and once that config is gone.
     pub invite_code: Option<InviteCode>,
 }
 

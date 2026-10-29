@@ -51,8 +51,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::backup_worker::BackupWorker;
 use crate::db::Db;
-use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
+use crate::facts::{CompletionCallbackStatus, DkgCodeSet, FederationPeer, SeatFacts, SeatPorts};
 use crate::fedimint_api::{FedimintApi, FedimintApiError};
+use crate::guardian_config::InstalledGuardian;
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
 use crate::push_callback::{CompletionHookWake, ValidatedDkgCompletionCallback};
@@ -226,9 +227,14 @@ pub enum SeatPhase {
     Created,
     /// DKG was started and fedimintd is inside its API gap.
     DkgInProgress,
-    /// A formed record exists but the final data directory is absent.
-    DataLoss { invite_code: InviteCode },
-    /// Consensus is serving.
+    /// A formed record exists but the final data directory is absent. The
+    /// seat still knows its federation, but has no config to build an
+    /// invite from.
+    DataLoss {
+        federation_id: fedimint_core::config::FederationId,
+    },
+    /// The final data directory is present; the invite is built from its
+    /// installed config.
     Running { invite_code: InviteCode },
 }
 
@@ -382,8 +388,8 @@ impl ProcessSlot {
 pub(crate) struct SeatDurableState {
     /// Immutable seat facts.
     pub(crate) facts: SeatFacts,
-    /// The immutable formed federation, which permanently closes restart.
-    pub(crate) formed_invite: Option<InviteCode>,
+    /// The immutable formed guardian, which permanently closes restart.
+    pub(crate) formed: Option<FederationPeer>,
     /// Terminal decommission timestamp.
     pub(crate) decommissioned_at_ms: Option<i64>,
     /// Transfer fence loaded before any possible child spawn.
@@ -416,7 +422,8 @@ pub(crate) struct SeatRuntimeDependencies {
 
 #[derive(Clone)]
 struct SeatRuntimeFacts {
-    formed_invite: Option<InviteCode>,
+    /// The durable formed fact: which guardian this seat is.
+    formed: Option<FederationPeer>,
     process_slot: ProcessSlotPhase,
     decommissioned_at_ms: Option<i64>,
     /// Transfer provenance or terminal fence, independent of formed state.
@@ -559,7 +566,7 @@ impl Seat {
     pub(crate) fn start(durable: SeatDurableState, runtime: SeatRuntimeDependencies) -> Arc<Self> {
         let SeatDurableState {
             facts,
-            formed_invite,
+            formed,
             decommissioned_at_ms,
             transfer_phase,
         } = durable;
@@ -579,7 +586,7 @@ impl Seat {
         let facts = Arc::new(facts);
         let data_dir = seat_data_dir(&process, facts.seat_no);
         let (state, _state_rx) = watch::channel(SeatRuntimeFacts {
-            formed_invite,
+            formed,
             process_slot: ProcessSlotPhase::Empty,
             decommissioned_at_ms,
             transfer_phase,
@@ -651,13 +658,6 @@ impl Seat {
     #[cfg(test)]
     pub(crate) fn ports(&self) -> SeatPorts {
         self.ports
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cached_report_for_test(&self) -> SeatReport {
-        self.state
-            .borrow()
-            .report(self.data_dir.try_exists().unwrap())
     }
 
     #[cfg(test)]
@@ -754,10 +754,16 @@ impl Seat {
     }
 
     pub(crate) async fn report(&self) -> Result<SeatReport, SeatVerbError> {
-        let final_data_exists = self.data_dir.try_exists().map_err(|error| {
-            SeatVerbError::internal(anyhow!("inspect final seat data dir: {error}"))
-        })?;
-        Ok(self.state.borrow().report(final_data_exists))
+        // One snapshot: the config read below must describe the same state
+        // the report is drawn from.
+        let state = self.state.borrow().clone();
+        let invite = match state.formed {
+            Some(peer) if state.reports_formation() => installed_invite(&self.data_dir, &peer)
+                .await
+                .map_err(SeatVerbError::internal)?,
+            _ => None,
+        };
+        Ok(state.report(invite))
     }
 
     /// Operator summary: durable facts plus the decommission flag.
@@ -813,11 +819,16 @@ impl Seat {
             .await
     }
 
-    /// Invite already present in the shared runtime mirror. Telemetry
-    /// discovery must never turn listing into a child probe or wait behind a
-    /// lifecycle command.
-    pub(crate) fn cached_invite_code(&self) -> Option<InviteCode> {
-        self.state.borrow().formed_invite.clone()
+    /// The invite a formed seat hands out, built from its installed config;
+    /// `None` before formation or once the final directory is gone. Reads the seat's
+    /// files only: telemetry discovery and payout recovery must never turn
+    /// into a child probe or wait behind a lifecycle command.
+    pub(crate) async fn installed_invite(&self) -> anyhow::Result<Option<InviteCode>> {
+        let formed = self.state.borrow().formed;
+        match formed {
+            Some(peer) => installed_invite(&self.data_dir, &peer).await,
+            None => Ok(None),
+        }
     }
 
     /// `GetPeerAttestation`'s unsigned material: what this seat can prove
@@ -936,7 +947,7 @@ impl SeatRuntimeFacts {
             ServiceStatus::Decommissioned
         } else if let Some(status) = self.transfer_status() {
             status
-        } else if self.formed_invite.is_some() {
+        } else if self.formed.is_some() {
             if final_data_exists {
                 ServiceStatus::Running
             } else {
@@ -947,7 +958,15 @@ impl SeatRuntimeFacts {
         }
     }
 
-    fn report(&self, final_data_exists: bool) -> SeatReport {
+    /// Whether [`Self::report`] describes the formation, and so needs the
+    /// installed invite.
+    fn reports_formation(&self) -> bool {
+        self.decommissioned_at_ms.is_none() && self.transfer_status().is_none()
+    }
+
+    /// `invite` is the one built from the installed config of a formed seat,
+    /// absent when its final directory is gone.
+    fn report(&self, invite: Option<InviteCode>) -> SeatReport {
         if let Some(at_ms) = self.decommissioned_at_ms {
             return SeatReport::Decommissioned { at_ms };
         }
@@ -957,23 +976,16 @@ impl SeatRuntimeFacts {
                 health: SeatHealth::Unavailable,
             };
         }
-        let (phase, health) = if let Some(invite_code) = &self.formed_invite {
-            (
-                if final_data_exists {
-                    SeatPhase::Running {
-                        invite_code: invite_code.clone(),
-                    }
-                } else {
+        let (phase, health) = if let Some(peer) = &self.formed {
+            match invite {
+                Some(invite_code) => (SeatPhase::Running { invite_code }, self.health.clone()),
+                None => (
                     SeatPhase::DataLoss {
-                        invite_code: invite_code.clone(),
-                    }
-                },
-                if final_data_exists {
-                    self.health.clone()
-                } else {
-                    SeatHealth::Unavailable
-                },
-            )
+                        federation_id: peer.federation_id,
+                    },
+                    SeatHealth::Unavailable,
+                ),
+            }
         } else {
             match self.process_slot {
                 ProcessSlotPhase::DkgAcknowledged => {
@@ -997,7 +1009,7 @@ impl SeatLoop {
         if self.state.borrow().transfer_status().is_some() {
             return Ok(false);
         }
-        if self.state.borrow().formed_invite.is_none() {
+        if self.state.borrow().formed.is_none() {
             return Ok(false);
         }
         self.data_dir.try_exists()
@@ -1504,15 +1516,12 @@ impl SeatLoop {
     async fn spawn_child(&mut self) -> Result<(), SeatVerbError> {
         self.state.borrow().reject_decommissioned()?;
         self.state.borrow().reject_transfer_work()?;
-        self.spawn_child_inner(None).await
+        self.spawn_child_inner(false).await
     }
 
     /// Only the import install command may bypass the pending-import fence,
     /// once the accepted guardian is durably on disk.
-    async fn spawn_child_inner(
-        &mut self,
-        imported_invite: Option<&InviteCode>,
-    ) -> Result<(), SeatVerbError> {
+    async fn spawn_child_inner(&mut self, imported: bool) -> Result<(), SeatVerbError> {
         if !matches!(self.child, ProcessSlot::Empty) {
             return Err(SeatVerbError::internal(anyhow!(
                 "child replacement requires a proved empty process slot"
@@ -1542,16 +1551,15 @@ impl SeatLoop {
             }
         };
         let state = client.child_state().clone();
-        if let Some(expected) = imported_invite {
-            if !matches!(&state, ChildState::AlreadyConfigured { invite_code } if invite_code == &expected.0)
-            {
-                // Never feed DKG parameters to an accepted import, even if a
-                // child unexpectedly claims its installed config is absent.
-                if child.stop().await.is_err() {
-                    self.set_process_slot(ProcessSlot::ExitUnproven);
-                }
-                return Err(SeatVerbError::SeatUnavailable);
+        // An accepted import's guardian is checked against its formed row
+        // when the configured child is handled below.
+        if imported && !matches!(&state, ChildState::AlreadyConfigured { .. }) {
+            // Never feed DKG parameters to an accepted import, even if a
+            // child unexpectedly claims its installed config is absent.
+            if child.stop().await.is_err() {
+                self.set_process_slot(ProcessSlot::ExitUnproven);
             }
+            return Err(SeatVerbError::SeatUnavailable);
         }
         self.set_process_slot(match state {
             ChildState::NeedsParams => ProcessSlot::Parked { child, client },
@@ -1605,7 +1613,7 @@ impl SeatLoop {
                 // Never send params to a configured or formed seat, including the
                 // crash window after the final directory was installed but before
                 // MG received ConfigPersisted.
-                if self.state.borrow().formed_invite.is_some()
+                if self.state.borrow().formed.is_some()
                     || self.final_data_exists().map_err(SeatVerbError::internal)?
                 {
                     return Ok(());
@@ -1621,8 +1629,8 @@ impl SeatLoop {
                 }
                 Ok(())
             }
-            ChildState::AlreadyConfigured { invite_code } => self
-                .handle_persisted_invite(InviteCode(invite_code))
+            ChildState::AlreadyConfigured { .. } => self
+                .handle_configured()
                 .await
                 .map_err(SeatVerbError::internal),
         }
@@ -1637,9 +1645,8 @@ impl SeatLoop {
             Err(error) => return Err(error),
         };
         match event {
-            DrivenDkgEvent::ConfigPersisted { invite_code, .. } => {
-                self.handle_persisted_invite(InviteCode(invite_code))
-                    .await?;
+            DrivenDkgEvent::ConfigPersisted { .. } => {
+                self.handle_configured().await?;
             }
             DrivenDkgEvent::DkgStarted => {
                 self.mark_dkg_acknowledged();
@@ -1657,12 +1664,19 @@ impl SeatLoop {
         Ok(())
     }
 
-    async fn handle_persisted_invite(&mut self, invite_code: InviteCode) -> anyhow::Result<()> {
+    /// The child reported an installed final config. The guardian it is comes
+    /// from that config on disk, the same files the child boots and every
+    /// later invite is built from, not from the invite string the child
+    /// reports beside it.
+    async fn handle_configured(&mut self) -> anyhow::Result<()> {
+        let installed = InstalledGuardian::read(&self.data_dir)
+            .await?
+            .ok_or_else(|| anyhow!("child reported a final config the data directory lacks"))?;
         self.db
-            .record_formed(&self.facts.seat_id, &invite_code)
+            .record_formed(&self.facts.seat_id, &installed.peer)
             .await?;
         self.state
-            .send_modify(|state| state.formed_invite = Some(invite_code.clone()));
+            .send_modify(|state| state.formed = Some(installed.peer));
         self.mark_configured();
         self.schedule_watchdog(Duration::ZERO);
         self.backup.mark();
@@ -1687,7 +1701,7 @@ impl SeatLoop {
         let state = self.state.borrow();
         state.reject_decommissioned()?;
         state.reject_transfer_work()?;
-        if state.formed_invite.is_some() {
+        if state.formed.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: state.service_status(final_data_exists),
             });
@@ -1707,7 +1721,7 @@ impl SeatLoop {
         let final_data_exists = self.final_data_exists()?;
         self.state.borrow().reject_decommissioned()?;
         self.state.borrow().reject_transfer_work()?;
-        if self.state.borrow().formed_invite.is_some() {
+        if self.state.borrow().formed.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: self.state.borrow().service_status(final_data_exists),
             });
@@ -1874,7 +1888,7 @@ impl SeatLoop {
                         .map_err(SeatVerbError::internal)?;
                     return Ok(());
                 }
-                DrivenDkgEvent::ConsensusStarted if self.state.borrow().formed_invite.is_some() => {
+                DrivenDkgEvent::ConsensusStarted if self.state.borrow().formed.is_some() => {
                     return Ok(());
                 }
                 DrivenDkgEvent::ParamsRejected { reason } => {
@@ -1910,7 +1924,7 @@ impl SeatLoop {
         let final_data_exists = self.final_data_exists()?;
         self.state.borrow().reject_decommissioned()?;
         self.state.borrow().reject_transfer_work()?;
-        if self.state.borrow().formed_invite.is_some() {
+        if self.state.borrow().formed.is_some() {
             return Err(SeatVerbError::WrongState {
                 status: self.state.borrow().service_status(final_data_exists),
             });
@@ -1930,7 +1944,7 @@ impl SeatLoop {
             self.schedule_respawn();
             return Err(error);
         }
-        if self.state.borrow().formed_invite.is_some() {
+        if self.state.borrow().formed.is_some() {
             return Ok(ServiceStatus::Running);
         }
         // spawn_child has consumed the recorded inputs only for NeedsParams.
@@ -1963,20 +1977,25 @@ impl SeatLoop {
         Ok(true)
     }
 
-    /// `GetInviteCode`: available once the seat's federation is running.
+    /// `GetInviteCode`: available once the seat has formed and while its
+    /// final directory is present.
     ///
-    /// The recorded invite answers without a probe: it is constant once
-    /// consensus has run (the seat's iroh keys are deterministic and the code
-    /// names this guardian's peer), so a re-fetch could only agree or mean
-    /// the child is momentarily unreachable — neither is worth a round trip
-    /// or an availability dependency on the child.
+    /// Built from that config without a probe, the way `fedimintd` builds its
+    /// own: the code names this guardian's endpoint and peer, so asking the
+    /// child could only agree or mean it is momentarily unreachable — neither
+    /// is worth a round trip or an availability dependency on the child.
     async fn invite_code(&mut self) -> Result<InviteCode, SeatVerbError> {
-        let state = self.state.borrow();
-        state
-            .formed_invite
-            .clone()
-            .ok_or_else(|| SeatVerbError::WrongState {
-                status: state.unformed_status(),
+        let formed = self.state.borrow().formed;
+        let Some(peer) = formed else {
+            return Err(SeatVerbError::WrongState {
+                status: self.state.borrow().unformed_status(),
+            });
+        };
+        installed_invite(&self.data_dir, &peer)
+            .await
+            .map_err(SeatVerbError::internal)?
+            .ok_or(SeatVerbError::WrongState {
+                status: ServiceStatus::DataLoss,
             })
     }
 
@@ -1985,7 +2004,7 @@ impl SeatLoop {
     /// The peer id comes from the invite code rather than from any config
     /// lookup ([`own_peer_id`]).
     async fn federation_binding(&mut self) -> Result<SeatFederationBinding, SeatVerbError> {
-        if self.state.borrow().formed_invite.is_none() {
+        if self.state.borrow().formed.is_none() {
             let status = self.state.borrow().unformed_status();
             return Err(SeatVerbError::WrongState { status });
         }
@@ -2437,7 +2456,7 @@ impl SeatLoop {
 
     async fn running_client(&mut self) -> Result<FedimintApi, SeatVerbError> {
         self.state.borrow().reject_transfer_work()?;
-        if self.state.borrow().formed_invite.is_none() {
+        if self.state.borrow().formed.is_none() {
             let status = self.state.borrow().unformed_status();
             return Err(SeatVerbError::WrongState { status });
         }
@@ -2507,6 +2526,23 @@ fn guardian_fee_bindings(bindings: &[VerifiedSeatBinding]) -> Vec<Account> {
         .iter()
         .map(|binding| binding.guardian_fee_account.clone())
         .collect()
+}
+
+/// The invite a seat formed as `peer` hands out, built from its installed
+/// config; `None` once the final directory is gone (`DataLoss`). The
+/// directory only ever appears complete, so one without its config is an
+/// error rather than a second kind of data loss.
+async fn installed_invite(
+    data_dir: &std::path::Path,
+    peer: &FederationPeer,
+) -> anyhow::Result<Option<InviteCode>> {
+    if !tokio::fs::try_exists(data_dir).await? {
+        return Ok(None);
+    }
+    let installed = InstalledGuardian::read_formed(data_dir, peer)
+        .await?
+        .ok_or_else(|| anyhow!("formed seat's final directory has no installed config"))?;
+    Ok(Some(InviteCode(installed.invite.to_string())))
 }
 
 /// This guardian's own peer id, from the invite code its own fedimintd hands

@@ -200,7 +200,7 @@ async fn restored_retirement_fences_survive_restart_and_keep_the_formed_row() {
     assert!(
         again
             .db
-            .formed_federation_invite(&s.grant.source_seat_id)
+            .formed_peer(&s.grant.source_seat_id)
             .await
             .unwrap()
             .is_some()
@@ -278,9 +278,15 @@ async fn source_with(
         native.calculate_federation_id(),
         None,
     );
-    db.record_formed(&seat_id, &InviteCode(invite.to_string()))
-        .await
-        .unwrap();
+    db.record_formed(
+        &seat_id,
+        &crate::facts::FederationPeer {
+            federation_id: native.calculate_federation_id(),
+            peer_id: native.local.identity,
+        },
+    )
+    .await
+    .unwrap();
     let spawner = spawner(&invite.to_string());
     config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
     let now = (crate::db::now_ms() / 1000) as u64;
@@ -502,7 +508,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
         source
             .fleet
             .db
-            .formed_federation_invite(&source.grant.source_seat_id)
+            .formed_peer(&source.grant.source_seat_id)
             .await
             .unwrap()
             .is_some()

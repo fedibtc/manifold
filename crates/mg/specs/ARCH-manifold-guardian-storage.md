@@ -35,8 +35,8 @@ Consequences the database transaction and schema enforce:
   seat-row deletion. The
   connection enables recursive triggers so implicit `REPLACE` deletes are
   covered too (closing rename, delete-and-reinsert, and replacement), and
-  rewriting the immutable formed invite with a different value is an error,
-  never an upsert. The first optional completion callback is retained for the
+  rewriting the immutable formed guardian identity (federation id and peer
+  id) with a different value is an error, never an upsert. The first optional completion callback is retained for the
   whole formation, so later ceremony sessions cannot add, remove, or redirect its
   bearer destination. Callback attempt scheduling, sanitized outcome, and bearer clearing are committed
   before/after network I/O at their respective ownership boundaries. Decommission

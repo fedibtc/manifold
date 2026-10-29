@@ -234,7 +234,8 @@ the fleet.
 - `SeatStatus` validates the textual seat id and returns its summary plus a live
   report. The report distinguishes active and decommissioned seats; active
   seats include health and their created, DKG-in-progress, running, or data-loss
-  phase, with the formed invite where applicable. It also carries
+  phase, with the invite built from the installed config for a running seat and
+  the formed federation id for a data-loss seat. It also carries
   `guardian_fee`: the seat's remittance account, and — once it has a federation
   — whether that federation still pays this MG, at what rate and share.
   The seat reads consensus metadata through its own `fedimintd`, without
@@ -253,7 +254,7 @@ the fleet.
   It returns no bearer. The previous capability stops authorizing discovery,
   metrics, and journals before the command returns.
 - `GuardianFees` validates the seat id, resolves the federation it guards from
-  its running invite code, and returns that seat's remittance account, its
+  its running invite code (built from its installed config), and returns that seat's remittance account, its
   stability-pool balances (staged, locked, idle, and their sum as
   `collectable_msat`), and the most recent remittances with each payer's
   breakdown opened. A remittance whose sealed breakdown does not decrypt is

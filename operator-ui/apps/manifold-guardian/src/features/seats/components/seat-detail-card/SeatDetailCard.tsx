@@ -65,18 +65,28 @@ export const SeatDetailCard = ({ seat }: SeatDetailCardProps) => {
           <dd className={styles.kvValue}>{describeSeatPhase(report.phase)}</dd>
         </div>
       )}
-      {report.state === 'active' &&
-        (report.phase === 'running' || report.phase === 'data_loss') && (
-          <div className={styles.kvRow}>
-            <dt className={styles.kvLabel}>Invite code</dt>
+      {report.state === 'active' && report.phase === 'running' && (
+        <div className={styles.kvRow}>
+          <dt className={styles.kvLabel}>Invite code</dt>
 
-            <dd className={styles.idRow}>
-              <span className={styles.kvValueMono}>{report.invite_code}</span>
+          <dd className={styles.idRow}>
+            <span className={styles.kvValueMono}>{report.invite_code}</span>
 
-              <CopyButton value={report.invite_code} label="Copy invite code" />
-            </dd>
-          </div>
-        )}
+            <CopyButton value={report.invite_code} label="Copy invite code" />
+          </dd>
+        </div>
+      )}
+      {report.state === 'active' && report.phase === 'data_loss' && (
+        <div className={styles.kvRow}>
+          <dt className={styles.kvLabel}>Federation ID</dt>
+
+          <dd className={styles.idRow}>
+            <span className={styles.kvValueMono}>{report.federation_id}</span>
+
+            <CopyButton value={report.federation_id} label="Copy federation ID" />
+          </dd>
+        </div>
+      )}
       {report.state === 'decommissioned' && (
         <div className={styles.kvRow}>
           <dt className={styles.kvLabel}>Decommissioned</dt>

@@ -6,12 +6,13 @@
 //! the formed row, and records only the guardian's Iroh secrets.
 
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, InviteCode, SeatId, SeatTransferGrant, SignedRequest, Timestamp,
+    DkgCompletionCallback, SeatId, SeatTransferGrant, SignedRequest, Timestamp,
 };
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 
 use super::{Db, DbError, now_ms};
+use crate::facts::FederationPeer;
 use crate::transfer_state::{
     ImportedKeys, IncomingState, IncomingTransfer, OutgoingTransfer, TransferMove, TransferPhase,
 };
@@ -136,21 +137,18 @@ async fn federation_available(
     seat_id: &SeatId,
     binding: &TransferMove,
 ) -> Result<bool, DbError> {
-    let invites: Vec<String> = sqlx::query_scalar(
-        "SELECT f.federation_invite FROM formed_seats f \
-         WHERE f.quote_id != ? \
+    let formed_elsewhere: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM formed_seats f \
+         WHERE f.quote_id != ? AND f.federation_id = ? \
          AND NOT EXISTS (SELECT 1 FROM decommissioned_seats d WHERE d.quote_id = f.quote_id) \
-         AND NOT EXISTS (SELECT 1 FROM seat_transfer_out t WHERE t.quote_id = f.quote_id)",
+         AND NOT EXISTS (SELECT 1 FROM seat_transfer_out t WHERE t.quote_id = f.quote_id))",
     )
     .bind(seat_id.as_bytes().as_slice())
-    .fetch_all(&mut *conn)
+    .bind(&binding.federation_id.0)
+    .fetch_one(&mut *conn)
     .await?;
-    for invite in invites {
-        let invite: fedimint_core::invite_code::InviteCode =
-            invite.parse().map_err(|_| corrupt(seat_id))?;
-        if invite.federation_id().to_string() == binding.federation_id.0 {
-            return Ok(false);
-        }
+    if formed_elsewhere {
+        return Ok(false);
     }
     let records: Vec<IncomingRow> = sqlx::query_as(&format!(
         "SELECT {INCOMING_COLUMNS} FROM seat_transfer_in t WHERE t.quote_id != ? \
@@ -298,7 +296,7 @@ impl Db {
         seat_id: &SeatId,
         binding: &TransferMove,
         keys: &ImportedKeys,
-        invite_code: &InviteCode,
+        peer: &FederationPeer,
     ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
         let Some(mut record) = incoming(&mut tx, seat_id).await? else {
@@ -312,14 +310,7 @@ impl Db {
         }
         record.state = IncomingState::Imported(keys.clone());
         save(&mut tx, seat_id, &record).await?;
-        sqlx::query(
-            "INSERT INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .bind(&invite_code.0)
-        .bind(now_ms())
-        .execute(&mut *tx)
-        .await?;
+        super::seats::insert_formed(&mut tx, seat_id, peer).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -345,7 +336,7 @@ impl Db {
     }
 
     /// Record the deletion of the guardian material and drop the accepted
-    /// keys. The outgoing tombstone, formed invite, accounting and wallets
+    /// keys. The outgoing tombstone, formed row, accounting and wallets
     /// remain permanent; the archive-less backup document follows from the
     /// row on the next scan.
     pub(crate) async fn record_transfer_removal(&self, seat_id: &SeatId) -> Result<bool, DbError> {

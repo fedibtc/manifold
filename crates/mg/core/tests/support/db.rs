@@ -68,3 +68,46 @@ pub(crate) async fn write_legacy_layout(
             .unwrap();
     }
 }
+
+/// The single-peer guardian config test children install.
+pub(crate) fn installed_config_fixture() -> fedimint_server::config::ServerConfig {
+    crate::transfer_native::tests::native_config()
+}
+
+/// The guardian [`installed_config_fixture`] is.
+pub(crate) fn formed_peer_fixture() -> crate::facts::FederationPeer {
+    let config = installed_config_fixture();
+    crate::facts::FederationPeer {
+        federation_id: config.calculate_federation_id(),
+        peer_id: config.local.identity,
+    }
+}
+
+/// The invite [`installed_config_fixture`] hands out, as MG builds it.
+pub(crate) fn installed_invite_fixture() -> fedi_decentralized_service_manifold_guardian::InviteCode
+{
+    let config = installed_config_fixture();
+    let installed =
+        crate::guardian_config::InstalledGuardian::from_config(&config.consensus, &config.local)
+            .unwrap();
+    fedi_decentralized_service_manifold_guardian::InviteCode(installed.invite.to_string())
+}
+
+/// Write the two public config files the way `fedimintd` installs them.
+pub(crate) async fn write_installed_config(
+    seat_data_dir: &std::path::Path,
+    config: &fedimint_server::config::ServerConfig,
+) {
+    tokio::fs::create_dir_all(seat_data_dir).await.unwrap();
+    for (name, json) in [
+        (
+            "consensus.json",
+            serde_json::to_string(&config.consensus).unwrap(),
+        ),
+        ("local.json", serde_json::to_string(&config.local).unwrap()),
+    ] {
+        tokio::fs::write(seat_data_dir.join(name), json)
+            .await
+            .unwrap();
+    }
+}

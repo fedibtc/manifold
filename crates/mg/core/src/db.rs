@@ -249,7 +249,12 @@ impl Db {
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // One connection: migration 0011 reads what the decoding step left in
+        // that connection's temp schema.
+        let mut conn = pool.acquire().await?;
+        decode_formed_invites(&mut conn).await?;
+        sqlx::migrate!("./migrations").run(&mut *conn).await?;
+        drop(conn);
 
         Ok(Self {
             pool,
@@ -1005,6 +1010,56 @@ pub enum DbError {
     HolderAuthorizationIssuedAtTooFarFuture,
     #[error("telemetry capability for seat {seat_id} is disabled")]
     TelemetryCapabilityDisabled { seat_id: SeatId },
+}
+
+/// Decode every invite a pre-0011 `formed_seats` row stores into the guardian
+/// it names, for migration 0011 to join on. Runs on the connection that then
+/// migrates and writes only that connection's temp schema, so a stored invite
+/// that does not decode fails the open before anything durable changes. A
+/// database already past 0011, or a new one, has nothing to decode.
+async fn decode_formed_invites(conn: &mut sqlx::SqliteConnection) -> Result<(), DbError> {
+    let stores_invites: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('formed_seats') \
+         WHERE name = 'federation_invite')",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if !stores_invites {
+        return Ok(());
+    }
+    sqlx::query(
+        "CREATE TEMP TABLE IF NOT EXISTS formed_invite_peers (\
+         federation_invite TEXT PRIMARY KEY NOT NULL, \
+         federation_id TEXT NOT NULL, peer_id INTEGER NOT NULL)",
+    )
+    .execute(&mut *conn)
+    .await?;
+    let rows: Vec<(Vec<u8>, String)> =
+        sqlx::query_as("SELECT quote_id, federation_invite FROM formed_seats")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (quote_id, invite) in rows {
+        let peer = invite
+            .parse::<fedimint_core::invite_code::InviteCode>()
+            .ok()
+            .as_ref()
+            .and_then(crate::facts::FederationPeer::from_invite)
+            .ok_or_else(|| DbError::CorruptRow {
+                table: "formed_seats",
+                key: hex::encode(&quote_id),
+                detail: "stored invite does not name one guardian of a federation".to_owned(),
+            })?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO formed_invite_peers \
+             (federation_invite, federation_id, peer_id) VALUES (?, ?, ?)",
+        )
+        .bind(&invite)
+        .bind(peer.federation_id.to_string())
+        .bind(i64::from(u16::from(peer.peer_id)))
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Take the single-instance lock, or fail if another daemon holds it

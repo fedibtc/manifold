@@ -57,6 +57,27 @@ describe('SeatDetailCard', () => {
     expect(screen.getByText(expected)).toBeTruthy();
   });
 
+  it('should render the federation id and no invite code for a seat that lost its data', () => {
+    const federationId = 'ab'.repeat(32);
+    render(
+      <SeatDetailCard
+        seat={{
+          ...runningSeat,
+          report: {
+            state: 'active',
+            health: 'unavailable',
+            phase: 'data_loss',
+            federation_id: federationId
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText('Federation ID')).toBeTruthy();
+    expect(screen.getByText(federationId)).toBeTruthy();
+    expect(screen.queryByText('Invite code')).toBeNull();
+  });
+
   it('should render the decommissioned date and no phase for a decommissioned seat', () => {
     render(
       <SeatDetailCard

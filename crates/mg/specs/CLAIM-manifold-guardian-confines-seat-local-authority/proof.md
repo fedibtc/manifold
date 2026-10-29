@@ -46,7 +46,8 @@ neither holds the fleet registry.
 
 Its crate-visible method surface is `facts`, `is_decommissioned`,
 `reject_decommissioned`, `stop`, `dkg_code`, `start_dkg`, `restart_dkg`,
-`report`, `summary`, `decommission`, and `invite_code`. The handle's private
+`report`, `summary`, `decommission`, `invite_code`, and `installed_invite`,
+which reads only S's own data directory. The handle's private
 `request`/`verb_request` helpers and status path only borrow or subscribe to
 the watch value, send an owned command, or notify the retained probe.
 `SeatLoop`'s command/probe dispatcher and private

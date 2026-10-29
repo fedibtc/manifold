@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, DkgCompletionCallbackInput, FederationSize, InviteCode, Plan,
+    DkgCompletionCallback, DkgCompletionCallbackInput, FederationSize, Plan,
 };
 use tempfile::TempDir;
 
@@ -81,18 +81,15 @@ async fn dkg_inputs_and_callback_commit_together_and_formed_seat_fences_replacem
         Some(callback),
         "restart keeps original callback"
     );
-    let invite = InviteCode("formed-invite".to_owned());
-    db.record_formed(&seat.seat_id, &invite).await.unwrap();
+    let formed = crate::test_support::formed_peer_fixture();
+    db.record_formed(&seat.seat_id, &formed).await.unwrap();
     assert!(db.dkg_inputs(&seat.seat_id).await.unwrap().is_none());
     assert!(
         db.record_dkg_inputs(&seat.seat_id, &codes, None)
             .await
             .is_err()
     );
-    assert_eq!(
-        db.formed_federation_invite(&seat.seat_id).await.unwrap(),
-        Some(invite)
-    );
+    assert_eq!(db.formed_peer(&seat.seat_id).await.unwrap(), Some(formed));
 
     let terminal = crate::test_support::insert_test_seat(&db, new_seat(38)).await;
     db.record_dkg_inputs(&terminal.seat_id, &codes, None)
@@ -161,7 +158,7 @@ async fn completion_callback_attempt_start_requires_formation_and_live_seat() {
         "an unformed seat cannot start delivery"
     );
 
-    db.record_formed(&seat.seat_id, &InviteCode("invite".to_owned()))
+    db.record_formed(&seat.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     assert!(
@@ -186,7 +183,7 @@ async fn completion_callback_attempt_counter_saturates_at_its_public_maximum() {
     db.install_completion_callback(&seat.seat_id, Some(&completion_callback("callback")))
         .await
         .unwrap();
-    db.record_formed(&seat.seat_id, &InviteCode("invite".to_owned()))
+    db.record_formed(&seat.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     sqlx::query(
@@ -651,20 +648,31 @@ async fn decommission_write_is_set_once_without_releasing_creation_facts() {
 async fn formed_seat_is_set_once_and_immutable() {
     let (_dir, db) = open_db().await;
     let seat = crate::test_support::insert_test_seat(&db, new_seat(1)).await;
-    let invite = InviteCode("invite-one".to_owned());
+    let formed = crate::test_support::formed_peer_fixture();
 
-    let formed_at = db.record_formed(&seat.seat_id, &invite).await.unwrap();
+    let formed_at = db.record_formed(&seat.seat_id, &formed).await.unwrap();
     assert_eq!(
-        db.record_formed(&seat.seat_id, &invite).await.unwrap(),
+        db.record_formed(&seat.seat_id, &formed).await.unwrap(),
         formed_at
     );
+    // Another peer of the same federation, and the same peer number in
+    // another federation, are both another guardian.
+    let other_peer = crate::facts::FederationPeer {
+        peer_id: fedimint_core::PeerId::from(1),
+        ..formed
+    };
+    let other_federation = crate::facts::FederationPeer {
+        federation_id: "2b".repeat(32).parse().unwrap(),
+        ..formed
+    };
+    for other in [other_peer, other_federation] {
+        assert!(matches!(
+            db.record_formed(&seat.seat_id, &other).await,
+            Err(DbError::CorruptRow { .. })
+        ));
+    }
     assert!(
-        db.record_formed(&seat.seat_id, &InviteCode("invite-two".to_owned()))
-            .await
-            .is_err()
-    );
-    assert!(
-        sqlx::query("UPDATE formed_seats SET federation_invite = 'other' WHERE quote_id = ?")
+        sqlx::query("UPDATE formed_seats SET peer_id = 1 WHERE quote_id = ?")
             .bind(seat.seat_id.as_bytes().as_slice())
             .execute(db.pool())
             .await
@@ -677,10 +685,7 @@ async fn formed_seat_is_set_once_and_immutable() {
             .await
             .is_err()
     );
-    assert_eq!(
-        db.formed_federation_invite(&seat.seat_id).await.unwrap(),
-        Some(invite)
-    );
+    assert_eq!(db.formed_peer(&seat.seat_id).await.unwrap(), Some(formed));
 }
 
 async fn set_max_seats(db: &Db, max_seats: u32) -> Result<bool, DbError> {

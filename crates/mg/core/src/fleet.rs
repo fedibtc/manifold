@@ -502,7 +502,7 @@ impl Fleet {
                 facts,
                 decommissioned_at_ms,
             } = seat;
-            let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
+            let formed = db.formed_peer(&facts.seat_id).await?;
             let transfer_phase = db.transfer_phase(&facts.seat_id).await?;
             let ports =
                 SeatPorts::from_base(facts.seat_no.port_base(config.first_port_base).ok_or_else(
@@ -512,7 +512,7 @@ impl Fleet {
             let seat = Seat::start(
                 SeatDurableState {
                     facts,
-                    formed_invite,
+                    formed,
                     decommissioned_at_ms,
                     transfer_phase,
                 },
@@ -602,9 +602,10 @@ impl Fleet {
         self.telemetry_registration_changed.notified().await;
     }
 
-    /// Snapshot all known seats and their invite when formation has produced
-    /// one. Seat identity is resource discovery, not an authorization scope.
-    pub fn telemetry_seats(&self) -> Vec<GuardianTelemetrySeat> {
+    /// Snapshot all known seats and their invite while a formed seat's
+    /// installed config can build one. Seat identity is resource discovery,
+    /// not an authorization scope.
+    pub async fn telemetry_seats(&self) -> Vec<GuardianTelemetrySeat> {
         let seats = self
             .seats
             .read()
@@ -614,9 +615,19 @@ impl Fleet {
             .collect::<Vec<_>>();
         let mut advertised = Vec::with_capacity(seats.len());
         for seat in seats {
+            // Discovery lists every seat; one whose config cannot be read is
+            // listed without an invite rather than failing the whole list.
+            let invite_code = seat.installed_invite().await.unwrap_or_else(|error| {
+                tracing::warn!(
+                    seat_id = %seat.facts().seat_id,
+                    error = format_args!("{error:#}"),
+                    "seat invite is unavailable for telemetry discovery"
+                );
+                None
+            });
             advertised.push(GuardianTelemetrySeat {
                 seat_id: seat.facts().seat_id.clone(),
-                invite_code: seat.cached_invite_code(),
+                invite_code,
             });
         }
         advertised.sort_by(|left, right| left.seat_id.cmp(&right.seat_id));
@@ -957,7 +968,7 @@ impl Fleet {
             SeatAdmissionResult::Inserted(facts) => (
                 SeatDurableState {
                     facts,
-                    formed_invite: None,
+                    formed: None,
                     decommissioned_at_ms: None,
                     transfer_phase: None,
                 },
@@ -965,7 +976,7 @@ impl Fleet {
             ),
             SeatAdmissionResult::Existing(facts) => (
                 SeatDurableState {
-                    formed_invite: self.db.formed_federation_invite(&facts.seat_id).await?,
+                    formed: self.db.formed_peer(&facts.seat_id).await?,
                     decommissioned_at_ms: self.db.decommissioned_at_ms(&facts.seat_id).await?,
                     transfer_phase: self.db.transfer_phase(&facts.seat_id).await?,
                     facts,
@@ -1011,7 +1022,7 @@ impl Fleet {
     ) -> (Arc<Seat>, bool) {
         let SeatDurableState {
             facts,
-            formed_invite,
+            formed,
             decommissioned_at_ms,
             transfer_phase,
         } = durable;
@@ -1041,7 +1052,7 @@ impl Fleet {
         let seat = Seat::start(
             SeatDurableState {
                 facts,
-                formed_invite,
+                formed,
                 decommissioned_at_ms,
                 transfer_phase,
             },

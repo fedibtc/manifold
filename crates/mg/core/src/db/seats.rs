@@ -15,13 +15,13 @@
 
 use super::{Db, DbError, IDENTITY_ID, now_ms};
 use crate::facts::{
-    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatNo,
+    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, FederationPeer, SeatFacts,
+    SeatNo,
 };
 use crate::identity::RootMnemonic;
 use crate::wallet::{ClaimOutcome, EcashClaimEvidence};
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, FaId, FederationSize, GuardianCode, InviteCode, OfferEpoch, Plan,
-    QuoteId, SeatId,
+    DkgCompletionCallback, FaId, FederationSize, GuardianCode, OfferEpoch, Plan, QuoteId, SeatId,
 };
 
 /// The durable facts a seat's recovery document is assembled from, as of one
@@ -30,7 +30,7 @@ pub(crate) struct SeatRecoveryFacts {
     pub(crate) payment: Option<PaymentRecord>,
     pub(crate) incoming: Option<crate::transfer_state::IncomingTransfer>,
     pub(crate) outgoing: Option<crate::transfer_state::OutgoingTransfer>,
-    pub(crate) formed_invite: Option<InviteCode>,
+    pub(crate) formed: Option<FederationPeer>,
     pub(crate) decommissioned_at_ms: Option<i64>,
 }
 
@@ -61,17 +61,54 @@ async fn decommissioned_at_ms(
     .await?)
 }
 
-async fn formed_federation_invite(
+async fn formed_peer(
     conn: &mut sqlx::SqliteConnection,
     seat_id: &SeatId,
-) -> Result<Option<InviteCode>, DbError> {
-    Ok(sqlx::query_scalar::<_, String>(
-        "SELECT federation_invite FROM formed_seats WHERE quote_id = ?",
+) -> Result<Option<(FederationPeer, i64)>, DbError> {
+    sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT federation_id, peer_id, formed_at_ms FROM formed_seats WHERE quote_id = ?",
     )
     .bind(seat_id.as_bytes().as_slice())
     .fetch_optional(conn)
     .await?
-    .map(InviteCode))
+    .map(|(federation_id, peer_id, formed_at_ms)| {
+        let corrupt = |detail: &str| DbError::CorruptRow {
+            table: "formed_seats",
+            key: seat_id.to_string(),
+            detail: detail.to_owned(),
+        };
+        Ok((
+            FederationPeer {
+                federation_id: federation_id
+                    .parse()
+                    .map_err(|_| corrupt("invalid federation id"))?,
+                peer_id: u16::try_from(peer_id)
+                    .map_err(|_| corrupt("invalid peer id"))?
+                    .into(),
+            },
+            formed_at_ms,
+        ))
+    })
+    .transpose()
+}
+
+/// Insert a formed-seat row on the caller's transaction.
+pub(super) async fn insert_formed(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+    peer: &FederationPeer,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO formed_seats (quote_id, federation_id, peer_id, formed_at_ms) \
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .bind(peer.federation_id.to_string())
+    .bind(i64::from(u16::from(peer.peer_id)))
+    .bind(now_ms())
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Insert the formation-wide first callback on the caller's transaction so
@@ -160,8 +197,8 @@ pub(crate) struct SeatBackupPublication {
 
 /// What a restored seat's document said about its guardian archive.
 pub struct RestoredGuardianConfig {
-    /// The formed federation's invite code, recorded in `formed_seats`.
-    pub federation_invite: Option<InviteCode>,
+    /// The guardian the archive is, recorded in `formed_seats`.
+    pub federation_peer: FederationPeer,
 }
 
 #[derive(Clone)]
@@ -825,27 +862,32 @@ impl Db {
     /// Record the one-way configured/no-wipe latch and return the stored
     /// timestamp (the caller mirrors it in memory, so db and mirror hold
     /// the same value). Idempotent: an already-set timestamp is kept and
-    /// returned — the first observation is the fact worth keeping.
+    /// returned — the first observation is the fact worth keeping. The row
+    /// names one guardian for good, so a config naming another one is an
+    /// error, never an upsert.
     pub async fn record_formed(
         &self,
         seat_id: &SeatId,
-        invite: &InviteCode,
+        peer: &FederationPeer,
     ) -> Result<i64, DbError> {
-        let at_ms = now_ms();
-        sqlx::query("INSERT OR IGNORE INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)")
-            .bind(seat_id.as_bytes().as_slice()).bind(&invite.0).bind(at_ms)
-            .execute(self.pool()).await?;
-        let (stored_invite, stored_at_ms): (String, i64) = sqlx::query_as(
-            "SELECT federation_invite, formed_at_ms FROM formed_seats WHERE quote_id = ?",
+        sqlx::query(
+            "INSERT OR IGNORE INTO formed_seats (quote_id, federation_id, peer_id, formed_at_ms) \
+             VALUES (?, ?, ?, ?)",
         )
         .bind(seat_id.as_bytes().as_slice())
-        .fetch_one(self.pool())
+        .bind(peer.federation_id.to_string())
+        .bind(i64::from(u16::from(peer.peer_id)))
+        .bind(now_ms())
+        .execute(self.pool())
         .await?;
-        if stored_invite != invite.0 {
+        let (stored, stored_at_ms) = formed_peer(&mut *self.pool().acquire().await?, seat_id)
+            .await?
+            .expect("formed row was inserted or already present");
+        if stored != *peer {
             return Err(DbError::CorruptRow {
                 table: "formed_seats",
                 key: seat_id.to_string(),
-                detail: "formed invite differs from the immutable stored invite".to_owned(),
+                detail: "installed config names another guardian than the formed seat".to_owned(),
             });
         }
         Ok(stored_at_ms)
@@ -933,12 +975,14 @@ impl Db {
         Ok(())
     }
 
-    /// The immutable invite for this formed seat, if it has formed.
-    pub(crate) async fn formed_federation_invite(
+    /// The guardian this seat is, if it has formed.
+    pub(crate) async fn formed_peer(
         &self,
         seat_id: &SeatId,
-    ) -> Result<Option<InviteCode>, DbError> {
-        formed_federation_invite(&mut *self.pool().acquire().await?, seat_id).await
+    ) -> Result<Option<FederationPeer>, DbError> {
+        Ok(formed_peer(&mut *self.pool().acquire().await?, seat_id)
+            .await?
+            .map(|(peer, _)| peer))
     }
 
     /// One seat's recovery-relevant lifecycle facts, read from one snapshot.
@@ -957,7 +1001,9 @@ impl Db {
             payment: payment(&mut snapshot, seat_id).await?,
             incoming: super::transfers::incoming(&mut snapshot, seat_id).await?,
             outgoing: super::transfers::outgoing(&mut snapshot, seat_id).await?,
-            formed_invite: formed_federation_invite(&mut snapshot, seat_id).await?,
+            formed: formed_peer(&mut snapshot, seat_id)
+                .await?
+                .map(|(peer, _)| peer),
             decommissioned_at_ms: decommissioned_at_ms(&mut snapshot, seat_id).await?,
         };
         snapshot.commit().await?;
@@ -1018,27 +1064,17 @@ impl Db {
             .bind(facts.created_at_ms)
             .execute(&mut *tx)
             .await?;
-            if seat.guardian.is_some() || seat.outgoing_transfer.is_some() {
-                let invite = seat
-                    .guardian
-                    .as_ref()
-                    .and_then(|guardian| guardian.federation_invite.as_ref())
-                    .or_else(|| {
-                        seat.outgoing_transfer
-                            .as_ref()
-                            .map(|outgoing| &outgoing.federation_invite)
-                    })
-                    .ok_or_else(|| DbError::CorruptRow {
-                        table: "backup_guardians",
-                        key: facts.seat_id.to_string(),
-                        detail: "guardian archive has no formed federation invite".to_owned(),
-                    })?;
-                sqlx::query("INSERT INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)")
-                    .bind(quote_id)
-                    .bind(&invite.0)
-                    .bind(now_ms())
-                    .execute(&mut *tx)
-                    .await?;
+            let formed = seat
+                .guardian
+                .as_ref()
+                .map(|guardian| &guardian.federation_peer)
+                .or_else(|| {
+                    seat.outgoing_transfer
+                        .as_ref()
+                        .map(|outgoing| &outgoing.federation_peer)
+                });
+            if let Some(peer) = formed {
+                insert_formed(&mut tx, &facts.seat_id, peer).await?;
             }
             if let Some(incoming) = &seat.incoming_transfer {
                 super::transfers::save(&mut tx, &facts.seat_id, incoming).await?;

@@ -1,9 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, InviteCode, Plan, QuoteId, SeatId,
-};
+use fedi_decentralized_service_manifold_guardian::{FaId, FederationSize, Plan, QuoteId, SeatId};
 use tempfile::TempDir;
 
 use super::*;
@@ -268,7 +266,7 @@ async fn a_seat_running_consensus_is_not_published_without_its_guardian_config()
     let db = test_db(&temp).await;
     let process = test_process(&temp);
     let facts = create_seat(&db, 6).await;
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
 
@@ -300,7 +298,7 @@ async fn a_restart_cannot_downgrade_a_consensus_seat_to_a_shareless_document() {
     let sink = SwitchableSink::new();
     let db = test_db(&temp).await;
     let facts = create_seat(&db, 7).await;
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
 
@@ -354,7 +352,7 @@ async fn an_archive_is_withheld_until_the_observation_is_durable() {
         .expect("the share-less document is still confirmed and recorded");
     assert!(record.archive_digest.is_none());
 
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     worker.mark();
@@ -385,7 +383,7 @@ async fn an_observation_landing_mid_publish_keeps_the_seat_pending() {
     let worker = BackupWorker::new(sink.clone() as _, FAST_SCAN);
     worker.spawn(db.clone(), test_process(&temp));
     eventually(|| sink.attempts.load(Ordering::SeqCst) == 1).await;
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     sink.holds.store(false, Ordering::SeqCst);
@@ -428,7 +426,7 @@ async fn a_confirmed_archive_is_never_reread_or_republished() {
     let db = test_db(&temp).await;
     let process = test_process(&temp);
     let facts = create_seat(&db, 8).await;
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     write_test_archive(&process, &facts).await;
@@ -551,15 +549,10 @@ async fn a_publication_never_straddles_an_import_acceptance() {
         write_test_archive(&process, &facts).await;
         // One federation per seat: a federation hosted once refuses a second.
         let federation_id = format!("{seat:02x}").repeat(32);
-        let invite = InviteCode(
-            fedimint_core::invite_code::InviteCode::new(
-                "ws://127.0.0.1:8174".parse().unwrap(),
-                fedimint_core::PeerId::from(0),
-                federation_id.parse().unwrap(),
-                None,
-            )
-            .to_string(),
-        );
+        let formed = crate::facts::FederationPeer {
+            federation_id: federation_id.parse().unwrap(),
+            peer_id: fedimint_core::PeerId::from(0),
+        };
         let now = crate::db::now_ms() / 1000;
         let grant = SeatTransferGrant {
             ts: Timestamp(now as u64),
@@ -604,7 +597,7 @@ async fn a_publication_never_straddles_an_import_acceptance() {
                 &facts.seat_id,
                 &waiting.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[41; 32], &[42; 32]),
-                &invite,
+                &formed,
             )
             .await
             .unwrap()
