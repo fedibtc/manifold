@@ -400,213 +400,58 @@
 
             tests =
               let
-
-                # Keep every workspace runner on the artifact feature set.
-                # A mismatch makes Cargo recompile inside each isolated runner.
+                # Keep the runner on the artifact feature set. A mismatch makes
+                # Cargo recompile inside the runner.
                 workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-mg-telemetry/defe-test-support";
-                # Linux Nix sandboxes isolate each runner's loopback network.
-                # Darwin runners share host loopback while keeping independent
-                # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
-                # can reserve the same ports before their services bind. Making
-                # each Darwin runner consume its predecessor serializes only the
-                # platform that lacks network namespaces.
-                darwinRunnerDependency =
-                  previousRunner:
-                  pkgs.lib.optionalString (pkgs.stdenv.isDarwin && previousRunner != null) ''
-                    test -e ${previousRunner}
-                  '';
-
-                runTests =
-                  name: artifacts: bins: cargoArgs: filter: previousRunner:
-                  craneLib.mkCargoDerivation {
-                    # Darwin includes the derivation name in its build TMPDIR;
-                    # keep it short enough for nested Unix-domain sockets.
-                    pname = if pkgs.stdenv.isDarwin then "df-nextest-${name}" else "${projectName}-nextest-${name}";
-                    cargoArtifacts = artifacts;
-                    doCheck = true;
-                    doInstallCargoArtifacts = false;
-                    env = {
-                      NEXTEST_SHOW_PROGRESS = "none";
-                      NEXTEST_STATUS_LEVEL = "none";
-                    };
-                    nativeBuildInputs = [
-                      pkgs.cargo-nextest
-                      pkgs.nostr-rs-relay
-                    ];
-                    buildPhaseCargoCommand = "mkdir -p $out";
-                    checkPhaseCargoCommand = ''
-                      ${darwinRunnerDependency previousRunner}
-                      export DEV_DEFE_PORTALLOC_DATA_DIR="$TMPDIR/defe-portalloc"
-                      export FA_CLI_TEST_BIN=${bins}/bin/fa-cli
-                      export MG_E2E=1
-                      export MG_E2E_MANIFOLD_GUARDIAN_BIN=${bins}/bin/fleet-manager
-                      export MG_E2E_MG_CLI_BIN=${bins}/bin/fman-cli
-                      export MG_E2E_FA_CLI_BIN=${bins}/bin/fa-cli
-                      export MG_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
-                      export MG_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
-                      export MG_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
-                      export FLIP_E2E_GATEWAYD_BIN=${fedimint.packages.${system}.gatewayd}/bin/gatewayd
-                      export FLIP_E2E_GATEWAY_CLI_BIN=${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli
-                      export FLIP_E2E_FEDIMINTD_BIN=${fedimint.packages.${system}.fedimintd}/bin/fedimintd
-                      export FLIP_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
-                      export FLIP_E2E_SP_FEDIMINTD_BIN=${fedi.packages.${system}.fedi-fedimintd}/bin/fedimintd
-                      export FLIP_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
-                      export FLIP_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
-                      export FLIP_E2E_LIQUIDITY_MANAGER_DAEMON_BIN=${bins}/bin/liquidity-manager-daemon
-                      mkdir -p "$DEV_DEFE_PORTALLOC_DATA_DIR"
-                      ${bins}/bin/defe \
-                        --binary-path ${bins}/bin \
-                        --nostr-rs-relay-bin ${pkgs.nostr-rs-relay}/bin/nostr-rs-relay \
-                        --bitcoind-bin ${pkgs.bitcoind}/bin/bitcoind \
-                        --gatewayd-bin ${fedimint.packages.${system}.gatewayd}/bin/gatewayd \
-                        --gateway-cli-bin ${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli \
-                        exec cargo nextest run \
-                        ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
-                        ${cargoArgs} -E ${pkgs.lib.escapeShellArg filter}
-                    '';
-                  };
-
-                ordinaryRunner =
-                  runTests "ordinary" testArtifacts runtimeBins workspaceTestArgs
-                    "all() - binary(manifold_guardian_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
-                    null;
-                mgFreeRunner =
-                  runTests "mg-free" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(manifold_guardian_0_1_forms_seven_guardian_federation_under_defe)"
-                    ordinaryRunner;
-                mgRestoreRunner =
-                  runTests "mg-restore" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(mg_restores_a_formed_fleet_from_mnemonic_and_nostr_under_defe)"
-                    mgFreeRunner;
-                faCrashRecoveryRunner =
-                  runTests "fa-crash-recovery" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(fa_client_resumes_real_dkg_after_sigkill_under_defe)"
-                    mgRestoreRunner;
-                mgSeatLifecycleRunner =
-                  runTests "mg-seat-lifecycle" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(mg_recovers_a_real_child_and_terminalizes_data_loss_under_defe)"
-                    faCrashRecoveryRunner;
-                mgPostFormationRunner =
-                  runTests "mg-post-formation" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(mg_remits_collects_and_recovers_guardian_fee_payout_under_defe)"
-                    mgSeatLifecycleRunner;
-                mgPaidRunner =
-                  runTests "mg-paid" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(manifold_guardian_0_1_paid_formation_settles_real_ecash_under_defe)"
-                    mgPostFormationRunner;
-                mgMultiRelayRunner =
-                  runTests "mg-multi-relay" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(mg_advertises_and_onboards_with_first_relay_down_under_defe)"
-                    mgPaidRunner;
-                mgTransferRunner =
-                  runTests "mg-transfer" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(manifold_guardian_0_1_formation) & test(fa_moves_a_formed_guardian_to_a_new_mg_under_defe)"
-                    mgMultiRelayRunner;
-                flipHappyRunner =
-                  runTests "flip-happy" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh)"
-                    mgTransferRunner;
-                flipDepositRunner =
-                  runTests "flip-deposit" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_deposit_monitoring_restart_claims_funded_top_up)"
-                    flipHappyRunner;
-                flipWithdrawalRunner =
-                  runTests "flip-withdrawal" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_gateway_withdrawal_restart_resumes_without_duplicate_funding)"
-                    flipDepositRunner;
-                flipPegInRunner =
-                  runTests "flip-peg-in" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_target_peg_in_restart_completes_after_wallet_operation_finality)"
-                    flipWithdrawalRunner;
-                flipStabilityRunner =
-                  runTests "flip-stability" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_stability_pool_happy_path_provides_into_pool)"
-                    flipPegInRunner;
-                flipRestoreCredentialRunner =
-                  runTests "flip-restore-credential" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_flip_operator_e2e) & test(live_restore_reinstates_the_archived_admin_credential)"
-                    flipStabilityRunner;
-
-                flipOperatorRemediationRunner =
-                  runTests "flip-operator-remediation" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_flip_operator_e2e) & test(operator_remediation_preserves_send_once_guards_and_releases_abandoned_capacity)"
-                    flipRestoreCredentialRunner;
-                flipRestoreRollbackRunner =
-                  runTests "flip-restore-rollback" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_restore_rejects_allocation_rollback_and_replay_stays_idempotent)"
-                    flipOperatorRemediationRunner;
-                flipTrustRejectRunner =
-                  runTests "flip-trust-reject" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_trust_reject_matrix_maps_each_failure_to_its_code)"
-                    flipRestoreRollbackRunner;
-                flipStabilityRecoveryRunner =
-                  runTests "flip-stability-recovery" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_stability_pre_submit_restart_adopts_the_deposit_already_made)"
-                    flipTrustRejectRunner;
-                flipWithdrawalIntentRunner =
-                  runTests "flip-withdrawal-intent" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_operator_withdrawal_intent_replays_once_and_rejects_conflicts)"
-                    flipStabilityRecoveryRunner;
-                flipCombinedReplayRunner =
-                  runTests "flip-combined-replay" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_combined_request_concurrent_replay_creates_one_allocation)"
-                    flipWithdrawalIntentRunner;
-                flipCapacityTopUpRunner =
-                  runTests "flip-capacity-top-up" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_top_up_admits_the_request_capacity_first_refused)"
-                    flipCombinedReplayRunner;
-                flipDependencyOutageRunner =
-                  runTests "flip-dependency-outage" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_dependency_outage_withdraws_the_advertisement_until_the_operator_republishes)"
-                    flipCapacityTopUpRunner;
-                flipTwoFederationsRunner =
-                  runTests "flip-two-federations" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_second_federation_is_funded_after_the_operator_tops_up)"
-                    flipDependencyOutageRunner;
-                flipManualReviewRunner =
-                  runTests "flip-manual-review" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_unresolvable_send_escalates_to_review_and_waits_for_the_operator)"
-                    flipTwoFederationsRunner;
-                flipCancelCapacityRunner =
-                  runTests "flip-cancel-capacity" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(integration_live_liquidity) & test(live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federation)"
-                    flipManualReviewRunner;
-
-                runners = [
-                  ordinaryRunner
-                  mgFreeRunner
-                  mgRestoreRunner
-                  faCrashRecoveryRunner
-                  mgSeatLifecycleRunner
-                  mgPostFormationRunner
-                  mgPaidRunner
-                  mgMultiRelayRunner
-                  mgTransferRunner
-                  flipHappyRunner
-                  flipDepositRunner
-                  flipWithdrawalRunner
-                  flipPegInRunner
-                  flipStabilityRunner
-                  flipRestoreCredentialRunner
-                  flipOperatorRemediationRunner
-                  flipRestoreRollbackRunner
-                  flipTrustRejectRunner
-                  flipStabilityRecoveryRunner
-                  flipWithdrawalIntentRunner
-                  flipCombinedReplayRunner
-                  flipCapacityTopUpRunner
-                  flipDependencyOutageRunner
-                  flipTwoFederationsRunner
-                  flipManualReviewRunner
-                  flipCancelCapacityRunner
-                ];
               in
-              pkgs.runCommand "${projectName}-nextest-${craneLib.cargoProfile}" { } ''
-                for result in ${pkgs.lib.concatMapStringsSep " " toString runners}; do
-                  test -e "$result"
-                done
-                touch "$out"
-              '';
+              # One nextest run under one defe, as `just test-e2e-local` runs it:
+              # defe hands every test its own exclusive resources and ports.
+              craneLib.mkCargoDerivation {
+                # Darwin includes the derivation name in its build TMPDIR;
+                # keep it short enough for nested Unix-domain sockets.
+                pname = if pkgs.stdenv.isDarwin then "df-nextest" else "${projectName}-nextest";
+                cargoArtifacts = testArtifacts;
+                doCheck = true;
+                doInstallCargoArtifacts = false;
+                env = {
+                  NEXTEST_SHOW_PROGRESS = "none";
+                  NEXTEST_STATUS_LEVEL = "none";
+                };
+                nativeBuildInputs = [
+                  pkgs.cargo-nextest
+                  pkgs.nostr-rs-relay
+                ];
+                buildPhaseCargoCommand = "mkdir -p $out";
+                checkPhaseCargoCommand = ''
+                  export DEV_DEFE_PORTALLOC_DATA_DIR="$TMPDIR/defe-portalloc"
+                  export FA_CLI_TEST_BIN=${runtimeBins}/bin/fa-cli
+                  export MG_E2E=1
+                  export MG_E2E_MANIFOLD_GUARDIAN_BIN=${runtimeBins}/bin/fleet-manager
+                  export MG_E2E_MG_CLI_BIN=${runtimeBins}/bin/fman-cli
+                  export MG_E2E_FA_CLI_BIN=${runtimeBins}/bin/fa-cli
+                  export MG_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
+                  export MG_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
+                  export MG_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
+                  export FLIP_E2E_GATEWAYD_BIN=${fedimint.packages.${system}.gatewayd}/bin/gatewayd
+                  export FLIP_E2E_GATEWAY_CLI_BIN=${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli
+                  export FLIP_E2E_FEDIMINTD_BIN=${fedimint.packages.${system}.fedimintd}/bin/fedimintd
+                  export FLIP_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
+                  export FLIP_E2E_SP_FEDIMINTD_BIN=${fedi.packages.${system}.fedi-fedimintd}/bin/fedimintd
+                  export FLIP_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
+                  export FLIP_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
+                  export FLIP_E2E_LIQUIDITY_MANAGER_DAEMON_BIN=${runtimeBins}/bin/liquidity-manager-daemon
+                  mkdir -p "$DEV_DEFE_PORTALLOC_DATA_DIR"
+                  ${runtimeBins}/bin/defe \
+                    --binary-path ${runtimeBins}/bin \
+                    --nostr-rs-relay-bin ${pkgs.nostr-rs-relay}/bin/nostr-rs-relay \
+                    --bitcoind-bin ${pkgs.bitcoind}/bin/bitcoind \
+                    --gatewayd-bin ${fedimint.packages.${system}.gatewayd}/bin/gatewayd \
+                    --gateway-cli-bin ${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli \
+                    exec cargo nextest run \
+                    ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
+                    ${workspaceTestArgs}
+                '';
+              };
 
             clippy = craneLib.cargoClippy {
               cargoArtifacts = workspaceDeps;

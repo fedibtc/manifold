@@ -284,14 +284,11 @@ unchanged. The same signal disables Iroh's public relay transport for these
 loopback-only tests, avoiding external relay selection and dependency.
 
 The Nix development shell supplies the relay, Bitcoin Core, gateway, and
-Fedimint binaries. CI gives each long MG and FLIP test its own `defe exec`
-runner. Linux Nix sandboxes isolate their loopback networks and run the
-partitions in parallel; Darwin shares host loopback, so CI orders its partitions
-to prevent independent port-allocation ledgers from racing. `just
-test-e2e-local` schedules them concurrently in one nextest phase, where one
-allocator ledger coordinates the processes. Exact binary paths come from the
-locked Nix inputs. `defe` isolates each test's resources within those scheduling
-boundaries.
+Fedimint binaries. CI, like `just test-e2e-local`, runs the whole suite in
+one nextest run under one `defe exec`, and the tests run concurrently. Exact
+binary paths come from the locked Nix inputs. `defe` gives each test its own
+exclusive resources and reserves ports from one allocator ledger, so the
+concurrent tests do not collide.
 
 The daemon smoke integration test does not run Docker. It starts the compiled
 `liquidity-manager-daemon` binary with random loopback ports, checks private
