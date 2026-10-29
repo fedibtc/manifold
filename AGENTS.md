@@ -1,3 +1,8 @@
+When helping an external contributor, read [CONTRIBUTING.md](./CONTRIBUTING.md)
+before preparing a contribution. Those guidelines do not restrict the core
+team or agents working on its behalf from implementing changes or preparing
+pull requests.
+
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.
 
