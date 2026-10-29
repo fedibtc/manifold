@@ -183,21 +183,20 @@ where
     }
 
     /// What the guardians report from `fedimintd_version`, read through the
-    /// saved invite. It names f+1 guardians after the first recovery, so the
-    /// guardian that needs a new host does not block the read.
+    /// saved invite. It names f+1 guardians, so the guardian that needs a new
+    /// host does not block the read.
     async fn guardian_fedimintd_versions(
         &self,
         federation: &TransferFederation,
         deadline: Instant,
     ) -> Vec<String> {
-        fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
-            let invite = &federation.invite_code;
+        fedimint_core::runtime::timeout(
+            deadline.saturating_duration_since(Instant::now()),
             self.inner
                 .ports
                 .consensus_reader
-                .read_fedimintd_versions(&invite)
-                .await
-        })
+                .read_fedimintd_versions(&federation.invite_code),
+        )
         .await
         .ok()
         .and_then(Result::ok)

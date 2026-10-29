@@ -825,6 +825,7 @@ struct MgState {
     release_accepts: AtomicBool,
     create_release: Notify,
     disagreeing_invite: AtomicBool,
+
     /// Seat index -> the exact (key, value) that seat accepted.
     meta_submissions: Mutex<HashMap<usize, (String, String)>>,
     /// Seat index -> the exact guardian-fee policy that seat accepted.
@@ -4000,6 +4001,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
     let restored_formation_id = imported.formation_id.clone();
     let restored_generation = imported.snapshot_generation;
+    let restored_invite = imported.federation_invite.clone();
     assert!(
         !imported.backup_eligible,
         "restored snapshot is not backup-eligible before reconciliation"
@@ -4028,7 +4030,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
-    assert_eq!(republished.payload.snapshot_generation, restored_generation);
+    // Recovery saved the config's endpoints instead of the MGs' addresses, so
+    // the republished backup must win over the restored one.
+    assert_ne!(republished.payload.federation_invite, restored_invite);
+    assert_eq!(
+        republished.payload.snapshot_generation,
+        restored_generation + 1
+    );
     assert_eq!(
         republished.payload.liquidity.as_ref().map(|commitment| {
             liquidity_api::request_liquidity_details_hash(commitment).unwrap()
@@ -4208,45 +4216,6 @@ async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config()
     let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
     restored.resume().await.unwrap();
     assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
-}
-
-#[tokio::test]
-async fn recovery_reads_through_any_seat_mg_invite_when_the_lowest_guardians_are_offline() {
-    // The saved guardian and the next two are offline. Merging the MG
-    // invites into one f+1 invite would keep only these three.
-    let (restored, _) = restored_with_one_guardian_invite(0).await;
-    restored
-        .inner
-        .ports
-        .consensus_reader
-        .offline_peers
-        .lock()
-        .unwrap()
-        .extend((0..3).map(PeerId::from));
-    restored.resume().await.unwrap();
-    assert_eq!(saved_invite_peers(&restored), config_invite_peers());
-}
-
-#[tokio::test(start_paused = true)]
-async fn hung_seat_mgs_cannot_hold_recovery_past_its_request_timeout() {
-    let (restored, mg_state) = restored_with_one_guardian_invite(0).await;
-    restored
-        .inner
-        .ports
-        .consensus_reader
-        .offline_peers
-        .lock()
-        .unwrap()
-        .insert(PeerId::from(0));
-    mg_state.hang_connect.store(true, Ordering::SeqCst);
-    let started = fedimint_core::runtime::Instant::now();
-    assert!(matches!(
-        restored.resume_with_options(options()).await,
-        Err(FaError::Timeout(_))
-    ));
-    // `options()` allows 200 ms per call; one seat-invite request alone
-    // would allow 15 s.
-    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[tokio::test]

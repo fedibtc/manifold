@@ -388,12 +388,9 @@ federation id, not the invite, is the identity. Recovery saves the invite of
 the verified config: the f+1 lowest guardians at their current endpoints, so
 it follows a guardian transfer. At least one of them is honest and online
 while the federation can make progress, so there is no fallback to other
-invites. An older formation saved an invite naming one guardian. For such an
-invite, recovery also reads through the invite of every saved manager, all at
-the same time, and uses the first read that works. It skips an invite to
-another federation. Other reads need a
-recovered record, so they dial the saved invite. Once every deployed
-formation has recovered, this completion step can go.
+invites. An older formation saved an invite naming one guardian. Its first
+recovery needs that guardian online; it then saves the f+1 invite. This is an
+accepted limit for formations from before f+1 invites.
 Committed liquidity request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic

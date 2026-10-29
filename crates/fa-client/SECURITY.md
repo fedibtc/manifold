@@ -448,12 +448,9 @@ Every read of a formed federation dials the saved invite. After it verifies
 consensus, recovery saves the invite of the verified config: the f+1 lowest
 guardians at their current endpoints. It is a dialing hint only, never a
 cached consensus result, and the federation id, not the invite string, is the
-identity. A saved invite naming fewer than f+1 guardians, from an older
-formation, can leave recovery with no reachable guardian. Only recovery then
-also reads through each saved manager's own invite, all at the same time,
-within the run deadline. Those invites are dialing hints only: reject a
-different federation id and apply the same consensus and directory checks.
-The signed liquidity commitment stays unchanged.
+identity. A saved invite from an older formation can name one guardian;
+until its first recovery, the FA reaches the federation only while that
+guardian is online. The signed liquidity commitment stays unchanged.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a
