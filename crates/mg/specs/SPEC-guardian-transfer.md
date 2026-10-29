@@ -76,7 +76,9 @@ online once. The FA does not have to be online at the same time.
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
    its federation. Each call answers from durable state and never waits;
-   the destination retries until it gets the guardian:
+   the destination retries until it gets the guardian, with a capped
+   backoff. A development destination instead asks again about once a
+   second while the source answers `AwaitingSessionEnd` or `AwaitingBackup`:
    - While the guardian runs, the source asks it to stop between consensus
      sessions, never inside one (see *Session boundary*), and answers
      `AwaitingSessionEnd`. The stop durably records `Transferred`, and a

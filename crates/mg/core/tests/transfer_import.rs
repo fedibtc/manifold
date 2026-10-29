@@ -8,7 +8,9 @@ use fedi_decentralized_service_manifold_guardian::{
 struct SourceCall {
     request: TransferSeatRequest,
     reply: tokio::sync::oneshot::Sender<
-        fedi_decentralized_service_manifold_guardian::TransferSeatResponse,
+        fedi_decentralized_service_manifold_guardian::FmResult<
+            fedi_decentralized_service_manifold_guardian::TransferSeatResponse,
+        >,
     >,
 }
 
@@ -39,18 +41,17 @@ impl crate::transfer_source::TransferSource for ControlledSource {
             .send(SourceCall { request, reply })
             .map_err(|_| crate::transfer_source::TransferSourceUnavailable)?;
         done.await
-            .map(Ok)
             .map_err(|_| crate::transfer_source::TransferSourceUnavailable)
     }
 }
 
 fn respond(d: &Destination, call: SourceCall) {
     call.reply
-        .send(
+        .send(Ok(
             fedi_decentralized_service_manifold_guardian::TransferSeatResponse {
                 material: d.material.clone().into_wire(),
             },
-        )
+        ))
         .unwrap();
 }
 
@@ -299,6 +300,76 @@ async fn worker_pull_authenticates_imports_and_retries_without_refetching_accept
         "same-move replay leaves running child alone"
     );
     d.fleet.shutdown().await;
+}
+
+/// While the source reports that the guardian is on its way, the destination
+/// asks again at a short fixed interval rather than backing off, so it takes
+/// the guardian soon after the source is ready.
+#[tokio::test]
+async fn a_development_worker_asks_again_promptly_while_the_source_reports_progress() {
+    let wait = wait_after_four_progress_answers(
+        32_173,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+    )
+    .await;
+    assert!(
+        wait < Duration::from_secs(3),
+        "the destination waited {wait:?} after a progress answer"
+    );
+}
+
+#[tokio::test]
+async fn a_staging_worker_backs_off_while_the_source_reports_progress() {
+    let wait = wait_after_four_progress_answers(
+        32_174,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Staging,
+    )
+    .await;
+    assert!(
+        wait >= Duration::from_secs(3),
+        "the destination asked again after only {wait:?}"
+    );
+}
+
+/// Answers the destination's first four requests with progress and returns
+/// how long it waits before the fifth. Backing off from 500ms waits 4s.
+async fn wait_after_four_progress_answers(
+    port: u16,
+    environment: fedi_decentralized_manifold_environment::ManifoldEnvironment,
+) -> Duration {
+    use fedi_decentralized_service_manifold_guardian::ManifoldGuardianError;
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let d = destination_in(
+        TempDir::new().unwrap(),
+        port,
+        Arc::new(ControlledSource(source)),
+        Arc::new(crate::transfer_native::tests::CoreConfigValidator),
+        environment,
+        vec![FakeDkgStep::Hang],
+    )
+    .await;
+    d.admit().await;
+    let mut next_call = async || {
+        tokio::time::timeout(Duration::from_secs(10), calls.recv())
+            .await
+            .expect("the destination asks its source")
+            .expect("source channel open")
+    };
+    for answer in [
+        ManifoldGuardianError::AwaitingSessionEnd,
+        ManifoldGuardianError::AwaitingSessionEnd,
+        ManifoldGuardianError::AwaitingBackup,
+        ManifoldGuardianError::AwaitingBackup,
+    ] {
+        next_call().await.reply.send(Err(answer)).unwrap();
+    }
+    let answered = std::time::Instant::now();
+    let call = next_call().await;
+    let wait = answered.elapsed();
+    respond(&d, call);
+    wait_phase(&d.seat, TransferPhase::Imported).await;
+    d.fleet.shutdown().await;
+    wait
 }
 
 #[tokio::test]
