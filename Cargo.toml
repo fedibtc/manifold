@@ -12,6 +12,7 @@ members = [
   "crates/domain",
   "crates/fa-cli",
   "crates/fa-client",
+  "crates/federation-observer",
   "crates/federation-preview",
   "crates/fedi-iroh-rpc",
   "crates/fedi-iroh-rpc-macros",
