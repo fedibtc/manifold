@@ -1119,6 +1119,7 @@ async fn run(
             } else {
                 println!("initialized FA {}", hex::encode(fa_pubkey.0.serialize()));
             }
+            client.shutdown().await;
         }
         Command::Create(create) => {
             let CreatePreflight {
@@ -1212,6 +1213,7 @@ async fn run(
                 observer.borrow_and_update();
             }
             output.snapshot(&observer.borrow(), format)?;
+            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1219,12 +1221,14 @@ async fn run(
             let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
             let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
+            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
         Command::RestartDkg(restart) => {
             let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
             let results = client.restart_dkg(FormationRunOptions::default()).await;
+            client.shutdown().await;
             endpoint.close().await;
             let results = results?;
             let output: Vec<_> = results
@@ -1275,6 +1279,7 @@ async fn run(
                 )
                 .await;
             output.snapshot(&client.status(), format)?;
+            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1293,6 +1298,7 @@ async fn run(
             )
             .await?;
             output.snapshot(&client.status(), format)?;
+            client.shutdown().await;
         }
         Command::Discover(discover) => {
             let requirements = MgCandidateRequirements {
@@ -1365,6 +1371,7 @@ async fn run(
                 let check = client.check_replacement_candidates().await?;
                 output.replacement_candidates(&check, format)?;
             }
+            client.shutdown().await;
         }
         Command::Maintenance(_) => {
             let operation = maintenance_preflight
@@ -1408,6 +1415,7 @@ async fn run(
                     .and_then(|()| output.guardian_fee_consensus(send_ppm.value(), format))
                 }
             };
+            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1420,6 +1428,7 @@ async fn run(
                     let result = client
                         .preview_transfer_destination(MgDiscoveryOptions::default())
                         .await;
+                    client.shutdown().await;
                     endpoint.close().await;
                     output.transfer_preview(&result?, format)?;
                 }
@@ -1486,12 +1495,14 @@ async fn run(
                         })
                     }
                     .await;
+                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(Some(&result?), format)?;
                 }
                 TransferCommand::Resume(resume) => {
                     let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
                     let result = client.resume_guardian_transfer(options).await;
+                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(result?.as_ref(), format)?;
                 }
@@ -1510,6 +1521,7 @@ async fn run(
                     )
                     .await?;
                     output.guardian_transfer(client.guardian_transfer().await?.as_ref(), format)?;
+                    client.shutdown().await;
                 }
             }
         }
@@ -1530,6 +1542,7 @@ async fn run(
             )
             .await?;
             let result = client.decommission_seats().await;
+            client.shutdown().await;
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
         }
@@ -1666,6 +1679,7 @@ async fn run(
                     )
                     .await?;
                 output.liquidity_discovery(&discovery, format)?;
+                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Request(request) => {
@@ -1715,6 +1729,7 @@ async fn run(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
+                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Resume(resume) => {
@@ -1743,6 +1758,7 @@ async fn run(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
+                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Status(status) => {
@@ -1764,6 +1780,7 @@ async fn run(
                     .liquidity_status(&LiquidityOperationId(status.operation_id))
                     .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
+                client.shutdown().await;
             }
             LiquidityCommand::List(list) => {
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -1783,6 +1800,7 @@ async fn run(
                     .list_liquidity_operations(after.as_ref(), list.limit)
                     .await?;
                 output.liquidity_page(&page, format)?;
+                client.shutdown().await;
             }
         },
     }

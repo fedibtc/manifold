@@ -3579,6 +3579,22 @@ async fn open_with_backup_recovery_hint(
 }
 
 #[tokio::test]
+async fn shutdown_returns_once_the_backup_workers_have_stopped() {
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let client = open_with_backup_recovery_hint(
+        MemDatabase::new().into_database(),
+        BackupRecoveryHint::Skip,
+    )
+    .await;
+    assert!(
+        metrics.num_alive_tasks() > 0,
+        "the staging profile starts backup workers"
+    );
+    client.shutdown().await;
+    assert_eq!(metrics.num_alive_tasks(), 0);
+}
+
+#[tokio::test]
 async fn automatic_backup_recovery_claims_mutations_before_open_returns() {
     let database = MemDatabase::new().into_database();
     let fresh = open_with_backup_recovery_hint(database.clone(), BackupRecoveryHint::Skip).await;
