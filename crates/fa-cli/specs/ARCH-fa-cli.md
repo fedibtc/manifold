@@ -232,8 +232,9 @@ reconciliation, because the seat list can lag consensus during a transfer. It
 returns when `observe_guardian_transfer` shows the transfer completed or
 closed, or when the run timeout passes, and prints the transfer as it stands
 then. It takes the payment-wallet flags too, for an interrupted purchase.
-`transfer status` is a storage-only projection. All four use the maintenance
-timing flags.
+`transfer status` is a storage-only projection. A replacement uses the default
+maintenance timing, as the app does. `--run-timeout-secs` bounds `transfer
+run`.
 
 Identity and state persist in `--state-dir`; secret-key bytes are never
 printed or logged. This disposable local state supports development and E2E

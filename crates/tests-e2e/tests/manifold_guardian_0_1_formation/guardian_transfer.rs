@@ -568,14 +568,7 @@ impl TransferCli<'_> {
             .arg("--setup-payment-publisher")
             .arg(self.setup_payment_publisher)
             .arg("transfer")
-            .args([
-                "--poll-interval-secs",
-                "1",
-                "--run-timeout-secs",
-                "60",
-                "--request-timeout-secs",
-                "10",
-            ])
+            .args(["--run-timeout-secs", "60"])
             .args(args)
             .env("MG_E2E_LOCAL_IROH", "1")
             .env(MG_ENDPOINT_ADDRS_ENV, self.mg_endpoints)

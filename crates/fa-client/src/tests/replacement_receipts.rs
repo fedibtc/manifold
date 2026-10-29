@@ -61,7 +61,6 @@ async fn request(
             seat_purchase::destination_approval(PAYMENT_AMOUNT_MSATS),
             Some(payment_federation_id()),
             None,
-            seat_purchase::transfer_options(),
         )
         .await
 }

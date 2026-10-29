@@ -166,8 +166,10 @@ struct MaintenanceTimingArgs {
 
 #[derive(Debug, ClapArgs)]
 struct TransferArgs {
-    #[command(flatten)]
-    timing: MaintenanceTimingArgs,
+    /// How long `transfer run` drives the transfer before it prints where
+    /// the transfer stands.
+    #[arg(long, global = true, default_value_t = 600)]
+    run_timeout_secs: u64,
     #[command(subcommand)]
     command: TransferCommand,
 }
@@ -203,17 +205,6 @@ struct TransferStartArgs {
     completion_callback_idempotency_key: Option<String>,
     #[command(flatten)]
     payment: ResumeArgs,
-}
-
-impl TransferArgs {
-    fn options(&self) -> anyhow::Result<MaintenanceRunOptions> {
-        MaintenanceRunOptions::new(fa_client::MaintenanceRunOptionsConfig {
-            poll_interval: Duration::from_secs(self.timing.poll_interval_secs),
-            run_timeout: Duration::from_secs(self.timing.run_timeout_secs),
-            request_timeout: Duration::from_secs(self.timing.request_timeout_secs),
-        })
-        .map_err(anyhow::Error::from)
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1450,8 +1441,7 @@ async fn run(
             result?;
         }
         Command::Transfer(transfer) => {
-            let options = transfer.options()?;
-            let run_timeout = Duration::from_secs(transfer.timing.run_timeout_secs);
+            let run_timeout = Duration::from_secs(transfer.run_timeout_secs);
             match transfer.command {
                 TransferCommand::Preview => {
                     let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
@@ -1500,7 +1490,6 @@ async fn run(
                                     approval,
                                     payer,
                                     completion_callback,
-                                    options,
                                 )
                                 .await?,
                         )
