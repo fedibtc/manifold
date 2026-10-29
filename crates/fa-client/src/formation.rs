@@ -4488,16 +4488,20 @@ where
         Ok(true)
     }
 
-    /// Choose remembered guardian addresses for this saved invite, if available.
+    /// Choose remembered guardian addresses for the saved invite's federation,
+    /// if available.
     /// Otherwise return the saved invite. Only connection information is reused;
     /// callers must still read fresh consensus.
     pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
+        let Ok(federation_id) = invite_federation_id(saved) else {
+            return saved.clone();
+        };
         self.inner
             .read_invite
             .lock()
             .await
             .as_ref()
-            .filter(|(original, _)| original == saved)
+            .filter(|(remembered, _)| *remembered == federation_id)
             .map(|(_, invite)| invite.clone())
             .unwrap_or_else(|| saved.clone())
     }
@@ -4524,7 +4528,7 @@ where
         let invite =
             FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
         *self.inner.read_invite.lock().await =
-            Some((saved.clone(), InviteCode(invite.to_string())));
+            Some((parsed.federation_id(), InviteCode(invite.to_string())));
         Ok(())
     }
 

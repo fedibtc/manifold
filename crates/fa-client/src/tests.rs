@@ -4177,6 +4177,32 @@ async fn an_invite_fallback_asks_one_mg_at_a_time_after_the_saved_invite() {
 }
 
 #[tokio::test]
+async fn remembered_endpoints_follow_the_federation_id_not_the_invite_string() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let authority = client
+        .post_formed_authority(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    let remembered = client.consensus_invite(&authority.invite_code).await;
+    assert_ne!(
+        remembered, authority.invite_code,
+        "formation remembered endpoints"
+    );
+
+    // Another invite string for the same federation reuses the endpoints.
+    let same_federation = test_invite_for_peer(1, 1, 0);
+    assert_ne!(same_federation, authority.invite_code);
+    assert_eq!(client.consensus_invite(&same_federation).await, remembered);
+
+    // An invite to another federation does not.
+    let other_federation = test_invite_for_peer(1, 1, 1);
+    assert_eq!(
+        client.consensus_invite(&other_federation).await,
+        other_federation
+    );
+}
+
+#[tokio::test]
 async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
     for fault in [
         "identity",

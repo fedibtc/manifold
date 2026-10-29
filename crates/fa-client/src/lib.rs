@@ -131,8 +131,9 @@ struct FaClientInner<I, P, N, F, C> {
     ports: FaClientPorts<I, P, N, F, C>,
     progress: watch::Sender<FaStatus>,
     run_guard: Arc<Mutex<()>>,
-    // Connection hints only; consensus is still read and verified each time.
-    read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
+    // Connection hints only, keyed by federation id; consensus is still read
+    // and verified each time.
+    read_invite: Mutex<Option<(FedimintFederationId, InviteCode)>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,

@@ -1466,8 +1466,8 @@ impl FormedLiquidityContext {
         // Display metadata is intentionally mutable after formation. Recovery
         // binds to final federation identity/config and replays the committed
         // name rather than making a later metadata edit strand an allocation.
+        // The invite is only a way to dial; the federation id is the identity.
         if self.network != commitment.network
-            || current.invite_code != commitment.federation_details.invite_code
             || current.federation_id != commitment.federation_details.federation_id
             || current.federation_config_hash
                 != commitment.federation_details.federation_config_hash
@@ -2050,6 +2050,29 @@ mod tests {
             bindings,
             seats,
         }
+    }
+
+    #[test]
+    fn a_commitment_matches_by_federation_id_not_invite_string() {
+        let commitment = commitment(Pubkey("provider".to_owned()));
+        let mut context = formed_context(Vec::new(), Vec::new());
+        context
+            .matches_commitment(&commitment)
+            .expect("same federation");
+
+        // A different way to dial the same federation still matches.
+        context.invite_code = InviteCode("another invite".to_owned());
+        context
+            .matches_commitment(&commitment)
+            .expect("invite is not identity");
+
+        context.federation = fedi_decentralized_domain::FederationSeats::from_parts(
+            FederationId("another federation".to_owned()),
+            HashBytes(vec![7; 32]),
+            3,
+            Vec::new(),
+        );
+        assert!(context.matches_commitment(&commitment).is_err());
     }
 
     #[test]
