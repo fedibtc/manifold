@@ -80,8 +80,34 @@ fn role_relay_limits_bound_all_event_kinds() {
     let limits = role_relay_limits();
     assert_eq!(
         limits.events.get_max_size(&nostr_sdk::Kind::TextNote),
-        Some(u32::try_from(ROLE_FETCHED_EVENT_MAX_BYTES).expect("role event bound fits u32"))
+        Some(64 * 1024)
     );
+}
+
+#[tokio::test]
+async fn role_event_size_accepts_64_kib_and_rejects_one_byte_more() {
+    let subscription_id = SubscriptionId::generate();
+    let empty_size = signed_text_event("").as_json().len();
+    let accepted = signed_text_event(&"x".repeat(64 * 1024 - empty_size));
+    let oversized = signed_text_event(&"x".repeat(64 * 1024 + 1 - empty_size));
+    assert_eq!(accepted.as_json().len(), 64 * 1024);
+    assert_eq!(oversized.as_json().len(), 64 * 1024 + 1);
+    let notifications = futures_util::stream::iter([
+        event_notification(&subscription_id, oversized),
+        event_notification(&subscription_id, accepted.clone()),
+        eose_notification(&subscription_id),
+    ]);
+
+    let collected = collect_subscription_notifications_capped(
+        notifications,
+        &subscription_id,
+        one_relay(),
+        Duration::from_secs(1),
+        CandidateBounds::for_limit(3),
+    )
+    .await;
+
+    assert_eq!(collected, [accepted]);
 }
 
 fn event_notification_from(

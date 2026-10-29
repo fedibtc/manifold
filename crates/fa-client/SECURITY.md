@@ -123,8 +123,8 @@ shared-pool use. Badge verification can leave the same cleanup on its private
 ephemeral client. These detached cleanup tasks are not joined by the preview
 deadline, but neither owns durable state, a lease, a reservation, or selection
 authority.
-The bounds are 2048 observed candidates, 256 KiB per normalized event, 16
-MiB aggregate, and 4 examined trust envelopes per walked advertisement
+Discovery caps observed candidates at 2,048, each normalized event at 64 KiB,
+aggregate bytes at 16 MiB, and examined trust envelopes at 4 per walked advertisement
 (derivations and the walk in
 `specs/ARCH-fa-client-discovery-selection.md`). Reaching the
 candidate ceiling or the aggregate byte bound completes the enumeration

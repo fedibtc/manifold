@@ -263,10 +263,10 @@ cross-environment restart before reading environment-derived policy
 ([SPEC-manifold-environment](../crates/manifold-environment/specs/SPEC-manifold-environment.md)).
 
 This helper bounds event content before signature verification. Relay and
-transport code must additionally bound the complete incoming event frame,
+transport code must also bound the complete incoming event frame,
 including tags, before invoking admission. FA relay and CLI transports reject a
-normalized complete event larger than 256 KiB. Relay lookup observes at most 16
-candidates and retains at most 4 MiB across one common-set query.
+normalized complete event larger than 64 KiB. Relay lookup observes at most 16
+candidates and retains at most 1 MiB per common-set query.
 
 ## Convergence boundary
 

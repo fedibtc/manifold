@@ -34,7 +34,7 @@ pub const MG_ADVERTISEMENTS_CANDIDATE_LIMIT: u16 = 2048;
 /// Maximum aggregate bytes retained from one MG advertisement relay query.
 ///
 /// Deliberately not derived as candidate limit x per-event cap (that product
-/// would be 512 MiB): this bound is out-of-memory insurance, and hitting it
+/// would be 128 MiB): this bound is out-of-memory insurance, and hitting it
 /// completes the enumeration successfully with the retained prefix rather
 /// than failing it — it degrades, never errors. Honest advertisements
 /// serialize to roughly 1-2 KiB, so even a full 2048-candidate listing stays
@@ -44,7 +44,7 @@ pub const MG_ADVERTISEMENTS_CANDIDATE_LIMIT: u16 = 2048;
 // measured worst-case legitimate advertisement event is 7830 bytes (~7.6 KiB;
 // `worst_case_advertisement_event_fits_the_per_event_cap` in
 // `crates/nostr/src/mg/tests.rs`), far below the shared
-// `ROLE_FETCHED_EVENT_MAX_BYTES` (256 KiB) used per event for now; derive an
+// `ROLE_FETCHED_EVENT_MAX_BYTES` (64 KiB) used per event for now; derive an
 // ad-specific per-event cap from that measurement with margin.
 pub const MG_ADVERTISEMENTS_RETAINED_MAX_BYTES: usize = 16 * 1024 * 1024;
 

@@ -44,10 +44,10 @@ FA common-set lookup pins the publisher, kind, and addressable-event identifier
 in its relay filter and enforces a local candidate-count cap. Those are query
 hints and resource bounds, not authentication. `fa-client` verifies complete
 kind-37707 events and owns durable replacement-order rollback protection.
-The shared relay config rejects every normalized event larger than 256 KiB and
-locally enforces subscription filters before signature verification, database
-retention, or role notification. The bounded collector also
-observes at most 16 common-set candidates and retains at most 4 MiB, so
+The shared relay config rejects normalized events larger than 64 KiB and
+enforces subscription filters locally before signature verification, database
+retention, or role notification. The bounded collector
+observes at most 16 common-set candidates and retains at most 1 MiB, so
 oversized events and tag arrays cannot expand the returned batch. The
 authorless MG advertisement enumeration is likewise locally bounded to
 2048 observed candidates and an explicit 16 MiB aggregate byte cap;
