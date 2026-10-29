@@ -209,9 +209,11 @@ where
     /// The FA buys the seat, paid from `payment_federation_id` unless it is
     /// free. It then signs a grant, which has no expiry, and asks the new
     /// seat to pull the guardian from its MG. The call advances the transfer
-    /// like [`Self::resume_guardian_transfer`]. The destination keeps asking
-    /// the source on its own, so the caller can return later, for example when `completion_callback`
-    /// reports that the guardian runs. Only one transfer is open at a time.
+    /// like [`Self::resume_guardian_transfer`], and
+    /// [`Self::run_guardian_transfer`] finishes it. The destination keeps
+    /// asking the source on its own. Only one transfer is open at a time.
+    /// The call waits while another operation runs, so it returns `Busy`
+    /// only when another client holds the database lease.
     ///
     /// This moves any guardian, with no reason to replace it. Consumers start
     /// a transfer with [`Self::request_guardian_replacement`], which requires
@@ -225,7 +227,9 @@ where
         completion_callback: Option<DkgCompletionCallback>,
         options: MaintenanceRunOptions,
     ) -> FaResult<GuardianTransfer> {
-        let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        // Wait for a short step of another operation instead of `Busy`: the
+        // caller holds an approval that a `Busy` would make it preview again.
+        let _guard = self.inner.run_guard.lock().await;
         let options = options.run_options();
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;

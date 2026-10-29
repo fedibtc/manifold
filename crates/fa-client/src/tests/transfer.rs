@@ -381,6 +381,22 @@ async fn the_transfer_loop_finishes_a_started_transfer_without_a_resume() {
 }
 
 #[tokio::test]
+async fn a_start_waits_for_another_operation_instead_of_busy() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    // Another operation, for example a replacement check, holds the run.
+    let other = client.inner.run_guard.clone().lock_owned().await;
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(other);
+    });
+
+    let started = start_transfer(&client, &mg_state).await;
+
+    assert_eq!(started.phase, GuardianTransferPhase::AwaitingSource);
+    release.await.unwrap();
+}
+
+#[tokio::test]
 async fn a_resume_checks_a_destination_that_still_pulls_once_and_returns() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     start_transfer(&client, &mg_state).await;
