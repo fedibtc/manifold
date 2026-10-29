@@ -688,10 +688,12 @@ seat, by the contract in
 [`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
 transfer row owns the whole move, including its destination seat. One
 transfer is open at a time. It moves any guardian, so it is crate-private.
-Consumers start a transfer with `request_guardian_replacement`, which needs a
-replacement receipt. Test tools that move a healthy guardian call
-`start_guardian_transfer_unchecked`, behind the `unchecked-guardian-transfer`
-feature.
+The consumer interface is three calls: `request_guardian_replacement` starts
+a transfer and needs a replacement receipt, `run_guardian_transfer` finishes
+it, and `guardian_transfer` reads it. Resume is crate-private. Test tools
+that move a healthy guardian call `start_guardian_transfer_unchecked`, and
+step a transfer with `resume_guardian_transfer_unchecked`, both behind the
+`unchecked-guardian-transfer` feature.
 
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian
@@ -736,7 +738,7 @@ Each of these returns `SelectionReauthorizationRequired` with the reason that
 Pay-and-create uses: a refusal is `SelectedMgUnavailable` with the MG failure,
 and a rejected payment is `SelectedPayerUnavailable`. No closed state is
 stored: the transfer row is deleted. Any other failure leaves the purchase in
-the row for `resume_guardian_transfer`.
+the row for the next resume.
 
 With the seat bought, the FA signs a grant, which has no expiry, and
 sends `PullSeat` with an optional completion callback. From then on the seat
@@ -754,7 +756,7 @@ does not prove that the destination's backup holds the guardian, and the
 stopped source still does. Any status other than `New`, `AwaitingTransfer`
 or `Running` is an error, and the transfer stays open.
 
-`resume_guardian_transfer` continues from the recorded stage. It asks the
+A resume continues from the recorded stage. It asks the
 destination once and does not wait for the source: while the destination is
 `AwaitingTransfer`, the resume reports `AwaitingSource` at once. So the run
 deadline bounds work, not a wait.
@@ -765,8 +767,7 @@ resumes an open transfer at once, so a reopened client continues it. While
 the transfer waits for the source or its removal, it checks every 30 s. A
 failed step retries with a backoff from 1 s to 5 min, and `Busy` retries
 after 1 s. Each step holds the run only for that step. With no transfer open,
-the loop sleeps until a start wakes it. Consumers do not resume a transfer
-themselves.
+the loop sleeps until a start wakes it.
 
 When the destination is `Running`, the FA reads the
 destination's attestation, saves it in the transfer, and votes it through

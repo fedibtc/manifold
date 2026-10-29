@@ -306,6 +306,17 @@ where
         .await
     }
 
+    /// [`Self::resume_guardian_transfer`] for test tools, which step a
+    /// transfer one call at a time. A consumer app drives the transfer with
+    /// [`Self::run_guardian_transfer`] instead.
+    #[cfg(feature = "unchecked-guardian-transfer")]
+    pub async fn resume_guardian_transfer_unchecked(
+        &self,
+        options: MaintenanceRunOptions,
+    ) -> FaResult<Option<GuardianTransfer>> {
+        self.resume_guardian_transfer(options).await
+    }
+
     /// Advance the open transfer as far as it goes within `options`.
     ///
     /// The call checks the destination once and does not wait for it: a
@@ -319,7 +330,7 @@ where
     /// transfer closes and the error is
     /// [`FaError::SelectionReauthorizationRequired`]. `None` means no
     /// transfer is open.
-    pub async fn resume_guardian_transfer(
+    pub(crate) async fn resume_guardian_transfer(
         &self,
         options: MaintenanceRunOptions,
     ) -> FaResult<Option<GuardianTransfer>> {

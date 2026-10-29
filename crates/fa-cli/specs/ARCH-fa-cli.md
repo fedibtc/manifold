@@ -225,7 +225,7 @@ item statuses are the library-owned liquidity journal governed by
 enables the test-only `unchecked-guardian-transfer` feature), so the sealed
 approval never leaves it. A paid seat takes the same payment-wallet flags as
 `resume`, and `--payment-federation-id` is the payer. `transfer resume` calls
-`fa-client::resume_guardian_transfer` without a reconciliation, because the
+`fa-client::resume_guardian_transfer_unchecked` without a reconciliation, because the
 seat list can lag consensus during a transfer. It takes the payment-wallet
 flags too, for an interrupted purchase. `transfer replace` takes the same
 arguments as `transfer start`, but runs a replacement check first and starts

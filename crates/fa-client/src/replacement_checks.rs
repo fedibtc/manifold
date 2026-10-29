@@ -217,7 +217,7 @@ where
     /// [`Self::start_guardian_transfer`] does.
     ///
     /// The receipt only authorizes the start. Once the transfer started, its
-    /// durable row authorizes [`Self::resume_guardian_transfer`]; reopening
+    /// durable row authorizes [`Self::run_guardian_transfer`] to finish it; reopening
     /// the client invalidates unused receipts, not transfers already started.
     pub async fn request_guardian_replacement(
         &self,

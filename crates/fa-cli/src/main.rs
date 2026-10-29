@@ -1500,7 +1500,7 @@ async fn run(
                 }
                 TransferCommand::Resume(resume) => {
                     let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
-                    let result = client.resume_guardian_transfer(options).await;
+                    let result = client.resume_guardian_transfer_unchecked(options).await;
                     client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(result?.as_ref(), format)?;
