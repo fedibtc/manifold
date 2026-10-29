@@ -2,6 +2,15 @@
 
 Shared monorepo for the Federation Decentralization Scaling project. Contains component design docs, the cross-component protocol, and reference Rust types.
 
+## Contributing
+
+Bug reports and feature ideas are welcome! For external contributions,
+please open a brief issue rather than a pull request. See our
+[contribution guidelines](./CONTRIBUTING.md).
+
+For security-sensitive bugs, please follow our
+[private reporting instructions](./SECURITY.md#reporting).
+
 ## Repository structure
 
 | Path | Description |
