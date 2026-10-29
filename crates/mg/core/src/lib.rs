@@ -32,6 +32,7 @@ pub mod onboarding;
 pub mod payout_wire;
 pub mod push_callback;
 pub mod remittance_metadata;
+pub mod replacement_guardian;
 pub mod restore;
 pub mod seat;
 pub mod seat_capacity;

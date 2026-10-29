@@ -489,6 +489,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         Fleet::open_with_wallet(
             db.clone(),
             FleetConfig {
+                replacement_guardian_verifier: Arc::new(
+                    mg_nostr::replacement_guardian::NostrReplacementGuardianVerifier::new(
+                        manifold_environment.clone(),
+                    )?,
+                ),
                 transfer_source: Arc::new(transfer_source::IrohTransferSource::new(
                     endpoint.clone(),
                 )),

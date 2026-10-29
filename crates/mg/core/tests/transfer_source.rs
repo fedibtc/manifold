@@ -13,6 +13,33 @@ struct Source {
     destination: secp256k1::Keypair,
     seat: Arc<Seat>,
     spawner: Arc<FakeSeatProcessSpawner>,
+    verification: Arc<DestinationAdmission>,
+}
+
+/// A mutable external trust observation, not an FA-supplied assertion.
+struct DestinationAdmission {
+    accepted: std::sync::atomic::AtomicBool,
+    calls: std::sync::Mutex<Vec<secp256k1::XOnlyPublicKey>>,
+    /// Simulate discovery that stalls until the caller drops its request.
+    stalled: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl crate::replacement_guardian::ReplacementGuardianVerifier for DestinationAdmission {
+    async fn verify(
+        &self,
+        destination: secp256k1::XOnlyPublicKey,
+    ) -> Result<(), crate::replacement_guardian::ReplacementGuardianUnverified> {
+        self.calls.lock().unwrap().push(destination);
+        if self.stalled.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        if self.accepted.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(crate::replacement_guardian::ReplacementGuardianUnverified)
+        }
+    }
 }
 
 impl Source {
@@ -231,6 +258,12 @@ async fn source_with(
 ) -> Source {
     let root = TempDir::new().unwrap();
     let mut config = config(&root, 1, port).await;
+    let verification = Arc::new(DestinationAdmission {
+        accepted: std::sync::atomic::AtomicBool::new(true),
+        calls: std::sync::Mutex::new(Vec::new()),
+        stalled: std::sync::atomic::AtomicBool::new(false),
+    });
+    config.replacement_guardian_verifier = verification.clone();
     config.respawn.initial_backoff = respawn_backoff;
     let db = Db::open(root.path()).await.unwrap();
     let identity = db.load_identity().await.unwrap().unwrap();
@@ -319,7 +352,105 @@ async fn source_with(
         destination,
         seat,
         spawner,
+        verification,
     }
+}
+
+/// Slow destination discovery must not turn concurrent transfer calls into a
+/// queue that consumes every shared RPC handler permit.
+#[tokio::test]
+async fn saturated_replacement_admission_leaves_other_rpcs_available() {
+    use fedi_decentralized_service_manifold_guardian::{
+        GetStatusRequest, ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest,
+    };
+    let source = running_source(35_610).await;
+    source.verification.stalled.store(true, Ordering::SeqCst);
+    let rpc = Arc::new(crate::service::ManifoldGuardianRpc::new(
+        source.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
+    ));
+    let mut requests = tokio::task::JoinSet::new();
+    // More simultaneous authorized calls than the daemon's 128 shared permits.
+    // Only the small source-wide admitted set may remain pending.
+    for _ in 0..132 {
+        let rpc = rpc.clone();
+        let request = MgSignedRequest::create(&source.pull(), &source.destination).unwrap();
+        requests.spawn(async move { rpc.transfer_seat(request).await });
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for _ in 0..128 {
+            assert!(matches!(
+                requests.join_next().await.unwrap().unwrap(),
+                Err(ManifoldGuardianError::Unauthorized)
+            ));
+        }
+        let request = SignedRequest::create(
+            &GetStatusRequest {
+                ts: source.grant.ts,
+                fa_id: source.grant.fa_id,
+                seat_id: source.grant.source_seat_id.clone(),
+            },
+            &source.fa,
+        )
+        .unwrap();
+        assert_eq!(
+            rpc.get_status(request).await.unwrap().status,
+            fedi_decentralized_service_manifold_guardian::ServiceStatus::Running
+        );
+    })
+    .await
+    .expect("excess admissions fail fast and unrelated RPC completes");
+    assert_eq!(source.verification.calls.lock().unwrap().len(), 4);
+    assert!(source.outgoing().await.is_none());
+    requests.abort_all();
+    while requests.join_next().await.is_some() {}
+    source.verification.stalled.store(false, Ordering::SeqCst);
+    source.pull_awaits_session_end().await;
+}
+
+/// A fully authorized FA cannot stop or extract a guardian for an unverified
+/// replacement. Admission is repeated even after retirement and a prior release.
+#[tokio::test]
+async fn replacement_admission_fences_stop_and_every_package_release() {
+    use fedi_decentralized_service_manifold_guardian::{
+        ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest,
+    };
+    let source = running_source(35_600).await;
+    let rpc = crate::service::ManifoldGuardianRpc::new(
+        source.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
+    );
+    let request = || MgSignedRequest::create(&source.pull(), &source.destination).unwrap();
+    let child = source.child().await;
+    eventually("the guardian is configured", || {
+        source.seat.child_configured_for_test()
+    })
+    .await;
+    source.verification.accepted.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        rpc.transfer_seat(request()).await,
+        Err(ManifoldGuardianError::Unauthorized)
+    ));
+    assert_eq!(source.outgoing().await, None);
+    assert!(child.state().shutdown_after_current_session.is_empty());
+    assert!(source.seat.child_configured_for_test());
+    assert_eq!(
+        *source.verification.calls.lock().unwrap(),
+        vec![source.grant.destination_service_pubkey]
+    );
+
+    source.verification.accepted.store(true, Ordering::SeqCst);
+    source.hand_over().await;
+    source.pull_after_backup().await;
+    source.verification.accepted.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        rpc.transfer_seat(request()).await,
+        Err(ManifoldGuardianError::Unauthorized)
+    ));
+    assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
+    source.verification.accepted.store(true, Ordering::SeqCst);
+    assert!(rpc.transfer_seat(request()).await.is_ok());
+    source.fleet.shutdown().await;
 }
 
 /// Without a policy that enables transfer, a running source with no stored

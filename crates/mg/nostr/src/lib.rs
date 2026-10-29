@@ -15,6 +15,7 @@
 
 pub mod backup;
 pub mod format;
+pub mod replacement_guardian;
 mod support;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -508,6 +509,11 @@ async fn run_advertisements(inner: Arc<Inner>, host: Arc<FleetNostrHost>, nostr:
                 }
             }
         }
+        // Addressable-event timestamps have second precision. A rapid
+        // closed -> open (or open -> full) transition must replace the old
+        // snapshot, not lose an equal-timestamp event-id tie at the relay.
+        // Coalesce changes during this delay, then build a fresh snapshot.
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -559,9 +565,7 @@ async fn advertise_once(
     nostr: &NostrRelayClient,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
 ) -> anyhow::Result<()> {
-    let Some(snapshot) = host.advertisement().await else {
-        return Ok(());
-    };
+    let snapshot = host.advertisement().await;
     let mut payload = build_payload(snapshot, &inner.keys);
     payload.holder_authorizations = holder_authorizations;
 

@@ -310,6 +310,9 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
     drop(db);
     FleetConfig {
         transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+        replacement_guardian_verifier: Arc::new(
+            crate::replacement_guardian::UnverifiedReplacementGuardian,
+        ),
         guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
         process_spawner: SeatProcessSpawner::Fake(Arc::new(
             crate::seat_process::fake::FakeSeatProcessSpawner::default(),
@@ -1120,9 +1123,9 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
 
     assert!(
         !fleet.availability_snapshot().await.accepting_seats,
-        "an MG that is not selling advertises nothing"
+        "an MG that is not selling offers no purchase plans"
     );
-    assert!(host.advertisement().await.is_none());
+    assert!(host.advertisement().await.plans.is_empty());
 
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
     tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
@@ -1132,7 +1135,7 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
         fleet.availability_snapshot().await.accepting_seats,
         "a give-away needs no wallet"
     );
-    assert!(host.advertisement().await.is_some());
+    assert!(!host.advertisement().await.plans.is_empty());
 
     fleet.set_offered_price(Some(Msats(1))).await.unwrap();
     tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
@@ -1142,7 +1145,7 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
         fleet.availability_snapshot().await.accepting_seats,
         "a priced offer is discoverable before payment runtime preparation"
     );
-    assert!(host.advertisement().await.is_some());
+    assert!(!host.advertisement().await.plans.is_empty());
     fleet.shutdown().await;
 }
 
@@ -1171,8 +1174,7 @@ fn journaled_seat_capacity(directory: &std::path::Path) -> Vec<serde_json::Value
         .collect()
 }
 
-/// Every advertisement cycle journals the seat capacity, also when it
-/// publishes nothing.
+/// Every advertisement cycle journals capacity, including closed fleets.
 #[tokio::test]
 async fn advertisement_cycle_shares_seat_capacity() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -1205,9 +1207,9 @@ async fn advertisement_cycle_shares_seat_capacity() {
         })
         .await
         .unwrap();
-    assert!(host.advertisement().await.is_some());
+    assert!(!host.advertisement().await.plans.is_empty());
     fleet.set_max_seats(Some(1)).await.unwrap();
-    assert!(host.advertisement().await.is_none());
+    assert!(host.advertisement().await.plans.is_empty());
 
     fleet.shutdown().await;
     // Dropping the subscriber flushes the journal.
@@ -1413,7 +1415,7 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
         !fleet.availability_snapshot().await.accepting_seats,
         "a fleet sells nothing before its first readiness check passes"
     );
-    assert!(host.advertisement().await.is_none());
+    assert!(host.advertisement().await.plans.is_empty());
     assert!(fleet.quote_offer().await.is_none());
     assert_eq!(fleet.seat_readiness(), None);
 
@@ -1423,7 +1425,7 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
         .await
         .expect("passing readiness wakes advertisement publication");
     assert!(fleet.availability_snapshot().await.accepting_seats);
-    assert!(host.advertisement().await.is_some());
+    assert!(!host.advertisement().await.plans.is_empty());
     let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
 
     let epoch = fleet.db.offer_epoch().await.unwrap();
@@ -1440,7 +1442,7 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
         .await
         .expect("failing readiness wakes advertisement publication");
     assert!(!fleet.availability_snapshot().await.accepting_seats);
-    assert!(host.advertisement().await.is_none());
+    assert!(host.advertisement().await.plans.is_empty());
     assert!(fleet.quote_offer().await.is_none());
     let refusal = fleet
         .create_seat(
@@ -1581,7 +1583,7 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
             "{min_mg_version:?}"
         );
         assert_eq!(
-            host.advertisement().await.is_some(),
+            !host.advertisement().await.plans.is_empty(),
             advertised,
             "{min_mg_version:?}"
         );

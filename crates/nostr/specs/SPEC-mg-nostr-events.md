@@ -89,11 +89,12 @@ published by `mg-nostr`'s advertisement loop):
 - `api_endpoints` — `{transport, url}` entries for pre-formation FA setup RPC;
 - `availability` — typed scalar `fedimintd_version` and `federation_sizes`;
   the version's SemVer build metadata is the exact DKG vendor identity, and FA
-  admits only `+fedi`. The event is published only while the
-  MG is accepting seats, so the payload carries neither a boolean nor a count;
+  admits only `+fedi`. The payload carries neither an availability boolean nor a count;
 - `plans` — the `service-manifold-guardian` `Plan` enum in its own canonical serde
-  form, identical to `GetAvailability`, so advertisement and RPC cannot
-  disagree. Prices are millisatoshis as JSON numbers, the same unit and type
+  form. The list is empty while the MG is not accepting seats; the MG keeps
+  publishing its signed identity and credentials when full or closed. Consumers
+  must find a supported purchase plan before offering a new seat. Prices are
+  millisatoshis as JSON numbers, the same unit and type
   a quote's `price_msats` uses, so no consumer parses or reconciles a price
   spelling;
 - `holder_authorizations` — embedded verified trust envelopes

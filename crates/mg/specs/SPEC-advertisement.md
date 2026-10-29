@@ -11,12 +11,13 @@ enforced when a priced quote is requested.
 No single artifact can own the advertisement contract because daemon projection and Nostr publication must stay interoperable with service-wire availability shapes, holder authorization verification, and independent FA consumers.
 
 When configured with a relay, the daemon immediately begins a periodic Nostr
-publication cycle. It connects lazily, snapshots the fleet, and publishes only
-when that snapshot says a seat would be accepted. An eligible cycle reads
+publication cycle. It connects lazily and snapshots the fleet. Every cycle reads
 durably enrolled Holder authorizations, signs a portable kind-37701 MG
-advertisement, and publishes it. Cycles run every 30 minutes and promptly after
-daemon-owned offer or capacity changes; repeated changes may coalesce into one
-fresh snapshot. A failed cycle is logged and
+advertisement, and publishes it. Cycles run every 30 minutes and after
+daemon-owned offer or capacity changes. After a trigger, the publisher coalesces
+changes for one second before rebuilding the snapshot. This gives sequential
+cycles distinct timestamps, so Nostr replaceable-event tie ordering cannot
+leave an earlier closed state visible after the MG reopens. A failed cycle is logged and
 retried at the next trigger or interval, and advertising failure never stops RPC
 service. Every document is stamped with the current Unix time and expires after
 60 minutes. The same relay client is reused after a successful connect.
@@ -31,9 +32,10 @@ Kind numbers remain provisional in that contract.
 ## Published document
 
 Advertisement publication and `GetAvailability` use the same gated availability
-projection. A false projection suppresses publication; a true projection allows
-the payload below. Advertisement and RPC calls are independent, so an ad is a
-discovery hint rather than a capacity reservation. The payload contains:
+projection. If that projection disallows new seats, the daemon publishes the
+identity document with an empty `plans` list. Advertisement publication and RPC
+calls are independent, so an ad is a discovery hint rather than a capacity
+reservation. The payload contains:
 
 - the MG's root-derived Nostr public key, which must also author the event;
 - the MG's root-derived commitment-signing service pubkey — the exact
@@ -43,8 +45,8 @@ discovery hint rather than a capacity reservation. The payload contains:
 - issue and expiry times;
 - one `iroh://` API endpoint containing the daemon's endpoint id;
 - the release-pinned fedimintd version and supported federation sizes;
-- the operator's current plans in the same `Plan` serialization used by
-  `GetAvailability`; and
+- the operator's current plans when accepting seats, or no plans otherwise,
+  in the same `Plan` serialization used by `GetAvailability`; and
 - the MG identity's bounded set of durably enrolled Holder authorizations and
   backing signed credentials, deduplicated by credential digest.
 
@@ -60,8 +62,11 @@ Fleet runtime and advertisement publication do not begin until onboarding has
 retained at least one structurally verified, subject-bound Holder authorization.
 The relying consumer still owns issuer trust, revocation, and policy evaluation;
 onboarding does not turn structural verification into an issuer endorsement.
-The ad is not published when the MG is not accepting seats. A previously published ad remains visible
-until its signed expiry, at most 60 minutes after issue; `GetAvailability` and
+An MG that is full, not ready, or has no offer still refreshes its signed identity
+and credentials with no purchase plans. This keeps existing seats and pending
+guardian transfers verifiable without advertising another purchasable seat.
+A previously published ad remains visible until superseded or its signed expiry,
+at most 60 minutes after issue; `GetAvailability` and
 `GetQuote` remain authoritative for races during that window.
 
 The commitment-signing pubkey inside the signed payload is what binds the dialing identity to the Nostr identity: consumers build their dialing locator from it and the advertised endpoint, trusting it exactly as far as they trust the advertisement's badge-vouched author ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md), trust-chain paragraph).
@@ -110,9 +115,9 @@ by the FA verification rules in
 
 ## Availability gates
 
-The advertisement carries neither an availability boolean nor a count. Its
-existence means the publication cycle observed that the MG was accepting
-seats: it had physical capacity after live seats — bounded by both the
+The advertisement carries neither an availability boolean nor a count. A
+nonempty `plans` list means the publication cycle observed that the MG was
+accepting seats: it had physical capacity after live seats — bounded by both the
 operator's seat limit and the remaining lifetime port grid — the operator
 had configured an offer, and the latest readiness check passed. Setup-payment
 membership and opening a retained payment-federation client in the current
@@ -148,9 +153,9 @@ release; build metadata does not count); without one the check does not
 apply. An MG below it stops selling new seats until it is updated, but it
 still serves its seats, so the version check is not a prerequisite and never
 marks a slot down. A newly admitted policy starts a run at once, so raising
-the minimum closes `GetAvailability` and `GetQuote` and stops publishing the
-advertisement without waiting for the next slot, and lowering or removing it
-reopens them and publishes again. An advertisement already on relays stays
+the minimum closes `GetAvailability` and `GetQuote` and publishes empty purchase
+plans without waiting for the next slot, and lowering or removing it
+reopens them and republishes the plans. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
 Each run also requires three uptime scores of at least the setup-payment
@@ -175,7 +180,7 @@ The verdict is durable in `offer_state`, so a restart resumes it: a ready MG
 keeps selling and a failing one stays closed until a run passes. A fresh,
 restored, or upgraded MG starts closed.
 
-A failed verdict suppresses publication, makes `GetAvailability` report
+A failed verdict publishes empty purchase plans, makes `GetAvailability` report
 `accepting_seats = false`, and makes `GetQuote` return `CapacityExhausted`, so
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused

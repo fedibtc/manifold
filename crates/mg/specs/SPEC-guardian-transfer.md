@@ -75,7 +75,15 @@ online once. The FA does not have to be online at the same time.
 3. The destination signs `TransferSeat` with the service key the grant names
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
-   its federation. Each call answers from durable state and never waits;
+   its federation. It also independently verifies a destination-bound
+   PeerBadge against its own environment's issuer roots and minimum trust
+   level, including fresh revocation checks. The source fails closed if it
+   cannot verify that trust, before stopping the guardian or releasing its
+   package. The source bounds concurrent admissions and rejects excess requests
+   without waiting, so slow discovery cannot occupy all shared RPC handlers.
+   It rejects subject mismatches and invalid issuance offline, before revocation
+   queries. On each admitted call, the source performs a bounded trust lookup, then
+   answers from durable state without waiting for a session boundary or backup;
    the destination retries until it gets the guardian, with a capped
    backoff. A development destination instead asks again about once a
    second while the source answers `AwaitingSessionEnd` or `AwaitingBackup`:
@@ -89,7 +97,16 @@ online once. The FA does not have to be online at the same time.
    - Then it returns the guardian's three config files and its two Iroh
      secrets in plain form; the Iroh connection between the two MGs keeps
      them confidential. It answers every later valid grant for the seat with
-     the same guardian.
+     the same guardian only if the destination passes a fresh admission check.
+
+   Destinations keep their identity documents fresh even after the FA buys the
+   last slot: full or closed MGs publish no purchase plans, but still refresh
+   their signed identity and badges. Operators must upgrade older destinations
+   that suppress publication when full, or make them available again before
+   their last document expires. The source never accepts expired identity
+   documents as a compatibility fallback. Rejection after a successful stop
+   request cannot cancel that stop or restart a retired source; the source must
+   be able to verify a valid destination again for the pull to continue.
 4. The destination validates the guardian against the grant, durably
    stores it, and starts it. From then on the seat is a formed seat that
    reports `Running`: its backup follows asynchronously as for a natively
@@ -122,7 +139,8 @@ online once. The FA does not have to be online at the same time.
   `TransferSeat` asks for it. A guardian that stops in any other way,
   including a shutdown an operator schedules through the older `shutdown`
   endpoint, restarts and keeps its seat.
-- The grant is the only authority. Possession of a grant gives no access to
+- The grant authorizes the move but cannot bypass destination PeerBadge
+  admission. Possession of a grant gives no access to
   the guardian, because the source answers only the destination the grant
   names, authenticated by its service-key signature.
 - The moved guardian keeps its peer id, consensus keys, and Iroh node ids.
@@ -207,9 +225,17 @@ rollback.
 
 ## Custody
 
-The FA chooses the destination and is the only party that checks it. Before
+The FA chooses the destination. Before
 it signs a grant, it refuses a destination whose MG or verified badge
 holder hosts, or ever hosted, a peer of the federation. A past host may still
 hold its old key share, and no credential proves that it deleted it. The FA
-keeps past hosts in its own backup for this check. The source checks only the
-FA's signature and ownership.
+keeps past hosts in its own backup for this check. Independently of the FA,
+the source verifies the destination's PeerBadge on every `TransferSeat`,
+including retries after retirement or a prior package release, using the
+complete shared verifier and its own canonical environment profile. The source
+resolves signed MG advertisements from its configured relays and requires a
+current, authenticated advertisement binding the badge's MG Nostr subject to
+the distinct RPC commitment key that the request authenticates and the grant
+names. The source never falls back to a superseded binding or badge set.
+An FA signature alone cannot authorize an unverified destination.
+The FA retains responsibility for custody-history and holder-diversity checks.

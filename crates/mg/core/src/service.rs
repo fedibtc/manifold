@@ -250,6 +250,7 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
         }
         SeatVerbError::MetaTargetConflict => ManifoldGuardianError::MetaTargetConflict,
         SeatVerbError::TransferGrantMismatch => ManifoldGuardianError::SeatTransferGrantMismatch,
+        SeatVerbError::ReplacementGuardianUnverified => ManifoldGuardianError::Unauthorized,
         SeatVerbError::TransferDisabled => ManifoldGuardianError::UnsupportedVerb {
             verb: verb.to_owned(),
         },

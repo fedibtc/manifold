@@ -123,11 +123,23 @@ encrypted recovery payloads, and the Iroh connection between the two MGs
 during the hand-over; never diagnostics.
 Destination service identity and fee/payment wallets remain local.
 
-Custody admission intentionally belongs to the FA. The source verifies the FA's
-signature and ownership, not destination credentials, and does not pin the
-first destination. Single-host operation therefore assumes a non-conflicting
-FA. Removing a retired guardian deletes only its local guardian material and
-then publishes an archive-less tombstone; it does not prove erasure of
+The source verifies the FA's signature and ownership and independently requires
+the destination's PeerBadge to satisfy its own canonical environment policy,
+including fresh revocation checks on every transfer request. The source checks
+admission before retirement and every package release; it fails closed if
+credentials are missing or verification inputs are unavailable.
+The source rejects subject mismatches and invalid issuance offline, before
+network trust queries. It bounds concurrent admissions and rejects excess
+requests without queueing shared RPC handlers.
+Full and closed MGs keep publishing fresh signed identity and credentials with
+empty purchase plans, so the source can still verify a destination after the FA
+buys its last slot. Older destinations that stop publishing when full require an
+upgrade or restored availability; expired identity documents remain inadmissible.
+The FA retains responsibility for custody-history and holder-diversity checks.
+The source does not pin the first destination. Single-host operation therefore
+still assumes a non-conflicting FA. Removing a retired guardian deletes only
+its local guardian material and then publishes an archive-less tombstone;
+it does not prove erasure of
 historical backups, revoke secrets already held by a past custodian, or justify
 forgetting that custodian in FA policy.
 

@@ -10263,6 +10263,7 @@ dependencies = [
  "lnurl-rs",
  "mg-core",
  "mg-fedimint",
+ "mg-nostr",
  "nostr-sdk",
  "peerbadge-protocol",
  "reqwest 0.12.28",

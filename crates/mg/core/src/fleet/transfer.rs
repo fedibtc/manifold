@@ -10,8 +10,8 @@ impl Fleet {
     /// `request` carries the caller's verified service key. Only a caller
     /// holding the key the FA named in the grant receives the guardian,
     /// however it obtained the grant. Without `may_start`, only a seat that
-    /// already stopped for a transfer answers: a stopped guardian is handed
-    /// over whatever the policy says now.
+    /// already stopped for a transfer answers. Destination PeerBadge admission
+    /// still applies to every request, including retries after retirement.
     pub(crate) async fn transfer_seat(
         &self,
         request: TransferSeatRequest,
@@ -36,6 +36,19 @@ impl Fleet {
         if !may_start && !matches!(seat.transfer_phase(), Some(TransferPhase::Outgoing(_))) {
             return Err(SeatVerbError::TransferDisabled);
         }
+        // The FA owns the seat, not the authority to bypass the source's trust
+        // policy. Check before both the irreversible stop and every release.
+        // Never queue here: queued handlers would still occupy the transport's
+        // shared RPC permits and starve unrelated seat operations.
+        let _admission = self
+            .replacement_admissions
+            .try_acquire()
+            .map_err(|_| SeatVerbError::ReplacementGuardianUnverified)?;
+        self.config
+            .replacement_guardian_verifier
+            .verify(grant.destination_service_pubkey)
+            .await
+            .map_err(|_| SeatVerbError::ReplacementGuardianUnverified)?;
         let key = self.identity.derive_service_signing_key();
         let material = seat.transfer_out(signed, key).await;
         // The guardian's stop, which frees its capacity, lands between
