@@ -184,7 +184,7 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
     ) -> TelemetryResult<ListGuardianTelemetrySeatsResponse> {
         authorize_telemetry(&self.fleet, &request.capability)?;
         Ok(ListGuardianTelemetrySeatsResponse {
-            seats: self.fleet.telemetry_seats(),
+            seats: self.fleet.telemetry_seats().await,
         })
     }
 

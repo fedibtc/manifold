@@ -44,7 +44,7 @@ it('should call a seat forming until its phase reaches running', () => {
       state: 'active',
       health: 'unavailable',
       phase: 'data_loss',
-      invite_code: 'invite'
+      federation_id: 'ab'.repeat(32)
     })
   ).toBe(false);
   expect(isSeatForming({ state: 'decommissioned', at_ms: 1 })).toBe(false);

@@ -691,11 +691,13 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                     }),
                 ),
-                SeatPhase::DataLoss { invite_code } => (
+                // The wire carries no federation id; without its config the
+                // seat has no invite to give.
+                SeatPhase::DataLoss { federation_id: _ } => (
                     ServiceStatus::DataLoss,
                     StatusDetail::Federation(FederationStatusInfo {
                         valid_until_date: None,
-                        invite_code: Some(invite_code),
+                        invite_code: None,
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,

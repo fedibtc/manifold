@@ -1,5 +1,5 @@
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationId, FederationSize, InviteCode, Locator, Plan, QuoteId,
+    FaId, FederationId, FederationSize, Locator, Plan, QuoteId,
 };
 use secp256k1::{Keypair, SECP256K1};
 
@@ -102,7 +102,7 @@ async fn a_waiting_seat_stays_bound_to_its_move() {
             &grant.destination_seat_id,
             &first.binding,
             &keys(),
-            &InviteCode("test".into())
+            &crate::test_support::formed_peer_fixture()
         )
         .await
         .unwrap()
@@ -126,7 +126,7 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
             &grant.destination_seat_id,
             &first.binding,
             &keys(),
-            &InviteCode("test".into())
+            &crate::test_support::formed_peer_fixture()
         )
         .await
         .unwrap()
@@ -141,10 +141,8 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
     assert_eq!(accepted.phase(), TransferPhase::Imported);
     assert!(accepted.accepted().unwrap().same_as(&keys()));
     assert_eq!(
-        db.formed_federation_invite(&grant.destination_seat_id)
-            .await
-            .unwrap(),
-        Some(InviteCode("test".into())),
+        db.formed_peer(&grant.destination_seat_id).await.unwrap(),
+        Some(crate::test_support::formed_peer_fixture()),
         "acceptance and the formed row commit together"
     );
     grant.ts.0 += 1;
@@ -180,8 +178,8 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
         Some(OutgoingTransfer::Removed)
     );
     assert_eq!(
-        db.formed_federation_invite(seat).await.unwrap(),
-        Some(InviteCode("test".into()))
+        db.formed_peer(seat).await.unwrap(),
+        Some(crate::test_support::formed_peer_fixture())
     );
     assert!(!db.record_transfer_removal(seat).await.unwrap());
 }
@@ -194,7 +192,7 @@ async fn retirement_is_monotone_and_retains_formed_and_seat_facts() {
     insert(&db, &grant, true).await;
     let seat = &grant.source_seat_id;
     assert!(!db.retire_for_transfer(seat).await.unwrap());
-    db.record_formed(seat, &InviteCode("test-invite".into()))
+    db.record_formed(seat, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     assert!(db.retire_for_transfer(seat).await.unwrap());
@@ -214,7 +212,7 @@ async fn retirement_is_monotone_and_retains_formed_and_seat_facts() {
             .await
             .is_err()
     );
-    assert!(db.formed_federation_invite(seat).await.unwrap().is_some());
+    assert!(db.formed_peer(seat).await.unwrap().is_some());
     assert_eq!(db.list_seats().await.unwrap().len(), 1);
 }
 
@@ -245,7 +243,7 @@ async fn transfer_admission_cannot_race_dkg_or_revive_decommission() {
             &grant.destination_seat_id,
             &TransferMove::from(&grant),
             &keys(),
-            &InviteCode("test".into())
+            &crate::test_support::formed_peer_fixture()
         )
         .await
         .unwrap()

@@ -309,7 +309,7 @@ pub(crate) async fn install(
                 .guardian
                 .as_ref()
                 .map(|guardian| RestoredGuardianConfig {
-                    federation_invite: guardian.federation_invite.clone(),
+                    federation_peer: guardian.federation_peer,
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
             incoming_transfer,

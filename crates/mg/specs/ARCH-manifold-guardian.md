@@ -189,7 +189,7 @@ direction is strictly bottom-up; each layer only knows the ones below it.
    root, and the seat's committed `BtcDepositor` key, so payment ecash and the
    ecash of any two guardian seats never share a note pool.
   Collection remains a public client operation: it takes only the seat's invite
-  code, never guardian authority.
+  code, built from its installed config, never guardian authority.
 - `service` — thin FA RPC mapping: every signed verb verifies its envelope
   into a `VerifiedFaRequest`, and every existing-seat verb resolves its
   seat through `Fleet::authorize` as its first fleet call; no FA verb
@@ -373,7 +373,7 @@ Six kinds of state, six owners:
   `api_auth`, not the source's
   ([ARCH-manifold-guardian-identity](./ARCH-manifold-guardian-identity.md)).
 - **Owned live facts** (durable accepted seats, the current ceremony's
-  acknowledgement, the set-once formed federation invite, decommission,
+  acknowledgement, the set-once formed guardian identity (federation id and peer id), decommission,
   incoming transfer and source retirement/removal):
   in-memory synchronization while the daemon runs; accepted-seat identity,
   validated ceremony inputs, formation, decommission, and transfer facts survive in SQLite
@@ -389,8 +389,9 @@ Six kinds of state, six owners:
   that its federation-derived root has never been used.
 - **Wallet-implementation-owned payout jobs**: the `mg-fedimint` payout
   worker operates the shared SQLite ledger containing the caller request ID, immutable
-  wallet scope (including the public guardian invite needed after seat
-  decommission), destination snapshot, and the set-once link to a native
+  wallet scope (a guardian job keeps only federation id and seat id; its fee
+  wallet is joined once through the invite built from the seat's installed
+  config and afterwards reopened by scope), destination snapshot, and the set-once link to a native
   operation. The schema remains in core's single migration set; no lifecycle
   transition deletes or retargets a job.
 - **Fedimint-wallet-owned payout operations**: each wallet database owns the

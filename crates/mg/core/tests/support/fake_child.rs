@@ -34,6 +34,10 @@ pub(crate) struct FakeApiState {
     /// Served by `invite_code` once consensus is running, in place of the
     /// unparsable placeholder the setup-only fixtures use.
     pub invite_code: Option<String>,
+    /// The config this child installs in its data directory when it
+    /// reports one, unless one is already there; the single-peer fixture
+    /// when unset.
+    pub installed_config: Option<fedimint_server::config::ServerConfig>,
     /// The meta module's current consensus value, if any.
     pub meta_consensus: Option<Vec<u8>>,
     /// The meta module's monotone consensus revision, served with
@@ -610,7 +614,7 @@ async fn run_fake_child(
         _ => ChildState::NeedsParams,
     };
     if matches!(state, ChildState::AlreadyConfigured { .. }) {
-        let _ = tokio::fs::create_dir_all(&data_dir).await;
+        install_fake_config(&data_dir, &api_state).await;
     }
     if write_frame(
         &mut control,
@@ -655,7 +659,7 @@ async fn run_fake_child(
                     .clone()
                     .unwrap_or_else(|| "fed11-fake-invite".to_owned())
             };
-            let _ = tokio::fs::create_dir_all(&data_dir).await;
+            install_fake_config(&data_dir, &api_state).await;
             let _ = write_frame(
                 &mut control,
                 &ChildMessage::ConfigPersisted {
@@ -675,7 +679,7 @@ async fn run_fake_child(
             FakeDkgStep::Hang => std::future::pending::<()>().await,
             FakeDkgStep::Message(message) => {
                 if matches!(message, ChildMessage::ConfigPersisted { .. }) {
-                    let _ = tokio::fs::create_dir_all(&data_dir).await;
+                    install_fake_config(&data_dir, &api_state).await;
                 }
                 let terminal_failure = matches!(
                     message,
@@ -715,6 +719,26 @@ async fn run_fake_child(
         }
     }
     std::future::pending::<()>().await;
+}
+
+/// Install the child's final config the way `fedimintd` does before it
+/// reports one, keeping a config that is already there (an import or a
+/// restore installed it, or an earlier child did).
+#[cfg(test)]
+pub(crate) async fn install_fake_config(
+    data_dir: &std::path::Path,
+    api_state: &Mutex<FakeApiState>,
+) {
+    if data_dir.join("consensus.json").exists() {
+        return;
+    }
+    let config = api_state
+        .lock()
+        .unwrap()
+        .installed_config
+        .clone()
+        .unwrap_or_else(crate::test_support::installed_config_fixture);
+    crate::test_support::write_installed_config(data_dir, &config).await;
 }
 
 /// A script line that keeps a spawned shell test child alive. The production

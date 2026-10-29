@@ -25,6 +25,7 @@ pub mod directory;
 pub mod facts;
 pub mod fedimint_api;
 pub mod fleet;
+pub(crate) mod guardian_config;
 pub mod guardian_fee;
 pub mod identity;
 pub mod legacy_layout;

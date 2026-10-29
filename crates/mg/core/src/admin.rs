@@ -972,9 +972,9 @@ pub fn report_json(report: SeatReport) -> Value {
                 SeatPhase::Transfer { status } => json!({ "phase": status }),
                 SeatPhase::Created => json!({ "phase": "created" }),
                 SeatPhase::DkgInProgress => json!({ "phase": "dkg_in_progress" }),
-                SeatPhase::DataLoss { invite_code } => json!({
+                SeatPhase::DataLoss { federation_id } => json!({
                     "phase": "data_loss",
-                    "invite_code": invite_code,
+                    "federation_id": federation_id.to_string(),
                 }),
                 SeatPhase::Running { invite_code } => json!({
                     "phase": "running",

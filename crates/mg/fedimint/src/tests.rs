@@ -840,6 +840,32 @@ async fn private_invite_is_rejected_before_fedimint_client_use() {
     ));
 }
 
+/// A payout job opens its guardian-fee wallet without an invite only if the
+/// wallet already joined it. A never-joined scope stays closed and gets no
+/// prefix, so a later join with the seat's invite starts from nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unjoined_guardian_wallet_does_not_open_without_an_invite() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let seat_id =
+        fedi_decentralized_service_manifold_guardian::SeatId::new("71".repeat(32)).unwrap();
+    let key = GuardianFeeAccountKey::from_secret_bytes(&[1; 32]);
+    assert!(
+        wallet
+            .joined_guardian_fee_client(FederationId::dummy(), &seat_id, &key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(wallet.prefixes.read().await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn preview_timeout_does_not_fence_same_process_retry() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -864,7 +890,7 @@ async fn preview_timeout_does_not_fence_same_process_retry() {
         assert!(matches!(
             wallet
                 .join_inner(
-                    &invite,
+                    Some(&invite),
                     scope.clone(),
                     std::time::Duration::from_millis(10),
                     None,

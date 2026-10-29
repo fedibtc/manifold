@@ -90,12 +90,16 @@ pub trait EcashPayoutWorker: Send + Sync + 'static {
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobWire>;
-    /// Resume a durably scoped guardian sweep without consulting the live seat.
-    /// `None` means this request has no job yet and needs a fresh invite.
+    /// Resume a durably scoped guardian sweep without consulting the live
+    /// seat's phase. `invite` is the seat's, built from its installed config
+    /// when it has one; it is needed only to join a fee wallet the job never
+    /// joined. `None` means this request has no job yet and needs a fresh
+    /// invite.
     async fn resume_guardian_sweep(
         &self,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        invite: Option<&InviteCode>,
     ) -> anyhow::Result<Option<PayoutJobWire>>;
     async fn payout_status(
         &self,
@@ -135,6 +139,7 @@ impl EcashPayoutWorker for NoEcashPayoutWorker {
         &self,
         _: &SeatId,
         _: &PayoutRequestId,
+        _: Option<&InviteCode>,
     ) -> anyhow::Result<Option<PayoutJobWire>> {
         Ok(None)
     }

@@ -673,7 +673,9 @@ pub fn seat_reports_fixture() -> Value {
         },
         SeatReport::Active {
             phase: SeatPhase::DataLoss {
-                invite_code: InviteCode("fed11fixturelostinvite".to_owned()),
+                federation_id: "15c7c0a1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d"
+                    .parse()
+                    .unwrap(),
             },
             health: SeatHealth::Unavailable,
         },

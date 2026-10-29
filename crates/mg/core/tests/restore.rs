@@ -1,6 +1,4 @@
-use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, InviteCode, Plan, QuoteId,
-};
+use fedi_decentralized_service_manifold_guardian::{FaId, FederationSize, Plan, QuoteId};
 use tempfile::TempDir;
 
 use super::*;
@@ -54,7 +52,7 @@ fn guardian_archive(consensus_json: &str) -> GuardianArchive {
 fn guardian_ref(archive: &GuardianArchive) -> GuardianArchiveRef {
     GuardianArchiveRef {
         archive_sha256: archive.digest(),
-        federation_invite: Some(InviteCode("fed11-restored".into())),
+        federation_peer: crate::test_support::formed_peer_fixture(),
     }
 }
 
@@ -104,18 +102,16 @@ fn transferred_document(seat: u8) -> (SeatBackupDocument, GuardianArchive) {
     let facts = facts(seat);
     let archive = guardian_archive("{}");
     let federation_id = "ab".repeat(32);
-    let invite = fedimint_core::invite_code::InviteCode::new(
-        "ws://127.0.0.1:8174".parse().unwrap(),
-        fedimint_core::PeerId::from(0),
-        federation_id.parse().unwrap(),
-        None,
-    );
+    let federation_peer = crate::facts::FederationPeer {
+        federation_id: federation_id.parse().unwrap(),
+        peer_id: fedimint_core::PeerId::from(0),
+    };
     let mut document = SeatBackupDocument::new(
         &facts,
         Some(payment()),
         Some(GuardianArchiveRef {
             archive_sha256: archive.digest(),
-            federation_invite: Some(InviteCode(invite.to_string())),
+            federation_peer,
         }),
         None,
     );
@@ -208,13 +204,7 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
                 &facts.seat_id,
                 &admitted.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[71; 32], &[72; 32]),
-                document
-                    .guardian
-                    .as_ref()
-                    .unwrap()
-                    .federation_invite
-                    .as_ref()
-                    .unwrap(),
+                &document.guardian.as_ref().unwrap().federation_peer,
             )
             .await
             .unwrap()
@@ -310,12 +300,12 @@ async fn accepted_import_restores_its_iroh_identity_and_remains_fenced() {
 async fn removed_source_restores_formed_accounting_without_guardian_material() {
     use crate::backup::{OutgoingTransferBackup, TransferBackup};
     let (mut document, _) = transferred_document(3);
-    let invite = document.guardian.take().unwrap().federation_invite.unwrap();
+    let federation_peer = document.guardian.take().unwrap().federation_peer;
     document.transfer = Some(TransferBackup {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
             removed: true,
-            federation_invite: invite.clone(),
+            federation_peer,
         }),
     });
     let recovered = recovered(vec![document.clone()], vec![]);
@@ -330,10 +320,8 @@ async fn removed_source_restores_formed_accounting_without_guardian_material() {
         Some(crate::transfer_state::OutgoingTransfer::Removed)
     );
     assert_eq!(
-        db.formed_federation_invite(&document.seat_id)
-            .await
-            .unwrap(),
-        Some(invite)
+        db.formed_peer(&document.seat_id).await.unwrap(),
+        Some(federation_peer)
     );
     assert!(db.payment(&document.seat_id).await.unwrap().is_some());
     assert!(!crate::seat_process::seat_data_dir(&process, SeatNo(0)).exists());
@@ -398,17 +386,11 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
     // And it refuses RestartDKG, which is the guard the backup carries no
     // ceremony state to re-establish: the config's presence is the fact.
     assert!(
-        db.formed_federation_invite(&formed.seat_id)
-            .await
-            .unwrap()
-            .is_some(),
+        db.formed_peer(&formed.seat_id).await.unwrap().is_some(),
         "a restored guardian must not be wipeable by a later RestartDKG"
     );
     assert!(
-        db.formed_federation_invite(&unformed.seat_id)
-            .await
-            .unwrap()
-            .is_none(),
+        db.formed_peer(&unformed.seat_id).await.unwrap().is_none(),
         "a paid-but-unformed seat is meant to run the ceremony"
     );
 
@@ -774,10 +756,7 @@ async fn a_selected_guardianless_document_ignores_a_recovered_archive() {
         "a guardian-less selected document leaves a recovered archive uninstalled"
     );
     assert!(
-        db.formed_federation_invite(&seat.seat_id)
-            .await
-            .unwrap()
-            .is_none(),
+        db.formed_peer(&seat.seat_id).await.unwrap().is_none(),
         "the restored seat must not claim the ignored guardian config"
     );
 }
@@ -870,4 +849,132 @@ fn a_refusal_keeps_its_discriminant_through_anyhow() {
         // riding beside it.
         assert!(on_the_wire.message.contains(&sentence), "{on_the_wire:?}");
     }
+}
+
+/// Re-encode a document the way a build before migration 0011 published it:
+/// each formed guardian named by the invite its child first reported.
+fn as_published_before_0011(
+    document: &SeatBackupDocument,
+    invite: &fedimint_core::invite_code::InviteCode,
+) -> Vec<u8> {
+    fn rewrite(value: &mut ciborium::Value, invite: &str) {
+        match value {
+            ciborium::Value::Map(entries) => {
+                for (key, value) in entries.iter_mut() {
+                    if key.as_text() == Some("federation_peer") {
+                        *key = ciborium::Value::Text("federation_invite".into());
+                        *value = ciborium::Value::Text(invite.into());
+                    } else {
+                        rewrite(value, invite);
+                    }
+                }
+            }
+            ciborium::Value::Array(values) => {
+                values.iter_mut().for_each(|value| rewrite(value, invite));
+            }
+            _ => {}
+        }
+    }
+    let mut value = ciborium::Value::serialized(document).unwrap();
+    rewrite(&mut value, &invite.to_string());
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes).unwrap();
+    bytes
+}
+
+/// A document published before formed rows stored the guardian still
+/// restores: its invite converts to the guardian it names — its own peer,
+/// here not peer 0 — for both a native archive reference and a removed
+/// transfer source's tombstone. An invite that does not name one guardian
+/// makes the document unreadable rather than restoring a seat with an
+/// unknown identity.
+#[tokio::test]
+async fn a_backup_published_before_0011_restores_its_guardian() {
+    use crate::backup::{OutgoingTransferBackup, TransferBackup};
+    let formed = crate::facts::FederationPeer {
+        federation_id: "e5".repeat(32).parse().unwrap(),
+        peer_id: fedimint_core::PeerId::from(2),
+    };
+    let invite = fedimint_core::invite_code::InviteCode::new(
+        "wss://guardian-2.example".parse().unwrap(),
+        formed.peer_id,
+        formed.federation_id,
+        None,
+    );
+    let archive = guardian_archive("{}");
+    let native = SeatBackupDocument::new(
+        &facts(1),
+        Some(payment()),
+        Some(GuardianArchiveRef {
+            archive_sha256: archive.digest(),
+            federation_peer: formed,
+        }),
+        None,
+    );
+    let mut removed = SeatBackupDocument::new(&facts(2), Some(payment()), None, None);
+    removed.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            removed: true,
+            federation_peer: formed,
+        }),
+    });
+
+    let mut seats = Vec::new();
+    for document in [&native, &removed] {
+        let old = as_published_before_0011(document, &invite);
+        let mut current = Vec::new();
+        ciborium::into_writer(document, &mut current).unwrap();
+        assert_ne!(old, current);
+        let read: SeatBackupDocument = ciborium::from_reader(&old[..]).unwrap();
+        assert_eq!(&read, document);
+        seats.push(read);
+    }
+    let temp = TempDir::new().unwrap();
+    let db = test_db(&temp).await;
+    install(
+        &db,
+        &process(&temp),
+        &test_identity(),
+        &recovered(seats, vec![(native.seat_id.clone(), archive)]),
+    )
+    .await
+    .unwrap();
+    for document in [&native, &removed] {
+        assert_eq!(
+            db.formed_peer(&document.seat_id).await.unwrap(),
+            Some(formed)
+        );
+    }
+
+    // Writers emit only the current shape.
+    let value = ciborium::Value::serialized(&native).unwrap();
+    let guardian = value
+        .as_map()
+        .unwrap()
+        .iter()
+        .find(|(key, _)| key.as_text() == Some("guardian"))
+        .unwrap()
+        .1
+        .as_map()
+        .unwrap()
+        .iter()
+        .map(|(key, _)| key.as_text().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(guardian, ["archive_sha256", "federation_peer"]);
+
+    let peers = (0..4u16)
+        .map(|peer| {
+            (
+                fedimint_core::PeerId::from(peer),
+                format!("wss://guardian-{peer}.example").parse().unwrap(),
+            )
+        })
+        .collect();
+    let client_invite = fedimint_core::invite_code::InviteCode::new_with_essential_num_guardians(
+        &peers,
+        formed.federation_id,
+    );
+    let old = as_published_before_0011(&native, &client_invite);
+    assert!(ciborium::from_reader::<SeatBackupDocument, _>(&old[..]).is_err());
 }

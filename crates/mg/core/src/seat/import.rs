@@ -149,12 +149,7 @@ impl SeatLoop {
         if &record.binding != binding {
             return Err(SeatVerbError::TransferGrantMismatch);
         }
-        let invite = guardian
-            .invite
-            .0
-            .parse::<fedimint_core::invite_code::InviteCode>()
-            .map_err(|_| SeatVerbError::TransferGrantMismatch)?;
-        if invite.federation_id().to_string() != binding.federation_id.0 {
+        if guardian.peer.federation_id.to_string() != binding.federation_id.0 {
             return Err(SeatVerbError::TransferGrantMismatch);
         }
         if !matches!(record.state, IncomingState::Waiting { .. }) {
@@ -174,7 +169,7 @@ impl SeatLoop {
                 &self.facts.seat_id,
                 binding,
                 &guardian.material.keys,
-                &guardian.invite,
+                &guardian.peer,
             )
             .await
             .map_err(SeatVerbError::internal)?
@@ -182,11 +177,11 @@ impl SeatLoop {
             return Err(SeatVerbError::SeatUnavailable);
         }
         self.state
-            .send_modify(|state| state.formed_invite = Some(guardian.invite.clone()));
+            .send_modify(|state| state.formed = Some(guardian.peer));
         self.mirror_incoming(TransferPhase::Imported);
         // Acceptance is durable; a spawn failure is now an ordinary formed
         // seat outage that the respawn schedule and the watchdog recover.
-        if let Err(error) = self.spawn_child_inner(Some(&guardian.invite)).await {
+        if let Err(error) = self.spawn_child_inner(true).await {
             tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "imported fedimintd spawn failed");
             self.schedule_respawn();
         }

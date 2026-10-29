@@ -105,7 +105,8 @@ Any one witness falsifies this conjunctive claim.
 
 5. **Collection uses the mnemonic/seat account (`code`, `test`, `claim`).** Core
    derives `GuardianFeeAccountKey` from the fleet mnemonic and seat id on every
-   call. The sole vault opens a public-invite `ClientScope::Guardian`, and
+   call. The sole vault opens a `ClientScope::Guardian` from the public invite built
+   from the seat's installed config, and
    `signing_account` rejects a stability-pool module whose carried account differs
    from that key. Collection submits only an idle claim and all-balance unlock for
    that account, then awaits their exact operation ids. The imported authority
@@ -114,7 +115,7 @@ Any one witness falsifies this conjunctive claim.
 6. **Durable payout job binding (`schema`, `code`, `test`).** The owner-only admin
    path stores one nonempty bounded payout destination. `PayoutWorker::start_job`
    reads it only while creating a request; `payout_jobs` persists request id,
-   exact payment or guardian wallet scope, retained public guardian invite, and
+   exact payment or guardian wallet scope (federation id and seat id) and
    destination before calling the wallet. Triggers make those inputs immutable
    and jobs undeletable. Existing requests use the snapshot despite configuration
    changes. Store and worker tests pin mutation refusal, concurrent replay,

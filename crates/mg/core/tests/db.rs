@@ -492,3 +492,257 @@ async fn recommended_seat_limits_migrate_to_automatic() {
         );
     }
 }
+
+/// A data root migrated by a build from before migration 0011, as an old
+/// binary leaves it: formed seats store an invite, and so do guardian-fee
+/// payout jobs.
+async fn pre_0011_data_root(formed_invites: &[(u8, &str)]) -> (tempfile::TempDir, SqlitePool) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fleet-manager.sqlite");
+    let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+        .await
+        .unwrap();
+    let mut old = sqlx::migrate!("./migrations");
+    old.migrations
+        .to_mut()
+        .retain(|migration| migration.version < 11);
+    old.run(&pool).await.unwrap();
+    for (seat, invite) in formed_invites {
+        sqlx::query(
+            "INSERT INTO seats (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms) \
+             VALUES (?, ?, ?, '{}', 4, 1)",
+        )
+        .bind(vec![*seat; 32])
+        .bind(i64::from(*seat))
+        .bind(format!("fa-{seat}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)",
+        )
+        .bind(vec![*seat; 32])
+        .bind(*invite)
+        .bind(1_000 + i64::from(*seat))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, invite_code, \
+         destination, created_at_ms) VALUES \
+         ('guardian-job', 'guardian_fee', 'fed-g', 'seat-g', 'stored-invite', 'g@example.com', 5), \
+         ('payment-job', 'payment_federation', 'fed-p', NULL, NULL, 'p@example.com', 6)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE payout_jobs SET operation_id = ?, amount_msat = 42, committed_at_ms = 7, \
+         cap_maximum_msat = 42, cap_remaining_msat = 8 WHERE request_id = 'guardian-job'",
+    )
+    .bind("ab".repeat(32))
+    .execute(&pool)
+    .await
+    .unwrap();
+    (dir, pool)
+}
+
+fn single_guardian_invite(federation: &str, peer: u16) -> String {
+    fedimint_core::invite_code::InviteCode::new(
+        fedimint_core::util::SafeUrl::parse(&format!("wss://guardian-{peer}.example")).unwrap(),
+        fedimint_core::PeerId::from(peer),
+        federation.parse().unwrap(),
+        None,
+    )
+    .to_string()
+}
+
+async fn schema_version(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn stored_invites(pool: &SqlitePool) -> Vec<(Vec<u8>, String, i64)> {
+    sqlx::query_as(
+        "SELECT quote_id, federation_invite, formed_at_ms FROM formed_seats ORDER BY quote_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Each formed invite becomes the guardian it names — its own peer, not the
+/// first — with its formation time, and the set-once triggers survive the
+/// table rebuild. Guardian-fee jobs keep every fact but their invite.
+#[tokio::test]
+async fn formed_invites_migrate_to_the_guardian_they_name() {
+    let federation_a = "a1".repeat(32);
+    let federation_b = "b2".repeat(32);
+    let (dir, pool) = pre_0011_data_root(&[
+        (1, &single_guardian_invite(&federation_a, 2)),
+        (2, &single_guardian_invite(&federation_b, 0)),
+    ])
+    .await;
+    pool.close().await;
+
+    let db = Db::open(dir.path()).await.unwrap();
+    for (seat, federation, peer) in [(1u8, &federation_a, 2u16), (2, &federation_b, 0)] {
+        let seat_id = SeatId::new(hex::encode([seat; 32])).unwrap();
+        assert_eq!(
+            db.formed_peer(&seat_id).await.unwrap(),
+            Some(crate::facts::FederationPeer {
+                federation_id: federation.parse().unwrap(),
+                peer_id: fedimint_core::PeerId::from(peer),
+            })
+        );
+    }
+    let formed_at: Vec<i64> =
+        sqlx::query_scalar("SELECT formed_at_ms FROM formed_seats ORDER BY quote_id")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(formed_at, [1_001, 1_002]);
+    for statement in [
+        "UPDATE formed_seats SET peer_id = 3",
+        "DELETE FROM formed_seats",
+        "UPDATE payout_jobs SET destination = 'x@example.com'",
+        "UPDATE payout_jobs SET cap_remaining_msat = 0 WHERE request_id = 'guardian-job'",
+        "DELETE FROM payout_jobs",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(db.pool()).await.is_err(),
+            "{statement} must still be refused"
+        );
+    }
+
+    type JobRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<i64>,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let jobs: Vec<JobRow> = sqlx::query_as(
+        "SELECT request_id, scope_kind, federation_id, seat_id, destination, operation_id, \
+         amount_msat, created_at_ms, committed_at_ms, cap_maximum_msat, cap_remaining_msat \
+         FROM payout_jobs ORDER BY request_id",
+    )
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        jobs,
+        [
+            (
+                "guardian-job".into(),
+                "guardian_fee".into(),
+                "fed-g".into(),
+                Some("seat-g".into()),
+                "g@example.com".into(),
+                Some("ab".repeat(32)),
+                Some(42),
+                5,
+                Some(7),
+                Some(42),
+                Some(8),
+            ),
+            (
+                "payment-job".into(),
+                "payment_federation".into(),
+                "fed-p".into(),
+                None,
+                "p@example.com".into(),
+                None,
+                None,
+                6,
+                None,
+                None,
+                None,
+            ),
+        ]
+    );
+    let invite_column: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('payout_jobs') WHERE name = 'invite_code')",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(!invite_column);
+    drop(db);
+    // Reopening a migrated root finds nothing left to decode.
+    Db::open(dir.path()).await.unwrap();
+}
+
+/// A stored invite that does not name exactly one guardian stops the open
+/// before anything durable changes: every row and the schema version are as
+/// the old build left them, so the next open (or an operator) sees the same
+/// state.
+#[tokio::test]
+async fn an_undecodable_formed_invite_fails_the_open_and_changes_nothing() {
+    let federation = "c3".repeat(32);
+    let peers = (0..4u16)
+        .map(|peer| {
+            (
+                fedimint_core::PeerId::from(peer),
+                fedimint_core::util::SafeUrl::parse(&format!("wss://guardian-{peer}.example"))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let client_invite = fedimint_core::invite_code::InviteCode::new_with_essential_num_guardians(
+        &peers,
+        federation.parse().unwrap(),
+    );
+    assert!(client_invite.peers().len() > 1);
+    for bad in ["fed11-not-an-invite".to_owned(), client_invite.to_string()] {
+        let good = single_guardian_invite(&federation, 1);
+        let (dir, pool) = pre_0011_data_root(&[(1, &good), (2, &bad)]).await;
+        let before = stored_invites(&pool).await;
+        pool.close().await;
+
+        for _ in 0..2 {
+            let error = Db::open(dir.path()).await.unwrap_err();
+            assert!(
+                matches!(&error, DbError::CorruptRow { table: "formed_seats", key, .. }
+                    if *key == hex::encode([2u8; 32])),
+                "{error}"
+            );
+        }
+
+        let path = dir.path().join("fleet-manager.sqlite");
+        let pool = SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        assert_eq!(schema_version(&pool).await, 10);
+        assert_eq!(stored_invites(&pool).await, before);
+        let stored_job_invite: Option<String> = sqlx::query_scalar(
+            "SELECT invite_code FROM payout_jobs WHERE request_id = 'guardian-job'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_job_invite.as_deref(), Some("stored-invite"));
+    }
+}
+
+/// Migration 0011 run without the decoding step — as a tool that only
+/// applies the SQL would — aborts on a formed row rather than inserting a
+/// guardian it does not know, and leaves the database unchanged.
+#[tokio::test]
+async fn formed_rows_without_their_decoded_guardian_abort_the_migration() {
+    let federation = "d4".repeat(32);
+    let (_dir, pool) = pre_0011_data_root(&[(1, &single_guardian_invite(&federation, 0))]).await;
+    let before = stored_invites(&pool).await;
+    assert!(sqlx::migrate!("./migrations").run(&pool).await.is_err());
+    assert_eq!(schema_version(&pool).await, 10);
+    assert_eq!(stored_invites(&pool).await, before);
+}

@@ -1,6 +1,4 @@
-use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, InviteCode, Plan, QuoteId,
-};
+use fedi_decentralized_service_manifold_guardian::{FaId, FederationSize, Plan, QuoteId};
 use mg_core::backup::GuardianArchiveRef;
 use mg_core::facts::{SeatFacts, SeatNo};
 use mg_core::identity::RootMnemonic;
@@ -69,10 +67,18 @@ fn big_guardian_archive() -> GuardianArchive {
     archive
 }
 
+fn formed_peer() -> mg_core::facts::FederationPeer {
+    serde_json::from_value(serde_json::json!({
+        "federation_id": "f6".repeat(32),
+        "peer_id": 1,
+    }))
+    .unwrap()
+}
+
 fn guardian_ref() -> GuardianArchiveRef {
     GuardianArchiveRef {
         archive_sha256: guardian_archive(64).digest(),
-        federation_invite: Some(InviteCode("fed11-backup-test".into())),
+        federation_peer: formed_peer(),
     }
 }
 
@@ -94,7 +100,7 @@ fn formed_publication(facts: &SeatFacts, archive: &GuardianArchive) -> SeatPubli
             None,
             Some(GuardianArchiveRef {
                 archive_sha256: archive.digest(),
-                federation_invite: None,
+                federation_peer: formed_peer(),
             }),
             None,
         ),
@@ -156,8 +162,8 @@ fn an_oversized_document_fails_loudly_instead_of_being_truncated() {
         &seat_facts(),
         None,
         Some(GuardianArchiveRef {
-            archive_sha256: "11".repeat(32),
-            federation_invite: Some(InviteCode("a".repeat(PADDED_PLAINTEXT_LEN))),
+            archive_sha256: "a".repeat(PADDED_PLAINTEXT_LEN),
+            federation_peer: formed_peer(),
         }),
         None,
     );
@@ -314,7 +320,7 @@ fn legacy_published_events(
         None,
         Some(GuardianArchiveRef {
             archive_sha256: sha256_hex(&bytes),
-            federation_invite: None,
+            federation_peer: formed_peer(),
         }),
         None,
     );
@@ -570,7 +576,7 @@ fn a_removal_tombstone_claims_only_its_obsolete_archive_slices() {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
             removed: true,
-            federation_invite: InviteCode("retained-formed-invite".into()),
+            federation_peer: formed_peer(),
         }),
     });
     old_events.extend(published_events(
@@ -599,7 +605,7 @@ fn stopped_source_publication(facts: &SeatFacts, archive: &GuardianArchive) -> S
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
             removed: false,
-            federation_invite: InviteCode("retained-formed-invite".into()),
+            federation_peer: formed_peer(),
         }),
     });
     publication
@@ -895,7 +901,7 @@ fn one_seats_slices_do_not_stand_in_for_another_seats() {
         None,
         Some(GuardianArchiveRef {
             archive_sha256: archive.digest(),
-            federation_invite: None,
+            federation_peer: formed_peer(),
         }),
         None,
     );

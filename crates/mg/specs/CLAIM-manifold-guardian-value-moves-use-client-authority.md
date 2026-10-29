@@ -16,6 +16,13 @@ from them. Read-only local-child discovery and ordinary public client operations
 do not violate the property unless they authorize a later value move with local
 guardian authority.
 
+## Status
+
+Unverified. Guardian payout jobs no longer store their public invite: the
+first wallet open now joins through an invite built from the seat's installed
+config, and later opens reopen the joined client by scope. The proof's
+argument 3 was updated without re-verification.
+
 ## Assumptions
 
 - **A1 — language and dispatch integrity:** Safe Rust ownership, trait dispatch,

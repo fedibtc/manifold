@@ -21,23 +21,21 @@ pub(crate) async fn create(
     scope: &PayoutScope,
     destination: &str,
 ) -> anyhow::Result<PayoutJob> {
-    let (kind, federation_id, seat_id, invite_code) = match scope {
+    let (kind, federation_id, seat_id) = match scope {
         PayoutScope::PaymentFederation { federation_id } => {
-            ("payment_federation", federation_id.0.clone(), None, None)
+            ("payment_federation", federation_id.0.clone(), None)
         }
         PayoutScope::GuardianFee {
             federation_id,
             seat_id,
-            invite_code,
         } => (
             "guardian_fee",
             federation_id.0.clone(),
             Some(seat_id.to_string()),
-            Some(invite_code.to_string()),
         ),
     };
-    sqlx::query("INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, invite_code, destination, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING")
-        .bind(request_id.as_str()).bind(kind).bind(federation_id).bind(seat_id).bind(invite_code).bind(destination).bind(now_ms()).execute(db.pool()).await?;
+    sqlx::query("INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, destination, created_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING")
+        .bind(request_id.as_str()).bind(kind).bind(federation_id).bind(seat_id).bind(destination).bind(now_ms()).execute(db.pool()).await?;
     let job = get(db, request_id)
         .await?
         .expect("inserted payout row is readable");
@@ -52,7 +50,7 @@ pub(crate) async fn get(
     db: &Db,
     request_id: &PayoutRequestId,
 ) -> anyhow::Result<Option<PayoutJob>> {
-    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
+    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
         .bind(request_id.as_str()).fetch_optional(db.pool()).await?;
     row.map(parse).transpose()
 }
@@ -96,7 +94,6 @@ struct Row {
     scope_kind: String,
     federation_id: String,
     seat_id: Option<String>,
-    invite_code: Option<String>,
     destination: String,
     operation_id: Option<String>,
     amount_msat: Option<i64>,
@@ -108,12 +105,11 @@ struct Row {
 fn parse(r: Row) -> anyhow::Result<PayoutJob> {
     let request_id = PayoutRequestId::parse(&r.request_id)?;
     let federation_id = FederationId(r.federation_id);
-    let scope = match (r.scope_kind.as_str(), r.seat_id, r.invite_code) {
-        ("payment_federation", None, None) => PayoutScope::PaymentFederation { federation_id },
-        ("guardian_fee", Some(seat), Some(invite)) => PayoutScope::GuardianFee {
+    let scope = match (r.scope_kind.as_str(), r.seat_id) {
+        ("payment_federation", None) => PayoutScope::PaymentFederation { federation_id },
+        ("guardian_fee", Some(seat)) => PayoutScope::GuardianFee {
             federation_id,
             seat_id: SeatId::new(seat)?,
-            invite_code: invite.parse()?,
         },
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: invalid scope shape"),
     };

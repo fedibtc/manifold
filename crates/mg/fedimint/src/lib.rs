@@ -348,26 +348,33 @@ impl Wallet {
         guardian_key: Option<&GuardianFeeAccountKey>,
     ) -> Result<FederationId, WalletError> {
         ensure_public_invite(invite_code)?;
-        self.join_inner(invite_code, scope, timeout, guardian_key)
-            .await
+        let federation_id = scope.federation_id();
+        let opened = self
+            .join_inner(Some(invite_code), scope, timeout, guardian_key)
+            .await?;
+        debug_assert!(opened, "a join with an invite opens its client");
+        Ok(federation_id)
     }
 
+    /// Open a scope's client, joining its federation through `invite_code`
+    /// only if this wallet never joined it. Without an invite an unjoined
+    /// scope stays closed and nothing is reserved for it: `Ok(false)`.
     async fn join_inner(
         &self,
-        invite_code: &InviteCode,
+        invite_code: Option<&InviteCode>,
         scope: ClientScope,
         preview_timeout: std::time::Duration,
         guardian_key: Option<&GuardianFeeAccountKey>,
-    ) -> Result<FederationId, WalletError> {
-        let federation_id = scope.federation_id();
+    ) -> Result<bool, WalletError> {
         let _joining = self.join_exclusion(scope.clone()).await;
         if self.federations.read().await.contains_key(&scope) {
-            return Ok(federation_id);
+            return Ok(true);
         }
         let known_prefix = { self.prefixes.read().await.get(&scope).copied() };
-        let prefix = match known_prefix {
-            Some(prefix) => prefix,
-            None => {
+        let prefix = match (known_prefix, invite_code) {
+            (Some(prefix), _) => prefix,
+            (None, None) => return Ok(false),
+            (None, Some(_)) => {
                 let _allocation = self.prefix_allocation.lock().await;
                 let prefix = reserve_prefix(&self.database, &scope).await?;
                 self.prefixes.write().await.insert(scope.clone(), prefix);
@@ -390,6 +397,9 @@ impl Wallet {
             })
             .await?
         } else {
+            let Some(invite_code) = invite_code else {
+                return Ok(false);
+            };
             // Preview is network-only and precedes both the permanent open fence
             // and the initial client write, so a transient download failure can be
             // retried in-process without risking concurrent database writers.
@@ -448,7 +458,7 @@ impl Wallet {
             .write()
             .await
             .insert(scope, Arc::new(client));
-        Ok(federation_id)
+        Ok(true)
     }
 
     /// Derive a mint-v1 locked quote issuance set and its escrow secrets
@@ -630,6 +640,27 @@ impl Wallet {
             .get(&scope)
             .cloned()
             .context("open guardian-fee client")
+    }
+
+    /// A seat's guardian-fee client if this wallet has joined its
+    /// federation, opened without an invite; `None` if it never joined.
+    async fn joined_guardian_fee_client(
+        &self,
+        federation_id: FederationId,
+        seat_id: &fedi_decentralized_service_manifold_guardian::SeatId,
+        key: &GuardianFeeAccountKey,
+    ) -> anyhow::Result<Option<ClientHandleArc>> {
+        let scope = ClientScope::Guardian {
+            federation_id,
+            seat_id: seat_id.to_string(),
+        };
+        if !self
+            .join_inner(None, scope.clone(), JOIN_ATTEMPT_TIMEOUT, Some(key))
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(self.federations.read().await.get(&scope).cloned())
     }
 
     async fn join_exclusion(&self, scope: ClientScope) -> tokio::sync::OwnedMutexGuard<()> {
