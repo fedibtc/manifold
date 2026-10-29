@@ -1131,6 +1131,7 @@ impl FaStore {
         &self,
         fa_id: FaId,
         federation_name: Option<crate::FederationName>,
+        invite: crate::InviteCode,
     ) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let mut formed = dbtx.get_value(&FormedFederationKey).await.ok_or_else(|| {
@@ -1145,6 +1146,22 @@ impl FaStore {
         // Consensus has the current name. A formation on this device saved
         // its intent's name, which stays when consensus names none.
         formed.federation_name = federation_name.or(formed.federation_name);
+        // The verified config's endpoints, so later reads and backups dial
+        // each guardian where it is now. A restored record has no backup
+        // generation of its own yet, so a changed invite advances the imported
+        // one: a restore must prefer this backup over the one it came from.
+        if formed.payload.federation_invite != invite {
+            if dbtx.get_value(&BackupGenerationKey).await.is_none() {
+                formed.payload.snapshot_generation = formed
+                    .payload
+                    .snapshot_generation
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        FaError::Storage("FA backup snapshot generation exhausted".to_owned())
+                    })?;
+            }
+            formed.payload.federation_invite = invite;
+        }
         if let Some(commitment) = formed.payload.liquidity.clone() {
             let details_payload_hash =
                 fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(

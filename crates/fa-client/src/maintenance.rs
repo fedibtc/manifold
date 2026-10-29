@@ -18,9 +18,8 @@ use crate::formation::{
     start_driver_run, validate_consensus_metadata_size,
 };
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusError,
-    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness,
-    ManifoldGuardianConnector,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
+    FormationFreshness, ManifoldGuardianConnector,
 };
 
 const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -213,9 +212,8 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
-        let invite = self.consensus_invite(&authority.invite_code).await;
         let snapshot = self
-            .read_metadata_consensus(&invite, run)
+            .read_formed_consensus(&authority, run)
             .await?
             .map_err(|error| FaError::MaintenanceConvergence {
                 unresolved: authority.seats.iter().map(|seat| seat.index).collect(),
@@ -240,10 +238,11 @@ where
         let mut guardian_errors = BTreeMap::new();
         let mut consensus_error = None;
         let mut retry_delay = run.poll_interval();
+        let invite = &authority.invite_code;
 
         loop {
             if accepted.len() >= threshold {
-                match run
+                let view = run
                     .call("reading the LNv2 gateway view", || {
                         Ok(self
                             .inner
@@ -251,8 +250,8 @@ where
                             .consensus_reader
                             .read_lnv2_gateways(&invite))
                     })
-                    .await
-                {
+                    .await;
+                match view {
                     Ok(Ok(gateways)) if gateways.contains(&gateway_api) => return Ok(()),
                     Ok(Ok(_)) => {
                         consensus_error = Some(
@@ -407,7 +406,6 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
-        let invite = self.consensus_invite(&authority.invite_code).await;
         let all_indices = authority
             .seats
             .iter()
@@ -436,7 +434,7 @@ where
                     consensus_error,
                 ));
             }
-            let snapshot = match self.read_metadata_consensus(&invite, run).await {
+            let snapshot = match self.read_formed_consensus(&authority, run).await {
                 Ok(Ok(snapshot)) => snapshot,
                 Ok(Err(error)) => {
                     consensus_error = Some(error.to_string());
@@ -570,7 +568,7 @@ where
             // Read back immediately even when some connects/submissions
             // failed. A threshold may already have adopted the value while a
             // late sibling returned a terminal refusal or timeout.
-            match self.read_metadata_consensus(&invite, run).await {
+            match self.read_formed_consensus(&authority, run).await {
                 Ok(Ok(snapshot)) => {
                     consensus_error = None;
                     validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(
@@ -614,17 +612,6 @@ where
             )
             .await?;
         }
-    }
-
-    pub(crate) async fn read_metadata_consensus(
-        &self,
-        invite: &fedi_decentralized_service_manifold_guardian::InviteCode,
-        run: DriverRun<'_>,
-    ) -> FaResult<Result<FederationConsensusSnapshot, FederationConsensusError>> {
-        run.call("reading federation consensus metadata", || {
-            Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-        })
-        .await
     }
 
     pub(crate) async fn connect_unresolved_formed_sessions(

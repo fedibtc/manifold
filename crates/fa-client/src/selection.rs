@@ -1262,21 +1262,10 @@ pub(crate) async fn preview_transfer_destination_with(
     now: u64,
     completed_at: impl FnOnce() -> u64,
 ) -> FaResult<TransferDestinationPreview> {
-    let every_version = FedimintdVersionRange::from_cores(
-        FedimintdVersionCore {
-            major: 0,
-            minor: 0,
-            patch: 0,
-        },
-        FedimintdVersionCore {
-            major: u64::MAX,
-            minor: u64::MAX,
-            patch: u64::MAX,
-        },
-    )?;
+    // Only MGs on the federation's DKG line can host one of its guardians.
     let discovery_requirements = MgCandidateRequirements {
         federation_size,
-        fedimintd_versions: every_version,
+        fedimintd_versions: dkg_line(&fedimintd_dkg_version)?,
     };
     let mut discovery =
         discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;

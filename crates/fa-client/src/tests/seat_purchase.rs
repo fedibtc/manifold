@@ -153,8 +153,9 @@ async fn open_purchase(client: &TestClient) -> crate::seat_purchase::StoredSeatP
 }
 
 #[tokio::test]
-async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
+async fn a_transfer_buys_its_seat_for_this_federation() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    let source_seat_id = formed(&client.status()).seats[MOVED].seat_id.clone();
     let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
 
     let transfer = start_transfer(&client, &mg_state).await;
@@ -181,8 +182,10 @@ async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
         funded_before + 1
     );
 
+    // The backup names no open move: its seats change only at the rebind.
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert_eq!(backup.seats[MOVED].seat_id, source_seat_id);
 }
 
 #[tokio::test]
@@ -725,8 +728,8 @@ async fn the_destination_line_is_the_one_most_guardians_report() {
         0
     );
 
-    // The saved invite names an offline guardian: the MGs' own invites
-    // reach the others.
+    // The saved invite names f+1 guardians, so the MGs are not asked. When
+    // no guardian it names answers, the preview names no line.
     let (_, _, mg_state, restored) =
         restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
     *mg_state.guardian_versions.lock().expect("test lock") = Some(vec![newer.clone()]);
@@ -738,19 +741,14 @@ async fn the_destination_line_is_the_one_most_guardians_report() {
         .lock()
         .expect("test lock")
         .insert(snapshot.federation_invite.0.clone());
-    assert_eq!(eligible_destination_mgs(&restored).await, 1);
-    // No invite of an MG reaches a guardian either: no line.
-    mg_state
-        .unreachable_version_invites
-        .lock()
-        .expect("test lock")
-        .extend((0..usize::from(MIN_FEDERATION_SIZE)).map(|index| test_invite(index).0));
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
     assert!(matches!(
         restored
             .preview_transfer_destination(crate::MgDiscoveryOptions::default())
             .await,
         Err(FaError::Selection(_))
     ));
+    assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
 
     // With no answer, the preview names no line rather than guess one.
     let (_, _, mg_state, restored) =

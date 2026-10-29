@@ -825,6 +825,7 @@ struct MgState {
     release_accepts: AtomicBool,
     create_release: Notify,
     disagreeing_invite: AtomicBool,
+
     /// Seat index -> the exact (key, value) that seat accepted.
     meta_submissions: Mutex<HashMap<usize, (String, String)>>,
     /// Seat index -> the exact guardian-fee policy that seat accepted.
@@ -3857,7 +3858,7 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
     restored
         .inner
         .store
-        .reconcile_formed_federation(fa_id, None)
+        .reconcile_formed_federation(fa_id, None, snapshot.federation_invite.clone())
         .await
         .unwrap();
 
@@ -4000,6 +4001,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
     let restored_formation_id = imported.formation_id.clone();
     let restored_generation = imported.snapshot_generation;
+    let restored_invite = imported.federation_invite.clone();
     assert!(
         !imported.backup_eligible,
         "restored snapshot is not backup-eligible before reconciliation"
@@ -4028,7 +4030,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
-    assert_eq!(republished.payload.snapshot_generation, restored_generation);
+    // Recovery saved the config's endpoints instead of the MGs' addresses, so
+    // the republished backup must win over the restored one.
+    assert_ne!(republished.payload.federation_invite, restored_invite);
+    assert_eq!(
+        republished.payload.snapshot_generation,
+        restored_generation + 1
+    );
     assert_eq!(
         republished.payload.liquidity.as_ref().map(|commitment| {
             liquidity_api::request_liquidity_details_hash(commitment).unwrap()
@@ -4116,6 +4124,98 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             .is_none(),
         "post-formed mutations remain gated after failed reconciliation",
     );
+}
+
+#[tokio::test]
+async fn reconciliation_saves_the_endpoints_of_the_verified_config() {
+    let (client, _, state, _) = formed_client_for_liquidity().await;
+    // Formation saved the seat MGs' own addresses; consensus names others.
+    client.resume().await.unwrap();
+    let authority = client
+        .post_formed_authority(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    let saved = authority
+        .invite_code
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap();
+    let config = test_federation_config();
+    assert_eq!(saved.federation_id(), config.calculate_federation_id());
+    let expected = config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect::<BTreeMap<_, _>>();
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    assert_eq!(saved.peers(), expected);
+
+    // A recovery with the saved f+1 invite asks no MG.
+    let invite_calls = state.invite_calls.load(Ordering::SeqCst);
+    client.resume().await.unwrap();
+    assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls);
+}
+
+/// A restored FA whose backup, from a formation before f+1 invites, names
+/// only `peer`.
+async fn restored_with_one_guardian_invite(peer: usize) -> (TestClient, Arc<MgState>) {
+    let (source, _, mg_state, _) = formed_client_for_liquidity().await;
+    let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
+    payload.federation_invite = test_invite_for_peer(peer, peer, 0);
+    let (payments, _) = TestPayments::new();
+    let restored = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let fa_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fa_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+    (restored, mg_state)
+}
+
+fn config_invite_peers() -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    test_federation_config()
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect()
+}
+
+fn saved_invite_peers(client: &TestClient) -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    let FaStatus::Formed(snapshot) = client.status() else {
+        panic!("formed status");
+    };
+    snapshot
+        .federation_invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap()
+        .peers()
+}
+
+#[tokio::test]
+async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config() {
+    let (restored, mg_state) = restored_with_one_guardian_invite(5).await;
+    restored.resume().await.unwrap();
+    assert_eq!(saved_invite_peers(&restored), config_invite_peers());
+
+    // Later recoveries dial the saved f+1 invite and ask no MG.
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    restored.resume().await.unwrap();
+    assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
 }
 
 #[tokio::test]
@@ -4600,7 +4700,6 @@ async fn open_client_with_store_and_registry(
     let (progress, _) = tokio::sync::watch::channel(status);
     FaClient {
         inner: Arc::new(FaClientInner {
-            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FaClientPorts {
                 identity: TestIdentity,
@@ -8374,8 +8473,6 @@ async fn completed_setup_stays_formed_through_failed_rechecks() {
     for fault in ["none", "identity", "directory"] {
         let fail = fault != "none";
         let mut reader = TestConsensusReader::new(state.clone());
-        // Yield during readback so the observer sees the phase while checking.
-        reader.fail_next(1);
         if fault == "identity" {
             reader
                 .config

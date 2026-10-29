@@ -382,10 +382,16 @@ directory and fee recipients agreed at formation may change by guardian vote
 (see `SECURITY.md`).
 Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
-If the saved invite is unreachable, recovery tries alternative invites from
-the saved managers without waiting for every manager. It verifies the same
-federation and remembers multiple guardian addresses in memory for later
-liquidity and gateway reads. Backups and committed request bytes are unchanged.
+Every read of the formed federation (recovery, maintenance, liquidity,
+replacement checks and guardian transfer) dials the saved invite. The
+federation id, not the invite, is the identity. Recovery saves the invite of
+the verified config: the f+1 lowest guardians at their current endpoints, so
+it follows a guardian transfer. At least one of them is honest and online
+while the federation can make progress, so there is no fallback to other
+invites. An older formation saved an invite naming one guardian. Its first
+recovery needs that guardian online; it then saves the f+1 invite. This is an
+accepted limit for formations from before f+1 invites.
+Committed liquidity request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
@@ -648,8 +654,8 @@ qualify. Peer scores use Fedimint's coverage-aware merge. Reports name
 Fedimint peers, which the FA maps to seats through the verified consensus seat
 bindings, matching each seat's MG; a seat's index is not its peer id. Without
 verified bindings naming every seat's MG once, reports are not used and only
-holder revocation can qualify. Reports use the saved
-invite first, then alternate MG invites one at a time. A policy refresh timeout
+holder revocation can qualify. Reports dial the saved
+invite, as every read of the formed federation does. A policy refresh timeout
 can use an authenticated retained publication; invalid or missing policy fails. The policy's absence duration and weekly/monthly score floors are
 shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
 
@@ -677,14 +683,18 @@ receipt.
 seat, by the contract in
 [`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
 transfer row owns the whole move, including its destination seat. One
-transfer is open at a time.
+transfer is open at a time. It moves any guardian, so it is crate-private.
+Consumers start a transfer with `request_guardian_replacement`, which needs a
+replacement receipt. Test tools that move a healthy guardian call
+`start_guardian_transfer_unchecked`, behind the `unchecked-guardian-transfer`
+feature.
 
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian
 for its build through the public Fedimint `fedimintd_version` endpoint, by the
 consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
-invite may name the guardian that needs a new host, so the FA also asks each
-seat's MG for its invite and uses the first that reaches the federation. The
+invite names f+1 guardians, so the guardian that needs a new host does not
+block the read (see the formed reads above). The
 line most
 of the answering guardians report wins, then the newer line. It does not use
 the advertisements of the federation's own MGs: an MG that is full or offline,

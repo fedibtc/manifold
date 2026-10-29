@@ -221,7 +221,8 @@ item statuses are the library-owned liquidity journal governed by
 `fa-client::preview_transfer_destination` would select. `transfer start
 --seat-index N --max-msats M` reconciles the formed federation through
 `fa-client::resume`, repeats that preview, approves it with the cap, and calls
-`fa-client::start_guardian_transfer` in the same process, so the sealed
+`fa-client::start_guardian_transfer_unchecked` in the same process (fa-cli
+enables the test-only `unchecked-guardian-transfer` feature), so the sealed
 approval never leaves it. A paid seat takes the same payment-wallet flags as
 `resume`, and `--payment-federation-id` is the payer. `transfer resume` calls
 `fa-client::resume_guardian_transfer` without a reconciliation, because the

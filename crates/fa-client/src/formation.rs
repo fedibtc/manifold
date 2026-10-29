@@ -3936,7 +3936,7 @@ where
             ));
         }
         let consensus = self
-            .read_recovery_consensus(&snapshot.federation_invite, run)
+            .read_formed_consensus(&self.post_formed_authority(fa_id).await?, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
@@ -4000,11 +4000,10 @@ where
             context.matches_commitment(commitment)?;
         }
 
-        self.remember_read_invite(&snapshot.federation_invite, &consensus)
-            .await?;
+        let invite = verified_dial_invite(&snapshot.federation_invite, &consensus)?;
         self.inner
             .store
-            .reconcile_formed_federation(fa_id, federation_name)
+            .reconcile_formed_federation(fa_id, federation_name, invite)
             .await?;
         self.publish_formed(fa_id).await
     }
@@ -4227,7 +4226,6 @@ where
                         .confirm_formation_meta_target(&recovery.snapshot.formation_id))
                 })
                 .await??;
-                self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
             }
             if let Some(error) = pending_error.take() {
@@ -4479,114 +4477,19 @@ where
         Ok(true)
     }
 
-    /// Choose remembered guardian addresses for this saved invite, if available.
-    /// Otherwise return the saved invite. Only connection information is reused;
-    /// callers must still read fresh consensus.
-    pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
-        self.inner
-            .read_invite
-            .lock()
-            .await
-            .as_ref()
-            .filter(|(original, _)| original == saved)
-            .map(|(_, invite)| invite.clone())
-            .unwrap_or_else(|| saved.clone())
-    }
-
-    /// Remember several guardian addresses from a verified consensus snapshot.
-    /// Call after verifying the directory and saved authority. This checks the
-    /// federation identity again before storing the connection hint in memory;
-    /// the saved invite, backups, and signed liquidity request stay unchanged.
-    async fn remember_read_invite(
+    /// Read fresh consensus of the formed federation through its saved
+    /// invite. The caller must still verify the federation identity, the
+    /// directory and saved authority.
+    pub(crate) async fn read_formed_consensus(
         &self,
-        saved: &InviteCode,
-        snapshot: &FederationConsensusSnapshot,
-    ) -> FaResult<()> {
-        verify_consensus_identity(snapshot, saved)?;
-        let peers = snapshot
-            .config
-            .global
-            .api_endpoints
-            .iter()
-            .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
-            .collect();
-        let parsed = FedimintInviteCode::from_str(&saved.0)
-            .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
-        let invite =
-            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
-        *self.inner.read_invite.lock().await =
-            Some((saved.clone(), InviteCode(invite.to_string())));
-        Ok(())
-    }
-
-    /// Read fresh consensus, trying saved managers' invites if the first read fails.
-    /// Alternative invites and returned configurations must name the saved
-    /// federation. Calls share the driver deadlines, and remaining attempts are
-    /// dropped once one succeeds. The caller must still verify the directory and
-    /// saved authority before marking recovery fresh.
-    async fn read_recovery_consensus(
-        &self,
-        saved: &InviteCode,
+        authority: &PostFormedAuthority,
         run: DriverRun<'_>,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
-        let invite = self.consensus_invite(saved).await;
-        let first = run
-            .call("reading federation recovery consensus", || {
-                Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-            })
-            .await;
-        match &first {
-            Ok(Ok(_)) => return first,
-            Err(error) if !matches!(error, FaError::Timeout(_)) => return first,
-            _ => {}
-        }
-
-        // A manager supplies another way to dial, never a trust verdict.
-        // Race the saved managers so one unavailable manager cannot hold up the rest.
-        let fa_id = self.fa_id()?;
-        let authority = self.post_formed_authority(fa_id).await?;
-        let expected = invite_federation_id(saved)?;
-        let mut pending = FuturesUnordered::new();
-        for seat in &authority.seats {
-            pending.push(async move {
-                let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
-                let request = run
-                    .construct("signing a recovery invite request", || {
-                        self.sign(&GetInviteCodeRequest {
-                            ts: Timestamp(now_secs()?),
-                            fa_id,
-                            seat_id: seat.seat_id.clone(),
-                        })
-                    })
-                    .await?;
-                let invite = client
-                    .call(run, MgOperation::GetInviteCode, |client| {
-                        client.get_invite_code(request)
-                    })
-                    .await?
-                    .invite_code;
-                if invite_federation_id(&invite)? != expected {
-                    return Err(FaError::InvalidManifoldGuardians(
-                        "recovery invite names another federation".to_owned(),
-                    ));
-                }
-                let snapshot = run
-                    .call("reading alternate recovery consensus", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-                    })
-                    .await?
-                    .map_err(|error| FaError::InvalidManifoldGuardians(error.to_string()))?;
-                verify_consensus_identity(&snapshot, saved)?;
-                Ok::<_, FaError>(snapshot)
-            });
-        }
-        while let Some(result) = pending.next().await {
-            if let Ok(snapshot) = result {
-                return Ok(Ok(snapshot));
-            }
-        }
-        first
+        let invite = &authority.invite_code;
+        run.call("reading federation consensus metadata", || {
+            Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+        })
+        .await
     }
 
     async fn fetch_agreed_invite(
@@ -4700,6 +4603,30 @@ where
 
 /// Reject a configuration whose federation id differs from the saved invite.
 /// This checks identity only; the caller verifies the guardian directory separately.
+/// The invite of a verified consensus config for the federation of `saved`:
+/// the f+1 lowest guardians at their current endpoints, which follow a
+/// guardian transfer. Call after the caller verified the directory and saved
+/// authority. It keeps the saved invite's API secret, if any.
+fn verified_dial_invite(
+    saved: &InviteCode,
+    snapshot: &FederationConsensusSnapshot,
+) -> FaResult<InviteCode> {
+    verify_consensus_identity(snapshot, saved)?;
+    let peers = snapshot
+        .config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .collect();
+    let parsed = FedimintInviteCode::from_str(&saved.0)
+        .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
+    Ok(InviteCode(
+        FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret())
+            .to_string(),
+    ))
+}
+
 fn verify_consensus_identity(
     snapshot: &FederationConsensusSnapshot,
     invite: &InviteCode,

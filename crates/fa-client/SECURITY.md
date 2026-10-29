@@ -378,8 +378,9 @@ contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
 
 The encrypted Nostr backup is not a database copy. Its purpose-built payload
-contains only the formed invite, stable seat identities/locators, and an
-optional exact live-liquidity commitment. It excludes quotes, guardian codes,
+contains only the formed invite, stable seat identities/locators, the MG
+identities (and badge holders, when known) that hosted a peer before a
+guardian transfer moved it, and an optional exact live-liquidity commitment. It excludes quotes, guardian codes,
 fee accounts, payment and trust state, signed responses, history, secrets, and
 value. One CBOR item is fixed-frame padded and authenticated under FA-specific
 key/AAD domains; restore ignores invalid candidates and chooses the highest
@@ -443,12 +444,13 @@ consent to it. A guardian vote is not FA consent, so this is a deliberate
 tradeoff: the FA cannot undo the vote, and refusing management would only
 block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
 still requires every manager's health and agreed invite.
-If the saved invite cannot reach consensus, recovery may ask the saved managers
-for alternative invites. They are dialing hints only: reject a different
-federation id and apply the same consensus and directory checks. Retain a
-multi-guardian read invite in memory after verification, never a cached
-consensus result. The original invite, backup, and signed liquidity commitment
-remain unchanged; liquidity and gateway verification use the read invite.
+Every read of a formed federation dials the saved invite. After it verifies
+consensus, recovery saves the invite of the verified config: the f+1 lowest
+guardians at their current endpoints. It is a dialing hint only, never a
+cached consensus result, and the federation id, not the invite string, is the
+identity. A saved invite from an older formation can name one guardian;
+until its first recovery, the FA reaches the federation only while that
+guardian is online. The signed liquidity commitment stays unchanged.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a
