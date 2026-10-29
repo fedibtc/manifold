@@ -1,8 +1,9 @@
 //! Intent-level delegation to the wallet-owned payout orchestrator.
+use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
+
 use super::Fleet;
 use crate::payout_wire::{PayoutJobStatusWire, PayoutJobWire};
 use crate::wallet::PayoutRequestId;
-use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 impl Fleet {
     pub async fn payout_payment_fees(
         &self,
@@ -18,9 +19,16 @@ impl Fleet {
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobWire> {
+        // An existing job needs the seat's invite only to join a fee wallet
+        // it never joined, so any installed config will do, whatever the
+        // seat's phase: a decommissioned seat still has one.
+        let installed = match self.seat_by_id(seat_id) {
+            Some(seat) => seat.installed_invite().await,
+            None => Ok(None),
+        };
         if let Some(job) = self
             .payouts
-            .resume_guardian_sweep(seat_id, request_id)
+            .resume_guardian_sweep(seat_id, request_id, installed)
             .await?
         {
             return Ok(job);

@@ -51,8 +51,10 @@ a child/admin mutation, or direct child database access.
 3. **Durable payout entries preserve the client scope (`enum`, `schema`, `code`,
    `test`).** `SweepPaymentFees` and `SweepGuardianFees` create/replay one durable
    job; `PayoutStatus` and `AwaitPayout` reconcile and observe it. The job fixes a
-   payment federation or guardian federation/seat/public-invite scope before any
-   wallet call. `WalletPayoutNative` maps those variants only to
+   payment federation or guardian federation/seat scope before any wallet call;
+   a guardian job's first wallet open joins through the public invite core builds
+   from the seat's installed config, and only when that invite names the job's
+   federation. `WalletPayoutNative` maps those variants only to
    `ClientScope::Payment` or `ClientScope::Guardian`, the latter with the derived
    guardian account key. Status/await and guardian resume use the stored scope;
    they do not reacquire a child capability after decommission.
@@ -99,7 +101,7 @@ a child/admin mutation, or direct child database access.
    payment-federation status/drain, guardian collection, and guardian
    status/history/balance/drain—has the same A2 authority classification. Payment
    callers supply `ClientScope::Payment`. Guardian collection and reads obtain the
-   public invite from the cached seat report and supply the mnemonic/seat-derived
+   public invite from the seat report, built from the installed config file, and supply the mnemonic/seat-derived
    `ClientScope::Guardian`. `Seat::report` checks final-data existence and watched
    child state; it performs no child API call or mutation and carries no
    transaction, amount, destination, or account. Policy proposal's intentional

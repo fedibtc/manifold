@@ -30,7 +30,7 @@ describe('SeatRecoveryNotices', () => {
       state: 'active',
       health: 'unavailable',
       phase: 'data_loss',
-      invite_code: 'fed11lostinvite'
+      federation_id: 'ab'.repeat(32)
     });
 
     expect(screen.getByText(/guardian data is missing/i)).toBeTruthy();

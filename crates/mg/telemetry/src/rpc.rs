@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use fedi_decentralized_guardian_metrics_policy::MetricsPolicy;
 use fedi_decentralized_service_manifold_guardian::{
     FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, GuardianMetricsResponse,
     GuardianTelemetryApi, ListGuardianTelemetrySeatsRequest, ListGuardianTelemetrySeatsResponse,
@@ -16,17 +17,16 @@ use fedi_decentralized_service_manifold_guardian::{
     ScrapeGuardianMetricsRequest, SeatId, ServiceError, ServiceErrorCode, TelemetryCapability,
     TelemetryResult,
 };
-use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
-
-use fedi_decentralized_guardian_metrics_policy::MetricsPolicy;
 use mg_core::fleet::{Fleet, TelemetryAccessError};
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const UPSTREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const PROJECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_SAFE_EVENT_RECORD_BYTES: usize = 64 * 1024;
 
-/// Sanitizing guardian metrics proxy hosted on the dedicated telemetry Iroh ALPN.
+/// Sanitizing guardian metrics proxy hosted on the dedicated telemetry Iroh
+/// ALPN.
 #[derive(Clone)]
 pub struct GuardianTelemetryRpc {
     fleet: Arc<Fleet>,
@@ -184,7 +184,7 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
     ) -> TelemetryResult<ListGuardianTelemetrySeatsResponse> {
         authorize_telemetry(&self.fleet, &request.capability)?;
         Ok(ListGuardianTelemetrySeatsResponse {
-            seats: self.fleet.telemetry_seats(),
+            seats: self.fleet.telemetry_seats().await,
         })
     }
 
@@ -256,7 +256,8 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
     }
 }
 
-/// Read one fetch batch from a journal directory, as the telemetry RPC serves it.
+/// Read one fetch batch from a journal directory, as the telemetry RPC serves
+/// it.
 ///
 /// A writer that died mid-append leaves one line that is not a JSON record
 /// (bounded-rolling-file terminates it at the next open). Such lines are

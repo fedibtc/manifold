@@ -1,13 +1,13 @@
 //! L6 RPC service: the thin boundary between the wire and the fleet.
 //!
 //! Everything here is mapping: verify the [`SignedRequest`] envelope into a
-//! `VerifiedFaRequest<T>` (the only unauthenticated code path is this one line),
-//! check the 0.1 policy gates, call the L4 [`Fleet`] verb, and translate its
-//! typed error into the wire [`ManifoldGuardianError`] vocabulary. Internal
+//! `VerifiedFaRequest<T>` (the only unauthenticated code path is this one
+//! line), check the 0.1 policy gates, call the L4 [`Fleet`] verb, and translate
+//! its typed error into the wire [`ManifoldGuardianError`] vocabulary. Internal
 //! failures are logged with detail and answered with the generic
 //! `Other("internal error")`; envelope failures are logged with their
-//! [`AuthError`](fedi_decentralized_service_manifold_guardian::AuthError) detail
-//! and answered with the deliberately coarse `Unauthorized`.
+//! [`AuthError`](fedi_decentralized_service_manifold_guardian::AuthError)
+//! detail and answered with the deliberately coarse `Unauthorized`.
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,8 +43,8 @@ use crate::push_callback::ValidatedDkgCompletionCallback;
 use crate::seat::{SeatFederationBinding, SeatPhase, SeatReport, SeatVerbError};
 use crate::wallet::{LockedPaymentPrepareError, Msats};
 
-/// The Manifold Guardian 0.1 RPC service: one [`Fleet`] plus the service signing
-/// key whose public half is advertised as the locator `service_pubkey`.
+/// The Manifold Guardian 0.1 RPC service: one [`Fleet`] plus the service
+/// signing key whose public half is advertised as the locator `service_pubkey`.
 ///
 /// Seat access discipline: every verb naming an existing seat resolves it
 /// through `Fleet::authorize` — the fleet's only crate-visible seat getter —
@@ -63,7 +63,8 @@ pub struct ManifoldGuardianRpc {
     /// commitment `signing_key` beside it: a verifier resolves an MG's live
     /// trust by looking its advertisement up *by* this pubkey, so an
     /// attestation naming any other key resolves to nothing
-    /// ([`ARCH-manifold-guardian-identity`](../../specs/ARCH-manifold-guardian-identity.md)).
+    /// ([`ARCH-manifold-guardian-identity`](../../specs/
+    /// ARCH-manifold-guardian-identity.md)).
     attestation_keys: nostr_sdk::Keys,
 
     /// Inputs `get_fman_trust_material` needs that do not exist yet when
@@ -80,7 +81,8 @@ pub struct ManifoldGuardianRpc {
 
     /// The Fedi-published setup-payment policy as the Nostr boundary last
     /// admitted it, which is where the minimum guardian fee rate comes from
-    /// ([SPEC-setup-payment-federations](../../../../specs/SPEC-setup-payment-federations.md)).
+    /// ([SPEC-setup-payment-federations](../../../../specs/
+    /// SPEC-setup-payment-federations.md)).
     ///
     /// The Nostr boundary exists before the RPC router and supplies this
     /// receiver at construction. An admitted event not yet seen falls back to
@@ -328,7 +330,8 @@ fn unsupported<T>(verb: &str) -> FmResult<T> {
 /// [`SeatFederationBinding`], and the digest is the shared statement's — the
 /// MG derives nothing here that a verifier re-derives independently, which
 /// is what keeps the two from disagreeing about the same federation
-/// ([`SPEC-federation-trust-directory`](../../../domain/specs/SPEC-federation-trust-directory.md)).
+/// ([`SPEC-federation-trust-directory`](../../../domain/specs/
+/// SPEC-federation-trust-directory.md)).
 pub(crate) fn sign_peer_attestation(
     keys: &nostr_sdk::Keys,
     binding: &SeatFederationBinding,
@@ -439,9 +442,10 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             };
             let quote_nonce: [u8; 32] = rand::random();
             let payment = if price == 0 {
-                // A seat given away settles against nothing, so terms that name a
-                // payment federation or refund outputs are not expressible for it.
-                // Refuse rather than quote something the requester did not ask for.
+                // A seat given away settles against nothing, so terms that name
+                // a payment federation or refund outputs are
+                // not expressible for it. Refuse rather than
+                // quote something the requester did not ask for.
                 if request.payment_federation_id.is_some() || request.refund_issuance.is_some() {
                     return Err(ManifoldGuardianError::PlanNotOffered);
                 }
@@ -522,8 +526,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             }
             let payment = match &quote.terms.payment {
                 None => {
-                    // A free quote priced nothing, so signatures presented against
-                    // it can only be confusion or an attempt to have them read as
+                    // A free quote priced nothing, so signatures presented
+                    // against it can only be confusion or
+                    // an attempt to have them read as
                     // evidence of something.
                     if !request.payment_signatures.is_empty() {
                         return Err(ManifoldGuardianError::InvalidPayment);
@@ -531,8 +536,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                     VerifiedPayment::Free
                 }
                 Some(terms) => {
-                    // Payment verification remains outside allocation; the fleet
-                    // receives only the opaque verified payment capability.
+                    // Payment verification remains outside allocation; the
+                    // fleet receives only the opaque
+                    // verified payment capability.
                     let verified = self
                         .fleet
                         .wallet()
@@ -679,8 +685,8 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                 .await
                 .map_err(|err| map_seat_error("get_status", err))?;
             // Project onto the canonical wire status. The payment placeholders
-            // (deadlines, grace) are 0.1 wire constants and live here, not in the
-            // fleet.
+            // (deadlines, grace) are 0.1 wire constants and live here, not in
+            // the fleet.
             let (phase, health) = match report {
                 SeatReport::Active { phase, health } => (phase, health),
                 SeatReport::Decommissioned { at_ms } => {
@@ -704,11 +710,13 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                     }),
                 ),
-                SeatPhase::DataLoss { invite_code } => (
+                // The wire carries no federation id; without its config the
+                // seat has no invite to give.
+                SeatPhase::DataLoss { federation_id: _ } => (
                     ServiceStatus::DataLoss,
                     StatusDetail::Federation(FederationStatusInfo {
                         valid_until_date: None,
-                        invite_code: Some(invite_code),
+                        invite_code: None,
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,
@@ -903,7 +911,8 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
     /// deployment environment second, so a production MG answers
     /// `UnsupportedVerb` no matter who asks. It exists to churn staging
     /// federations without an operator in the loop
-    /// ([`ARCH-manifold-guardian-product-boundary`](../../specs/ARCH-manifold-guardian-product-boundary.md)).
+    /// ([`ARCH-manifold-guardian-product-boundary`](../../specs/
+    /// ARCH-manifold-guardian-product-boundary.md)).
     async fn decommission_seat(
         &self,
         request: SignedRequest<DecommissionSeatRequest>,

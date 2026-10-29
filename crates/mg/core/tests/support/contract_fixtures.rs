@@ -10,9 +10,9 @@
 //! Two things separate this from the liquidity-manager module it mirrors
 //! (`crates/service-liquidity-manager/tests/support/fixtures.rs`):
 //!
-//! - Almost nothing on the MG admin surface is a serde-derived response
-//!   struct. `admin.rs` hand-encodes the JSON, so every response fixture here
-//!   is produced by calling that module's own `*_json` shaper. A fixture that
+//! - Almost nothing on the MG admin surface is a serde-derived response struct.
+//!   `admin.rs` hand-encodes the JSON, so every response fixture here is
+//!   produced by calling that module's own `*_json` shaper. A fixture that
 //!   rebuilt the shapes locally would be a second copy of the contract, which
 //!   is the drift this wave exists to remove.
 //! - The request side is covered exhaustively rather than sampled. The walk in
@@ -755,7 +755,9 @@ pub fn seat_reports_fixture() -> Value {
         },
         SeatReport::Active {
             phase: SeatPhase::DataLoss {
-                invite_code: InviteCode("fed11fixturelostinvite".to_owned()),
+                federation_id: "15c7c0a1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d"
+                    .parse()
+                    .unwrap(),
             },
             health: SeatHealth::Unavailable,
         },

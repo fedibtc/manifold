@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::ensure;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, GuardianMaterial, InviteCode, SEAT_TRANSFER_MATERIAL_MAX_BYTES,
+    FederationId, GuardianMaterial, SEAT_TRANSFER_MATERIAL_MAX_BYTES,
 };
 use fedimint_server::config::ServerConfig;
 
@@ -126,7 +126,8 @@ pub(crate) struct InvalidGuardian;
 
 /// Validated identity for installation and destination endpoint proofs.
 pub(crate) struct ValidatedGuardian {
-    pub(crate) invite: InviteCode,
+    /// The guardian the material is, as its config names it.
+    pub(crate) peer: crate::facts::FederationPeer,
     /// Keep validation and installation tied to the same bytes.
     pub(crate) material: TransferMaterial,
 }
@@ -251,16 +252,10 @@ fn validate_blocking(
     );
     ensure!(config.calculate_federation_id().to_string() == federation.0);
     validator.validate(&config, network)?;
-    let invite = fedimint_core::invite_code::InviteCode::new(
-        config.consensus.api_endpoints()[&config.local.identity]
-            .url
-            .clone(),
-        config.local.identity,
-        config.calculate_federation_id(),
-        None,
-    );
+    let installed =
+        crate::guardian_config::InstalledGuardian::from_config(&config.consensus, &config.local)?;
     Ok(ValidatedGuardian {
-        invite: InviteCode(invite.to_string()),
+        peer: installed.peer,
         material,
     })
 }

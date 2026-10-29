@@ -14,12 +14,13 @@
 //! Two constraints follow from the same fact and are enforced here rather than
 //! documented:
 //!
-//! - **It never writes into an existing seat directory.** It creates, adopts
-//!   (a read-only shape-and-digest check against what an interrupted attempt
-//!   of this same restore left), or refuses, which keeps the destructive-site
+//! - **It never writes into an existing seat directory.** It creates, adopts (a
+//!   read-only shape-and-digest check against what an interrupted attempt of
+//!   this same restore left), or refuses, which keeps the destructive-site
 //!   module outside the deletion paths relevant to
-//!   [`CLAIM-manifold-guardian-preserves-published-guardian-data`](../../specs/CLAIM-manifold-guardian-preserves-published-guardian-data.md)
-//!   and makes a misdirected restore incapable of destroying a live guardian.
+//!   [`CLAIM-manifold-guardian-preserves-published-guardian-data`](../../specs/
+//!   CLAIM-manifold-guardian-preserves-published-guardian-data.md) and makes a
+//!   misdirected restore incapable of destroying a live guardian.
 //! - **It refuses an install that already has an identity.** Nothing mints a
 //!   mnemonic implicitly, so an identity row means an operator onboarded this
 //!   host, and burying that is never what they meant.
@@ -130,19 +131,19 @@ pub(crate) async fn recover(
 /// Retryability across the filesystem writes comes from two mechanics:
 ///
 /// - **Staging.** Archives are written under `restore-staging/` and renamed
-///   into place, so a final seat directory only ever appears complete — a
-///   crash mid-write leaves debris only in the staging root, which the next
-///   attempt wipes (it is a reserved path only an interrupted restore
-///   creates, on a host that has no identity and so no live guardian).
-/// - **Adoption.** A final directory that already exists is adopted if and
-///   only if it is exactly what a staged write renames into place — the
-///   archive files hashing to the digest the seat's document names and
-///   nothing else — which is exactly what a crash
-///   between the renames and the fleet transaction leaves. Anything else
-///   refuses: adoption reads, verifies, and never writes, so the
-///   never-write-into-an-existing-directory constraint relevant to
-///   [`CLAIM-manifold-guardian-preserves-published-guardian-data`](../../specs/CLAIM-manifold-guardian-preserves-published-guardian-data.md)
-///   holds.
+///   into place, so a final seat directory only ever appears complete — a crash
+///   mid-write leaves debris only in the staging root, which the next attempt
+///   wipes (it is a reserved path only an interrupted restore creates, on a
+///   host that has no identity and so no live guardian).
+/// - **Adoption.** A final directory that already exists is adopted if and only
+///   if it is exactly what a staged write renames into place — the archive
+///   files hashing to the digest the seat's document names and nothing else —
+///   which is exactly what a crash between the renames and the fleet
+///   transaction leaves. Anything else refuses: adoption reads, verifies, and
+///   never writes, so the never-write-into-an-existing-directory constraint
+///   relevant to
+///   [`CLAIM-manifold-guardian-preserves-published-guardian-data`](../../specs/
+///   CLAIM-manifold-guardian-preserves-published-guardian-data.md) holds.
 pub(crate) async fn install(
     db: &Db,
     process: &SeatProcessConfig,
@@ -309,7 +310,7 @@ pub(crate) async fn install(
                 .guardian
                 .as_ref()
                 .map(|guardian| RestoredGuardianConfig {
-                    federation_invite: guardian.federation_invite.clone(),
+                    federation_peer: guardian.federation_peer,
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
             incoming_transfer,

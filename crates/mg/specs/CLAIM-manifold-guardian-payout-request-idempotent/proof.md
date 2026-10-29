@@ -82,9 +82,12 @@ metadata enumeration a recovery oracle.
 6. **Committed work remains discoverable (`schema`, `code`).** The SQLite
    no-delete trigger retains linked jobs. If a crash hid the link,
    `PayoutWorker::reconcile` asks the exact stored scope for native metadata
-   and records the returned operation. Guardian jobs retain their public invite
-   in that immutable scope, so decommission, stop, or a later DKG attempt cannot
-   make the wallet unreachable. Both status and await invoke
+   and records the returned operation. Guardian jobs retain only federation id
+   and seat id; a fee wallet the job already joined reopens by that scope alone,
+   so decommission, stop, or loss of the seat's data cannot make it
+   unreachable. A job whose wallet was never joined joins through the invite
+   built from the seat's installed config, which names the job's federation; if
+   that config is gone, the job stays unstarted rather than starting elsewhere. Both status and await invoke
    reconciliation. Repeated sweep invokes the same request-aware wallet start,
    which performs the same lookup under the start fence. Status and await pass
    both the linked operation ID and request ID back through the wallet boundary;

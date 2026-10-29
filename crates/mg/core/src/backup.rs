@@ -18,7 +18,7 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::facts::{SeatFacts, SeatNo};
+use crate::facts::{FederationPeer, SeatFacts, SeatNo};
 use crate::identity::RootMnemonic;
 
 /// One seat's irreplaceable state.
@@ -27,14 +27,14 @@ use crate::identity::RootMnemonic;
 /// different times, so the document is published more than once per seat:
 ///
 /// - **The payment record**, from the moment the seat is created. Its typed
-///   claim evidence cannot be fetched again — obtaining it means submitting
-///   an issuance backed by inputs the FA has already spent — so losing it
-///   loses the FA's money.
+///   claim evidence cannot be fetched again — obtaining it means submitting an
+///   issuance backed by inputs the FA has already spent — so losing it loses
+///   the FA's money.
 /// - **The guardian archive**, only once DKG has written one. It does not live
 ///   *here*: this document changes over a seat's life and is republished each
 ///   time, while `fedimintd`'s config files are written once at the end of the
 ///   ceremony and never again. Welding an immutable payload into a mutable
-///   document means re-publishing key shares every time an invite or a
+///   document means re-publishing key shares every time a formed guardian or a
 ///   decommission is recorded, so the archive travels beside the document
 ///   ([`SeatPublication`]) and this document names it.
 ///
@@ -53,7 +53,7 @@ use crate::identity::RootMnemonic;
 /// [`Self::guardian`] already answers exactly that question: `fedimintd` writes
 /// its config when the ceremony completes and at no other time, so
 /// `guardian.is_some()` is the native-seat predicate. A removed transfer source
-/// instead retains its formed invite in the archive-less tombstone. Carrying
+/// instead retains its formed guardian in the archive-less tombstone. Carrying
 /// an observation timestamp beside it would be a second source of truth for one
 /// fact.
 ///
@@ -82,14 +82,16 @@ pub struct SeatBackupDocument {
     /// deliberately left; relay-side event deletion is honoured at the relay's
     /// discretion and cannot be relied on for this.
     pub decommissioned_at_ms: Option<i64>,
-    /// Transfer recovery facts; absent on legacy/native seats. Omission preserves
-    /// their original document digest. Never contains a live signed grant.
+    /// Transfer recovery facts; absent on legacy/native seats. Omission
+    /// preserves their original document digest. Never contains a live
+    /// signed grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<TransferBackup>,
 }
 
 /// Transfer facts are independent of the guardian archive: a removed source
-/// retains its formed identity and permanent fence without retaining key shares.
+/// retains its formed identity and permanent fence without retaining key
+/// shares.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TransferBackup {
     pub incoming: Option<IncomingTransferBackup>,
@@ -102,8 +104,8 @@ pub struct TransferBackup {
 /// no guardian, and the FA sends the move again after a restore.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IncomingTransferBackup {
-    /// Restore through the import validation/installation path, not straight into
-    /// a running child. The archive remains beside the document.
+    /// Restore through the import validation/installation path, not straight
+    /// into a running child. The archive remains beside the document.
     Accepted {
         binding: crate::transfer_state::TransferMove,
         iroh_api_sk: [u8; 32],
@@ -133,9 +135,57 @@ impl std::fmt::Debug for IncomingTransferBackup {
 /// publishes the archive-less tombstone that keeps a later restore from
 /// re-creating deleted secrets.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "OutgoingTransferBackupRepr")]
 pub struct OutgoingTransferBackup {
     pub phase: crate::transfer_state::OutgoingTransfer,
-    pub federation_invite: InviteCode,
+    /// The guardian the retired seat was.
+    pub federation_peer: FederationPeer,
+}
+
+/// Every [`OutgoingTransferBackup`] shape a published document carries.
+#[derive(Deserialize)]
+struct OutgoingTransferBackupRepr {
+    phase: crate::transfer_state::OutgoingTransfer,
+    #[serde(default)]
+    federation_peer: Option<FederationPeer>,
+    #[serde(default)]
+    federation_invite: Option<InviteCode>,
+}
+
+impl TryFrom<OutgoingTransferBackupRepr> for OutgoingTransferBackup {
+    type Error = String;
+
+    fn try_from(repr: OutgoingTransferBackupRepr) -> Result<Self, Self::Error> {
+        Ok(Self {
+            phase: repr.phase,
+            federation_peer: published_federation_peer(
+                repr.federation_peer,
+                repr.federation_invite,
+            )?,
+        })
+    }
+}
+
+/// The guardian a published document names. Documents from builds before
+/// migration 0020 carry, instead, the invite the seat's child first
+/// reported; it names exactly one guardian, so it converts on read. Writers
+/// emit only `federation_peer`.
+fn published_federation_peer(
+    federation_peer: Option<FederationPeer>,
+    federation_invite: Option<InviteCode>,
+) -> Result<FederationPeer, String> {
+    match (federation_peer, federation_invite) {
+        (Some(peer), None) => Ok(peer),
+        (None, Some(invite)) => invite
+            .0
+            .parse::<fedimint_core::invite_code::InviteCode>()
+            .ok()
+            .as_ref()
+            .and_then(FederationPeer::from_invite)
+            .ok_or_else(|| "formed invite does not name one guardian of a federation".to_owned()),
+        (None, None) => Err("formed seat names no guardian".to_owned()),
+        (Some(_), Some(_)) => Err("formed seat names its guardian twice".to_owned()),
+    }
 }
 
 /// The part of a seat's payment that cannot be reconstructed.
@@ -162,17 +212,42 @@ impl PaymentBackup {
 /// carries a *reference* to it rather than a copy. Presence is also the
 /// formed-seat fact the lifecycle needs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "GuardianArchiveRefRepr")]
 pub struct GuardianArchiveRef {
     /// Digest of the archive published beside this seat's document. This is
     /// what binds a given archive to *this seat's* document: the storage
     /// adapter checks the reassembled archive against it on restore.
     pub archive_sha256: String,
-    /// The federation's invite code: names the federation this seat guards, so
-    /// a recovered fleet can be reported to an operator in terms of the
-    /// federations it rejoins rather than opaque seat ids. It belongs here
-    /// rather than in the archive because it is observed from the child after
-    /// the ceremony, while the archive is fixed at the ceremony's end.
-    pub federation_invite: Option<InviteCode>,
+    /// The guardian this seat is: names the federation it guards, so a
+    /// recovered fleet can be reported to an operator in terms of the
+    /// federations it rejoins rather than opaque seat ids, and is the formed
+    /// row a restore records. An invite is not carried: it is built from the
+    /// restored config like any other seat's.
+    pub federation_peer: FederationPeer,
+}
+
+/// Every [`GuardianArchiveRef`] shape a published document carries.
+#[derive(Deserialize)]
+struct GuardianArchiveRefRepr {
+    archive_sha256: String,
+    #[serde(default)]
+    federation_peer: Option<FederationPeer>,
+    #[serde(default)]
+    federation_invite: Option<InviteCode>,
+}
+
+impl TryFrom<GuardianArchiveRefRepr> for GuardianArchiveRef {
+    type Error = String;
+
+    fn try_from(repr: GuardianArchiveRefRepr) -> Result<Self, Self::Error> {
+        Ok(Self {
+            archive_sha256: repr.archive_sha256,
+            federation_peer: published_federation_peer(
+                repr.federation_peer,
+                repr.federation_invite,
+            )?,
+        })
+    }
 }
 
 /// The `fedimintd` config files a restored seat needs, carried opaquely.
@@ -216,11 +291,11 @@ impl GuardianArchive {
 }
 
 /// `fedimintd` config file names, as written into a seat's data directory.
-/// Named here because this module is the only thing that reads them; the
-/// daemon otherwise treats the directory as the child's private business
-/// (ARCH-manifold-guardian-seat-processes).
-const LOCAL_CONFIG_FILE: &str = "local.json";
-const CONSENSUS_CONFIG_FILE: &str = "consensus.json";
+/// Named here because this module and [`crate::guardian_config`] are the
+/// only things that read them; the daemon otherwise treats the directory as
+/// the child's private business (ARCH-manifold-guardian-seat-processes).
+pub(crate) const LOCAL_CONFIG_FILE: &str = "local.json";
+pub(crate) const CONSENSUS_CONFIG_FILE: &str = "consensus.json";
 pub(crate) const PRIVATE_CONFIG_FILE: &str = "private.json";
 pub(crate) async fn read_optional(path: std::path::PathBuf) -> std::io::Result<Option<String>> {
     match tokio::fs::read_to_string(&path).await {
@@ -403,8 +478,8 @@ impl SeatBackupDocument {
             );
             if let Some(guardian) = &self.guardian {
                 anyhow::ensure!(
-                    guardian.federation_invite.as_ref() == Some(&outgoing.federation_invite),
-                    "transfer retirement invite mismatch"
+                    guardian.federation_peer == outgoing.federation_peer,
+                    "transfer retirement guardian mismatch"
                 );
             }
             anyhow::ensure!(
@@ -416,19 +491,12 @@ impl SeatBackupDocument {
         if let Some(incoming) = &transfer.incoming {
             let binding = match incoming {
                 IncomingTransferBackup::Accepted { binding, .. } => {
-                    let invite = self
-                        .guardian
-                        .as_ref()
-                        .and_then(|guardian| guardian.federation_invite.as_ref())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("accepted transfer lacks guardian identity")
-                        })?;
-                    let invite: fedimint_core::invite_code::InviteCode = invite
-                        .0
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("invalid imported federation invite"))?;
+                    let guardian = self.guardian.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("accepted transfer lacks guardian identity")
+                    })?;
                     anyhow::ensure!(
-                        invite.federation_id().to_string() == binding.federation_id.0,
+                        guardian.federation_peer.federation_id.to_string()
+                            == binding.federation_id.0,
                         "imported federation identity mismatch"
                     );
                     binding
@@ -511,7 +579,7 @@ pub(crate) fn seat_document_sha256(document: &SeatBackupDocument) -> String {
 /// else, so a publication without its archive is not that seat's publication:
 /// this refuses to assemble one — leaving the worker to retry, which is what
 /// should happen while `fedimintd` is still writing its config out. The
-/// predicate is the durable formed invite, which a mnemonic restore also
+/// predicate is the durable formed row, which a mnemonic restore also
 /// re-establishes, so no restart or forgotten runtime flag can downgrade a
 /// relay document to "no archive exists".
 ///
@@ -520,7 +588,7 @@ pub(crate) fn seat_document_sha256(document: &SeatBackupDocument) -> String {
 /// republication: immutable, confirmed, done.
 ///
 /// It reads only from the database and the seat's data directory, never from
-/// the running child. The invite is written to the immutable formed-seat row
+/// the running child. The guardian is written to the immutable formed-seat row
 /// when the final configuration is installed, so a rebuild with no child still
 /// reproduces it.
 pub(crate) async fn seat_publication_plan(
@@ -535,12 +603,11 @@ pub(crate) async fn seat_publication_plan(
         payment,
         incoming,
         outgoing,
-        formed_invite,
+        formed,
         decommissioned_at_ms,
     } = db.seat_recovery_facts(&facts.seat_id).await?;
     let payment = payment.map(|record| PaymentBackup::from_record(&record));
     let removed = outgoing == Some(crate::transfer_state::OutgoingTransfer::Removed);
-    let federation_invite = formed_invite.clone();
 
     // An accepted import has its guardian in the final directory and its
     // formed row before the acceptance is committed, so it reads like a
@@ -553,7 +620,7 @@ pub(crate) async fn seat_publication_plan(
             // Only an immutable formed row associates the final directory with a
             // completed federation. Until it lands, the document carries no
             // guardian even if event delivery left files in place.
-            None if federation_invite.is_none() => (None, None),
+            None if formed.is_none() => (None, None),
             None => {
                 let seat_data_dir = crate::seat_process::seat_data_dir(process, facts.seat_no);
                 let archive = read_guardian_archive(&seat_data_dir).await?;
@@ -567,10 +634,16 @@ pub(crate) async fn seat_publication_plan(
             }
         }
     };
-    let guardian = archive_sha256.map(|archive_sha256| GuardianArchiveRef {
-        archive_sha256,
-        federation_invite,
-    });
+    let guardian = archive_sha256
+        .map(|archive_sha256| {
+            formed
+                .map(|federation_peer| GuardianArchiveRef {
+                    archive_sha256,
+                    federation_peer,
+                })
+                .ok_or_else(|| anyhow::anyhow!("archived guardian lacks formed identity"))
+        })
+        .transpose()?;
     let mut document = SeatBackupDocument::new(facts, payment, guardian, decommissioned_at_ms);
     let accepted_backup = incoming.filter(|_| !removed).and_then(|incoming| {
         let keys = incoming.accepted()?;
@@ -586,10 +659,10 @@ pub(crate) async fn seat_publication_plan(
             incoming: accepted_backup,
             outgoing: outgoing
                 .map(|phase| {
-                    formed_invite
-                        .map(|federation_invite| OutgoingTransferBackup {
+                    formed
+                        .map(|federation_peer| OutgoingTransferBackup {
                             phase,
-                            federation_invite,
+                            federation_peer,
                         })
                         .ok_or_else(|| anyhow::anyhow!("retired source lacks formed identity"))
                 })

@@ -1,9 +1,10 @@
-use super::*;
-use crate::transfer_native::{ValidatedGuardian, validate_material};
-use crate::transfer_state::{IncomingState, TransferMove, TransferPhase};
 use fedi_decentralized_service_manifold_guardian::{
     Locator, MgSignedRequest, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest,
 };
+
+use super::*;
+use crate::transfer_native::{ValidatedGuardian, validate_material};
+use crate::transfer_state::{IncomingState, TransferMove, TransferPhase};
 
 struct SourceCall {
     request: TransferSeatRequest,
@@ -621,7 +622,7 @@ async fn install_accepts_and_starts_the_imported_guardian_without_a_backup_barri
     assert!(
         d.fleet
             .db
-            .formed_federation_invite(&d.grant.destination_seat_id)
+            .formed_peer(&d.grant.destination_seat_id)
             .await
             .unwrap()
             .is_some()
@@ -755,7 +756,7 @@ async fn install_accepts_the_directory_a_crashed_attempt_left_in_place() {
     assert!(
         d.fleet
             .db
-            .formed_federation_invite(&d.grant.destination_seat_id)
+            .formed_peer(&d.grant.destination_seat_id)
             .await
             .unwrap()
             .is_some(),

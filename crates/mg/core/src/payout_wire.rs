@@ -1,6 +1,6 @@
 //! Stable operator-facing payout and wallet-drain response vocabulary.
 
-use fedi_decentralized_service_manifold_guardian::{FederationId, InviteCode, SeatId};
+use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 
 use crate::wallet::PayoutRequestId;
 
@@ -13,7 +13,6 @@ pub enum PayoutScopeWire {
     GuardianFee {
         federation_id: FederationId,
         seat_id: SeatId,
-        invite_code: InviteCode,
     },
 }
 

@@ -91,7 +91,7 @@ export type CompletionCallbackStatus =
 export type SeatPhase =
   | { phase: 'created' }
   | { phase: 'dkg_in_progress' }
-  | { phase: 'data_loss'; invite_code: InviteCode }
+  | { phase: 'data_loss'; federation_id: FederationId }
   | { phase: 'running'; invite_code: InviteCode };
 
 export type SeatReport =
@@ -357,7 +357,6 @@ export type PayoutScope =
       kind: 'guardian_fee';
       federation_id: FederationId;
       seat_id: SeatId;
-      invite_code: string;
     };
 export interface DestinationCap {
   maximum_msat: number;

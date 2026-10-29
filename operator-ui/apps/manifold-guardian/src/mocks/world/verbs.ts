@@ -216,8 +216,7 @@ const sweepGuardianFees: Verb<'SweepGuardianFees'> = ({ seat_id, request_id }) =
     scope: {
       kind: 'guardian_fee',
       federation_id: ledger.federation_id,
-      seat_id,
-      invite_code: `mock-invite-${ledger.federation_id}`
+      seat_id
     },
     destination: getState().payoutDestination!,
     operation: {

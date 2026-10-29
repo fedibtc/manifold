@@ -4,22 +4,20 @@ mod seats;
 pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 mod transfers;
 
-pub(crate) use seats::SeatAdmissionResult;
-pub(crate) use seats::SeatRecoveryFacts;
-pub(crate) use seats::{CompletionCallbackOutcome, CompletionCallbackRecord};
-pub use seats::{
-    NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,
-};
-
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::wallet::Msats;
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, MonthlyDataBudget, OfferEpoch, Plan,
+    FederationId, MonthlyDataBudget, OfferEpoch, Plan, SeatId,
+};
+pub(crate) use seats::{
+    CompletionCallbackOutcome, CompletionCallbackRecord, SeatAdmissionResult, SeatRecoveryFacts,
+};
+pub use seats::{
+    NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -33,7 +31,7 @@ use crate::host_pressure::{
 use crate::identity::RootMnemonic;
 use crate::ordering_latency::{OrderingLatencyAverage, OrderingLatencyState};
 use crate::seat_readiness::{Uptime, UptimeScores};
-use fedi_decentralized_service_manifold_guardian::SeatId;
+use crate::wallet::Msats;
 
 pub(crate) const IDENTITY_ID: i64 = 1;
 
@@ -262,7 +260,12 @@ impl Db {
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // One connection: migration 0020 reads what the decoding step left in
+        // that connection's temp schema.
+        let mut conn = pool.acquire().await?;
+        decode_formed_invites(&mut conn).await?;
+        sqlx::migrate!("./migrations").run(&mut *conn).await?;
+        drop(conn);
 
         Ok(Self {
             pool,
@@ -333,12 +336,12 @@ impl Db {
 
     /// Write the identity onboarding chose, once.
     ///
-    /// A Manifold Guardian has exactly one mnemonic and acquires it exactly once,
-    /// at onboarding: either freshly generated, or the phrase a restore
-    /// recovered from ([`crate::onboarding`]). Nothing else creates one — a
-    /// daemon that finds no identity row has not begun onboarding and does not
-    /// invent one for itself, because a host that was going to be recovered
-    /// would then be carrying a mnemonic nobody asked for.
+    /// A Manifold Guardian has exactly one mnemonic and acquires it exactly
+    /// once, at onboarding: either freshly generated, or the phrase a
+    /// restore recovered from ([`crate::onboarding`]). Nothing else creates
+    /// one — a daemon that finds no identity row has not begun onboarding
+    /// and does not invent one for itself, because a host that was going to
+    /// be recovered would then be carrying a mnemonic nobody asked for.
     ///
     /// A second call fails on the primary key, which is the enforcement of
     /// "onboarding happens once".
@@ -649,7 +652,8 @@ impl Db {
         )
     }
 
-    /// Replace the feature cache without touching payment state or the offer epoch.
+    /// Replace the feature cache without touching payment state or the offer
+    /// epoch.
     pub async fn store_feature_config(&self, publisher: &str, event: &str) -> Result<(), DbError> {
         sqlx::query("INSERT INTO nostr_feature_config_v1 (publisher, event_json) VALUES (?, ?) ON CONFLICT (publisher) DO UPDATE SET event_json = excluded.event_json").bind(publisher).bind(event).execute(&self.pool).await?;
         Ok(())
@@ -1466,6 +1470,56 @@ pub enum DbError {
     HolderAuthorizationIssuedAtTooFarFuture,
     #[error("telemetry capability for seat {seat_id} is disabled")]
     TelemetryCapabilityDisabled { seat_id: SeatId },
+}
+
+/// Decode every invite a pre-0020 `formed_seats` row stores into the guardian
+/// it names, for migration 0020 to join on. Runs on the connection that then
+/// migrates and writes only that connection's temp schema, so a stored invite
+/// that does not decode fails the open before anything durable changes. A
+/// database already past 0020, or a new one, has nothing to decode.
+async fn decode_formed_invites(conn: &mut sqlx::SqliteConnection) -> Result<(), DbError> {
+    let stores_invites: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('formed_seats') \
+         WHERE name = 'federation_invite')",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if !stores_invites {
+        return Ok(());
+    }
+    sqlx::query(
+        "CREATE TEMP TABLE IF NOT EXISTS formed_invite_peers (\
+         federation_invite TEXT PRIMARY KEY NOT NULL, \
+         federation_id TEXT NOT NULL, peer_id INTEGER NOT NULL)",
+    )
+    .execute(&mut *conn)
+    .await?;
+    let rows: Vec<(Vec<u8>, String)> =
+        sqlx::query_as("SELECT quote_id, federation_invite FROM formed_seats")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (quote_id, invite) in rows {
+        let peer = invite
+            .parse::<fedimint_core::invite_code::InviteCode>()
+            .ok()
+            .as_ref()
+            .and_then(crate::facts::FederationPeer::from_invite)
+            .ok_or_else(|| DbError::CorruptRow {
+                table: "formed_seats",
+                key: hex::encode(&quote_id),
+                detail: "stored invite does not name one guardian of a federation".to_owned(),
+            })?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO formed_invite_peers \
+             (federation_invite, federation_id, peer_id) VALUES (?, ?, ?)",
+        )
+        .bind(&invite)
+        .bind(peer.federation_id.to_string())
+        .bind(i64::from(u16::from(peer.peer_id)))
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Take the single-instance lock, or fail if another daemon holds it

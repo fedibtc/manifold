@@ -60,7 +60,7 @@ async fn restored_retirement_fences_override_missing_directory_and_never_spawn()
         fleet.shutdown().await;
         fleet
             .db
-            .record_formed(&seat_id, &InviteCode("retained-test-invite".into()))
+            .record_formed(&seat_id, &crate::test_support::formed_peer_fixture())
             .await
             .unwrap();
         assert!(fleet.db.retire_for_transfer(&seat_id).await.unwrap());
@@ -550,7 +550,7 @@ async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
         .await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     assert!(matches!(
-        seat.cached_report_for_test(),
+        seat.report().await.unwrap(),
         SeatReport::Active {
             phase: SeatPhase::Running { .. },
             health: SeatHealth::Healthy,
@@ -915,8 +915,9 @@ async fn accepted_replay_repairs_a_missing_runtime_registry_entry() {
 
 #[tokio::test]
 async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_material() {
-    use crate::transfer_native::tests::{CoreConfigValidator, material, native_config};
     use fedi_decentralized_service_manifold_guardian::{Locator, SeatTransferGrant, Timestamp};
+
+    use crate::transfer_native::tests::{CoreConfigValidator, material, native_config};
 
     let temp = TempDir::new().unwrap();
     let mut config = config(&temp, 1, 31_225).await;
@@ -987,12 +988,7 @@ async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_materi
     assert!(
         fleet
             .db
-            .accept_transfer(
-                &seat_id,
-                &admission.binding,
-                &package.keys,
-                &validated.invite,
-            )
+            .accept_transfer(&seat_id, &admission.binding, &package.keys, &validated.peer,)
             .await
             .unwrap()
     );
@@ -1076,7 +1072,7 @@ async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_materi
         .await
         .unwrap();
     let db = Db::open(temp.path()).await.unwrap();
-    db.record_formed(&seat_id, &validated.invite).await.unwrap();
+    db.record_formed(&seat_id, &validated.peer).await.unwrap();
     assert_eq!(
         db.deliverable_completion_callbacks().await.unwrap().len(),
         1
@@ -1091,7 +1087,7 @@ async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_materi
     reopened.shutdown().await;
     drop(reopened);
     let db = Db::open(temp.path()).await.unwrap();
-    db.record_formed(&seat_id, &validated.invite).await.unwrap();
+    db.record_formed(&seat_id, &validated.peer).await.unwrap();
     assert!(db.retire_for_transfer(&seat_id).await.unwrap());
     assert!(db.record_transfer_removal(&seat_id).await.unwrap());
     tokio::fs::remove_dir_all(&data).await.unwrap();
@@ -1907,15 +1903,17 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
 /// The readiness worker follows the setup-payment policy's minimum release
 /// and maximum pressures: raising the minimum above this release, or a
 /// maximum below the host's CPU, IO or memory pressure average, stops
-/// discovery and quoting at the next run, and undoing either restores them. The MG still serves its
-/// seats meanwhile, so every one of those runs records an up uptime slot.
+/// discovery and quoting at the next run, and undoing either restores them. The
+/// MG still serves its seats meanwhile, so every one of those runs records an
+/// up uptime slot.
 #[tokio::test]
 async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MaxPressurePercent};
+
     use crate::host_pressure::{HostPressure, PressurePermille};
     use crate::seat_readiness::{ReadinessProbe, run};
-    use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MaxPressurePercent};
 
     /// Passing prerequisites, one run per step the test allows, each run in
     /// the next uptime slot.
@@ -2284,9 +2282,10 @@ async fn the_ordering_latency_check_closes_new_seats_without_costing_uptime() {
 /// the stored averages intact.
 #[tokio::test]
 async fn the_pressure_history_survives_restart() {
+    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+
     use crate::host_pressure::PressureTotals;
     use crate::seat_readiness::{ReadinessProbe, run};
-    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 
     /// Passing prerequisites, one run, then no more.
     struct OnceProbe(bool);
@@ -2743,7 +2742,7 @@ async fn assert_terminal_start_cleans_session(step: FakeDkgStep, quote: u8, firs
     .expect("replacement retries without FA");
     tokio::time::timeout(Duration::from_secs(1), async {
         while !matches!(
-            fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+            fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
             SeatReport::Active {
                 phase: SeatPhase::DkgInProgress,
                 ..
@@ -2861,7 +2860,9 @@ async fn daemon_reopen_replays_validated_codes_without_fa_and_preserves_identity
             reopened
                 .seat_by_id(&seat_id)
                 .unwrap()
-                .cached_report_for_test(),
+                .report()
+                .await
+                .unwrap(),
             SeatReport::Active {
                 phase: SeatPhase::DkgInProgress,
                 ..
@@ -2883,7 +2884,9 @@ async fn daemon_reopen_replays_validated_codes_without_fa_and_preserves_identity
         reopened
             .seat_by_id(&seat_id)
             .unwrap()
-            .cached_report_for_test(),
+            .report()
+            .await
+            .unwrap(),
         SeatReport::Active {
             phase: SeatPhase::DkgInProgress,
             ..
@@ -3092,7 +3095,7 @@ async fn failed_child_stop_permanently_refuses_replacement_but_records_decommiss
     let codes = scripted_dkg_codes(&fleet, &fa_id, &seat_id).await;
     start_dkg(&fleet, &fa_id, &seat_id, &codes).await.unwrap();
     assert!(matches!(
-        fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+        fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
         SeatReport::Active {
             phase: SeatPhase::DkgInProgress,
             health: SeatHealth::Healthy,
@@ -3104,7 +3107,7 @@ async fn failed_child_stop_permanently_refuses_replacement_but_records_decommiss
         Err(SeatVerbError::Internal(_))
     ));
     assert!(matches!(
-        fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+        fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
         SeatReport::Active {
             phase: SeatPhase::Created,
             health: SeatHealth::Unavailable,
@@ -3169,13 +3172,8 @@ async fn driven_dkg_persists_config_before_a_later_child_death() {
 
     start_dkg(&fleet, &fa_id, &seat_id, &codes).await.unwrap();
     for _ in 0..500 {
-        if fleet
-            .db
-            .formed_federation_invite(&seat_id)
-            .await
-            .unwrap()
-            .as_ref()
-            == Some(&invite)
+        if fleet.db.formed_peer(&seat_id).await.unwrap()
+            == Some(crate::test_support::formed_peer_fixture())
         {
             tokio::time::timeout(Duration::from_secs(1), async {
                 while spawner.spawn_count() < 2 {
@@ -3185,7 +3183,7 @@ async fn driven_dkg_persists_config_before_a_later_child_death() {
             .await
             .expect("formed child respawns after capped backoff");
             assert!(matches!(
-                fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+                fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
                 SeatReport::Active {
                     phase: SeatPhase::Running { .. },
                     ..
@@ -3225,16 +3223,11 @@ async fn configured_child_hello_repairs_missing_invite_without_status_request() 
         .unwrap();
     let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     for _ in 0..500 {
-        if fleet
-            .db
-            .formed_federation_invite(&seat_id)
-            .await
-            .unwrap()
-            .as_ref()
-            == Some(&invite)
+        if fleet.db.formed_peer(&seat_id).await.unwrap()
+            == Some(crate::test_support::formed_peer_fixture())
         {
             assert!(matches!(
-                fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+                fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
                 SeatReport::Active {
                     phase: SeatPhase::Running { .. },
                     ..
@@ -3246,6 +3239,103 @@ async fn configured_child_hello_repairs_missing_invite_without_status_request() 
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("AlreadyConfigured was not durably mirrored");
+}
+
+/// A seat hands out the invite its installed config builds, however the
+/// guardian was first recorded: here an invite the child reported through
+/// another endpoint before formed rows stored only the guardian. Once the
+/// config is gone the seat still names its federation but has no invite.
+#[tokio::test]
+async fn a_formed_seat_builds_its_invite_from_the_installed_config() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_248).await;
+    let formed = crate::test_support::formed_peer_fixture();
+    let reported_earlier = fedimint_core::invite_code::InviteCode::new(
+        fedimint_core::util::SafeUrl::parse("wss://earlier-endpoint.example").unwrap(),
+        formed.peer_id,
+        formed.federation_id,
+        None,
+    );
+    config.process_spawner = SeatProcessSpawner::Fake(Arc::new(
+        FakeSeatProcessSpawner::configured(&reported_earlier.to_string()),
+    ));
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (_fa_id, seat_id) = create_free_seat(&fleet, 129).await;
+    fleet.shutdown().await;
+    fleet
+        .db
+        .record_formed(
+            &seat_id,
+            &crate::facts::FederationPeer::from_invite(&reported_earlier).unwrap(),
+        )
+        .await
+        .unwrap();
+    let data_dir = seat_data_dir(&config.process, SeatNo(0));
+    crate::test_support::write_installed_config(
+        &data_dir,
+        &crate::test_support::installed_config_fixture(),
+    )
+    .await;
+    drop(fleet);
+
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let built = crate::test_support::installed_invite_fixture();
+    assert_ne!(built.0, reported_earlier.to_string());
+    assert_eq!(seat.invite_code().await.unwrap(), built);
+    assert!(matches!(
+        seat.report().await.unwrap(),
+        SeatReport::Active {
+            phase: SeatPhase::Running { invite_code },
+            ..
+        } if invite_code == built
+    ));
+    assert_eq!(
+        fleet
+            .telemetry_seats()
+            .await
+            .into_iter()
+            .map(|seat| seat.invite_code)
+            .collect::<Vec<_>>(),
+        [Some(built)]
+    );
+
+    tokio::fs::write(data_dir.join("consensus.json"), b"{")
+        .await
+        .unwrap();
+    assert!(seat.report().await.is_err());
+    assert_eq!(fleet.running_seat_metrics_ports().await[0].0, seat_id);
+    tokio::fs::remove_file(data_dir.join("consensus.json"))
+        .await
+        .unwrap();
+    assert!(seat.report().await.is_err());
+    tokio::fs::remove_dir_all(&data_dir).await.unwrap();
+    assert!(fleet.running_seat_metrics_ports().await.is_empty());
+    assert!(matches!(
+        seat.report().await.unwrap(),
+        SeatReport::Active {
+            phase: SeatPhase::DataLoss { federation_id },
+            health: SeatHealth::Unavailable,
+        } if federation_id == formed.federation_id
+    ));
+    assert!(matches!(
+        seat.invite_code().await,
+        Err(SeatVerbError::WrongState {
+            status: ServiceStatus::DataLoss
+        })
+    ));
+    assert_eq!(
+        fleet
+            .telemetry_seats()
+            .await
+            .into_iter()
+            .map(|seat| seat.invite_code)
+            .collect::<Vec<_>>(),
+        [None]
+    );
+    fleet.shutdown().await;
 }
 
 #[tokio::test]
@@ -3260,7 +3350,6 @@ async fn formed_seat_without_its_final_directory_reports_data_loss() {
     let (fa_id, seat_id) = create_free_seat(&fleet, 125).await;
     let codes = scripted_dkg_codes(&fleet, &fa_id, &seat_id).await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
-    let invite = InviteCode(fixture_invite_code(&fixture_client_config(), 0));
     fleet
         .form_fake_child(&seat_id, running_federation(0, None))
         .await;
@@ -3281,13 +3370,13 @@ async fn formed_seat_without_its_final_directory_reports_data_loss() {
     assert!(matches!(
         seat.report().await.unwrap(),
         SeatReport::Active {
-            phase: SeatPhase::DataLoss { invite_code },
+            phase: SeatPhase::DataLoss { federation_id },
             health: SeatHealth::Unavailable,
-        } if invite_code == invite
+        } if federation_id == crate::test_support::formed_peer_fixture().federation_id
     ));
     assert!(
         matches!(
-            seat.cached_report_for_test(),
+            seat.report().await.unwrap(),
             SeatReport::Active {
                 phase: SeatPhase::DataLoss { .. },
                 ..
@@ -3376,7 +3465,7 @@ async fn formed_watchdog_tracks_health_without_refetching_the_durable_invite() {
             .unwrap(),
         SeatReport::Active {
             phase: SeatPhase::Running {
-                invite_code: invite
+                invite_code: crate::test_support::installed_invite_fixture()
             },
             health: SeatHealth::Healthy,
         }
@@ -3385,6 +3474,14 @@ async fn formed_watchdog_tracks_health_without_refetching_the_durable_invite() {
     tokio::fs::remove_dir_all(&data_dir).await.unwrap();
     seat.watchdog_tick_for_test().await;
     tokio::fs::create_dir_all(&data_dir).await.unwrap();
+    // A final directory that reappears without its config is not a running
+    // seat with some invite.
+    assert!(seat.report().await.is_err());
+    crate::test_support::write_installed_config(
+        &data_dir,
+        &crate::test_support::installed_config_fixture(),
+    )
+    .await;
     assert!(matches!(
         seat.report().await.unwrap(),
         SeatReport::Active {
@@ -3458,7 +3555,7 @@ async fn status_is_prompt_while_the_seat_loop_is_waiting_on_health() {
             .unwrap(),
         SeatReport::Active {
             phase: SeatPhase::Running {
-                invite_code: invite,
+                invite_code: crate::test_support::installed_invite_fixture(),
             },
             health: SeatHealth::Unavailable,
         }
@@ -3629,8 +3726,8 @@ async fn restart_losing_the_completion_race_reports_formed_without_starting_agai
         ServiceStatus::Running
     );
     assert_eq!(
-        fleet.db.formed_federation_invite(&seat_id).await.unwrap(),
-        Some(invite)
+        fleet.db.formed_peer(&seat_id).await.unwrap(),
+        Some(crate::test_support::formed_peer_fixture())
     );
     assert_eq!(
         spawner.spawn_count(),
@@ -3679,7 +3776,7 @@ async fn restart_from_uninitialized_replaces_the_child_and_starts_dkg() {
         ServiceStatus::DkgInProcess
     );
     assert_eq!(
-        fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
+        fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
         SeatReport::Active {
             phase: SeatPhase::DkgInProgress,
             health: SeatHealth::Healthy,
@@ -3814,12 +3911,7 @@ async fn start_dkg_rejects_invalid_bare_codes_before_any_side_effect() {
         );
         assert!(!child.consensus_running, "{case}: DKG started");
         assert!(
-            fleet
-                .db
-                .formed_federation_invite(&seat_id)
-                .await
-                .unwrap()
-                .is_none(),
+            fleet.db.formed_peer(&seat_id).await.unwrap().is_none(),
             "{case}: formed record written"
         );
     }
@@ -3977,7 +4069,7 @@ async fn one_mg_capability_authorizes_nonblocking_discovery_metrics_and_journals
 
     // Created seats have unavailable children. Discovery reads only the
     // shared cache, so it still lists both immediately with no invite.
-    let seats = fleet.telemetry_seats();
+    let seats = fleet.telemetry_seats().await;
     assert_eq!(seats.len(), 2);
     assert!(seats.iter().all(|seat| seat.invite_code.is_none()));
     assert_eq!(
@@ -5508,14 +5600,14 @@ impl crate::backup::BackupSink for FakeBackupSink {
 /// Write the config files fedimintd leaves behind once DKG completes.
 async fn write_guardian_config_files(config: &FleetConfig, seat_no: crate::facts::SeatNo) {
     let dir = seat_data_dir(&config.process, seat_no);
-    tokio::fs::create_dir_all(&dir).await.unwrap();
-    for (name, contents) in [
-        ("private.json", r#"{"shares":"deadbeef"}"#),
-        ("local.json", r#"{"api_bind":"127.0.0.1:1"}"#),
-        ("consensus.json", r#"{"api_endpoints":{}}"#),
-    ] {
-        tokio::fs::write(dir.join(name), contents).await.unwrap();
-    }
+    crate::test_support::write_installed_config(
+        &dir,
+        &crate::test_support::installed_config_fixture(),
+    )
+    .await;
+    tokio::fs::write(dir.join("private.json"), r#"{"shares":"deadbeef"}"#)
+        .await
+        .unwrap();
 }
 
 /// Run the ceremony for real against a fake in setup mode (it reaches
@@ -5640,7 +5732,7 @@ async fn a_wedged_relay_never_withholds_an_invite_code() {
 
     assert_eq!(
         seat.invite_code().await.unwrap(),
-        InviteCode("fed11-fake-invite".to_owned())
+        crate::test_support::installed_invite_fixture()
     );
     let report = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -5663,7 +5755,7 @@ async fn a_wedged_relay_never_withholds_an_invite_code() {
         report,
         SeatReport::Active {
             phase: SeatPhase::Running {
-                invite_code: InviteCode("fed11-fake-invite".to_owned())
+                invite_code: crate::test_support::installed_invite_fixture()
             },
             health: SeatHealth::Healthy,
         }
@@ -5726,8 +5818,8 @@ async fn a_missing_guardian_archive_holds_the_publication_not_the_seat() {
         }
     })
     .await
-    .expect("ConfigPersisted records the invite without a read-side fallback");
-    assert_eq!(invite, InviteCode("fed11-fake-invite".to_owned()));
+    .expect("ConfigPersisted records the formed guardian without a read-side fallback");
+    assert_eq!(invite, crate::test_support::installed_invite_fixture());
     tokio::time::sleep(Duration::from_millis(100)).await;
     let published = sink.published();
     assert_eq!(published.len(), 1, "no config-less document was published");
@@ -5749,20 +5841,15 @@ async fn a_formed_seats_document_carries_its_federation_guard_and_tombstone() {
     let _fake = run_test_dkg(&fleet, &fa_id, &seat_id).await;
 
     write_guardian_config_files(&config, seat.facts().seat_no).await;
-    // The probe that observes consensus records the federation invite and then
-    // queues the document, so drive probes until a document carrying both
-    // lands. Publications converge rather than being atomic with the writes
-    // they describe: a publication already in flight when the invite was
-    // recorded carries the config without it, and the mark republishes.
+    // Formation records the guardian and then queues the document, so wait
+    // for a document carrying the archive reference to land.
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let _ = seat.invite_code().await;
-            if sink.published().last().is_some_and(|document| {
-                document
-                    .guardian
-                    .as_ref()
-                    .is_some_and(|config| config.federation_invite.is_some())
-            }) {
+            if sink
+                .published()
+                .last()
+                .is_some_and(|document| document.guardian.is_some())
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -5774,8 +5861,8 @@ async fn a_formed_seats_document_carries_its_federation_guard_and_tombstone() {
     let formed = sink.published().pop().unwrap();
     let guardian = formed.guardian.as_ref().unwrap();
     assert_eq!(
-        guardian.federation_invite,
-        Some(InviteCode("fed11-fake-invite".to_owned())),
+        guardian.federation_peer,
+        crate::test_support::formed_peer_fixture(),
         "the digest is useless without the federation it belongs to"
     );
     // No ceremony state is carried: the presence of a guardian archive is
@@ -5795,8 +5882,8 @@ async fn a_formed_seats_document_carries_its_federation_guard_and_tombstone() {
     let retired = sink.published().pop().unwrap();
     assert!(retired.decommissioned_at_ms.is_some());
     assert_eq!(
-        retired.guardian.as_ref().unwrap().federation_invite,
-        guardian.federation_invite,
+        retired.guardian.as_ref().unwrap().federation_peer,
+        guardian.federation_peer,
         "the tombstone republish must not drop what earlier publications recorded"
     );
 }

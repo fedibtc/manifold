@@ -209,7 +209,7 @@ async fn periodic_scan_delivers_when_every_wake_is_missed() {
         .unwrap();
     fleet
         .db
-        .record_formed(&seat_id, &InviteCode("invite".to_owned()))
+        .record_formed(&seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
 

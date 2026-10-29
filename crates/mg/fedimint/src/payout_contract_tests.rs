@@ -69,25 +69,17 @@ fn internal_payout_projection_matches_committed_operator_contracts() {
 }
 
 #[test]
-fn guardian_scope_invite_conversion_has_the_operator_shape() {
-    let invite = fedimint_core::invite_code::InviteCode::new(
-        fedimint_core::util::SafeUrl::parse("https://guardian.example").unwrap(),
-        fedimint_core::PeerId::from(0),
-        "02".repeat(32).parse().unwrap(),
-        None,
-    );
+fn guardian_scope_conversion_has_the_operator_shape() {
     let scope = PayoutScope::GuardianFee {
-        federation_id: FederationId(invite.federation_id().to_string()),
+        federation_id: FederationId("02".repeat(32)),
         seat_id: SeatId::new("01".repeat(32)).unwrap(),
-        invite_code: invite.clone(),
     };
     assert_eq!(
         serde_json::to_value(scope.to_wire()).unwrap(),
         serde_json::json!({
             "kind": "guardian_fee",
-            "federation_id": invite.federation_id().to_string(),
+            "federation_id": "02".repeat(32),
             "seat_id": "01".repeat(32),
-            "invite_code": invite.to_string(),
         })
     );
 }

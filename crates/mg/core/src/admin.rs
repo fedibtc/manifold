@@ -83,7 +83,8 @@ pub enum AdminRequest {
     PayoutDestination,
     /// Replace or clear the global Lightning destination.
     SetPayoutDestination { destination: Option<String> },
-    /// Sweep one setup-payment wallet through an automatically selected gateway.
+    /// Sweep one setup-payment wallet through an automatically selected
+    /// gateway.
     SweepPaymentFees {
         #[ts(type = "FederationId")]
         federation_id: FederationId,
@@ -139,7 +140,8 @@ pub enum AdminRequest {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
     },
-    /// Sweep collected guardian-fee ecash through an automatically selected gateway.
+    /// Sweep collected guardian-fee ecash through an automatically selected
+    /// gateway.
     SweepGuardianFees {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
@@ -943,11 +945,11 @@ pub fn onboarded_already_json() -> Value {
 ///
 /// The daemon does not withdraw service when a federation stops paying — that
 /// is the operator's decision
-/// ([REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md))
-/// — and an operator who has to remember a second verb to notice being cut out
-/// will not notice. Reading it is best-effort: a seat with no federation yet,
-/// or one whose metadata cannot be read, reports why instead of failing the
-/// whole status.
+/// ([REQ-guardian-fee-remittance](../../../../specs/
+/// REQ-guardian-fee-remittance.md)) — and an operator who has to remember a
+/// second verb to notice being cut out will not notice. Reading it is
+/// best-effort: a seat with no federation yet, or one whose metadata cannot be
+/// read, reports why instead of failing the whole status.
 pub(crate) async fn read_seat_guardian_fee(fleet: &Fleet, seat_id: &SeatId) -> Value {
     match fleet.guardian_fee_account(seat_id) {
         // Without an account there is nothing to report a policy against, so
@@ -1098,9 +1100,9 @@ pub fn report_json(report: SeatReport) -> Value {
                 SeatPhase::Transfer { status } => json!({ "phase": status }),
                 SeatPhase::Created => json!({ "phase": "created" }),
                 SeatPhase::DkgInProgress => json!({ "phase": "dkg_in_progress" }),
-                SeatPhase::DataLoss { invite_code } => json!({
+                SeatPhase::DataLoss { federation_id } => json!({
                     "phase": "data_loss",
-                    "invite_code": invite_code,
+                    "federation_id": federation_id.to_string(),
                 }),
                 SeatPhase::Running { invite_code } => json!({
                     "phase": "running",

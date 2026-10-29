@@ -1,6 +1,4 @@
-use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, InviteCode, Plan, QuoteId, SeatId,
-};
+use fedi_decentralized_service_manifold_guardian::{FaId, FederationSize, Plan, QuoteId, SeatId};
 
 use super::*;
 
@@ -153,7 +151,7 @@ async fn a_publication_carries_the_archive_its_document_names() {
 
     // A seat the database knows has run consensus refuses to be published
     // without its key shares.
-    db.record_formed(&facts.seat_id, &InviteCode("test-invite".to_owned()))
+    db.record_formed(&facts.seat_id, &crate::test_support::formed_peer_fixture())
         .await
         .unwrap();
     assert!(

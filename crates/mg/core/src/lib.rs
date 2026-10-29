@@ -11,9 +11,9 @@
 //!
 //! Module responsibilities, the concurrency model, and state ownership are
 //! recorded in
-//! [`ARCH-manifold-guardian`](../../specs/ARCH-manifold-guardian.md); the other records
-//! under [`crates/mg/specs`](../../specs/) govern individual decisions and
-//! behaviors (Linked Specs).
+//! [`ARCH-manifold-guardian`](../../specs/ARCH-manifold-guardian.md); the other
+//! records under [`crates/mg/specs`](../../specs/) govern individual decisions
+//! and behaviors (Linked Specs).
 
 pub mod admin;
 pub mod admin_http;
@@ -27,6 +27,7 @@ pub mod facts;
 pub mod fedimint_api;
 mod fedimint_stats;
 pub mod fleet;
+pub(crate) mod guardian_config;
 pub mod guardian_fee;
 pub mod guardian_link;
 pub mod host_pressure;

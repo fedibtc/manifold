@@ -13,19 +13,18 @@
 #[cfg(test)]
 pub mod testutil;
 
-use fedi_decentralized_service_manifold_guardian::{
-    FederationId, InviteCode, LockedBlindedSignature, LockedIssuanceRequest,
-    LockedIssuanceRequestV2, PaymentTerms, QuoteId, QuoteTerms, RefundIssuance, RefundTransaction,
-};
-use fedimint_core::core::ModuleInstanceId;
-
-use crate::guardian_fee::GuardianFeeVault;
 use std::fmt;
 use std::str::FromStr;
 
-use crate::guardian_fee::GuardianFeeAccountKey;
+use fedi_decentralized_service_manifold_guardian::{
+    FederationId, InviteCode, LockedBlindedSignature, LockedIssuanceRequest,
+    LockedIssuanceRequestV2, PaymentTerms, QuoteId, QuoteTerms, RefundIssuance, RefundTransaction,
+    SeatId,
+};
+use fedimint_core::core::ModuleInstanceId;
+
+use crate::guardian_fee::{GuardianFeeAccountKey, GuardianFeeVault};
 use crate::payout_wire::{PayoutJobStatusWire, PayoutJobWire, WalletDrainStatusWire};
-use fedi_decentralized_service_manifold_guardian::SeatId;
 
 /// Handle to the implementation-owned reconciler for accepted ecash claims.
 /// SQLite is authoritative; [`Self::mark`] is only a prompt rescan hint.
@@ -90,12 +89,16 @@ pub trait EcashPayoutWorker: Send + Sync + 'static {
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobWire>;
-    /// Resume a durably scoped guardian sweep without consulting the live seat.
-    /// `None` means this request has no job yet and needs a fresh invite.
+    /// Resume a durably scoped guardian sweep without consulting the live
+    /// seat's phase. `invite` is the seat's, built from its installed config
+    /// when it has one; it is needed only to join a fee wallet the job never
+    /// joined. A config read error must not prevent a joined or committed job
+    /// from resuming. Returns `None` when the request has no job yet.
     async fn resume_guardian_sweep(
         &self,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        invite: anyhow::Result<Option<InviteCode>>,
     ) -> anyhow::Result<Option<PayoutJobWire>>;
     async fn payout_status(
         &self,
@@ -135,6 +138,7 @@ impl EcashPayoutWorker for NoEcashPayoutWorker {
         &self,
         _: &SeatId,
         _: &PayoutRequestId,
+        _: anyhow::Result<Option<InviteCode>>,
     ) -> anyhow::Result<Option<PayoutJobWire>> {
         Ok(None)
     }
@@ -183,14 +187,15 @@ pub struct Msats(pub u64);
 pub enum ClaimOutcome {
     Success,
     /// The federation terminally refused reissuing the verified locked notes,
-    /// so the claim records their inputs as already spent. Claim evidence exists
-    /// only after offline verification at `CreateSeat`, and the notes are
-    /// spendable only by keys derived from this MG's mnemonic. A prior
-    /// successful claim by this identity (notably before a mnemonic restore) is
-    /// therefore the expected cause, but this name states the observed input
-    /// state rather than inferring who spent them. The upstream terminal state
-    /// can also represent another transaction or output-finalization failure,
-    /// which this coarse outcome cannot distinguish.
+    /// so the claim records their inputs as already spent. Claim evidence
+    /// exists only after offline verification at `CreateSeat`, and the
+    /// notes are spendable only by keys derived from this MG's mnemonic. A
+    /// prior successful claim by this identity (notably before a mnemonic
+    /// restore) is therefore the expected cause, but this name states the
+    /// observed input state rather than inferring who spent them. The
+    /// upstream terminal state can also represent another transaction or
+    /// output-finalization failure, which this coarse outcome cannot
+    /// distinguish.
     AlreadySpent,
 }
 

@@ -45,18 +45,10 @@ mod payout_worker;
 pub mod setup_payment_policy;
 mod wallet_drain;
 
-pub(crate) use payout_job::DestinationCap;
-pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
-
-pub use mg_core::db::WalletOrigin;
-pub use mg_core::guardian_fee::GuardianFeeAccountKey;
-pub use mg_core::wallet::WalletSecret;
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::Arc;
-use zeroize::Zeroizing;
 
 use anyhow::Context as _;
 use bitcoin_hashes::{Hash as _, HashEngine as _, sha256, sha256t};
@@ -80,10 +72,9 @@ use fedimint_mint_client::{
     MintClientInit, MintClientModule, OOBNotes, ReissueExternalNotesError,
     ReissueExternalNotesState,
 };
-use fedimint_mintv2_client::MintClientInit as MintV2ClientInit;
 use fedimint_mintv2_client::{
     ECash as MintV2Ecash, FinalReceiveOperationState as MintV2ReceiveState,
-    MintClientModule as MintV2ClientModule,
+    MintClientInit as MintV2ClientInit, MintClientModule as MintV2ClientModule,
 };
 use fedimint_mintv2_common::Denomination as MintV2Denomination;
 use futures::StreamExt as _;
@@ -92,9 +83,15 @@ use lnurl::LnUrlResponse;
 use lnurl::lightning_address::LightningAddress;
 use lnurl::lnurl::LnUrl;
 use locked_payments::{locked_payment, locked_payment_v2, mint_v2_module, refund};
+pub use mg_core::db::WalletOrigin;
+pub use mg_core::guardian_fee::GuardianFeeAccountKey;
+pub use mg_core::wallet::WalletSecret;
+pub(crate) use payout_job::DestinationCap;
+pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
 use stability_pool_client::StabilityPoolClientInit;
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
+use zeroize::Zeroizing;
 
 const WALLET_SECRET_SALT: &[u8] = b"fleet-manager-wallet-v0";
 const WALLET_LOCK_FILE: &str = ".wallet.lock";
@@ -102,8 +99,8 @@ const WALLET_LOCK_FILE: &str = ".wallet.lock";
 ///
 /// LNURL-pay responses contain a callback URL, human-readable metadata, amount
 /// bounds, and (on the second request) one BOLT 11 invoice. 64 KiB leaves ample
-/// room for those fields while keeping a remote endpoint from growing one payout
-/// request's JSON allocation without bound.
+/// room for those fields while keeping a remote endpoint from growing one
+/// payout request's JSON allocation without bound.
 const MAX_LNURL_RESPONSE_BYTES: usize = 64 * 1024;
 const JOIN_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MINIMUM_V1_GATEWAY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -238,7 +235,8 @@ pub struct Wallet {
     connectors: ConnectorRegistry,
     /// Federation id to its never-reused prefix-free consensus database prefix.
     prefixes: Arc<RwLock<BTreeMap<ClientScope, u64>>>,
-    /// Serializes global prefix allocation; federation joins remain independently locked.
+    /// Serializes global prefix allocation; federation joins remain
+    /// independently locked.
     prefix_allocation: Mutex<()>,
     root_secret: DerivableSecret,
     /// Root of the guardian-fee clients, from its own identity label. `None`
@@ -375,32 +373,39 @@ impl Wallet {
         wait: OpenWait,
     ) -> Result<FederationId, WalletError> {
         ensure_public_invite(invite_code)?;
-        self.join_inner(invite_code, scope, timeout, guardian_key, wait)
-            .await
+        let federation_id = scope.federation_id();
+        let opened = self
+            .join_inner(Some(invite_code), scope, timeout, guardian_key, wait)
+            .await?;
+        debug_assert!(opened, "a join with an invite opens its client");
+        Ok(federation_id)
     }
 
+    /// Open a scope's client, joining its federation through `invite_code`
+    /// only if this wallet never joined it. Without an invite an unjoined
+    /// scope stays closed and nothing is reserved for it: `Ok(false)`.
     async fn join_inner(
         &self,
-        invite_code: &InviteCode,
+        invite_code: Option<&InviteCode>,
         scope: ClientScope,
         preview_timeout: std::time::Duration,
         guardian_key: Option<&GuardianFeeAccountKey>,
         wait: OpenWait,
-    ) -> Result<FederationId, WalletError> {
-        let federation_id = scope.federation_id();
+    ) -> Result<bool, WalletError> {
         // Checked before the exclusion too, so a caller that refuses to wait
         // is refused only while an open is really running.
         if self.federations.read().await.contains_key(&scope) {
-            return Ok(federation_id);
+            return Ok(true);
         }
         let _joining = self.open_exclusion(scope.clone(), wait).await?;
         if self.federations.read().await.contains_key(&scope) {
-            return Ok(federation_id);
+            return Ok(true);
         }
         let known_prefix = { self.prefixes.read().await.get(&scope).copied() };
-        let prefix = match known_prefix {
-            Some(prefix) => prefix,
-            None => {
+        let prefix = match (known_prefix, invite_code) {
+            (Some(prefix), _) => prefix,
+            (None, None) => return Ok(false),
+            (None, Some(_)) => {
                 let _allocation = self.prefix_allocation.lock().await;
                 let prefix = reserve_prefix(&self.database, &scope).await?;
                 self.prefixes.write().await.insert(scope.clone(), prefix);
@@ -423,9 +428,13 @@ impl Wallet {
             })
             .await?
         } else {
-            // Preview is network-only and precedes both the permanent open fence
-            // and the initial client write, so a transient download failure can be
-            // retried in-process without risking concurrent database writers.
+            let Some(invite_code) = invite_code else {
+                return Ok(false);
+            };
+            // Preview is network-only and precedes both the permanent open
+            // fence and the initial client write, so a transient
+            // download failure can be retried in-process without
+            // risking concurrent database writers.
             let preview = match tokio::time::timeout(preview_timeout, async {
                 client_builder(guardian_key)
                     .await?
@@ -450,7 +459,8 @@ impl Wallet {
                 // absent federation-derived root was never used, so it may take
                 // Fedimint's fast join path. A restored mnemonic has no such
                 // proof and must scan. Recovery handles have no usable modules:
-                // finish the scan, shut down the handle, then reopen the database.
+                // finish the scan, shut down the handle, then reopen the
+                // database.
                 match self.origin {
                     WalletOrigin::Fresh => preview
                         .join(database, root)
@@ -481,7 +491,7 @@ impl Wallet {
             .write()
             .await
             .insert(scope, Arc::new(client));
-        Ok(federation_id)
+        Ok(true)
     }
 
     /// Derive a mint-v1 locked quote issuance set and its escrow secrets
@@ -670,6 +680,33 @@ impl Wallet {
             .get(&scope)
             .cloned()
             .context("open guardian-fee client")
+    }
+
+    /// A seat's guardian-fee client if this wallet has joined its
+    /// federation, opened without an invite; `None` if it never joined.
+    async fn joined_guardian_fee_client(
+        &self,
+        federation_id: FederationId,
+        seat_id: &fedi_decentralized_service_manifold_guardian::SeatId,
+        key: &GuardianFeeAccountKey,
+    ) -> anyhow::Result<Option<ClientHandleArc>> {
+        let scope = ClientScope::Guardian {
+            federation_id,
+            seat_id: seat_id.to_string(),
+        };
+        if !self
+            .join_inner(
+                None,
+                scope.clone(),
+                JOIN_ATTEMPT_TIMEOUT,
+                Some(key),
+                OpenWait::Wait,
+            )
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(self.federations.read().await.get(&scope).cloned())
     }
 
     async fn join_exclusion(&self, scope: ClientScope) -> tokio::sync::OwnedMutexGuard<()> {
@@ -1130,7 +1167,8 @@ fn required_mint_modules(
     Ok(mints)
 }
 
-/// Refuse success when Fedimint skipped a configured mint during recovery setup.
+/// Refuse success when Fedimint skipped a configured mint during recovery
+/// setup.
 async fn ensure_mint_recoveries_started(
     database: &Database,
     required_mints: &BTreeSet<ModuleInstanceId>,
@@ -1149,7 +1187,8 @@ async fn ensure_mint_recoveries_started(
     Ok(())
 }
 
-/// Refuse success unless each required mint reports durable recovery completion.
+/// Refuse success unless each required mint reports durable recovery
+/// completion.
 async fn ensure_mint_recoveries_finished(
     database: &Database,
     required_mints: &BTreeSet<ModuleInstanceId>,
@@ -1172,7 +1211,8 @@ async fn ensure_mint_recoveries_finished(
     Ok(())
 }
 
-/// Domain-separate guardian seats before Fedimint adds its federation and module paths.
+/// Domain-separate guardian seats before Fedimint adds its federation and
+/// module paths.
 fn guardian_scope_root(root: &DerivableSecret, seat_id: &str) -> DerivableSecret {
     root.tweak(
         [
@@ -1471,7 +1511,8 @@ fn vetted_v1_gateway_keys(values: Vec<String>) -> HashSet<bitcoin::secp256k1::Pu
         .collect()
 }
 
-/// Apply eligibility before preference so a usable alternative remains selectable.
+/// Apply eligibility before preference so a usable alternative remains
+/// selectable.
 fn select_v1_gateway_from_announcements(
     announcements: &[fedimint_ln_common::LightningGatewayAnnouncement],
     vetted: &HashSet<bitcoin::secp256k1::PublicKey>,

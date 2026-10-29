@@ -1,8 +1,9 @@
 //! MG-wide capability-scoped guardian telemetry protocol.
 //!
-//! This is deliberately a separate Iroh ALPN from the FA-facing Manifold Guardian
-//! service. One verified MG registration grants the collector access to seat
-//! discovery, guardian metrics, and explicitly-shareable event journals.
+//! This is deliberately a separate Iroh ALPN from the FA-facing Manifold
+//! Guardian service. One verified MG registration grants the collector access
+//! to seat discovery, guardian metrics, and explicitly-shareable event
+//! journals.
 
 use fedi_decentralized_services::domain::{HolderAuthorizationEnvelope, InviteCode, ProtocolV1};
 use fedi_iroh_rpc::service;
@@ -85,7 +86,8 @@ pub struct GuardianTelemetryRegistrationResponse {
 #[serde(deny_unknown_fields)]
 pub struct GuardianTelemetrySeat {
     pub seat_id: SeatId,
-    /// Present after formation; absent for seats that do not yet have an invite.
+    /// Present while a formed seat's installed config can build its invite;
+    /// absent before formation and once that config is gone.
     pub invite_code: Option<InviteCode>,
 }
 
@@ -101,7 +103,8 @@ pub struct ListGuardianTelemetrySeatsResponse {
     pub seats: Vec<GuardianTelemetrySeat>,
 }
 
-/// Request one policy-projected scrape of a guardian's loopback Prometheus endpoint.
+/// Request one policy-projected scrape of a guardian's loopback Prometheus
+/// endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScrapeGuardianMetricsRequest {
@@ -330,10 +333,10 @@ pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
 /// Fields of a [`SEAT_CAPACITY_EVENT`] journal record. The MG owns this
 /// shape and the telemetry collector decodes it from archived journals, so a
 /// field keeps its name and meaning once released. The collector also uses
-/// these field names for its stored reports and private exports. Releases before 0.1.4
-/// journal only the seat counts, the accepting flag and the operator limit,
-/// releases before 0.1.16 no CPU limit, CPU capacity or monthly data
-/// budget, and releases before 0.1.17 no disk limit.
+/// these field names for its stored reports and private exports. Releases
+/// before 0.1.4 journal only the seat counts, the accepting flag and the
+/// operator limit, releases before 0.1.16 no CPU limit, CPU capacity or monthly
+/// data budget, and releases before 0.1.17 no disk limit.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SeatCapacityEvent {
     pub available_seats: u32,
@@ -496,7 +499,8 @@ pub trait GuardianTelemetryApi {
 mod tests {
     use blind_rsa_signatures::Signature as PbrsaSignature;
     use fedi_decentralized_services::domain::{HolderAuthorizationEnvelope, SchnorrSignatureProof};
-    use nostr::{Keys, secp256k1::Message};
+    use nostr::Keys;
+    use nostr::secp256k1::Message;
     use peerbadge_protocol::{
         Credential, CredentialDigest, CredentialProof, HolderAuthorization,
         HolderAuthorizationStatement, HolderId, IssuerId, SignedCredential, SubjectPubkey,

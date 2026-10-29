@@ -8,11 +8,11 @@
 //!    its last session completed and no later one began, so the destination
 //!    starts in a session this key never signed. That exit writes the fence,
 //!    which also keeps the guardian from starting here again.
-//! 2. Fence `stopped`, but the relays do not yet confirm a backup recording
-//!    it: wake the backup worker and answer `AwaitingBackup`. Until then a
-//!    restore from the relays could start the guardian here again.
-//! 3. Confirmed: read the guardian's config files and Iroh secrets and
-//!    return them.
+//! 2. Fence `stopped`, but the relays do not yet confirm a backup recording it:
+//!    wake the backup worker and answer `AwaitingBackup`. Until then a restore
+//!    from the relays could start the guardian here again.
+//! 3. Confirmed: read the guardian's config files and Iroh secrets and return
+//!    them.
 
 use fedi_decentralized_service_manifold_guardian::{SeatTransferGrant, SignedRequest, Timestamp};
 use secp256k1::Keypair;
@@ -60,16 +60,7 @@ impl SeatLoop {
             .map_err(|_| SeatVerbError::TransferGrantMismatch)?
             .into_inner();
         let state = self.state.borrow();
-        let federation = state
-            .formed_invite
-            .as_ref()
-            .and_then(|invite| {
-                invite
-                    .0
-                    .parse::<fedimint_core::invite_code::InviteCode>()
-                    .ok()
-            })
-            .map(|invite| invite.federation_id().to_string());
+        let federation = state.formed.map(|peer| peer.federation_id.to_string());
         if grant.fa_id != self.facts.fa_id
             || grant.source_seat_id != self.facts.seat_id
             || grant.source.service_pubkey != service_key.x_only_public_key().0

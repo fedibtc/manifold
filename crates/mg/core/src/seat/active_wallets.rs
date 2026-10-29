@@ -39,7 +39,7 @@ impl DailyWalletSamples {
         let mut prompt_retries = SESSION_ZERO_PROMPT_RETRIES;
         loop {
             let ready = |facts: &SeatRuntimeFacts| {
-                facts.formed_invite.is_some()
+                facts.formed.is_some()
                     && facts.decommissioned_at_ms.is_none()
                     && facts.transfer_status().is_none()
                     && facts.health == SeatHealth::Healthy
@@ -95,7 +95,8 @@ impl DailyWalletSamples {
         ))
     }
 
-    /// Read or record today's observation, unless session zero is still pending.
+    /// Read or record today's observation, unless session zero is still
+    /// pending.
     async fn today(&self) -> Result<Option<(i64, WindowedFigure)>, SeatVerbError> {
         let _sampling = self.sampling.lock().await;
         let day = now_ms() / DAY_MS;

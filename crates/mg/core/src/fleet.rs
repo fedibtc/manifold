@@ -13,10 +13,8 @@ mod transfer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{
-    Arc, Mutex, RwLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, anyhow};
@@ -28,13 +26,6 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use tokio::sync::{Notify, Semaphore};
 
-use crate::guardian_fee::{
-    AccountId, Collected, FederationFeeStatus, FeePolicy, GuardianFeeAccountKey, GuardianFeeVault,
-    Remittance,
-};
-use crate::wallet::EcashPayoutWorker;
-use crate::wallet::{ClaimOutcome, EcashClaimWorker, EcashWallet, Msats, VerifiedLockedPayment};
-
 use crate::backup::BackupSink;
 use crate::backup_worker::BackupWorker;
 use crate::db::{
@@ -42,6 +33,10 @@ use crate::db::{
     SeatsConfigUpdate,
 };
 use crate::facts::{PortBase, SeatPorts};
+use crate::guardian_fee::{
+    AccountId, Collected, FederationFeeStatus, FeePolicy, GuardianFeeAccountKey, GuardianFeeVault,
+    Remittance,
+};
 use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
 use crate::ordering_latency::OrderingLatencyState;
@@ -53,6 +48,9 @@ use crate::seat::{
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
 use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::wallet::{
+    ClaimOutcome, EcashClaimWorker, EcashPayoutWorker, EcashWallet, Msats, VerifiedLockedPayment,
+};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -216,7 +214,8 @@ impl FleetNostrHost {
     /// What a directory runtime reads out of the daemon each cycle.
     ///
     /// Read-only and whole: `None` suppresses publication while the MG is not
-    /// accepting seats; otherwise the snapshot contains the whole advertisement.
+    /// accepting seats; otherwise the snapshot contains the whole
+    /// advertisement.
     pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
         // Each advertisement cycle reports capacity, even without publication.
@@ -532,7 +531,7 @@ impl Fleet {
                 facts,
                 decommissioned_at_ms,
             } = seat;
-            let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
+            let formed = db.formed_peer(&facts.seat_id).await?;
             let transfer_phase = db.transfer_phase(&facts.seat_id).await?;
             let ports =
                 SeatPorts::from_base(facts.seat_no.port_base(config.first_port_base).ok_or_else(
@@ -542,7 +541,7 @@ impl Fleet {
             let seat = Seat::start(
                 SeatDurableState {
                     facts,
-                    formed_invite,
+                    formed,
                     decommissioned_at_ms,
                     transfer_phase,
                 },
@@ -635,9 +634,10 @@ impl Fleet {
         self.telemetry_registration_changed.notified().await;
     }
 
-    /// Snapshot all known seats and their invite when formation has produced
-    /// one. Seat identity is resource discovery, not an authorization scope.
-    pub fn telemetry_seats(&self) -> Vec<GuardianTelemetrySeat> {
+    /// Snapshot all known seats and their invite while a formed seat's
+    /// installed config can build one. Seat identity is resource discovery,
+    /// not an authorization scope.
+    pub async fn telemetry_seats(&self) -> Vec<GuardianTelemetrySeat> {
         let seats = self
             .seats
             .read()
@@ -647,9 +647,19 @@ impl Fleet {
             .collect::<Vec<_>>();
         let mut advertised = Vec::with_capacity(seats.len());
         for seat in seats {
+            // Discovery lists every seat; one whose config cannot be read is
+            // listed without an invite rather than failing the whole list.
+            let invite_code = seat.installed_invite().await.unwrap_or_else(|error| {
+                tracing::warn!(
+                    seat_id = %seat.facts().seat_id,
+                    error = format_args!("{error:#}"),
+                    "seat invite is unavailable for telemetry discovery"
+                );
+                None
+            });
             advertised.push(GuardianTelemetrySeat {
                 seat_id: seat.facts().seat_id.clone(),
-                invite_code: seat.cached_invite_code(),
+                invite_code,
             });
         }
         advertised.sort_by(|left, right| left.seat_id.cmp(&right.seat_id));
@@ -681,7 +691,7 @@ impl Fleet {
         let seat = self
             .seat_by_id(seat_id)
             .ok_or(TelemetryAccessError::Unavailable)?;
-        running_metrics_port(&seat)
+        seat.running_metrics_port()
             .await
             .ok_or(TelemetryAccessError::Unavailable)
     }
@@ -698,7 +708,7 @@ impl Fleet {
             .collect::<Vec<_>>();
         let mut running = Vec::with_capacity(seats.len());
         for (seat_id, seat) in seats {
-            if let Some(port) = running_metrics_port(&seat).await {
+            if let Some(port) = seat.running_metrics_port().await {
                 running.push((seat_id, port));
             }
         }
@@ -1047,7 +1057,7 @@ impl Fleet {
             SeatAdmissionResult::Inserted(facts) => (
                 SeatDurableState {
                     facts,
-                    formed_invite: None,
+                    formed: None,
                     decommissioned_at_ms: None,
                     transfer_phase: None,
                 },
@@ -1055,7 +1065,7 @@ impl Fleet {
             ),
             SeatAdmissionResult::Existing(facts) => (
                 SeatDurableState {
-                    formed_invite: self.db.formed_federation_invite(&facts.seat_id).await?,
+                    formed: self.db.formed_peer(&facts.seat_id).await?,
                     decommissioned_at_ms: self.db.decommissioned_at_ms(&facts.seat_id).await?,
                     transfer_phase: self.db.transfer_phase(&facts.seat_id).await?,
                     facts,
@@ -1101,7 +1111,7 @@ impl Fleet {
     ) -> (Arc<Seat>, bool) {
         let SeatDurableState {
             facts,
-            formed_invite,
+            formed,
             decommissioned_at_ms,
             transfer_phase,
         } = durable;
@@ -1131,7 +1141,7 @@ impl Fleet {
         let seat = Seat::start(
             SeatDurableState {
                 facts,
-                formed_invite,
+                formed,
                 decommissioned_at_ms,
                 transfer_phase,
             },
@@ -1231,7 +1241,8 @@ impl Fleet {
     ///
     /// The FA-facing release verb needs the same effect as the operator verb
     /// above but must reach it through `authorize`, so seat selection stays
-    /// owner-bound (`CLAIM-manifold-guardian-selects-only-owned-seat-authority`).
+    /// owner-bound
+    /// (`CLAIM-manifold-guardian-selects-only-owned-seat-authority`).
     pub(crate) async fn decommission(&self, seat: &Seat) -> anyhow::Result<bool> {
         let decommissioned = seat.decommission().await?;
         if decommissioned {
@@ -1374,7 +1385,8 @@ impl Fleet {
             .await
     }
 
-    /// Read-only destruction-safety projection for one seat's collected-fee wallet.
+    /// Read-only destruction-safety projection for one seat's collected-fee
+    /// wallet.
     pub async fn guardian_fee_drain_status(
         &self,
         seat_id: &SeatId,
@@ -1425,9 +1437,10 @@ impl Fleet {
     /// The federation a seat guards, as a client invite code.
     ///
     /// Collection is an ordinary client operation
-    /// ([REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md)),
-    /// so this is the only thing guardian-fee work takes from the seat: the
-    /// same public invite code any member of the federation holds.
+    /// ([REQ-guardian-fee-remittance](../../../../specs/
+    /// REQ-guardian-fee-remittance.md)), so this is the only thing
+    /// guardian-fee work takes from the seat: the same public invite code
+    /// any member of the federation holds.
     async fn seat_federation(
         &self,
         seat_id: &SeatId,
@@ -1482,19 +1495,6 @@ impl Fleet {
 /// service Nostr identity [`crate::service`] signs `GetPeerAttestation`
 /// responses under. A seat-binding directory this fleet's guardians vote for
 /// must bind each of their seats to exactly this key.
-/// `seat`'s loopback metrics port while its child is running.
-async fn running_metrics_port(seat: &Seat) -> Option<u16> {
-    let report = seat.report().await.ok()?;
-    matches!(
-        report,
-        SeatReport::Active {
-            phase: crate::seat::SeatPhase::Running { .. },
-            ..
-        }
-    )
-    .then(|| seat.metrics_port())
-}
-
 fn attestation_pubkey(identity: &RootMnemonic) -> Pubkey {
     Pubkey(
         identity
