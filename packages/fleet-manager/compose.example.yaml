@@ -19,7 +19,7 @@
 # ./admin-password into a directory, and MG checks the file itself — it refuses
 # a path that is not a regular file and any mode accessible by group or
 # others (mode & 0o077 must be 0).
-#   mkdir -p data && chown <uid>:<gid> data
+#   mkdir -p data && chown <uid>:<gid> data && chmod 0700 data
 #   openssl rand -base64 24 > admin-password   # a generated, nonempty password
 #   chown <uid>:<gid> admin-password && chmod 0600 admin-password   # 0400 too
 #
