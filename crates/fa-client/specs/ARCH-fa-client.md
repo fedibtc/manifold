@@ -694,7 +694,11 @@ it, and `observe_guardian_transfer` reports it. The watch follows every
 transfer write. After a move completes it keeps the completed transfer until
 the next start, so a consumer sees the end. A purchase that ends without a
 seat clears it. A start waits while another operation
-runs, so the consumer does not keep its approval for a retry. Resume and a start
+runs, until its approval expires, so the consumer does not keep its approval
+for a retry. A replacement checks its receipt under the same run, so another
+transfer cannot replace the receipt's seat in between. The watch belongs to
+one client instance: a subscription sees the writes of that client only,
+which matches the single active client per database. Resume and a start
 without a receipt are crate-private, so a test tool goes through the same
 calls as a consumer app.
 

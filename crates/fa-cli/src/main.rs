@@ -993,7 +993,6 @@ async fn execute(args: AppArgs) -> anyhow::Result<()> {
 
 const MAX_CALLBACK_URL_FILE_BYTES: u64 = 2_050;
 
-#[cfg(unix)]
 /// Drive the open guardian transfer with `run_guardian_transfer` until it
 /// completes or closes, or `timeout` passes, and return it as it stands then.
 async fn drive_guardian_transfer(
@@ -1025,6 +1024,7 @@ async fn drive_guardian_transfer(
     transfer.borrow().clone()
 }
 
+#[cfg(unix)]
 fn read_completion_callback_url(path: &Path) -> anyhow::Result<String> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 

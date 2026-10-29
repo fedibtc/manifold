@@ -227,6 +227,10 @@ where
         completion_callback: Option<DkgCompletionCallback>,
         options: MaintenanceRunOptions,
     ) -> Result<GuardianTransfer, ReplacementStartError> {
+        // The receipt names a seat of the current seat list. Check it under
+        // the run that starts the transfer, so another transfer cannot
+        // replace that seat in between.
+        let run = self.lock_run_for(&approval).await?;
         let authority = self
             .post_formed_authority(
                 self.fa_id()
@@ -238,7 +242,8 @@ where
             return Err(ReplacementStartError::InvalidReceipt);
         }
         Ok(self
-            .start_guardian_transfer(
+            .start_guardian_transfer_locked(
+                &run,
                 receipt.candidate.seat_index,
                 approval,
                 payment_federation_id,

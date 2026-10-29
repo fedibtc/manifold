@@ -47,7 +47,6 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use fedimint_core::runtime::Instant;
 use futures::stream::{FuturesUnordered, StreamExt as _};
-use futures::{FutureExt as _, pin_mut};
 use nostr_sdk::PublicKey;
 
 use crate::db::GuardianTransferWrite;
@@ -214,13 +213,15 @@ where
     /// like [`Self::resume_guardian_transfer`], and
     /// [`Self::run_guardian_transfer`] finishes it. The destination keeps
     /// asking the source on its own. Only one transfer is open at a time.
-    /// The call waits while another operation runs, so it returns `Busy`
-    /// only when another client holds the database lease.
+    /// The call waits while another operation runs, until the approval
+    /// expires, so it returns `Busy` only when another client holds the
+    /// database lease.
     ///
     /// This moves any guardian, with no reason to replace it, so it is
     /// crate-private. Consumers start a transfer with
     /// [`Self::request_guardian_replacement`], which requires a replacement
     /// receipt.
+    #[cfg(test)]
     pub(crate) async fn start_guardian_transfer(
         &self,
         seat_index: u16,
@@ -229,9 +230,46 @@ where
         completion_callback: Option<DkgCompletionCallback>,
         options: MaintenanceRunOptions,
     ) -> FaResult<GuardianTransfer> {
-        // Wait for a short step of another operation instead of `Busy`: the
-        // caller holds an approval that a `Busy` would make it preview again.
-        let _guard = self.inner.run_guard.lock().await;
+        let run = self.lock_run_for(&approval).await?;
+        self.start_guardian_transfer_locked(
+            &run,
+            seat_index,
+            approval,
+            payment_federation_id,
+            completion_callback,
+            options,
+        )
+        .await
+    }
+
+    /// Wait for the run instead of `Busy`, because the caller holds an
+    /// approval that a `Busy` would make it preview again. Another operation
+    /// can hold the run for minutes, so the wait ends when the approval
+    /// expires.
+    pub(crate) async fn lock_run_for(
+        &self,
+        approval: &TransferDestinationApproval,
+    ) -> FaResult<tokio::sync::OwnedMutexGuard<()>> {
+        let left = Duration::from_secs(approval.valid_until.0.saturating_sub(now_secs()?));
+        fedimint_core::runtime::timeout(left, self.inner.run_guard.clone().lock_owned())
+            .await
+            .map_err(|_| FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            })
+    }
+
+    /// [`Self::start_guardian_transfer`] with the run already held, so a
+    /// caller can check its own preconditions under the same run.
+    pub(crate) async fn start_guardian_transfer_locked(
+        &self,
+        _run: &tokio::sync::OwnedMutexGuard<()>,
+        seat_index: u16,
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
+        completion_callback: Option<DkgCompletionCallback>,
+        options: MaintenanceRunOptions,
+    ) -> FaResult<GuardianTransfer> {
         let options = options.run_options();
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
@@ -285,10 +323,7 @@ where
             self.drive_guardian_transfer(transfer, fa_id, run).await
         }
         .await;
-        let result = finish_driver_run(result, self.inner.store.release_driver_lease(lease).await);
-        // Even a failed start can leave a transfer open for the driver.
-        self.inner.transfer_opened.notify_one();
-        result
+        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
     /// Advance the open transfer as far as it goes within `options`.
@@ -333,14 +368,20 @@ where
     /// removal, it checks again every 30 s. A failed step retries with a
     /// backoff from 1 s to 5 min, and `Busy` retries after 1 s. Each step
     /// holds `run_guard` only for that step, so other operations run between
-    /// steps. A start wakes the loop.
+    /// steps. A recorded start wakes the loop.
     pub async fn run_guardian_transfer(&self) {
+        let open = |transfer: &Option<GuardianTransfer>| {
+            transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.phase != GuardianTransferPhase::Completed)
+        };
+        // The watch changes only after a committed write, so a start that
+        // was cancelled after it recorded the transfer still wakes the loop.
+        let mut transfer = self.observe_guardian_transfer();
         let mut retry = TRANSFER_RETRY_MIN;
         loop {
-            if self.inner.store.load_guardian_transfer().await.is_none() {
-                self.inner.transfer_opened.notified().await;
-                retry = TRANSFER_RETRY_MIN;
-                continue;
+            if transfer.wait_for(open).await.is_err() {
+                return;
             }
             let pause = match self
                 .resume_guardian_transfer(MaintenanceRunOptions::default())
@@ -360,16 +401,11 @@ where
                 }
             };
             // A closed transfer goes straight to the wait for the next one.
-            if self.inner.store.load_guardian_transfer().await.is_none() {
+            if !open(&transfer.borrow()) {
+                retry = TRANSFER_RETRY_MIN;
                 continue;
             }
-            let sleep = fedimint_core::runtime::sleep(pause).fuse();
-            let opened = self.inner.transfer_opened.notified().fuse();
-            pin_mut!(sleep, opened);
-            futures::select! {
-                () = sleep => {}
-                () = opened => {}
-            }
+            fedimint_core::runtime::sleep(pause).await;
         }
     }
 

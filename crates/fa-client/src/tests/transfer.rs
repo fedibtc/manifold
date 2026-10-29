@@ -406,6 +406,66 @@ async fn the_transfer_watch_follows_the_move_and_keeps_its_completion() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn the_transfer_loop_finishes_a_transfer_whose_start_stopped_after_recording_it() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let client = Arc::new(client);
+    let driver = tokio::spawn({
+        let client = client.clone();
+        async move { client.run_guardian_transfer().await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The start stops right after it recorded the transfer, as a cancelled
+    // start or a crash would. Nothing but the recorded write wakes the loop.
+    client.inner.store.stop_after_transfer_writes(1);
+    assert!(
+        start_transfer_with(
+            &client,
+            &mg_state,
+            destination_approval(PAYMENT_AMOUNT_MSATS)
+        )
+        .await
+        .is_err()
+    );
+
+    guardian_arrives(&mg_state);
+    tokio::time::timeout(Duration::from_secs(300), async {
+        while client.guardian_transfer().await.is_some() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("the loop finishes the recorded transfer");
+    driver.abort();
+}
+
+#[tokio::test]
+async fn a_start_gives_up_waiting_for_the_run_when_its_approval_expires() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let _other = client.inner.run_guard.clone().lock_owned().await;
+    let mut approval = destination_approval(PAYMENT_AMOUNT_MSATS);
+    approval.valid_until = Timestamp(crate::formation::now_secs().unwrap() + 1);
+
+    let started = tokio::time::timeout(
+        Duration::from_secs(10),
+        start_transfer_with(&client, &mg_state, approval),
+    )
+    .await
+    .expect("the wait ends with the approval");
+
+    assert!(
+        matches!(
+            started,
+            Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                ..
+            })
+        ),
+        "{started:?}"
+    );
+    assert_eq!(client.guardian_transfer().await, None);
+}
+
 #[tokio::test]
 async fn a_start_waits_for_another_operation_instead_of_busy() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
