@@ -580,7 +580,7 @@ where
             intent.validate()?;
             // The request commits to the current seats, which an open
             // guardian transfer is about to change.
-            if self.inner.store.load_guardian_transfer().await?.is_some() {
+            if self.inner.store.load_guardian_transfer().await.is_some() {
                 return Err(FaError::InvalidIntent(
                     "finish the open guardian transfer before a liquidity request".to_owned(),
                 ));

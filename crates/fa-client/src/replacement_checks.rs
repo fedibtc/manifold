@@ -213,11 +213,12 @@ where
 
     /// Replace the guardian a receipt names: validate the receipt without
     /// asking about health again, then start a guardian transfer of that
-    /// guardian onto the approved destination, as
-    /// [`Self::start_guardian_transfer`] does.
+    /// guardian onto the approved destination. The start buys the seat and
+    /// asks the new MG to pull the guardian, within the default maintenance
+    /// timing; [`Self::run_guardian_transfer`] does the rest.
     ///
     /// The receipt only authorizes the start. Once the transfer started, its
-    /// durable row authorizes [`Self::resume_guardian_transfer`]; reopening
+    /// durable row authorizes [`Self::run_guardian_transfer`] to finish it; reopening
     /// the client invalidates unused receipts, not transfers already started.
     pub async fn request_guardian_replacement(
         &self,
@@ -225,8 +226,11 @@ where
         approval: TransferDestinationApproval,
         payment_federation_id: Option<FederationId>,
         completion_callback: Option<DkgCompletionCallback>,
-        options: MaintenanceRunOptions,
     ) -> Result<GuardianTransfer, ReplacementStartError> {
+        // The receipt names a seat of the current seat list. Check it under
+        // the run that starts the transfer, so another transfer cannot
+        // replace that seat in between.
+        let run = self.lock_run_for(&approval).await?;
         let authority = self
             .post_formed_authority(
                 self.fa_id()
@@ -238,12 +242,13 @@ where
             return Err(ReplacementStartError::InvalidReceipt);
         }
         Ok(self
-            .start_guardian_transfer(
+            .start_guardian_transfer_locked(
+                &run,
                 receipt.candidate.seat_index,
                 approval,
                 payment_federation_id,
                 completion_callback,
-                options,
+                MaintenanceRunOptions::default(),
             )
             .await?)
     }

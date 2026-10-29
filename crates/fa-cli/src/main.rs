@@ -166,8 +166,10 @@ struct MaintenanceTimingArgs {
 
 #[derive(Debug, ClapArgs)]
 struct TransferArgs {
-    #[command(flatten)]
-    timing: MaintenanceTimingArgs,
+    /// How long `transfer run` drives the transfer before it prints where
+    /// the transfer stands.
+    #[arg(long, global = true, default_value_t = 600)]
+    run_timeout_secs: u64,
     #[command(subcommand)]
     command: TransferCommand,
 }
@@ -176,13 +178,13 @@ struct TransferArgs {
 enum TransferCommand {
     /// Preview the MG that would receive a guardian (read-only).
     Preview,
-    /// Buy a seat on a fresh MG and start to move one guardian onto it.
-    Start(Box<TransferStartArgs>),
-    /// Like `start`, but only for a guardian that a replacement check finds
-    /// eligible now; the check's receipt authorizes the start.
+    /// Replace a guardian that a replacement check finds eligible now: buy a
+    /// seat on a fresh MG and start to move the guardian onto it.
     Replace(Box<TransferStartArgs>),
-    /// Continue the open guardian transfer, including an interrupted purchase.
-    Resume(ResumeArgs),
+    /// Drive the open guardian transfer, including an interrupted purchase,
+    /// until it completes or closes, or the run timeout passes. Prints the
+    /// transfer as it stands then.
+    Run(ResumeArgs),
     /// Print the open guardian transfer without network access.
     Status,
 }
@@ -203,17 +205,6 @@ struct TransferStartArgs {
     completion_callback_idempotency_key: Option<String>,
     #[command(flatten)]
     payment: ResumeArgs,
-}
-
-impl TransferArgs {
-    fn options(&self) -> anyhow::Result<MaintenanceRunOptions> {
-        MaintenanceRunOptions::new(fa_client::MaintenanceRunOptionsConfig {
-            poll_interval: Duration::from_secs(self.timing.poll_interval_secs),
-            run_timeout: Duration::from_secs(self.timing.run_timeout_secs),
-            request_timeout: Duration::from_secs(self.timing.request_timeout_secs),
-        })
-        .map_err(anyhow::Error::from)
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -993,6 +984,37 @@ async fn execute(args: AppArgs) -> anyhow::Result<()> {
 
 const MAX_CALLBACK_URL_FILE_BYTES: u64 = 2_050;
 
+/// Drive the open guardian transfer with `run_guardian_transfer` until it
+/// completes or closes, or `timeout` passes, and return it as it stands then.
+async fn drive_guardian_transfer(
+    client: &CliClient,
+    timeout: Duration,
+) -> Option<fa_client::GuardianTransfer> {
+    let mut transfer = client.observe_guardian_transfer();
+    let finished = async {
+        loop {
+            if transfer
+                .borrow_and_update()
+                .as_ref()
+                .is_none_or(|transfer| {
+                    transfer.phase == fa_client::GuardianTransferPhase::Completed
+                })
+            {
+                return;
+            }
+            if transfer.changed().await.is_err() {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        () = client.run_guardian_transfer() => {}
+        () = finished => {}
+        () = tokio::time::sleep(timeout) => {}
+    }
+    transfer.borrow().clone()
+}
+
 #[cfg(unix)]
 fn read_completion_callback_url(path: &Path) -> anyhow::Result<String> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -1419,8 +1441,7 @@ async fn run(
             result?;
         }
         Command::Transfer(transfer) => {
-            let options = transfer.options()?;
-            let replace = matches!(transfer.command, TransferCommand::Replace(_));
+            let run_timeout = Duration::from_secs(transfer.run_timeout_secs);
             match transfer.command {
                 TransferCommand::Preview => {
                     let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
@@ -1431,7 +1452,7 @@ async fn run(
                     endpoint.close().await;
                     output.transfer_preview(&result?, format)?;
                 }
-                TransferCommand::Start(start) | TransferCommand::Replace(start) => {
+                TransferCommand::Replace(start) => {
                     let completion_callback = start
                         .completion_callback_url_file
                         .as_ref()
@@ -1453,57 +1474,37 @@ async fn run(
                     // Reconcile first: the approval below is short-lived.
                     let result = async {
                         client.resume().await?;
-                        let receipt = if replace {
-                            let check = client.check_replacement_candidates().await?;
-                            Some(
-                                check
-                                    .receipt(start.seat_index)
-                                    .context("the guardian is not eligible for replacement")?
-                                    .clone(),
-                            )
-                        } else {
-                            None
-                        };
+                        let check = client.check_replacement_candidates().await?;
+                        let receipt = check
+                            .receipt(start.seat_index)
+                            .context("the guardian is not eligible for replacement")?
+                            .clone();
                         let approval = client
                             .preview_transfer_destination(MgDiscoveryOptions::default())
                             .await?
                             .approve(start.max_msats)?;
-                        anyhow::Ok(match receipt {
-                            Some(receipt) => {
-                                client
-                                    .request_guardian_replacement(
-                                        &receipt,
-                                        approval,
-                                        payer,
-                                        completion_callback,
-                                        options,
-                                    )
-                                    .await?
-                            }
-                            None => {
-                                client
-                                    .start_guardian_transfer_unchecked(
-                                        start.seat_index,
-                                        approval,
-                                        payer,
-                                        completion_callback,
-                                        options,
-                                    )
-                                    .await?
-                            }
-                        })
+                        anyhow::Ok(
+                            client
+                                .request_guardian_replacement(
+                                    &receipt,
+                                    approval,
+                                    payer,
+                                    completion_callback,
+                                )
+                                .await?,
+                        )
                     }
                     .await;
                     client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(Some(&result?), format)?;
                 }
-                TransferCommand::Resume(resume) => {
-                    let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
-                    let result = client.resume_guardian_transfer(options).await;
+                TransferCommand::Run(run) => {
+                    let (client, endpoint) = open_existing(&run, wallet_secret).await?;
+                    let transfer = drive_guardian_transfer(&client, run_timeout).await;
                     client.shutdown().await;
                     endpoint.close().await;
-                    output.guardian_transfer(result?.as_ref(), format)?;
+                    output.guardian_transfer(transfer.as_ref(), format)?;
                 }
                 TransferCommand::Status => {
                     let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -1519,7 +1520,10 @@ async fn run(
                         profile.clone(),
                     )
                     .await?;
-                    output.guardian_transfer(client.guardian_transfer().await?.as_ref(), format)?;
+                    output.guardian_transfer(
+                        client.observe_guardian_transfer().borrow().as_ref(),
+                        format,
+                    )?;
                     client.shutdown().await;
                 }
             }
@@ -2200,11 +2204,11 @@ impl WalletRootSecret {
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Transfer(TransferArgs {
-                command: TransferCommand::Start(args) | TransferCommand::Replace(args),
+                command: TransferCommand::Replace(args),
                 ..
             }) => args.payment.wallet_secret_file.as_ref(),
             Command::Transfer(TransferArgs {
-                command: TransferCommand::Resume(args),
+                command: TransferCommand::Run(args),
                 ..
             }) => args.wallet_secret_file.as_ref(),
             Command::Init

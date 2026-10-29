@@ -61,7 +61,6 @@ async fn request(
             seat_purchase::destination_approval(PAYMENT_AMOUNT_MSATS),
             Some(payment_federation_id()),
             None,
-            seat_purchase::transfer_options(),
         )
         .await
 }
@@ -101,7 +100,7 @@ async fn a_receipt_starts_the_transfer_of_its_guardian_after_a_refresh() {
     let transfer = request(&client, &receipt).await.unwrap();
     assert_eq!(transfer.seat_index, 0);
     assert_eq!(transfer.phase, GuardianTransferPhase::AwaitingSource);
-    assert_eq!(client.guardian_transfer().await.unwrap(), Some(transfer));
+    assert_eq!(client.guardian_transfer().await, Some(transfer));
     assert_eq!(state.pull_requests.lock().unwrap().len(), 1);
 }
 
@@ -118,7 +117,7 @@ async fn receipt_cannot_authorize_another_client_or_a_modified_display_target() 
         request(&other, receipt).await,
         Err(ReplacementStartError::InvalidReceipt)
     ));
-    assert_eq!(other.guardian_transfer().await.unwrap(), None);
+    assert_eq!(other.guardian_transfer().await, None);
     assert_eq!(other_state.create_records.lock().unwrap().len(), creates);
 }
 
@@ -135,7 +134,7 @@ async fn receipt_is_invalid_after_reopening_the_same_database() {
         request(&reopened, &receipt).await,
         Err(ReplacementStartError::InvalidReceipt)
     ));
-    assert_eq!(reopened.guardian_transfer().await.unwrap(), None);
+    assert_eq!(reopened.guardian_transfer().await, None);
     assert!(reopened.observe_replacement_candidates().borrow().is_none());
 }
 

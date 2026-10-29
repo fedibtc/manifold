@@ -4735,6 +4735,7 @@ async fn open_client_with_store_and_registry(
     registry: TestRegistry,
 ) -> TestClient {
     let status = store.load_status(TestIdentity::fa_id()).await.unwrap();
+    store.load_guardian_transfer_watch().await;
     let (progress, _) = tokio::sync::watch::channel(status);
     FaClient {
         inner: Arc::new(FaClientInner {

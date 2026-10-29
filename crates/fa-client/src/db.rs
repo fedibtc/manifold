@@ -15,7 +15,7 @@ use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
@@ -78,8 +78,10 @@ pub(crate) enum GuardianTransferWrite {
     /// Put the destination seat into the federation's seats in place of the
     /// source seat, after consensus adopted the new binding.
     Rebind(crate::transfer::StoredGuardianTransfer),
-    /// Close the open transfer.
+    /// Close the open transfer without a move: its purchase ended.
     Close,
+    /// Close the open transfer after the move completed.
+    Complete(crate::transfer::StoredGuardianTransfer),
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -946,6 +948,8 @@ pub(crate) struct FaStore {
     /// last one commits and then fails, so its run stops right there.
     #[cfg(test)]
     stopped_transfer_write: Arc<std::sync::Mutex<Option<usize>>>,
+    /// The open transfer as last written, or the one that last completed.
+    guardian_transfer: Arc<watch::Sender<Option<crate::transfer::GuardianTransfer>>>,
 }
 
 impl FaStore {
@@ -973,7 +977,24 @@ impl FaStore {
             failed_restore: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
+            guardian_transfer: Arc::new(watch::channel(None).0),
         }
+    }
+
+    /// Load the open transfer into the transfer watch. A client calls this
+    /// once when it opens; every later transfer write updates the watch.
+    pub(crate) async fn load_guardian_transfer_watch(&self) {
+        self.guardian_transfer.send_replace(
+            self.load_guardian_transfer()
+                .await
+                .map(|transfer| transfer.view(transfer.public_phase())),
+        );
+    }
+
+    pub(crate) fn observe_guardian_transfer(
+        &self,
+    ) -> watch::Receiver<Option<crate::transfer::GuardianTransfer>> {
+        self.guardian_transfer.subscribe()
     }
 
     /// Prepare one eligible backup, allocating its generation and Nostr
@@ -1479,6 +1500,7 @@ impl FaStore {
             failed_abandon: Arc::new(AtomicBool::new(false)),
             failed_restore: Arc::new(AtomicBool::new(false)),
             stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
+            guardian_transfer: Arc::new(watch::channel(None).0),
         }
     }
 
@@ -3490,13 +3512,12 @@ impl FaStore {
 
     pub(crate) async fn load_guardian_transfer(
         &self,
-    ) -> FaResult<Option<crate::transfer::StoredGuardianTransfer>> {
-        Ok(self
-            .database
+    ) -> Option<crate::transfer::StoredGuardianTransfer> {
+        self.database
             .begin_transaction_nc()
             .await
             .get_value(&GuardianTransferKey)
-            .await)
+            .await
     }
 
     async fn write_guardian_transfer(
@@ -3517,6 +3538,17 @@ impl FaStore {
         let same = |transfer: &crate::transfer::StoredGuardianTransfer| {
             open.as_ref()
                 .is_some_and(|open| open.transfer_id == transfer.transfer_id)
+        };
+        let published = match &write {
+            GuardianTransferWrite::Begin(transfer)
+            | GuardianTransferWrite::Update(transfer)
+            | GuardianTransferWrite::Rebind(transfer) => {
+                Some(transfer.view(transfer.public_phase()))
+            }
+            GuardianTransferWrite::Close => None,
+            GuardianTransferWrite::Complete(transfer) => {
+                Some(transfer.view(crate::transfer::GuardianTransferPhase::Completed))
+            }
         };
         match write {
             GuardianTransferWrite::Begin(transfer) => {
@@ -3556,13 +3588,14 @@ impl FaStore {
                 .await?;
                 dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
             }
-            GuardianTransferWrite::Close => {
+            GuardianTransferWrite::Close | GuardianTransferWrite::Complete(_) => {
                 dbtx.remove_entry(&GuardianTransferKey).await;
             }
         }
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("persisting the guardian transfer failed".to_owned()))?;
+        self.guardian_transfer.send_replace(published);
         #[cfg(test)]
         {
             let mut left = self.stopped_transfer_write.lock().expect("test lock");

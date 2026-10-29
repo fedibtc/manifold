@@ -217,22 +217,24 @@ item statuses are the library-owned liquidity journal governed by
 
 ## Guardian transfer
 
+fa-cli uses only the consumer calls of `fa-client`, as the app does.
 `transfer preview` reopens the FA database and prints the MG that
-`fa-client::preview_transfer_destination` would select. `transfer start
+`fa-client::preview_transfer_destination` would select. `transfer replace
 --seat-index N --max-msats M` reconciles the formed federation through
-`fa-client::resume`, repeats that preview, approves it with the cap, and calls
-`fa-client::start_guardian_transfer_unchecked` in the same process (fa-cli
-enables the test-only `unchecked-guardian-transfer` feature), so the sealed
-approval never leaves it. A paid seat takes the same payment-wallet flags as
-`resume`, and `--payment-federation-id` is the payer. `transfer resume` calls
-`fa-client::resume_guardian_transfer` without a reconciliation, because the
-seat list can lag consensus during a transfer. It takes the payment-wallet
-flags too, for an interrupted purchase. `transfer replace` takes the same
-arguments as `transfer start`, but runs a replacement check first and starts
-the transfer through `fa-client::request_guardian_replacement` with that
-check's receipt for the seat, so it refuses a guardian that is not eligible
-now. `transfer status` is a storage-only projection. All five use the
-maintenance timing flags.
+`fa-client::resume`, runs a replacement check, repeats that preview, approves
+it with the cap, and starts the transfer through
+`fa-client::request_guardian_replacement` with the check's receipt for the
+seat, in the same process, so the sealed approval never leaves it. It refuses
+a guardian that is not eligible now. A paid seat takes the same
+payment-wallet flags as `resume`, and `--payment-federation-id` is the payer.
+`transfer run` drives `fa-client::run_guardian_transfer` without a
+reconciliation, because the seat list can lag consensus during a transfer. It
+returns when `observe_guardian_transfer` shows the transfer completed or
+closed, or when the run timeout passes, and prints the transfer as it stands
+then. It takes the payment-wallet flags too, for an interrupted purchase.
+`transfer status` is a storage-only projection. A replacement uses the default
+maintenance timing, as the app does. `--run-timeout-secs` bounds `transfer
+run`.
 
 Identity and state persist in `--state-dir`; secret-key bytes are never
 printed or logged. This disposable local state supports development and E2E

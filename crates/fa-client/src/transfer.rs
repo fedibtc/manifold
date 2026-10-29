@@ -30,6 +30,9 @@
 //! restored FA cannot reconcile that federation. Both cases are accepted.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
+
+use tokio::sync::watch;
 
 use fedi_decentralized_domain::{
     MG_SEAT_BINDINGS_META_FIELD_KEY, MgPeerAttestation, MgSeatBindings, federation_seats,
@@ -49,7 +52,7 @@ use nostr_sdk::PublicKey;
 use crate::db::GuardianTransferWrite;
 use crate::formation::{
     DriverRun, PostFormedAuthority, PostFormedSeat, SeatSession, finish_driver_run, now_secs,
-    sleep_for_retry, snapshot_meta_consensus, start_driver_run,
+    snapshot_meta_consensus, start_driver_run,
 };
 use crate::maintenance::{
     MaintenanceConnection, maintenance_convergence, sleep_for_maintenance_retry,
@@ -61,6 +64,15 @@ use crate::{
     FormationFreshness, FormationId, MaintenanceRunOptions, ManifoldGuardianConnector, MgCause,
     MgOperation, TransferDestinationApproval,
 };
+
+/// How often `FaClient::run_guardian_transfer` checks a transfer that
+/// waits for the source or for its removal. Each check is one call to the
+/// destination.
+const TRANSFER_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// The first retry delay of a failed transfer step, and the `Busy` delay.
+const TRANSFER_RETRY_MIN: Duration = Duration::from_secs(1);
+/// The longest retry delay of a failed transfer step.
+const TRANSFER_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 /// One guardian moving from its MG onto a new seat.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,7 +166,7 @@ impl StoredGuardianTransfer {
         }
     }
 
-    fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
+    pub(crate) fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
         let (destination_mg_id, destination_seat_id) = match &self.stage {
             TransferStage::Buying(purchase) => (purchase.mg_id, None),
             TransferStage::Moving(moving) => (
@@ -172,7 +184,7 @@ impl StoredGuardianTransfer {
         }
     }
 
-    fn public_phase(&self) -> GuardianTransferPhase {
+    pub(crate) fn public_phase(&self) -> GuardianTransferPhase {
         match &self.stage {
             TransferStage::Buying(_) => GuardianTransferPhase::BuyingSeat,
             TransferStage::Moving(moving) => match moving.phase {
@@ -198,15 +210,18 @@ where
     /// The FA buys the seat, paid from `payment_federation_id` unless it is
     /// free. It then signs a grant, which has no expiry, and asks the new
     /// seat to pull the guardian from its MG. The call advances the transfer
-    /// like [`Self::resume_guardian_transfer`], but does not wait for the
-    /// source. The destination keeps asking the source on its own, so the
-    /// caller can return later, for example when `completion_callback`
-    /// reports that the guardian runs. Only one transfer is open at a time.
+    /// like [`Self::resume_guardian_transfer`], and
+    /// [`Self::run_guardian_transfer`] finishes it. The destination keeps
+    /// asking the source on its own. Only one transfer is open at a time.
+    /// The call waits while another operation runs, until the approval
+    /// expires, so it returns `Busy` only when another client holds the
+    /// database lease.
     ///
-    /// This moves any guardian, with no reason to replace it. Consumers start
-    /// a transfer with [`Self::request_guardian_replacement`], which requires
-    /// a replacement receipt. Only test tools reach this directly, through
-    /// the `unchecked-guardian-transfer` feature.
+    /// This moves any guardian, with no reason to replace it, so it is
+    /// crate-private. Consumers start a transfer with
+    /// [`Self::request_guardian_replacement`], which requires a replacement
+    /// receipt.
+    #[cfg(test)]
     pub(crate) async fn start_guardian_transfer(
         &self,
         seat_index: u16,
@@ -215,7 +230,46 @@ where
         completion_callback: Option<DkgCompletionCallback>,
         options: MaintenanceRunOptions,
     ) -> FaResult<GuardianTransfer> {
-        let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let run = self.lock_run_for(&approval).await?;
+        self.start_guardian_transfer_locked(
+            &run,
+            seat_index,
+            approval,
+            payment_federation_id,
+            completion_callback,
+            options,
+        )
+        .await
+    }
+
+    /// Wait for the run instead of `Busy`, because the caller holds an
+    /// approval that a `Busy` would make it preview again. Another operation
+    /// can hold the run for minutes, so the wait ends when the approval
+    /// expires.
+    pub(crate) async fn lock_run_for(
+        &self,
+        approval: &TransferDestinationApproval,
+    ) -> FaResult<tokio::sync::OwnedMutexGuard<()>> {
+        let left = Duration::from_secs(approval.valid_until.0.saturating_sub(now_secs()?));
+        fedimint_core::runtime::timeout(left, self.inner.run_guard.clone().lock_owned())
+            .await
+            .map_err(|_| FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            })
+    }
+
+    /// [`Self::start_guardian_transfer`] with the run already held, so a
+    /// caller can check its own preconditions under the same run.
+    pub(crate) async fn start_guardian_transfer_locked(
+        &self,
+        _run: &tokio::sync::OwnedMutexGuard<()>,
+        seat_index: u16,
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
+        completion_callback: Option<DkgCompletionCallback>,
+        options: MaintenanceRunOptions,
+    ) -> FaResult<GuardianTransfer> {
         let options = options.run_options();
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
@@ -266,44 +320,26 @@ where
             lease
                 .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer.clone()))
                 .await?;
-            self.drive_guardian_transfer(transfer, fa_id, false, run)
-                .await
+            self.drive_guardian_transfer(transfer, fa_id, run).await
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// [`Self::start_guardian_transfer`] for test tools, which move a
-    /// healthy guardian. A consumer app must not enable this feature.
-    #[cfg(feature = "unchecked-guardian-transfer")]
-    pub async fn start_guardian_transfer_unchecked(
-        &self,
-        seat_index: u16,
-        approval: TransferDestinationApproval,
-        payment_federation_id: Option<FederationId>,
-        completion_callback: Option<DkgCompletionCallback>,
-        options: MaintenanceRunOptions,
-    ) -> FaResult<GuardianTransfer> {
-        self.start_guardian_transfer(
-            seat_index,
-            approval,
-            payment_federation_id,
-            completion_callback,
-            options,
-        )
-        .await
-    }
-
     /// Advance the open transfer as far as it goes within `options`.
     ///
-    /// Waiting for the source MG or for its removal is not an error: the
-    /// result reports the phase, and a later call continues from it. A
+    /// The call checks the destination once and does not wait for it: a
+    /// destination that has not pulled the guardian yet leaves the transfer
+    /// in `AwaitingSource`, and an unreachable source leaves it in
+    /// `RemovingSource`. Neither is an error, and a later call continues
+    /// from the reported phase. So `options` bounds the purchase, the vote
+    /// and the removal, not a wait for the source. A
     /// purchase or a vote that fails returns its error and stays open for a
     /// later call, unless the purchase ended without value at risk; then the
     /// transfer closes and the error is
     /// [`FaError::SelectionReauthorizationRequired`]. `None` means no
     /// transfer is open.
-    pub async fn resume_guardian_transfer(
+    pub(crate) async fn resume_guardian_transfer(
         &self,
         options: MaintenanceRunOptions,
     ) -> FaResult<Option<GuardianTransfer>> {
@@ -311,33 +347,90 @@ where
         let options = options.run_options();
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
-        let Some(transfer) = self.inner.store.load_guardian_transfer().await? else {
+        let Some(transfer) = self.inner.store.load_guardian_transfer().await else {
             return Ok(None);
         };
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = self
-            .drive_guardian_transfer(transfer, fa_id, true, run)
+            .drive_guardian_transfer(transfer, fa_id, run)
             .await
             .map(Some);
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// The open transfer, if any, as last recorded.
-    pub async fn guardian_transfer(&self) -> FaResult<Option<GuardianTransfer>> {
-        Ok(self
-            .inner
+    /// Drive the open guardian transfer until it closes, then wait for the
+    /// next one. Consumers drive this future while active, like
+    /// [`Self::run_replacement_checks`]; dropping it stops the loop.
+    ///
+    /// The loop resumes an open transfer at once, so a reopened client
+    /// continues it. While the transfer waits for the source or its
+    /// removal, it checks again every 30 s. A failed step retries with a
+    /// backoff from 1 s to 5 min, and `Busy` retries after 1 s. Each step
+    /// holds `run_guard` only for that step, so other operations run between
+    /// steps. A recorded start wakes the loop.
+    pub async fn run_guardian_transfer(&self) {
+        let open = |transfer: &Option<GuardianTransfer>| {
+            transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.phase != GuardianTransferPhase::Completed)
+        };
+        // The watch changes only after a committed write, so a start that
+        // was cancelled after it recorded the transfer still wakes the loop.
+        let mut transfer = self.observe_guardian_transfer();
+        let mut retry = TRANSFER_RETRY_MIN;
+        loop {
+            if transfer.wait_for(open).await.is_err() {
+                return;
+            }
+            let pause = match self
+                .resume_guardian_transfer(MaintenanceRunOptions::default())
+                .await
+            {
+                Ok(_) => {
+                    retry = TRANSFER_RETRY_MIN;
+                    TRANSFER_POLL_INTERVAL
+                }
+                // Busy can come from another client holding the database
+                // lease too.
+                Err(FaError::Busy) => TRANSFER_RETRY_MIN,
+                Err(_) => {
+                    let pause = retry;
+                    retry = (retry * 2).min(TRANSFER_RETRY_MAX);
+                    pause
+                }
+            };
+            // A closed transfer goes straight to the wait for the next one.
+            if !open(&transfer.borrow()) {
+                retry = TRANSFER_RETRY_MIN;
+                continue;
+            }
+            fedimint_core::runtime::sleep(pause).await;
+        }
+    }
+
+    /// Observe the open transfer as last recorded. After a move completes,
+    /// the value stays the completed transfer until the next start, so a
+    /// consumer sees the end of the move. A transfer whose purchase ended
+    /// without a seat becomes `None`. A new client starts from storage.
+    pub fn observe_guardian_transfer(&self) -> watch::Receiver<Option<GuardianTransfer>> {
+        self.inner.store.observe_guardian_transfer()
+    }
+
+    /// The open transfer, if any, as stored.
+    #[cfg(test)]
+    pub(crate) async fn guardian_transfer(&self) -> Option<GuardianTransfer> {
+        self.inner
             .store
             .load_guardian_transfer()
-            .await?
-            .map(|transfer| transfer.view(transfer.public_phase())))
+            .await
+            .map(|transfer| transfer.view(transfer.public_phase()))
     }
 
     async fn drive_guardian_transfer(
         &self,
         transfer: StoredGuardianTransfer,
         fa_id: FaId,
-        wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<GuardianTransfer> {
         let lease = run.lease();
@@ -366,7 +459,7 @@ where
             // that restored a backup from before its import lost the
             // guardian, and pulls it again from the stopped source.
             if let Pulled::Waiting = self
-                .await_pulled_guardian(&transfer, &moving.destination, fa_id, wait, run)
+                .check_pulled_guardian(&transfer, &moving.destination, fa_id, run)
                 .await?
             {
                 let current = transfer.moved(&moving);
@@ -435,7 +528,7 @@ where
         // about the destination now. A destination that lost the guardian
         // pulls it again from the source first.
         if let Pulled::Waiting = self
-            .await_pulled_guardian(&transfer, &moving.destination, fa_id, wait, run)
+            .check_pulled_guardian(&transfer, &moving.destination, fa_id, run)
             .await?
         {
             return Ok(transfer.view(GuardianTransferPhase::RemovingSource));
@@ -443,7 +536,10 @@ where
         match self.remove_source_seat(&transfer, fa_id, run).await {
             Ok(()) => {
                 lease
-                    .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
+                    .write_guardian_transfer(
+                        fa_id,
+                        GuardianTransferWrite::Complete(transfer.clone()),
+                    )
                     .await?;
                 Ok(transfer.view(GuardianTransferPhase::Completed))
             }
@@ -457,19 +553,18 @@ where
     }
 
     /// Make sure the destination runs the guardian: a destination that
-    /// reports `New` gets `PullSeat` with a grant for this move. With `wait`,
-    /// poll it until the guardian runs or the run ends. An unreachable
-    /// destination counts as still waiting.
-    async fn await_pulled_guardian(
+    /// reports `New` gets `PullSeat` with a grant for this move, and is asked
+    /// again. A destination that is still pulling, or unreachable, counts as
+    /// waiting.
+    async fn check_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
         destination: &StoredDestinationSeat,
         fa_id: FaId,
-        wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         match self
-            .poll_pulled_guardian(transfer, destination, fa_id, wait, run)
+            .read_pulled_guardian(transfer, destination, fa_id, run)
             .await
         {
             Err(FaError::Mg(failure))
@@ -481,12 +576,11 @@ where
         }
     }
 
-    async fn poll_pulled_guardian(
+    async fn read_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
         destination: &StoredDestinationSeat,
         fa_id: FaId,
-        wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         let client = match MgClient::connect(
@@ -514,7 +608,7 @@ where
                 .status;
             match status {
                 ServiceStatus::Running => return Ok(Pulled::Running),
-                ServiceStatus::AwaitingTransfer => {}
+                ServiceStatus::AwaitingTransfer => return Ok(Pulled::Waiting),
                 // A new seat, or a destination restored from a backup from
                 // before its import. A grant has no expiry, and the
                 // destination takes a grant signed again for the same move
@@ -540,13 +634,6 @@ where
                         .into());
                 }
             }
-            if !wait
-                || sleep_for_retry(run.deadline(), run.poll_interval())
-                    .await
-                    .is_err()
-            {
-                return Ok(Pulled::Waiting);
-            }
         }
     }
 
@@ -562,7 +649,7 @@ where
         bindings: &[fedi_decentralized_domain::VerifiedSeatBinding],
         run: DriverRun<'_>,
     ) -> FaResult<crate::backup::FaBackupPayload> {
-        let Some(transfer) = self.inner.store.load_guardian_transfer().await? else {
+        let Some(transfer) = self.inner.store.load_guardian_transfer().await else {
             return Ok(payload);
         };
         let TransferStage::Moving(mut moving) = transfer.stage.clone() else {

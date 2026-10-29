@@ -144,7 +144,6 @@ async fn open_purchase(client: &TestClient) -> crate::seat_purchase::StoredSeatP
         .store
         .load_guardian_transfer()
         .await
-        .unwrap()
         .expect("an open transfer");
     let TransferStage::Buying(purchase) = transfer.stage else {
         panic!("the transfer still buys its seat");
@@ -204,7 +203,7 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
     )
     .await
     .unwrap_err();
-    let pending = client.guardian_transfer().await.unwrap().unwrap();
+    let pending = client.guardian_transfer().await.unwrap();
     assert_eq!(pending.phase, GuardianTransferPhase::BuyingSeat);
     assert_eq!(pending.destination_mg_id, test_mg_id(DESTINATION));
     assert_eq!(pending.destination_seat_id, None);
@@ -316,7 +315,9 @@ async fn a_refused_purchase_settles_its_refund_and_closes_the_transfer() {
         payment_state.refund_calls.load(Ordering::SeqCst),
         refunds_before + 1
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
+    // The start recorded the transfer before its purchase ended.
+    assert_eq!(*client.observe_guardian_transfer().borrow(), None);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
@@ -344,7 +345,7 @@ async fn a_quote_above_the_approved_cap_moves_no_value() {
         payment_state.readiness_calls.load(Ordering::SeqCst),
         reservations_before
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
 }
 
 #[tokio::test]
@@ -371,13 +372,7 @@ async fn payment_that_never_started_rechecks_its_payer(stop_before_release: bool
     )
     .await
     .unwrap_err();
-    let mut transfer = client
-        .inner
-        .store
-        .load_guardian_transfer()
-        .await
-        .unwrap()
-        .unwrap();
+    let mut transfer = client.inner.store.load_guardian_transfer().await.unwrap();
     let TransferStage::Buying(purchase) = &mut transfer.stage else {
         panic!("the transfer still buys its seat");
     };
@@ -442,7 +437,7 @@ async fn payment_that_never_started_rechecks_its_payer(stop_before_release: bool
         payment_state.whole_release_calls.load(Ordering::SeqCst),
         releases_before + 1
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert!(destination_create_records(&mg_state).is_empty());
 }
 
@@ -477,7 +472,7 @@ async fn a_priced_destination_needs_a_payer_before_the_transfer_opens() {
         mg_state.connect_calls.load(Ordering::SeqCst),
         connects_before
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert!(destination_create_records(&mg_state).is_empty());
 }
 
@@ -518,7 +513,7 @@ async fn a_free_destination_that_starts_to_charge_closes_the_transfer() {
         payment_state.readiness_calls.load(Ordering::SeqCst),
         reservations_before
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert!(destination_create_records(&mg_state).is_empty());
 }
 
@@ -553,7 +548,7 @@ async fn a_destination_that_stops_selling_closes_the_transfer() {
         reservations_before
     );
     assert!(destination_create_records(&mg_state).is_empty());
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     // The slot is free: a new selection starts a new transfer.
     set_mg_version(&mg_state, DESTINATION, &fedimintd_version().to_string());
     let transfer = start_transfer(&client, &mg_state).await;
@@ -842,13 +837,7 @@ async fn a_rejected_payment_closes_the_transfer_for_another_payer() {
     )
     .await
     .unwrap_err();
-    let mut transfer = client
-        .inner
-        .store
-        .load_guardian_transfer()
-        .await
-        .unwrap()
-        .unwrap();
+    let mut transfer = client.inner.store.load_guardian_transfer().await.unwrap();
     let TransferStage::Buying(purchase) = &mut transfer.stage else {
         panic!("the transfer still buys its seat");
     };
@@ -889,7 +878,7 @@ async fn a_rejected_payment_closes_the_transfer_for_another_payer() {
         ),
         "{error:?}"
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
@@ -971,7 +960,7 @@ async fn an_approval_previewed_for_another_federation_is_refused() {
         payment_state.readiness_calls.load(Ordering::SeqCst),
         readiness_before
     );
-    assert_eq!(other_client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(other_client.guardian_transfer().await, None);
 }
 
 /// The preview kept the destination off the guardians' service keys. The
@@ -1009,6 +998,6 @@ async fn a_destination_with_a_guardian_service_key_is_refused_at_start() {
         payment_state.readiness_calls.load(Ordering::SeqCst),
         readiness_before
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert!(destination_create_records(&mg_state).is_empty());
 }

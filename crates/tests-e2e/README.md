@@ -156,10 +156,11 @@ pretending the formation gate ran.
 `tests/manifold_guardian_0_1_formation/guardian_transfer.rs`) drives a
 guardian transfer only through `fa-cli`, as a consumer would. Seven MGs form
 a free federation, and an eighth MG joins. With the source MG offline,
-`fa-cli transfer start` buys a free seat on the new MG and asks it to pull
+a replacement check flags the source after a short policy absence limit, and
+`fa-cli transfer replace` buys a free seat on the new MG and asks it to pull
 the guardian of seat 0. The FA then stays offline: the new MG keeps its pull
 across a restart and runs the guardian, with the source's config, once the
-source is back. `fa-cli transfer resume` then completes the move. The test
+source is back. `fa-cli transfer run` then completes the move. The test
 checks that:
 
 - the source deleted the guardian data, reports `Removed`, stays removed

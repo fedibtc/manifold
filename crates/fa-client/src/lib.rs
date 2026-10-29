@@ -389,6 +389,7 @@ where
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
         let status = store.load_status(fa_id).await?;
+        store.load_guardian_transfer_watch().await;
         let (progress, _) = watch::channel(status);
         let backup_tasks = TaskGroup::new();
         Ok(Self {

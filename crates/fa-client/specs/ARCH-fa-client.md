@@ -688,10 +688,19 @@ seat, by the contract in
 [`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
 transfer row owns the whole move, including its destination seat. One
 transfer is open at a time. It moves any guardian, so it is crate-private.
-Consumers start a transfer with `request_guardian_replacement`, which needs a
-replacement receipt. Test tools that move a healthy guardian call
-`start_guardian_transfer_unchecked`, behind the `unchecked-guardian-transfer`
-feature.
+The consumer interface is three calls: `request_guardian_replacement` starts
+a transfer and needs a replacement receipt, `run_guardian_transfer` finishes
+it, and `observe_guardian_transfer` reports it. The watch follows every
+transfer write. After a move completes it keeps the completed transfer until
+the next start, so a consumer sees the end. A purchase that ends without a
+seat clears it. A start waits while another operation
+runs, until its approval expires, so the consumer does not keep its approval
+for a retry. A replacement checks its receipt under the same run, so another
+transfer cannot replace the receipt's seat in between. The watch belongs to
+one client instance: a subscription sees the writes of that client only,
+which matches the single active client per database. Resume and a start
+without a receipt are crate-private, so a test tool goes through the same
+calls as a consumer app.
 
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian
@@ -736,7 +745,7 @@ Each of these returns `SelectionReauthorizationRequired` with the reason that
 Pay-and-create uses: a refusal is `SelectedMgUnavailable` with the MG failure,
 and a rejected payment is `SelectedPayerUnavailable`. No closed state is
 stored: the transfer row is deleted. Any other failure leaves the purchase in
-the row for `resume_guardian_transfer`.
+the row for the next resume.
 
 With the seat bought, the FA signs a grant, which has no expiry, and
 sends `PullSeat` with an optional completion callback. From then on the seat
@@ -754,9 +763,20 @@ does not prove that the destination's backup holds the guardian, and the
 stopped source still does. Any status other than `New`, `AwaitingTransfer`
 or `Running` is an error, and the transfer stays open.
 
-`resume_guardian_transfer` continues from the recorded stage. While the
-destination is `AwaitingTransfer` it polls until the run ends and then
-reports `AwaitingSource`. When the destination is `Running`, the FA reads the
+A resume continues from the recorded stage. It asks the
+destination once and does not wait for the source: while the destination is
+`AwaitingTransfer`, the resume reports `AwaitingSource` at once. So the run
+deadline bounds work, not a wait.
+
+`run_guardian_transfer` is a consumer-driven future, like
+`run_replacement_checks`, and the transfer timing belongs to `fa-client`. It
+resumes an open transfer at once, so a reopened client continues it. While
+the transfer waits for the source or its removal, it checks every 30 s. A
+failed step retries with a backoff from 1 s to 5 min, and `Busy` retries
+after 1 s. Each step holds the run only for that step. With no transfer open,
+the loop sleeps until a start wakes it.
+
+When the destination is `Running`, the FA reads the
 destination's attestation, saves it in the transfer, and votes it through
 every guardian except the source, like a metadata update. The destination
 signs a new attestation on each request, so a resume votes the saved one. It
