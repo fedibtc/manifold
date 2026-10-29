@@ -73,9 +73,10 @@ A restored payload imports the formed federation record as `Unsynced`; reconcili
 gates mutations until fresh guardian consensus confirms the saved federation
 identity and complete signed seat-binding directory. It checks the saved MG
 identities and any liquidity commitment against that directory. A saved
-invite that names fewer than f+1 guardians, from an older formation, is
-completed first: recovery signs invite requests to every saved manager at the
-same time and adds the guardians of the same federation that answer. After it
+invite that names fewer than f+1 guardians, from an older formation, may name
+only an offline guardian. Then recovery also signs invite requests to every
+saved manager and reads through each invite for the same federation, all at
+the same time, and uses the first read that works. After it
 verifies consensus, reconciliation saves the invite of the verified config:
 the f+1 lowest guardians at their current endpoints. The next backup carries
 that invite. The signed liquidity commitment stays unchanged; it is matched by

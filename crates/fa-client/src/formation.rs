@@ -3944,20 +3944,20 @@ where
                 "formed FA federation record contains no seats".to_owned(),
             ));
         }
-        let mut authority = self.post_formed_authority(fa_id).await?;
-        authority.invite_code = run
-            .call("completing the saved federation invite", || {
-                Ok(self.completed_invite(&authority.invite_code, authority.seat_routes()))
+        let authority = self.post_formed_authority(fa_id).await?;
+        let read = if names_essential_guardians(&authority.invite_code, authority.seats.len()) {
+            self.read_formed_consensus(&authority, run).await?
+        } else {
+            run.call("reading federation consensus through the seat MGs", || {
+                Ok(self.read_through_seat_invites(&authority))
             })
-            .await?;
-        let consensus = self
-            .read_formed_consensus(&authority, run)
             .await?
-            .map_err(|error| {
-                FaError::InvalidManifoldGuardians(format!(
-                    "reading formed federation consensus failed: {error}"
-                ))
-            })?;
+        };
+        let consensus = read.map_err(|error| {
+            FaError::InvalidManifoldGuardians(format!(
+                "reading formed federation consensus failed: {error}"
+            ))
+        })?;
         verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
@@ -4492,53 +4492,72 @@ where
         Ok(true)
     }
 
-    /// The invite recovery dials. A saved invite names the f+1 lowest
-    /// guardians, as Fedimint builds it: at least one of them is honest and
-    /// online while the federation can make progress. An older formation
-    /// saved an invite naming one guardian. Then every seat's MG is asked at
-    /// the same time for its own invite, and the guardians of the same
-    /// federation that the saved invite lacks are added. An MG only adds a way
-    /// to dial; recovery still verifies the federation it reads, then saves
-    /// the f+1 invite of the verified config. So this runs at most until a
-    /// formation's first recovery, and other reads dial the saved invite.
-    pub(crate) async fn completed_invite<'a>(
+    /// Recovery's read when the saved invite names fewer than f+1 guardians,
+    /// as an older formation saved it. A saved invite of f+1 guardians always
+    /// reaches one honest, online guardian while the federation can make
+    /// progress; a one-guardian invite does not. So read through the saved
+    /// invite and through every seat MG's own invite at the same time, and
+    /// return the first read that works. An MG only gives a way to dial; the
+    /// caller still verifies the federation it read, then saves the f+1
+    /// invite of the verified config, so this runs until the first recovery.
+    pub(crate) async fn read_through_seat_invites(
+        &self,
+        authority: &PostFormedAuthority,
+    ) -> Result<FederationConsensusSnapshot, crate::FederationConsensusError> {
+        let saved = &authority.invite_code;
+        let expected = invite_federation_id(saved).ok();
+        let fa_id = self.fa_id().ok();
+        let mut reads = std::iter::once(None)
+            .chain(authority.seat_routes().map(Some))
+            .map(|route| self.read_through_route(saved, expected, fa_id, route))
+            .collect::<FuturesUnordered<_>>();
+        let mut saved_error = None;
+        while let Some((is_saved, result)) = reads.next().await {
+            match result {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) if is_saved => saved_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        Err(saved_error.expect("the saved invite is always read"))
+    }
+
+    /// One read of [`Self::read_through_seat_invites`]: through the saved
+    /// invite, or through the invite one seat MG gives for the same
+    /// federation. Says whether it was the saved invite.
+    async fn read_through_route(
         &self,
         saved: &InviteCode,
-        seats: impl IntoIterator<Item = (&'a SeatId, &'a Locator)>,
-    ) -> InviteCode {
-        let seats = seats.into_iter().collect::<Vec<_>>();
-        let Ok(parsed) = FedimintInviteCode::from_str(&saved.0) else {
-            return saved.clone();
+        expected: Option<FedimintFederationId>,
+        fa_id: Option<FaId>,
+        route: Option<(&SeatId, &Locator)>,
+    ) -> (
+        bool,
+        Result<FederationConsensusSnapshot, crate::FederationConsensusError>,
+    ) {
+        let invite = match (route, fa_id) {
+            (None, _) => Some(saved.clone()),
+            (Some((seat_id, locator)), Some(fa_id)) => self
+                .seat_invite(fa_id, seat_id, locator)
+                .await
+                .filter(|invite| {
+                    expected.is_some() && invite_federation_id(invite).ok() == expected
+                }),
+            (Some(_), None) => None,
         };
-        let mut peers = parsed.peers();
-        let essential = seats.len().saturating_sub(1) / 3 + 1;
-        if peers.len() >= essential {
-            return saved.clone();
-        }
-        let Ok(fa_id) = self.fa_id() else {
-            return saved.clone();
+        let result = match invite {
+            Some(invite) => {
+                self.inner
+                    .ports
+                    .consensus_reader
+                    .read_consensus(&invite)
+                    .await
+            }
+            None => Err(crate::FederationConsensusError::new(
+                "seat MG gave no invite for this federation",
+            )),
         };
-        let mut pending = seats
-            .into_iter()
-            .map(|(seat_id, locator)| self.seat_invite(fa_id, seat_id, locator))
-            .collect::<FuturesUnordered<_>>();
-        while let Some(invite) = pending.next().await {
-            let Some(invite) =
-                invite.and_then(|invite| FedimintInviteCode::from_str(&invite.0).ok())
-            else {
-                continue;
-            };
-            if invite.federation_id() != parsed.federation_id() {
-                continue;
-            }
-            for (peer, url) in invite.peers() {
-                peers.entry(peer).or_insert(url);
-            }
-        }
-        InviteCode(
-            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret())
-                .to_string(),
-        )
+        (route.is_none(), result)
     }
 
     /// The invite one saved seat's MG gives for its federation.
@@ -4690,6 +4709,14 @@ where
 
 /// Reject a configuration whose federation id differs from the saved invite.
 /// This checks identity only; the caller verifies the guardian directory separately.
+/// Whether `invite` names at least f+1 of a federation of `size` guardians.
+fn names_essential_guardians(invite: &InviteCode, size: usize) -> bool {
+    invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .is_ok_and(|invite| invite.peers().len() > size.saturating_sub(1) / 3)
+}
+
 /// The invite of a verified consensus config for the federation of `saved`:
 /// the f+1 lowest guardians at their current endpoints, which follow a
 /// guardian transfer. Call after the caller verified the directory and saved

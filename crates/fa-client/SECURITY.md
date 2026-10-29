@@ -444,15 +444,16 @@ consent to it. A guardian vote is not FA consent, so this is a deliberate
 tradeoff: the FA cannot undo the vote, and refusing management would only
 block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
 still requires every manager's health and agreed invite.
-If the remembered or saved invite cannot reach the federation, every read of a
-formed federation (recovery, maintenance, liquidity, replacement checks, and
-guardian transfer) asks the saved managers for alternative invites, one at a
-time, because each working invite queries the whole federation. They are
-dialing hints only: reject a different
-federation id and apply the same consensus and directory checks. Retain a
-multi-guardian read invite in memory after verification, never a cached
-consensus result. The original invite, backup, and signed liquidity commitment
-remain unchanged; liquidity and gateway verification use the read invite.
+Every read of a formed federation dials the saved invite. After it verifies
+consensus, recovery saves the invite of the verified config: the f+1 lowest
+guardians at their current endpoints. It is a dialing hint only, never a
+cached consensus result, and the federation id, not the invite string, is the
+identity. A saved invite naming fewer than f+1 guardians, from an older
+formation, can leave recovery with no reachable guardian. Only recovery then
+also reads through each saved manager's own invite, all at the same time,
+within the run deadline. Those invites are dialing hints only: reject a
+different federation id and apply the same consensus and directory checks.
+The signed liquidity commitment stays unchanged.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a

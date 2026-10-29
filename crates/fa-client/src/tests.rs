@@ -4144,58 +4144,18 @@ async fn reconciliation_saves_the_endpoints_of_the_verified_config() {
     // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
     assert_eq!(saved.peers(), expected);
 
-    // A complete saved invite dials as it is and asks no MG.
+    // A recovery with the saved f+1 invite asks no MG.
     let invite_calls = state.invite_calls.load(Ordering::SeqCst);
-    assert_eq!(
-        client
-            .completed_invite(&authority.invite_code, authority.seat_routes())
-            .await,
-        authority.invite_code
-    );
+    client.resume().await.unwrap();
     assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls);
 }
 
-#[tokio::test]
-async fn a_one_guardian_saved_invite_gets_the_other_guardians_from_every_seat_mg() {
-    let (client, _, state, _) = formed_client_for_liquidity().await;
-    let authority = client
-        .post_formed_authority(TestIdentity::fa_id())
-        .await
-        .unwrap();
-    // An invite saved by an older formation names one guardian.
-    let saved = test_invite_for_peer(5, 5, 0);
-
-    let invite_calls = state.invite_calls.load(Ordering::SeqCst);
-    let invite = client
-        .completed_invite(&saved, authority.seat_routes())
-        .await;
-    assert_eq!(
-        state.invite_calls.load(Ordering::SeqCst),
-        invite_calls + usize::from(MIN_FEDERATION_SIZE),
-        "every seat MG is asked",
-    );
-    let invite = invite.0.parse::<FedimintInviteCode>().unwrap();
-    assert_eq!(
-        invite.federation_id(),
-        test_federation_config().calculate_federation_id()
-    );
-    // The f+1 lowest of the guardians the MGs named.
-    let expected = (0..3)
-        .map(|peer| {
-            let peer = u16::try_from(peer).unwrap();
-            (PeerId::from(peer), test_guardian_url(usize::from(peer)))
-        })
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(invite.peers(), expected);
-}
-
-#[tokio::test]
-async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config() {
+/// A restored FA whose backup, from a formation before f+1 invites, names
+/// only `peer`.
+async fn restored_with_one_guardian_invite(peer: usize) -> (TestClient, Arc<MgState>) {
     let (source, _, mg_state, _) = formed_client_for_liquidity().await;
     let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
-    // A backup from a formation before f+1 invites names one guardian.
-    payload.federation_invite = test_invite_for_peer(5, 5, 0);
-
+    payload.federation_invite = test_invite_for_peer(peer, peer, 0);
     let (payments, _) = TestPayments::new();
     let restored = open_client(
         MemDatabase::new().into_database(),
@@ -4212,35 +4172,81 @@ async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config()
         .await
         .unwrap();
     restored.inner.progress.send_replace(status);
+    (restored, mg_state)
+}
 
-    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
-    restored.resume().await.unwrap();
-    assert_eq!(
-        mg_state.invite_calls.load(Ordering::SeqCst),
-        invite_calls + usize::from(MIN_FEDERATION_SIZE),
-        "the first recovery asks every seat MG",
-    );
-    let FaStatus::Formed(snapshot) = restored.status() else {
-        panic!("formed status");
-    };
-    let saved = snapshot
-        .federation_invite
-        .0
-        .parse::<FedimintInviteCode>()
-        .unwrap();
-    let expected = test_federation_config()
+fn config_invite_peers() -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    test_federation_config()
         .global
         .api_endpoints
         .iter()
         .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
         .take(3)
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(saved.peers(), expected);
+        .collect()
+}
+
+fn saved_invite_peers(client: &TestClient) -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    let FaStatus::Formed(snapshot) = client.status() else {
+        panic!("formed status");
+    };
+    snapshot
+        .federation_invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap()
+        .peers()
+}
+
+#[tokio::test]
+async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config() {
+    let (restored, mg_state) = restored_with_one_guardian_invite(5).await;
+    restored.resume().await.unwrap();
+    assert_eq!(saved_invite_peers(&restored), config_invite_peers());
 
     // Later recoveries dial the saved f+1 invite and ask no MG.
     let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
     restored.resume().await.unwrap();
     assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
+}
+
+#[tokio::test]
+async fn recovery_reads_through_any_seat_mg_invite_when_the_lowest_guardians_are_offline() {
+    // The saved guardian and the next two are offline. Merging the MG
+    // invites into one f+1 invite would keep only these three.
+    let (restored, _) = restored_with_one_guardian_invite(0).await;
+    restored
+        .inner
+        .ports
+        .consensus_reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .extend((0..3).map(PeerId::from));
+    restored.resume().await.unwrap();
+    assert_eq!(saved_invite_peers(&restored), config_invite_peers());
+}
+
+#[tokio::test(start_paused = true)]
+async fn hung_seat_mgs_cannot_hold_recovery_past_its_request_timeout() {
+    let (restored, mg_state) = restored_with_one_guardian_invite(0).await;
+    restored
+        .inner
+        .ports
+        .consensus_reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .insert(PeerId::from(0));
+    mg_state.hang_connect.store(true, Ordering::SeqCst);
+    let started = fedimint_core::runtime::Instant::now();
+    assert!(matches!(
+        restored.resume_with_options(options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    // `options()` allows 200 ms per call; one seat-invite request alone
+    // would allow 15 s.
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[tokio::test]
