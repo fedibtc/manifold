@@ -3945,9 +3945,11 @@ where
             ));
         }
         let mut authority = self.post_formed_authority(fa_id).await?;
-        authority.invite_code = self
-            .completed_invite(&authority.invite_code, authority.seat_routes())
-            .await;
+        authority.invite_code = run
+            .call("completing the saved federation invite", || {
+                Ok(self.completed_invite(&authority.invite_code, authority.seat_routes()))
+            })
+            .await?;
         let consensus = self
             .read_formed_consensus(&authority, run)
             .await?
