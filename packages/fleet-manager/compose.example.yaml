@@ -14,6 +14,15 @@
 #   FLEET_MANAGER_BITCOIND_USERNAME=<rpcauth user>
 #   FLEET_MANAGER_BITCOIND_PASSWORD=<its password>
 #
+# Prepare the host before `docker compose up`. The dedicated user named in
+# `user:` below must own both bind sources: Compose turns a missing
+# ./admin-password into a directory, and MG checks the file itself — it refuses
+# a path that is not a regular file and any mode accessible by group or
+# others (mode & 0o077 must be 0).
+#   mkdir -p data && chown <uid>:<gid> data
+#   openssl rand -base64 24 > admin-password   # a generated, nonempty password
+#   chown <uid>:<gid> admin-password && chmod 0600 admin-password   # 0400 too
+#
 # Run one MG per data directory, ever: never start a copy of ./data elsewhere.
 services:
   fleet-manager:
@@ -23,11 +32,14 @@ services:
     stop_grace_period: 1m
     # Bitcoin Core RPC stays on the host's loopback, and each seat needs its
     # UDP ports reachable (README, "Seat iroh reachability"). Host networking
-    # gives both; the host firewall decides what is exposed.
+    # shares the host firewall directly rather than reproducing UDP-only
+    # container publishing: allow the intended seat UDP range through it, and
+    # deny external access to the corresponding TCP API ports — the admin port
+    # below binds loopback.
     network_mode: host
     user: "<uid>:<gid>" # a dedicated host user that owns ./data
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt: ["no-new-privileges:true"]
     tmpfs: [/tmp]
     env_file: [bitcoind.env]
     environment:
