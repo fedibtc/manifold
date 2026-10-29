@@ -141,6 +141,8 @@ struct FaClientInner<I, P, N, F, C> {
     manifold_environment: ManifoldEnvironment,
     backup_tasks: TaskGroup,
     replacement_checks: replacement_checks::ReplacementChecks,
+    /// Wakes [`FaClient::run_guardian_transfer`] after a transfer start.
+    transfer_opened: tokio::sync::Notify,
 }
 
 impl<I, P, N, F, C> Drop for FaClientInner<I, P, N, F, C> {
@@ -403,6 +405,7 @@ where
                 manifold_environment,
                 backup_tasks,
                 replacement_checks: replacement_checks::ReplacementChecks::default(),
+                transfer_opened: tokio::sync::Notify::new(),
             }),
         })
     }

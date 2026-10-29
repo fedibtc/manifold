@@ -3490,13 +3490,12 @@ impl FaStore {
 
     pub(crate) async fn load_guardian_transfer(
         &self,
-    ) -> FaResult<Option<crate::transfer::StoredGuardianTransfer>> {
-        Ok(self
-            .database
+    ) -> Option<crate::transfer::StoredGuardianTransfer> {
+        self.database
             .begin_transaction_nc()
             .await
             .get_value(&GuardianTransferKey)
-            .await)
+            .await
     }
 
     async fn write_guardian_transfer(

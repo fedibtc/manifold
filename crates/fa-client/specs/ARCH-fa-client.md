@@ -754,9 +754,21 @@ does not prove that the destination's backup holds the guardian, and the
 stopped source still does. Any status other than `New`, `AwaitingTransfer`
 or `Running` is an error, and the transfer stays open.
 
-`resume_guardian_transfer` continues from the recorded stage. While the
-destination is `AwaitingTransfer` it polls until the run ends and then
-reports `AwaitingSource`. When the destination is `Running`, the FA reads the
+`resume_guardian_transfer` continues from the recorded stage. It asks the
+destination once and does not wait for the source: while the destination is
+`AwaitingTransfer`, the resume reports `AwaitingSource` at once. So the run
+deadline bounds work, not a wait.
+
+`run_guardian_transfer` is a consumer-driven future, like
+`run_replacement_checks`, and the transfer timing belongs to `fa-client`. It
+resumes an open transfer at once, so a reopened client continues it. While
+the transfer waits for the source or its removal, it checks every 30 s. A
+failed step retries with a backoff from 1 s to 5 min, and `Busy` retries
+after 1 s. Each step holds the run only for that step. With no transfer open,
+the loop sleeps until a start wakes it. Consumers do not resume a transfer
+themselves.
+
+When the destination is `Running`, the FA reads the
 destination's attestation, saves it in the transfer, and votes it through
 every guardian except the source, like a metadata update. The destination
 signs a new attestation on each request, so a resume votes the saved one. It

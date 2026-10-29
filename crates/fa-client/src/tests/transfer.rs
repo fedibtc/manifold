@@ -135,7 +135,7 @@ async fn a_guardian_moves_onto_its_new_seat() {
         restored.seats[0].seat_id,
         formation.seats[0].seat_id.clone()
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     // Selection still knows who holds every seat, and who held the moved
     // peer before.
     let (holders, past_mgs) = client.inner.store.formed_custody().await;
@@ -216,7 +216,6 @@ async fn an_offline_source_leaves_only_its_removal_open() {
         client
             .guardian_transfer()
             .await
-            .unwrap()
             .map(|transfer| transfer.phase),
         Some(GuardianTransferPhase::RemovingSource)
     );
@@ -313,7 +312,6 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
         client
             .guardian_transfer()
             .await
-            .unwrap()
             .map(|transfer| transfer.phase),
         Some(GuardianTransferPhase::PublishingBinding)
     );
@@ -322,7 +320,6 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
         client
             .guardian_transfer()
             .await
-            .unwrap()
             .map(|transfer| transfer.source_seat_id)
     );
     assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
@@ -338,6 +335,81 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
             .seat_id,
         destination
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_transfer_loop_finishes_a_started_transfer_without_a_resume() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let client = Arc::new(client);
+    // The loop runs before the start, so the start must wake it.
+    let driver = tokio::spawn({
+        let client = client.clone();
+        async move { client.run_guardian_transfer().await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    start_transfer(&client, &mg_state).await;
+
+    // While the destination still pulls, the loop leaves the transfer open
+    // and does not hold the run between its checks.
+    tokio::time::sleep(Duration::from_secs(95)).await;
+    assert_eq!(
+        client
+            .guardian_transfer()
+            .await
+            .map(|transfer| transfer.phase),
+        Some(GuardianTransferPhase::AwaitingSource)
+    );
+    let between_checks = client.resume_guardian_transfer(short_options()).await;
+    assert!(
+        !matches!(between_checks, Err(FaError::Busy)),
+        "the loop holds the run between checks: {between_checks:?}"
+    );
+
+    guardian_arrives(&mg_state);
+    tokio::time::timeout(Duration::from_secs(120), async {
+        while client.guardian_transfer().await.is_some() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("the loop finishes the transfer");
+    assert!(
+        !driver.is_finished(),
+        "the loop waits for the next transfer"
+    );
+    driver.abort();
+}
+
+#[tokio::test]
+async fn a_resume_checks_a_destination_that_still_pulls_once_and_returns() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    start_transfer(&client, &mg_state).await;
+    // The run allows a minute, so a resume that polled the destination
+    // until its deadline would not return in time.
+    let long_run = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_millis(10),
+        run_timeout: Duration::from_secs(60),
+        request_timeout: Duration::from_secs(2),
+    })
+    .unwrap();
+
+    let resumed = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.resume_guardian_transfer(long_run),
+    )
+    .await
+    .expect("a resume does not wait for the source")
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(resumed.phase, GuardianTransferPhase::AwaitingSource);
+    guardian_arrives(&mg_state);
+    let finished = client
+        .resume_guardian_transfer(long_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
 }
 
 #[tokio::test]
@@ -384,13 +456,8 @@ async fn check_destination_pulls_again(
     mg_state: &MgState,
     callback: Option<DkgCompletionCallback>,
 ) {
-    let phase = client.guardian_transfer().await.unwrap().unwrap().phase;
-    let source_seat_id = client
-        .guardian_transfer()
-        .await
-        .unwrap()
-        .unwrap()
-        .source_seat_id;
+    let phase = client.guardian_transfer().await.unwrap().phase;
+    let source_seat_id = client.guardian_transfer().await.unwrap().source_seat_id;
     let pulls_before = mg_state.pull_requests.lock().expect("test lock").len();
     mg_state
         .seat_statuses
@@ -465,7 +532,7 @@ async fn a_destination_that_lost_the_guardian_before_the_vote_pulls_it_again() {
         .expect("test lock")
         .clear();
     assert_eq!(
-        client.guardian_transfer().await.unwrap().unwrap().phase,
+        client.guardian_transfer().await.unwrap().phase,
         GuardianTransferPhase::PublishingBinding
     );
 
@@ -480,7 +547,7 @@ async fn a_destination_that_lost_the_guardian_before_the_removal_pulls_it_again(
     // is left.
     restored.resume().await.unwrap();
     assert_eq!(
-        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        restored.guardian_transfer().await.unwrap().phase,
         GuardianTransferPhase::RemovingSource
     );
 
@@ -502,7 +569,7 @@ async fn a_destination_held_by_a_guardian_holder_is_not_bought() {
         .unwrap_err();
 
     assert!(matches!(error, FaError::InvalidIntent(_)), "{error:?}");
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -592,7 +659,7 @@ async fn transfer_adopted_but_unrecorded() -> (
         "{error:?}"
     );
     assert_eq!(
-        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        restored.guardian_transfer().await.unwrap().phase,
         GuardianTransferPhase::PublishingBinding
     );
     // The backup names the move once its binding is voted.
@@ -668,7 +735,7 @@ async fn a_reconciliation_that_adopts_an_open_move_keeps_the_backup_restorable()
     restored.resume().await.unwrap();
 
     assert_eq!(
-        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        restored.guardian_transfer().await.unwrap().phase,
         GuardianTransferPhase::RemovingSource
     );
     let backup = restored.inner.store.backup_payload().await.unwrap().payload;
@@ -722,7 +789,7 @@ async fn a_published_binding_does_not_remove_the_source_of_a_lost_destination() 
     // The destination is checked before the rebind too, so the transfer
     // stays where it stopped.
     assert_eq!(
-        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        restored.guardian_transfer().await.unwrap().phase,
         GuardianTransferPhase::PublishingBinding
     );
     assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
@@ -762,7 +829,7 @@ async fn a_backup_from_before_an_adopted_move_does_not_reconcile() {
         panic!("restored status");
     };
     assert_ne!(restored.freshness, FormationFreshness::Fresh);
-    assert_eq!(replacement.guardian_transfer().await.unwrap(), None);
+    assert_eq!(replacement.guardian_transfer().await, None);
 }
 
 /// Accepted: a device lost before the vote restores a backup without the
@@ -800,7 +867,7 @@ async fn a_backup_from_before_the_vote_restores_without_the_move() {
     };
     assert_eq!(restored.freshness, FormationFreshness::Fresh);
     assert_eq!(restored.seats[MOVED].seat_id, source_seat_id);
-    assert_eq!(replacement.guardian_transfer().await.unwrap(), None);
+    assert_eq!(replacement.guardian_transfer().await, None);
 }
 
 /// Check what a crash right after a transfer write leaves: the source seat
@@ -889,11 +956,7 @@ async fn a_transfer_stopped_after_any_write_finishes_on_resume() {
         }
 
         // Every stop ends in the same move, paid once.
-        assert_eq!(
-            reopened.guardian_transfer().await.unwrap(),
-            None,
-            "{writes}"
-        );
+        assert_eq!(reopened.guardian_transfer().await, None, "{writes}");
         assert_eq!(
             mg_state.removed_seats.lock().expect("test lock").clone(),
             vec![(MOVED, source_seat_id)],
@@ -942,7 +1005,7 @@ async fn a_live_liquidity_request_blocks_a_transfer() {
             if *operation_id == operation.operation_id),
         "{error:?}"
     );
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
@@ -1091,7 +1154,7 @@ async fn a_policy_without_transfer_buys_no_seat() {
         "{error:?}"
     );
     assert_eq!(error.code(), FaErrorCode::CapabilityUnavailable);
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(client.guardian_transfer().await, None);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),

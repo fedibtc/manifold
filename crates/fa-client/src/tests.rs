@@ -4759,6 +4759,7 @@ async fn open_client_with_store_and_registry(
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
             backup_tasks: fedimint_core::task::TaskGroup::new(),
             replacement_checks: replacement_checks::ReplacementChecks::default(),
+            transfer_opened: tokio::sync::Notify::new(),
         }),
     }
 }
