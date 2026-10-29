@@ -150,13 +150,16 @@
         # the upstream payment retry site cannot format payment authorization,
         # invoice metadata, gateway metadata, or remote error text. Keep the
         # patch adjacent to the pinned input and make every Cargo consumer use
-        # the same patched source.
+        # the same patched source. The other patches change only Fedimint's
+        # test environment: an E2E DKG pause point, and a 5s instead of 60s
+        # wait after a scheduled shutdown's last session.
         fedimintPatched = pkgs.applyPatches {
           name = "fedimint-redacted-lightning-payment-logs";
           src = fedimint;
           patches = [
             ./patches/fedimint-redact-lightning-payment-logs.patch
             ./patches/fedimint-dkg-test-pause.patch
+            ./patches/fedimint-test-scheduled-shutdown-wait.patch
           ];
         };
         # RocksDB's `OptimisticTransactionDB` defaults to 2^20 commit lock

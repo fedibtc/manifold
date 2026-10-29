@@ -170,7 +170,8 @@ between sessions:
   destination's next `TransferSeat` asks the new process.
 
 The wait costs up to one session plus the minute fedimintd waits after its
-last session for peers to finish it. A source whose guardian is down when
+last session for peers to finish it. In Fedimint's test environment, where
+sessions last seconds, the patched fedimintd waits 5s instead. A source whose guardian is down when
 `TransferSeat` arrives asks nothing; the guardian restarts as usual and a
 later retry asks it. While the federation cannot end the session, for
 example with too many peers offline, the guardian keeps running and the
