@@ -645,7 +645,8 @@ pub struct FederationConsensusSnapshot {
 /// responses. An unrelated LNv2 value outside
 /// [`GatewayApiUrl`](fedi_decentralized_domain::GatewayApiUrl) policy is
 /// omitted individually rather than turning target absence into a transport
-/// failure. `fedi-decentralized-federation-preview` provides these operations.
+/// failure. [`ConnectorsConsensusReader`](crate::ConnectorsConsensusReader)
+/// implements them with `fedi-decentralized-federation-preview`.
 ///
 /// `fa-client` cannot verify that the query happened. Fedimint's
 /// `get_consensus` derives its guarantee from the client performing threshold

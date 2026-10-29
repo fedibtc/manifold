@@ -2455,6 +2455,7 @@ dependencies = [
  "chacha20poly1305",
  "ciborium",
  "fedi-decentralized-domain",
+ "fedi-decentralized-federation-preview",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-nostr-clients",

@@ -83,6 +83,7 @@ fn formed_text_status_reports_current_freshness() {
             seats: Vec::new(),
             freshness,
             backup_eligible: false,
+            origin: fa_client::FormedOrigin::Backup,
         });
         let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
         assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));

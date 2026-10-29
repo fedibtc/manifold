@@ -9,6 +9,7 @@ mod decommission;
 mod discovery;
 mod eligibility;
 mod error;
+mod federation_reader;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -45,6 +46,7 @@ pub use error::{
     AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
     MgOperation, SelectionReauthorizationReason,
 };
+pub use federation_reader::ConnectorsConsensusReader;
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
@@ -99,8 +101,8 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
     FaStatus, FedimintdVersionRange, FormationActionRequired, FormationFreshness, FormationId,
-    FormationIntent, FormationPhase, FormationSnapshot, FormedFederationSnapshot, FormedSeat,
-    GuardianReplacementId, GuardianReplacementRequirements, GuardianReplacementSeat,
+    FormationIntent, FormationPhase, FormationSnapshot, FormedFederationSnapshot, FormedOrigin,
+    FormedSeat, GuardianReplacementId, GuardianReplacementRequirements, GuardianReplacementSeat,
     MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,

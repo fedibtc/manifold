@@ -741,6 +741,18 @@ pub struct FormedFederationSnapshot {
     /// once: always for a formation on this device, and after the first
     /// successful reconciliation for a restored backup. Persisted.
     pub backup_eligible: bool,
+    /// Whether this device formed the federation or restored it.
+    pub origin: FormedOrigin,
+}
+
+/// Where this device got a formed federation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormedOrigin {
+    /// A formation on this device.
+    ThisDevice,
+    /// An authenticated backup imported on this device.
+    Backup,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
