@@ -32,6 +32,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use fedi_decentralized_domain::{
     MG_SEAT_BINDINGS_META_FIELD_KEY, MgPeerAttestation, MgSeatBindings, federation_seats,
 };
@@ -165,7 +167,7 @@ impl StoredGuardianTransfer {
         }
     }
 
-    fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
+    pub(crate) fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
         let (destination_mg_id, destination_seat_id) = match &self.stage {
             TransferStage::Buying(purchase) => (purchase.mg_id, None),
             TransferStage::Moving(moving) => (
@@ -183,7 +185,7 @@ impl StoredGuardianTransfer {
         }
     }
 
-    fn public_phase(&self) -> GuardianTransferPhase {
+    pub(crate) fn public_phase(&self) -> GuardianTransferPhase {
         match &self.stage {
             TransferStage::Buying(_) => GuardianTransferPhase::BuyingSeat,
             TransferStage::Moving(moving) => match moving.phase {
@@ -403,8 +405,17 @@ where
         }
     }
 
-    /// The open transfer, if any, as last recorded.
-    pub async fn guardian_transfer(&self) -> Option<GuardianTransfer> {
+    /// Observe the open transfer as last recorded. After a move completes,
+    /// the value stays the completed transfer until the next start, so a
+    /// consumer sees the end of the move. A transfer whose purchase ended
+    /// without a seat becomes `None`. A new client starts from storage.
+    pub fn observe_guardian_transfer(&self) -> watch::Receiver<Option<GuardianTransfer>> {
+        self.inner.store.observe_guardian_transfer()
+    }
+
+    /// The open transfer, if any, as stored.
+    #[cfg(test)]
+    pub(crate) async fn guardian_transfer(&self) -> Option<GuardianTransfer> {
         self.inner
             .store
             .load_guardian_transfer()
@@ -521,7 +532,10 @@ where
         match self.remove_source_seat(&transfer, fa_id, run).await {
             Ok(()) => {
                 lease
-                    .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
+                    .write_guardian_transfer(
+                        fa_id,
+                        GuardianTransferWrite::Complete(transfer.clone()),
+                    )
                     .await?;
                 Ok(transfer.view(GuardianTransferPhase::Completed))
             }

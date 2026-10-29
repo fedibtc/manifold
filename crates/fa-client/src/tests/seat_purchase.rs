@@ -316,6 +316,8 @@ async fn a_refused_purchase_settles_its_refund_and_closes_the_transfer() {
         refunds_before + 1
     );
     assert_eq!(client.guardian_transfer().await, None);
+    // The start recorded the transfer before its purchase ended.
+    assert_eq!(*client.observe_guardian_transfer().borrow(), None);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 

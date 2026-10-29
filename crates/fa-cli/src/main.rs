@@ -1519,7 +1519,10 @@ async fn run(
                         profile.clone(),
                     )
                     .await?;
-                    output.guardian_transfer(client.guardian_transfer().await.as_ref(), format)?;
+                    output.guardian_transfer(
+                        client.observe_guardian_transfer().borrow().as_ref(),
+                        format,
+                    )?;
                     client.shutdown().await;
                 }
             }

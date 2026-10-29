@@ -690,7 +690,10 @@ transfer row owns the whole move, including its destination seat. One
 transfer is open at a time. It moves any guardian, so it is crate-private.
 The consumer interface is three calls: `request_guardian_replacement` starts
 a transfer and needs a replacement receipt, `run_guardian_transfer` finishes
-it, and `guardian_transfer` reads it. A start waits while another operation
+it, and `observe_guardian_transfer` reports it. The watch follows every
+transfer write. After a move completes it keeps the completed transfer until
+the next start, so a consumer sees the end. A purchase that ends without a
+seat clears it. A start waits while another operation
 runs, so the consumer does not keep its approval for a retry. Resume is
 crate-private. Test tools
 that move a healthy guardian call `start_guardian_transfer_unchecked`, and

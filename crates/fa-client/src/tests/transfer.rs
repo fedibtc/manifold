@@ -381,6 +381,32 @@ async fn the_transfer_loop_finishes_a_started_transfer_without_a_resume() {
 }
 
 #[tokio::test]
+async fn the_transfer_watch_follows_the_move_and_keeps_its_completion() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let watch = client.observe_guardian_transfer();
+    assert_eq!(*watch.borrow(), None);
+
+    start_transfer(&client, &mg_state).await;
+    assert_eq!(
+        watch.borrow().as_ref().map(|transfer| transfer.phase),
+        Some(GuardianTransferPhase::AwaitingSource)
+    );
+
+    guardian_arrives(&mg_state);
+    client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap();
+
+    // The row is gone, but the watch still shows how the move ended.
+    assert_eq!(client.guardian_transfer().await, None);
+    assert_eq!(
+        watch.borrow().as_ref().map(|transfer| transfer.phase),
+        Some(GuardianTransferPhase::Completed)
+    );
+}
+
+#[tokio::test]
 async fn a_start_waits_for_another_operation_instead_of_busy() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     // Another operation, for example a replacement check, holds the run.
