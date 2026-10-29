@@ -420,6 +420,19 @@ where
         self.inner.progress.borrow().clone()
     }
 
+    /// Stop this client's background work and wait until it has stopped.
+    ///
+    /// Dropping the last handle only asks that work to stop. A process that
+    /// is about to exit calls this first, so no client task still runs while
+    /// the async runtime shuts down. The work stops for every handle.
+    pub async fn shutdown(self) {
+        let tasks = self.inner.backup_tasks.clone();
+        drop(self);
+        if let Err(error) = tasks.shutdown_join_all(None).await {
+            tracing::warn!(%error, "FA background tasks did not stop cleanly");
+        }
+    }
+
     /// Legacy registry-backed creation entry point.
     ///
     /// MVP automatic selection uses [`Self::preview_mg_selection`] followed
