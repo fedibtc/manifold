@@ -350,7 +350,8 @@ retains the exclusive data-root lock, and shutdown aborts and joins tracked
 connections before the lock can be released.
 
 The database, WAL, archives, keys, and backups are confidential. Startup
-authenticates an AEAD key sentinel and the Manifold trust-profile revision and
+authenticates an AEAD key sentinel and the collector's store trust revision,
+which moves only with the PeerBadge trust inputs the collector reads, and
 refuses missing, mismatched, or unsupported-format metadata on populated state.
 Each target ciphertext also authenticates its format, deployment profile, key
 identifier, target identity, generation, and authorization time. Candidate
