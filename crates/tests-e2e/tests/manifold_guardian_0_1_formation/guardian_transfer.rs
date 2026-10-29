@@ -4,7 +4,6 @@
 use super::*;
 
 const TRANSFER_TEST_TIMEOUT: Duration = Duration::from_secs(600);
-const TRANSFER_PORT_BASE: u16 = 46_000;
 /// Offset in an MG's port block for its pinned service endpoint, above its
 /// one seat's ports.
 const ENDPOINT_PORT_OFFSET: u16 = 99;
@@ -53,13 +52,14 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     let temp = mg_e2e_temp_dir()?;
     eprintln!("guardian transfer E2E data dir: {}", temp.display());
     // One more MG than the federation has guardians: the destination.
-    let overrides = local_iroh_overrides_for_grid(TRANSFER_PORT_BASE, 1, GUARDIAN_COUNT + 1);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT + 1)?;
+    let overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT + 1);
     let (daemons, mut locators) = start_daemons(
         bin,
         &temp,
         bitcoind,
         1,
-        TRANSFER_PORT_BASE,
+        port_base,
         Some(&overrides),
         GUARDIAN_COUNT,
         Some(nostr),
@@ -92,10 +92,10 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         .to_owned();
     let source_index = mg_index_of_seat(bin, &temp, &source_seat_id).await?;
     let source_dir = temp.join(format!("mg-{source_index}"));
-    let source_base = TRANSFER_PORT_BASE + u16::try_from(source_index)? * 100;
+    let source_base = port_base + u16::try_from(source_index)? * MG_PORT_STRIDE;
     let source_material = guardian_config(&source_dir)?;
     let destination_dir = temp.join(format!("mg-{GUARDIAN_COUNT}"));
-    let destination_base = TRANSFER_PORT_BASE + u16::try_from(GUARDIAN_COUNT)? * 100;
+    let destination_base = port_base + u16::try_from(GUARDIAN_COUNT)? * MG_PORT_STRIDE;
     // The moved guardian keeps its Iroh ids but listens on the destination
     // seat's ports. This harness routes ids by static overrides, so an MG
     // reaches the moved guardian only with this route.
@@ -319,7 +319,7 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
             &bitcoind.rpc_url,
             &bitcoind.rpc_username,
             &bitcoind.rpc_password,
-            TRANSFER_PORT_BASE + u16::try_from(*index)? * 100,
+            port_base + u16::try_from(*index)? * MG_PORT_STRIDE,
             Some(&moved_overrides),
             Some(nostr),
             None,
