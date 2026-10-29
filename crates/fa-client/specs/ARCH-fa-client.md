@@ -338,6 +338,8 @@ objects, trust conclusions, or lifecycle transitions:
   earn their guarantees from threshold peer queries and return no signatures,
   so an adapter that fabricates or caches a result defeats readback silently.
   The obligations are stated on the port and in [`SECURITY.md`](../SECURITY.md).
+  `ConnectorsConsensusReader` meets them over the consumer's Fedimint
+  connectors, so a consumer supplies connectors, not an implementation.
 - **Presentation** — collects intent, renders an uncached advertisement-only
   preview and authenticated payer choices, retains the sealed preview approval
   only for that screen visit, and invokes Pay-and-create with its explicit
@@ -375,7 +377,9 @@ reconciliation checks the federation and its seats, not the agreed recipients,
 and needs no formation account provider.
 A formed federation has one durable record. Consensus confirmation replaces the
 formation record with it in one transaction, and a backup import writes the
-same record. On restart it starts unsynced. Fresh threshold consensus must
+same record. The record keeps its `origin`, this device or a backup, so a
+consumer can show a restore as a restore. A record from before `origin` takes
+it from its badge holders: only a formation on this device records them. On restart it starts unsynced. Fresh threshold consensus must
 match the saved federation identity and verified directory before it becomes
 fresh; its seats and any saved liquidity commitment must also match. The
 directory and fee recipients agreed at formation may change by guardian vote

@@ -3879,6 +3879,11 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
         panic!("expected restored recovery");
     };
     assert!(!snapshot.backup_eligible);
+    assert_eq!(snapshot.origin, crate::FormedOrigin::Backup);
+    assert_eq!(
+        formed(&source.status()).origin,
+        crate::FormedOrigin::ThisDevice
+    );
 
     restored
         .inner
@@ -3892,6 +3897,8 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
         panic!("expected restored recovery");
     };
     assert!(snapshot.backup_eligible);
+    // Reconciliation proves the seats, not where the record came from.
+    assert_eq!(snapshot.origin, crate::FormedOrigin::Backup);
 }
 
 #[tokio::test]

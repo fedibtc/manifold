@@ -6,15 +6,14 @@ use std::time::Duration;
 use anyhow::{Context as _, bail, ensure};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
-    FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
-    FaStatus, FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FedimintdVersionRange, FormationIntent, FormationRunOptions,
-    GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
-    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
-    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
-    MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
-    PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference, PreparedSeatPayment,
-    SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
+    ConnectorsConsensusReader, FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity,
+    FaPaymentError, FaPayments, FaStatus, FedimintFederationId, FedimintdVersionRange,
+    FormationIntent, FormationRunOptions, GuardianFeePpm, LiquidityOperationId,
+    LiquidityProviderConnector, LiquidityProviderConnectorError, LiquidityRequestIntent,
+    MaintenanceRunOptions, ManifoldGuardianCallError, ManifoldGuardianConnector,
+    ManifoldGuardianConnectorError, MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery,
+    MgSelectionRequest, PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference,
+    PreparedSeatPayment, SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -64,7 +63,7 @@ const IDENTITY_FILE: &str = "fi-identity";
 const DATABASE_DIR: &str = "fi-client.db";
 
 type CliClient =
-    FaClient<CliIdentity, CliPayments, CliRegistry, CliMgConnector, CliConsensusReader>;
+    FaClient<CliIdentity, CliPayments, CliRegistry, CliMgConnector, ConnectorsConsensusReader>;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1937,7 +1936,7 @@ async fn open_client_with_fee_account_provider(
             registry,
             connector,
             peer_badge_verifier,
-            CliConsensusReader::new().await?,
+            consensus_reader().await?,
             fa_fee_account_provider,
             publisher,
             profile.guardian_verification_fee_account().cloned(),
@@ -1952,7 +1951,7 @@ async fn open_client_with_fee_account_provider(
             registry,
             connector,
             peer_badge_verifier,
-            CliConsensusReader::new().await?,
+            consensus_reader().await?,
             fa_fee_account_provider,
             profile,
         )
@@ -2021,73 +2020,13 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
     }
 }
 
-/// Reads federation consensus through a real invite-code preview.
-///
-/// This is the implementation `FederationConsensusReader` expects: it performs
-/// the config download and the `meta` consensus query itself. `fa-client`
-/// cannot check that the query happened, so returning anything not obtained
-/// this way would silently defeat the post-DKG readback.
-struct CliConsensusReader {
-    connectors: fedi_decentralized_federation_preview::ConnectorRegistry,
-}
-
-impl CliConsensusReader {
-    async fn new() -> anyhow::Result<Self> {
-        Ok(Self {
-            connectors: fedi_decentralized_federation_preview::bind_client_connectors()
-                .await
-                .context("bind federation preview connectors")?,
-        })
-    }
-}
-
-impl FederationConsensusReader for CliConsensusReader {
-    async fn read_guardian_reports(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
-        fedi_decentralized_federation_preview::read_guardian_reports(&self.connectors, invite_code)
+/// Reads each federation live, over freshly bound client connectors.
+async fn consensus_reader() -> anyhow::Result<ConnectorsConsensusReader> {
+    Ok(ConnectorsConsensusReader::new(
+        fedi_decentralized_federation_preview::bind_client_connectors()
             .await
-            .map_err(|error| FederationConsensusError::new(error.to_string()))
-    }
-
-    async fn read_consensus(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
-        let snapshot =
-            fedi_decentralized_federation_preview::read_consensus(&self.connectors, invite_code)
-                .await
-                .map_err(|error| FederationConsensusError::new(error.to_string()))?;
-
-        Ok(FederationConsensusSnapshot {
-            config: snapshot.config,
-            meta_value: snapshot.meta_value,
-            meta_revision: snapshot.meta_revision,
-            network: snapshot.network,
-        })
-    }
-
-    async fn read_lnv2_gateways(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<Vec<fa_client::GatewayApiUrl>, FederationConsensusError> {
-        fedi_decentralized_federation_preview::read_lnv2_gateways(&self.connectors, invite_code)
-            .await
-            .map_err(|error| FederationConsensusError::new(error.to_string()))
-    }
-
-    async fn read_fedimintd_versions(
-        &self,
-        invite_code: &InviteCode,
-    ) -> Result<Vec<String>, FederationConsensusError> {
-        fedi_decentralized_federation_preview::read_fedimintd_versions(
-            &self.connectors,
-            invite_code,
-        )
-        .await
-        .map_err(|error| FederationConsensusError::new(error.to_string()))
-    }
+            .context("bind federation preview connectors")?,
+    ))
 }
 
 #[derive(Clone)]

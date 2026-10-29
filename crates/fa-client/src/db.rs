@@ -155,6 +155,7 @@ pub(crate) struct BackupRelayConfirmation {
 /// The key and the JSON stay those of the earlier restored-backup record, so
 /// an older build reads a formed federation as a restored one.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(from = "UncheckedFormedFederationRecord")]
 struct FormedFederationRecord {
     #[serde(rename = "fi_id")]
     fa_id: FaId,
@@ -165,8 +166,44 @@ struct FormedFederationRecord {
     /// Verified badge holders this device knows, by seat id. A formation on
     /// this device records its seats' holders. A backup carries none, so an
     /// imported record starts empty.
+    seat_holders: Vec<(SeatId, PublicKey)>,
+    origin: crate::FormedOrigin,
+}
+
+/// A stored [`FormedFederationRecord`], which older builds wrote without
+/// `origin` or `seat_holders`.
+#[derive(serde::Deserialize)]
+struct UncheckedFormedFederationRecord {
+    #[serde(rename = "fi_id")]
+    fa_id: FaId,
+    payload: crate::backup::FaBackupPayload,
+    formation_id: FormationId,
+    backup_eligible: bool,
+    federation_name: Option<crate::FederationName>,
     #[serde(default)]
     seat_holders: Vec<(SeatId, PublicKey)>,
+    origin: Option<crate::FormedOrigin>,
+}
+
+impl From<UncheckedFormedFederationRecord> for FormedFederationRecord {
+    fn from(record: UncheckedFormedFederationRecord) -> Self {
+        // A record without an origin: a backup carries no badge holders, and
+        // a formation on this device records the holders of its seats.
+        let origin = record.origin.unwrap_or(if record.seat_holders.is_empty() {
+            crate::FormedOrigin::Backup
+        } else {
+            crate::FormedOrigin::ThisDevice
+        });
+        Self {
+            fa_id: record.fa_id,
+            payload: record.payload,
+            formation_id: record.formation_id,
+            backup_eligible: record.backup_eligible,
+            federation_name: record.federation_name,
+            seat_holders: record.seat_holders,
+            origin,
+        }
+    }
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -1105,6 +1142,7 @@ impl FaStore {
                 backup_eligible: false,
                 federation_name: None,
                 seat_holders: Vec::new(),
+                origin: crate::FormedOrigin::Backup,
             },
         )
         .await;
@@ -4371,6 +4409,7 @@ fn formed_recovery(formed: FormedFederationRecord, fa_id: FaId) -> FaResult<FaRe
             .collect(),
         freshness: FormationFreshness::Unsynced,
         backup_eligible: formed.backup_eligible,
+        origin: formed.origin,
     }))
 }
 
@@ -4441,6 +4480,7 @@ async fn record_formed_federation(
             backup_eligible: true,
             federation_name: Some(formation.intent.federation_name),
             seat_holders,
+            origin: crate::FormedOrigin::ThisDevice,
         },
     )
     .await;
@@ -4468,4 +4508,55 @@ fn validate_active_formation(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod formed_record_tests {
+    use super::*;
+
+    fn record(seat_holders: Vec<(SeatId, PublicKey)>) -> serde_json::Value {
+        let key = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7; 32]).unwrap();
+        let mut value = serde_json::to_value(FormedFederationRecord {
+            fa_id: FaId(key.x_only_public_key().0),
+            payload: crate::backup::FaBackupPayload {
+                schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
+                snapshot_generation: 1,
+                federation_invite: crate::InviteCode("fed11test".to_owned()),
+                seats: Vec::new(),
+                liquidity: None,
+                past_hosts: Vec::new(),
+            },
+            formation_id: FormationId("formation".to_owned()),
+            backup_eligible: true,
+            federation_name: None,
+            seat_holders,
+            origin: crate::FormedOrigin::ThisDevice,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("origin");
+        value
+    }
+
+    #[test]
+    fn a_record_from_before_origin_gets_it_from_its_badge_holders() {
+        let decode = |value| serde_json::from_value::<FormedFederationRecord>(value).unwrap();
+        // Only a formation on this device records badge holders.
+        assert_eq!(
+            decode(record(Vec::new())).origin,
+            crate::FormedOrigin::Backup
+        );
+        let holder = PublicKey::from_slice(&[2; 32]).unwrap();
+        assert_eq!(
+            decode(record(vec![(
+                SeatId::new("ab".repeat(32)).unwrap(),
+                holder
+            )]))
+            .origin,
+            crate::FormedOrigin::ThisDevice
+        );
+        // A stored origin wins over the inference.
+        let mut stored = record(Vec::new());
+        stored["origin"] = serde_json::json!("this_device");
+        assert_eq!(decode(stored).origin, crate::FormedOrigin::ThisDevice);
+    }
 }
