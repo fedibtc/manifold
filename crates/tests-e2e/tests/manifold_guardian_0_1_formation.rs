@@ -5183,12 +5183,26 @@ async fn complete_onboarding_stages(
             Duration::from_secs(30),
         )
         .await?;
-        manifold_guardian_admin(
-            manifold_guardian_bin,
-            data_dir,
-            &["refresh-holder-authorizations"],
-        )
-        .await?;
+        // Each refresh is one relay read, and the relay may not serve the
+        // just-published event to the first one. Ask until the daemon has
+        // observed it, as the operator's setup screen does.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let refreshed = manifold_guardian_admin(
+                manifold_guardian_bin,
+                data_dir,
+                &["refresh-holder-authorizations"],
+            )
+            .await?;
+            if refreshed["stage"] != "holder_authorization" {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the daemon never observed its published Holder authorization: {refreshed}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
     let max_seats = max_seats.to_string();
     // Offer free seats right at onboarding so the daemon is accepting seats
