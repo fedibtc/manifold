@@ -398,7 +398,9 @@ Repeated exposition must preserve them; a collector must not make stale values
 look fresh. Prometheus/Agent must set both `honor_timestamps: true` and
 `track_timestamps_staleness: true` and own TSDB and remote-write semantics.
 Remote target failure is exported as stale snapshot metadata and does not make
-the process readiness route fail. Readiness covers the local database and
+the process readiness route fail. Per-seat freshness derives only from snapshots
+that passed persisted-row revalidation in the same exposition view, never from a
+raw stored timestamp. Readiness covers the local database and
 ability to serve. Quarantined/expired targets are suppressed immediately and
 their latest metric snapshots are deleted rather than reappearing after renewal.
 

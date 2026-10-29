@@ -176,11 +176,13 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
                 mg_id: "11".into(),
                 mg_name: "same".into(),
                 fresh: true,
+                seats: vec![],
             },
             MetricsTargetHealth {
                 mg_id: "22".into(),
                 mg_name: "same".into(),
                 fresh: false,
+                seats: vec![],
             },
         ],
         0,

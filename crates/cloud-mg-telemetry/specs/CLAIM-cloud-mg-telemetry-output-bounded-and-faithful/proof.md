@@ -46,7 +46,7 @@ the payload fields inside each safe event.
    identity for current allowed
    families.
 2. **[test] Collector metrics inventory.** Snapshot parser tests accept exposition
-   containing the six named `cloud_fman_telemetry_*` families. The renderer
+   containing the seven named `cloud_fman_telemetry_*` families. The renderer
    constructs only those generated families in addition to already-filtered
    forwarded samples. Admission diagnostics use only six fixed event labels,
    and collection-failure counters only five fixed stage labels
@@ -94,7 +94,7 @@ the payload fields inside each safe event.
 8. **[enum] Exit closure.** The 25 production Rust files contain seven HTTP routes,
    six of them on the private listener, and 16 response shapes; seven collector tracing call
    sites; the single validated archive content writer and its bounded path
-   constructors; 51 admitted source metric families plus exactly six generated
+   constructors; 51 admitted source metric families plus exactly seven generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
    sends. They contain no additional concrete held-material output path. Startup
    `Result` termination and the panic hook remain weaker, unexercised exits, so
