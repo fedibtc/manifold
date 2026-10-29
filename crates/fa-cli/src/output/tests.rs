@@ -77,7 +77,6 @@ fn formed_text_status_reports_current_freshness() {
         (fa_client::FormationFreshness::Fresh, "fresh"),
     ] {
         let status = FaStatus::Formed(fa_client::FormedFederationSnapshot {
-            snapshot_generation: 1,
             formation_id: fa_client::FormationId("formed-federation".to_owned()),
             federation_invite: fa_client::InviteCode("invite".to_owned()),
             federation_name: None,

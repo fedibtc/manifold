@@ -4356,7 +4356,6 @@ fn formed_recovery(formed: FormedFederationRecord, fa_id: FaId) -> FaResult<FaRe
         ));
     }
     Ok(FaRecovery::Formed(crate::FormedFederationSnapshot {
-        snapshot_generation: formed.payload.snapshot_generation,
         formation_id: formed.formation_id,
         federation_invite: formed.payload.federation_invite,
         federation_name: formed.federation_name,

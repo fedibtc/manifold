@@ -728,7 +728,6 @@ pub enum FaStatus {
 /// The seats of a formed federation, as this device last recorded them.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FormedFederationSnapshot {
-    pub snapshot_generation: u64,
     /// Stable local handle: the formation id of a formation on this device,
     /// or one derived when an authenticated backup is imported.
     pub formation_id: FormationId,

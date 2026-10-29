@@ -282,10 +282,9 @@ where
                         |_| FaError::Storage("formed federation has too many seats".to_owned()),
                     )?),
                     federation_name: snapshot.federation_name.unwrap_or_else(|| {
-                        crate::formation::default_federation_name(
-                            fa_id,
-                            snapshot.snapshot_generation,
-                        )
+                        // Only a restored federation without a name in
+                        // consensus gets here; no creation time is known.
+                        crate::formation::default_federation_name(fa_id, 0)
                     }),
                     formation_id: snapshot.formation_id,
                     seats: snapshot
