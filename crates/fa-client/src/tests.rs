@@ -3765,7 +3765,16 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
         panic!("restored status");
     };
     assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
-    assert_eq!(snapshot.snapshot_generation, 4);
+    assert_eq!(
+        restored
+            .inner
+            .store
+            .formed_federation_payload(restored.inner.ports.identity.public_key().unwrap())
+            .await
+            .unwrap()
+            .snapshot_generation,
+        4
+    );
     let profile = ManifoldEnvironment::Production.profile().unwrap();
     assert_eq!(
         crate::backup_worker::restore_from_relays(
@@ -4016,7 +4025,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     };
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
     let restored_formation_id = imported.formation_id.clone();
-    let restored_generation = imported.snapshot_generation;
+    let restored_generation = restored
+        .inner
+        .store
+        .formed_federation_payload(fa_id)
+        .await
+        .unwrap()
+        .snapshot_generation;
     let restored_invite = imported.federation_invite.clone();
     assert!(
         !imported.backup_eligible,
