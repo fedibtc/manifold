@@ -1,4 +1,4 @@
-import { Banner, Button } from '@operator-ui/common-ui';
+import { Banner, Button, Chip } from '@operator-ui/common-ui';
 import { QRCodeSVG } from 'qrcode.react';
 import { useEffect } from 'react';
 import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
@@ -25,8 +25,18 @@ const LINK_STEPS: { title: string; detail: string }[] = [
   },
   {
     title: 'Allow notifications',
-    detail: 'If your phone asks, allow them. This host uses them to reach you.'
+    detail: 'If your phone asks, allow them. This is how your guardians reach you.'
   }
+];
+
+// What the daemon notifies about (`AttentionReason` in mg-core), in words.
+const NOTIFIED_ABOUT = [
+  'A guardian is offline for 10 minutes or more',
+  'A guardian lost its data',
+  'This host is not ready to take new seats',
+  'Your payment federation cannot receive payments',
+  'This host is not approved',
+  'Support sent you a message'
 ];
 
 const phoneIcon = (
@@ -73,7 +83,11 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 <header className={styles.cardHead}>
                   <h2 className={styles.cardTitle}>{link.device_label}</h2>
 
-                  <span className={styles.caption}>Linked phone</span>
+                  {terminal ? (
+                    <Chip tone="warn">Stopped</Chip>
+                  ) : (
+                    <Chip tone="ok">Linked</Chip>
+                  )}
                 </header>
                 {terminal && (
                   <div role="alert">
@@ -92,12 +106,6 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </div>
 
                   <div className={styles.kvRow}>
-                    <dt className={styles.kvLabel}>Link expires</dt>
-
-                    <dd className={styles.kvValue}>{formatDay(link.callback_expires_at)}</dd>
-                  </div>
-
-                  <div className={styles.kvRow}>
                     <dt className={styles.kvLabel}>Last notification</dt>
 
                     <dd className={styles.kvValue}>{lastNotified}</dd>
@@ -106,7 +114,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
 
                 <div className={styles.actions}>
                   {!terminal && (
-                    <Button onClick={handleTest} disabled={busy}>
+                    <Button variant="secondary" onClick={handleTest} disabled={busy}>
                       Send test notification
                     </Button>
                   )}
@@ -141,7 +149,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                     />
                   </div>
 
-                  <ol className={styles.rows}>
+                  <ol className={styles.rows} aria-label="Link steps">
                     {LINK_STEPS.map((step, index) => (
                       <li key={step.title} className={styles.row}>
                         <h3 className={styles.stepTitle}>
@@ -155,8 +163,8 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 </div>
 
                 <p className={styles.note}>
-                  Once linked, your phone appears on this page. This code works once and expires at{' '}
-                  {formatCheckedAt(offer.expires_at)}. A new one replaces it then.
+                  This code works once and expires at {formatCheckedAt(offer.expires_at)}. A new one
+                  replaces it then.
                 </p>
               </section>
             )}
@@ -178,6 +186,23 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 {error}
               </p>
             )}
+
+            <section className={styles.card}>
+              <header className={styles.cardHead}>
+                <h2 className={styles.cardTitle}>What you are notified about</h2>
+              </header>
+
+              <ul className={styles.list} aria-label="What you are notified about">
+                {NOTIFIED_ABOUT.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+
+              <p className={styles.note}>
+                You hear about each once, when it starts, and at most twice an hour. Never about
+                earnings or seats sold.
+              </p>
+            </section>
           </div>
         ) : (
           <section className={styles.card}>

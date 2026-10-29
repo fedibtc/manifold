@@ -47,7 +47,7 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
   renderPage({ ...unlinked, offer });
   expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
   // The steps follow the phone: scan, confirm, then the notification prompt.
-  const steps = within(screen.getByRole('list')).getAllByRole('listitem');
+  const steps = within(screen.getByRole('list', { name: 'Link steps' })).getAllByRole('listitem');
   expect(steps.map((step) => within(step).getByRole('heading').textContent)).toEqual([
     '1. Scan this code',
     '2. Tap Link guardian',
@@ -63,8 +63,13 @@ it('should show the linked device and never claim a notification was sent when n
   renderPage(linked);
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
   expect(screen.getByText('Never')).toBeInTheDocument();
-  expect(screen.getByText('Link expires')).toBeInTheDocument();
+  expect(screen.getByText('Linked')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send test notification' })).toBeInTheDocument();
+  // The host sees what reaches the phone, and that money news never does.
+  const notified = within(screen.getByRole('list', { name: 'What you are notified about' }));
+  expect(notified.getAllByRole('listitem')).toHaveLength(6);
+  expect(notified.getByText('A guardian is offline for 10 minutes or more')).toBeInTheDocument();
+  expect(screen.getByText(/Never about earnings or seats sold/)).toBeInTheDocument();
 });
 
 it('should require confirmation before unlinking', async () => {
@@ -82,8 +87,9 @@ it('should show the stopped link and mint a new code without forgetting the devi
     ...linked,
     link: { ...phone, delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } }
   });
-  expect(await screen.findByText(/Notifications stopped/)).toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Notifications stopped');
   expect(screen.getByText('Pixel 8')).toBeInTheDocument();
+  expect(screen.queryByText('Linked')).not.toBeInTheDocument();
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('CreateGuardianLinkOffer'));
   expect(adminCall).not.toHaveBeenCalledWith('RevokeGuardianLink');
 });

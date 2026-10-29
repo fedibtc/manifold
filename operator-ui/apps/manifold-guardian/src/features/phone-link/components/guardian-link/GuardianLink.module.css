@@ -70,3 +70,6 @@
 .row {
   @apply uStack1 border-b border-muted py-4 first:pt-0 last:border-b-0;
 }
+.list {
+  @apply m-0 list-disc pl-5 text-sm text-ink uStack1;
+}
