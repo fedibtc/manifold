@@ -1085,9 +1085,7 @@ where
             ));
         }
         let invite_code = authority.invite_code.clone();
-        let invite = self
-            .dial_invite(&invite_code, authority.seat_routes())
-            .await;
+        let invite = &invite_code;
         let consensus = timeout(
             FA_LIQUIDITY_RPC_TIMEOUT,
             self.inner.ports.consensus_reader.read_consensus(&invite),

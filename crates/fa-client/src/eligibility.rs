@@ -155,9 +155,7 @@ where
     /// the seats, not the peer id. `None` when the bindings cannot be read
     /// or verified, or do not name every seat's MG exactly once.
     async fn seat_peers(&self, authority: &PostFormedAuthority) -> Option<BTreeMap<u16, PeerId>> {
-        let invite = self
-            .dial_invite(&authority.invite_code, authority.seat_routes())
-            .await;
+        let invite = &authority.invite_code;
         let consensus = timeout(
             REQUEST_TIMEOUT,
             self.inner.ports.consensus_reader.read_consensus(&invite),
@@ -192,9 +190,7 @@ where
         federation_id: &FederationId,
         peers: &BTreeSet<PeerId>,
     ) -> Option<GuardianReports> {
-        let invite = self
-            .dial_invite(&authority.invite_code, authority.seat_routes())
-            .await;
+        let invite = &authority.invite_code;
         // The invite reader allows 30s for setup and 10s for reports.
         timeout(
             Duration::from_secs(45),

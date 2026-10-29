@@ -4148,7 +4148,7 @@ async fn reconciliation_saves_the_endpoints_of_the_verified_config() {
     let invite_calls = state.invite_calls.load(Ordering::SeqCst);
     assert_eq!(
         client
-            .dial_invite(&authority.invite_code, authority.seat_routes())
+            .completed_invite(&authority.invite_code, authority.seat_routes())
             .await,
         authority.invite_code
     );
@@ -4166,7 +4166,9 @@ async fn a_one_guardian_saved_invite_gets_the_other_guardians_from_every_seat_mg
     let saved = test_invite_for_peer(5, 5, 0);
 
     let invite_calls = state.invite_calls.load(Ordering::SeqCst);
-    let invite = client.dial_invite(&saved, authority.seat_routes()).await;
+    let invite = client
+        .completed_invite(&saved, authority.seat_routes())
+        .await;
     assert_eq!(
         state.invite_calls.load(Ordering::SeqCst),
         invite_calls + usize::from(MIN_FEDERATION_SIZE),
@@ -4185,6 +4187,60 @@ async fn a_one_guardian_saved_invite_gets_the_other_guardians_from_every_seat_mg
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(invite.peers(), expected);
+}
+
+#[tokio::test]
+async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config() {
+    let (source, _, mg_state, _) = formed_client_for_liquidity().await;
+    let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
+    // A backup from a formation before f+1 invites names one guardian.
+    payload.federation_invite = test_invite_for_peer(5, 5, 0);
+
+    let (payments, _) = TestPayments::new();
+    let restored = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let fa_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fa_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    restored.resume().await.unwrap();
+    assert_eq!(
+        mg_state.invite_calls.load(Ordering::SeqCst),
+        invite_calls + usize::from(MIN_FEDERATION_SIZE),
+        "the first recovery asks every seat MG",
+    );
+    let FaStatus::Formed(snapshot) = restored.status() else {
+        panic!("formed status");
+    };
+    let saved = snapshot
+        .federation_invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap();
+    let expected = test_federation_config()
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(saved.peers(), expected);
+
+    // Later recoveries dial the saved f+1 invite and ask no MG.
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    restored.resume().await.unwrap();
+    assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
 }
 
 #[tokio::test]

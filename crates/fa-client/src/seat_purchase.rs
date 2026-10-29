@@ -182,20 +182,16 @@ where
         .await
     }
 
-    /// What the guardians report from `fedimintd_version`, read through
-    /// [`Self::dial_invite`]. An older saved invite may name only the very
-    /// guardian that needs a new host; the dial invite adds the others.
+    /// What the guardians report from `fedimintd_version`, read through the
+    /// saved invite. It names f+1 guardians after the first recovery, so the
+    /// guardian that needs a new host does not block the read.
     async fn guardian_fedimintd_versions(
         &self,
         federation: &TransferFederation,
         deadline: Instant,
     ) -> Vec<String> {
-        let routes = federation
-            .seats
-            .iter()
-            .map(|(_, locator, seat_id)| (seat_id, locator));
         fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
-            let invite = self.dial_invite(&federation.invite_code, routes).await;
+            let invite = &federation.invite_code;
             self.inner
                 .ports
                 .consensus_reader

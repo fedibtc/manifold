@@ -3944,8 +3944,12 @@ where
                 "formed FA federation record contains no seats".to_owned(),
             ));
         }
+        let mut authority = self.post_formed_authority(fa_id).await?;
+        authority.invite_code = self
+            .completed_invite(&authority.invite_code, authority.seat_routes())
+            .await;
         let consensus = self
-            .read_formed_consensus(&self.post_formed_authority(fa_id).await?, run)
+            .read_formed_consensus(&authority, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
@@ -4486,14 +4490,16 @@ where
         Ok(true)
     }
 
-    /// The invite that dials the formed federation. A saved invite names the
-    /// f+1 lowest guardians, as Fedimint builds it: at least one of them is
-    /// honest and online while the federation can make progress. An older
-    /// formation saved an invite naming one guardian. Then every seat's MG is
-    /// asked at the same time for its own invite, and the guardians of the
-    /// same federation that the saved invite lacks are added. An MG only adds
-    /// a way to dial; callers still verify the federation they read.
-    pub(crate) async fn dial_invite<'a>(
+    /// The invite recovery dials. A saved invite names the f+1 lowest
+    /// guardians, as Fedimint builds it: at least one of them is honest and
+    /// online while the federation can make progress. An older formation
+    /// saved an invite naming one guardian. Then every seat's MG is asked at
+    /// the same time for its own invite, and the guardians of the same
+    /// federation that the saved invite lacks are added. An MG only adds a way
+    /// to dial; recovery still verifies the federation it reads, then saves
+    /// the f+1 invite of the verified config. So this runs at most until a
+    /// formation's first recovery, and other reads dial the saved invite.
+    pub(crate) async fn completed_invite<'a>(
         &self,
         saved: &InviteCode,
         seats: impl IntoIterator<Item = (&'a SeatId, &'a Locator)>,
@@ -4556,17 +4562,15 @@ where
         .flatten()
     }
 
-    /// Read fresh consensus of the formed federation through
-    /// [`Self::dial_invite`]. The caller must still verify the federation
-    /// identity, the directory and saved authority.
+    /// Read fresh consensus of the formed federation through its saved
+    /// invite. The caller must still verify the federation identity, the
+    /// directory and saved authority.
     pub(crate) async fn read_formed_consensus(
         &self,
         authority: &PostFormedAuthority,
         run: DriverRun<'_>,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
-        let invite = self
-            .dial_invite(&authority.invite_code, authority.seat_routes())
-            .await;
+        let invite = &authority.invite_code;
         run.call("reading federation consensus metadata", || {
             Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
         })

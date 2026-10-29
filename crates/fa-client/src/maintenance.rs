@@ -238,9 +238,7 @@ where
         let mut guardian_errors = BTreeMap::new();
         let mut consensus_error = None;
         let mut retry_delay = run.poll_interval();
-        let invite = self
-            .dial_invite(&authority.invite_code, authority.seat_routes())
-            .await;
+        let invite = &authority.invite_code;
 
         loop {
             if accepted.len() >= threshold {
