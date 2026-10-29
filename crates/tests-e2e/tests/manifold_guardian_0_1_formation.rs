@@ -3551,6 +3551,14 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+    // Read the event log position before creating the address, so the wait
+    // below sees the receive that this address produces.
+    let receive_position = fedimint_cli
+        .run_json(&["dev", "next-event-log-id"], FEDIMINT_CLI_WALLETV2_TIMEOUT)
+        .await?
+        .as_u64()
+        .context("next-event-log-id returns a number")?
+        .to_string();
     let deposit_address = fedimint_cli
         .run_json(
             &["module", "walletv2", "receive"],
@@ -3575,9 +3583,13 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     // Keep one client process alive while WalletV2 finds the next valid
     // receive index and claims the output. Valid indices occur only about once
     // per 65,536 candidates; restarting a short-lived client repeats that CPU
-    // search from the same persisted index forever.
+    // search from the same persisted index forever. `await-receive` returns
+    // once the claim succeeds and its ecash is issued.
     fedimint_cli
-        .run(&["dev", "wait", "60"], Duration::from_secs(70))
+        .run(
+            &["module", "walletv2", "await-receive", &receive_position],
+            FEDIMINT_CLI_WALLETV2_TIMEOUT,
+        )
         .await?;
     let info = fedimint_cli
         .run_json(&["info"], Duration::from_secs(10))
