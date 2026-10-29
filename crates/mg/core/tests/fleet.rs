@@ -2542,7 +2542,9 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     let temp = TempDir::new().unwrap();
     let mut config = config(&temp, 1, 31_252).await;
     config.respawn.initial_backoff = Duration::from_millis(10);
-    config.respawn.unresponsive_restart_after = Duration::from_millis(300);
+    // Longer than the API client's reconnect after a restart, which the
+    // replacement's first probe can wait out (see below).
+    config.respawn.unresponsive_restart_after = Duration::from_secs(2);
     let invite = fixture_invite_code(&fixture_client_config(), 0);
     let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
         vec![],
@@ -2566,18 +2568,18 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     // An answer in between restarts the limit.
     fake.set_consensus_running(false);
     seat.watchdog_tick_for_test().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
     fake.set_consensus_running(true);
     seat.watchdog_tick_for_test().await;
     fake.set_consensus_running(false);
     seat.watchdog_tick_for_test().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
     seat.watchdog_tick_for_test().await;
     // Longer than the respawn backoff, so a wrongful restart would show.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(spawner.spawn_count(), spawns, "no restart before the limit");
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
     seat.watchdog_tick_for_test().await;
     tokio::time::timeout(Duration::from_secs(1), async {
         while spawner.spawn_count() == spawns {
@@ -2587,11 +2589,21 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     .await
     .expect("the unresponsive child is replaced");
 
-    // The replacement gets its own full limit.
+    // The replacement gets its own full limit. After a restart the seat's
+    // API client reconnects, and Fedimint's connection pool first waits
+    // 500ms plus up to as much jitter. The first probe can therefore reach
+    // its 1s timeout before it reaches the replacement. A timed-out probe
+    // also counts as unanswered, so a second tick within the limit must not
+    // restart the replacement either.
     let replacement = fleet
         .configure_fake_child(&seat_id, FakeApiState::default())
         .await;
-    seat.watchdog_tick_for_test().await;
+    for _ in 0..2 {
+        seat.watchdog_tick_for_test().await;
+        if replacement.state().probe_calls > 0 {
+            break;
+        }
+    }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(replacement.state().probe_calls, 1);
     assert_eq!(spawner.spawn_count(), spawns + 1);
