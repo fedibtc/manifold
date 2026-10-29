@@ -217,10 +217,10 @@ where
     /// The call waits while another operation runs, so it returns `Busy`
     /// only when another client holds the database lease.
     ///
-    /// This moves any guardian, with no reason to replace it. Consumers start
-    /// a transfer with [`Self::request_guardian_replacement`], which requires
-    /// a replacement receipt. Only test tools reach this directly, through
-    /// the `unchecked-guardian-transfer` feature.
+    /// This moves any guardian, with no reason to replace it, so it is
+    /// crate-private. Consumers start a transfer with
+    /// [`Self::request_guardian_replacement`], which requires a replacement
+    /// receipt.
     pub(crate) async fn start_guardian_transfer(
         &self,
         seat_index: u16,
@@ -289,38 +289,6 @@ where
         // Even a failed start can leave a transfer open for the driver.
         self.inner.transfer_opened.notify_one();
         result
-    }
-
-    /// [`Self::start_guardian_transfer`] for test tools, which move a
-    /// healthy guardian. A consumer app must not enable this feature.
-    #[cfg(feature = "unchecked-guardian-transfer")]
-    pub async fn start_guardian_transfer_unchecked(
-        &self,
-        seat_index: u16,
-        approval: TransferDestinationApproval,
-        payment_federation_id: Option<FederationId>,
-        completion_callback: Option<DkgCompletionCallback>,
-        options: MaintenanceRunOptions,
-    ) -> FaResult<GuardianTransfer> {
-        self.start_guardian_transfer(
-            seat_index,
-            approval,
-            payment_federation_id,
-            completion_callback,
-            options,
-        )
-        .await
-    }
-
-    /// [`Self::resume_guardian_transfer`] for test tools, which step a
-    /// transfer one call at a time. A consumer app drives the transfer with
-    /// [`Self::run_guardian_transfer`] instead.
-    #[cfg(feature = "unchecked-guardian-transfer")]
-    pub async fn resume_guardian_transfer_unchecked(
-        &self,
-        options: MaintenanceRunOptions,
-    ) -> FaResult<Option<GuardianTransfer>> {
-        self.resume_guardian_transfer(options).await
     }
 
     /// Advance the open transfer as far as it goes within `options`.

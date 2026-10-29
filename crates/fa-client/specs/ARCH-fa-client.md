@@ -694,11 +694,9 @@ it, and `observe_guardian_transfer` reports it. The watch follows every
 transfer write. After a move completes it keeps the completed transfer until
 the next start, so a consumer sees the end. A purchase that ends without a
 seat clears it. A start waits while another operation
-runs, so the consumer does not keep its approval for a retry. Resume is
-crate-private. Test tools
-that move a healthy guardian call `start_guardian_transfer_unchecked`, and
-step a transfer with `resume_guardian_transfer_unchecked`, both behind the
-`unchecked-guardian-transfer` feature.
+runs, so the consumer does not keep its approval for a retry. Resume and a start
+without a receipt are crate-private, so a test tool goes through the same
+calls as a consumer app.
 
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian

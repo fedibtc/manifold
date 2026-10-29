@@ -7,6 +7,8 @@ const TRANSFER_TEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Offset in an MG's port block for its pinned service endpoint, above its
 /// one seat's ports.
 const ENDPOINT_PORT_OFFSET: u16 = 99;
+/// Absence after which the stopped source qualifies for replacement.
+const SOURCE_OFFLINE_LIMIT_SECS: u64 = 20;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fa_moves_a_formed_guardian_to_a_new_mg_under_defe() {
@@ -39,10 +41,9 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     let ResourceDescriptor::NostrRelay(relay) = &relay_lease.descriptor else {
         anyhow::bail!("expected Nostr relay descriptor");
     };
-    let publisher =
-        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
-            .public_key()
-            .to_string();
+    let setup_payment_keys =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?;
+    let publisher = setup_payment_keys.public_key().to_string();
     let nostr = NostrEnv {
         relay_urls: &relay.url,
         holder_relay_url: &relay.url,
@@ -69,6 +70,28 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     let mut daemons = daemons.into_iter().map(Some).collect::<Vec<_>>();
     offer_free_seats(bin, &temp, GUARDIAN_COUNT).await?;
     let state_dir = temp.join("fa-state");
+    // The FA replaces a guardian only through a replacement check, which
+    // reads the absence limit from the setup-payment policy. A short limit
+    // lets the stopped source qualify within the test.
+    let setup_payment_event_file = temp.join("setup-payment-event.json");
+    std::fs::write(
+        &setup_payment_event_file,
+        serde_json::to_vec(
+            &EventBuilder::new(
+                Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+                serde_json::json!({
+                    "version": 1,
+                    "fman_version": "0.1.0",
+                    "federations": [],
+                    "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
+                    "max_guardian_offline_secs": SOURCE_OFFLINE_LIMIT_SECS,
+                })
+                .to_string(),
+            )
+            .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
+            .sign_with_keys(&setup_payment_keys)?,
+        )?,
+    )?;
     let invite = form_federation_in_state(
         &fa_cli_bin,
         &state_dir,
@@ -167,6 +190,8 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         relay_url: &relay.url,
         mg_endpoints: &mg_endpoints,
         iroh_overrides: &moved_overrides,
+        setup_payment_event_file: &setup_payment_event_file,
+        setup_payment_publisher: &publisher,
     };
 
     // The preview offers only the new MG: every other MG hosts a guardian.
@@ -188,11 +213,24 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         .context("preview names its MG")?
         .to_owned();
 
-    let started = fa
-        .run(&["start", "--seat-index", "0", "--max-msats", "0"])
-        .await?;
+    // The check flags the source once it was offline for longer than the
+    // policy allows. Until then `replace` refuses the guardian.
+    let started = tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            match fa
+                .run(&["replace", "--seat-index", "0", "--max-msats", "0"])
+                .await
+            {
+                Ok(started) => return started,
+                Err(error) => eprintln!("guardian not replaceable yet: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+    .await
+    .context("the stopped source never qualified for replacement")?;
     progress(&format!(
-        "transfer started with the source offline: {started}"
+        "replacement started with the source offline: {started}"
     ));
     anyhow::ensure!(
         started["phase"] == "awaiting_source"
@@ -248,24 +286,21 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     };
     let finished = tokio::time::timeout(Duration::from_secs(300), async {
         loop {
-            // A failed step leaves the transfer open for the next resume.
-            let resumed = match fa.run(&["resume"]).await {
-                Ok(resumed) => resumed,
+            // `run` returns at its run timeout with the transfer still open,
+            // and a failed step leaves it open for the next run.
+            let ran = match fa.run(&["run"]).await {
+                Ok(ran) => ran,
                 Err(error) => {
-                    eprintln!("guardian transfer resume failed: {error:#}");
+                    eprintln!("guardian transfer run failed: {error:#}");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
-            eprintln!("guardian transfer resumed: {resumed}");
-            if resumed["phase"] == "completed" {
-                return Ok::<_, anyhow::Error>(resumed);
+            eprintln!("guardian transfer ran: {ran}");
+            if ran["phase"] == "completed" {
+                return Ok::<_, anyhow::Error>(ran);
             }
-            anyhow::ensure!(
-                !resumed.is_null(),
-                "the transfer closed before it completed"
-            );
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            anyhow::ensure!(!ran.is_null(), "the transfer closed before it completed");
         }
     })
     .await
@@ -517,6 +552,8 @@ struct TransferCli<'a> {
     relay_url: &'a str,
     mg_endpoints: &'a str,
     iroh_overrides: &'a str,
+    setup_payment_event_file: &'a Path,
+    setup_payment_publisher: &'a str,
 }
 
 impl TransferCli<'_> {
@@ -526,6 +563,10 @@ impl TransferCli<'_> {
             .arg("--state-dir")
             .arg(self.state_dir)
             .arg("--json")
+            .arg("--setup-payment-event-file")
+            .arg(self.setup_payment_event_file)
+            .arg("--setup-payment-publisher")
+            .arg(self.setup_payment_publisher)
             .arg("transfer")
             .args([
                 "--poll-interval-secs",
