@@ -155,23 +155,16 @@ where
     /// the seats, not the peer id. `None` when the bindings cannot be read
     /// or verified, or do not name every seat's MG exactly once.
     async fn seat_peers(&self, authority: &PostFormedAuthority) -> Option<BTreeMap<u16, PeerId>> {
-        let consensus = self
-            .with_invite_fallback(
-                &authority.invite_code,
-                authority.seat_routes(),
-                |invite| async move {
-                    timeout(
-                        REQUEST_TIMEOUT,
-                        self.inner.ports.consensus_reader.read_consensus(&invite),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .ok_or(())
-                },
-            )
-            .await
-            .ok()?;
+        let invite = self
+            .dial_invite(&authority.invite_code, authority.seat_routes())
+            .await;
+        let consensus = timeout(
+            REQUEST_TIMEOUT,
+            self.inner.ports.consensus_reader.read_consensus(&invite),
+        )
+        .await
+        .ok()?
+        .ok()?;
         let federation = federation_seats(&consensus.config).ok()?;
         let directory = liquidity_seat_bindings_field(&consensus.meta_value).ok()??;
         let bindings = MgSeatBindings::parse_canonical(&directory)
@@ -199,29 +192,25 @@ where
         federation_id: &FederationId,
         peers: &BTreeSet<PeerId>,
     ) -> Option<GuardianReports> {
-        self.with_invite_fallback(&authority.invite_code, authority.seat_routes(), |invite| {
-            async move {
-                // The invite reader allows 30s for setup and 10s for reports.
-                timeout(
-                    Duration::from_secs(45),
-                    self.inner
-                        .ports
-                        .consensus_reader
-                        .read_guardian_reports(&invite),
-                )
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .filter(|report| {
-                    report.federation_id == *federation_id
-                        && report.peers == *peers
-                        && (!report.sessions.is_empty() || !report.availability.is_empty())
-                })
-                .ok_or(())
-            }
-        })
+        let invite = self
+            .dial_invite(&authority.invite_code, authority.seat_routes())
+            .await;
+        // The invite reader allows 30s for setup and 10s for reports.
+        timeout(
+            Duration::from_secs(45),
+            self.inner
+                .ports
+                .consensus_reader
+                .read_guardian_reports(&invite),
+        )
         .await
         .ok()
+        .and_then(Result::ok)
+        .filter(|report| {
+            report.federation_id == *federation_id
+                && report.peers == *peers
+                && (!report.sessions.is_empty() || !report.availability.is_empty())
+        })
     }
 
     async fn revoked_holder(&self, seat: &PostFormedSeat) -> bool {

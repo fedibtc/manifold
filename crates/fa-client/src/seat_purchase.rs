@@ -182,10 +182,9 @@ where
         .await
     }
 
-    /// What the guardians report from `fedimintd_version`, read through the
-    /// first invite that reaches the federation. The saved invite may name
-    /// the very guardian that needs a new host, so each seat's MG also
-    /// offers its own invite.
+    /// What the guardians report from `fedimintd_version`, read through
+    /// [`Self::dial_invite`]. An older saved invite may name only the very
+    /// guardian that needs a new host; the dial invite adds the others.
     async fn guardian_fedimintd_versions(
         &self,
         federation: &TransferFederation,
@@ -195,19 +194,14 @@ where
             .seats
             .iter()
             .map(|(_, locator, seat_id)| (seat_id, locator));
-        fedimint_core::runtime::timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            self.with_invite_fallback(&federation.invite_code, routes, |invite| async move {
-                self.inner
-                    .ports
-                    .consensus_reader
-                    .read_fedimintd_versions(&invite)
-                    .await
-                    .ok()
-                    .filter(|versions| !versions.is_empty())
-                    .ok_or(())
-            }),
-        )
+        fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
+            let invite = self.dial_invite(&federation.invite_code, routes).await;
+            self.inner
+                .ports
+                .consensus_reader
+                .read_fedimintd_versions(&invite)
+                .await
+        })
         .await
         .ok()
         .and_then(Result::ok)

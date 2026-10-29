@@ -3857,7 +3857,7 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
     restored
         .inner
         .store
-        .reconcile_formed_federation(fa_id, None)
+        .reconcile_formed_federation(fa_id, None, snapshot.federation_invite.clone())
         .await
         .unwrap();
 
@@ -4119,87 +4119,72 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
 }
 
 #[tokio::test]
-async fn an_invite_fallback_asks_one_mg_at_a_time_after_the_saved_invite() {
+async fn reconciliation_saves_the_endpoints_of_the_verified_config() {
     let (client, _, state, _) = formed_client_for_liquidity().await;
-    // The last MG answers with an invite to another federation.
-    state.disagreeing_invite.store(true, Ordering::SeqCst);
+    // Formation saved the seat MGs' own addresses; consensus names others.
+    client.resume().await.unwrap();
     let authority = client
         .post_formed_authority(TestIdentity::fa_id())
         .await
         .unwrap();
-    let last = usize::from(MIN_FEDERATION_SIZE) - 1;
-    let remembered = client.consensus_invite(&authority.invite_code).await;
-    let tried = std::sync::Mutex::new(Vec::new());
+    let saved = authority
+        .invite_code
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap();
+    let config = test_federation_config();
+    assert_eq!(saved.federation_id(), config.calculate_federation_id());
+    let expected = config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect::<BTreeMap<_, _>>();
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    assert_eq!(saved.peers(), expected);
 
-    // Only the second MG's invite works: the remembered invite and the first MG's
-    // invite fail, and the MGs after the second are never asked.
+    // A complete saved invite dials as it is and asks no MG.
     let invite_calls = state.invite_calls.load(Ordering::SeqCst);
-    let answer = client
-        .with_invite_fallback(&authority.invite_code, authority.seat_routes(), |invite| {
-            let tried = &tried;
-            async move {
-                tried.lock().unwrap().push(invite.clone());
-                if invite == test_invite_for_peer(1, 1, 0) {
-                    Ok(invite)
-                } else {
-                    Err(())
-                }
-            }
-        })
-        .await;
-    assert_eq!(answer, Ok(test_invite_for_peer(1, 1, 0)));
     assert_eq!(
-        *tried.lock().unwrap(),
-        vec![
-            remembered.clone(),
-            test_invite_for_peer(0, 0, 0),
-            test_invite_for_peer(1, 1, 0),
-        ]
+        client
+            .dial_invite(&authority.invite_code, authority.seat_routes())
+            .await,
+        authority.invite_code
     );
-    assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls + 2);
-
-    // When nothing works, every MG is asked once, the other federation's
-    // invite is skipped, and the remembered invite's failure is returned.
-    tried.lock().unwrap().clear();
-    let answer: Result<(), InviteCode> = client
-        .with_invite_fallback(&authority.invite_code, authority.seat_routes(), |invite| {
-            let tried = &tried;
-            async move {
-                tried.lock().unwrap().push(invite.clone());
-                Err(invite)
-            }
-        })
-        .await;
-    assert_eq!(answer, Err(remembered));
-    let tried = tried.into_inner().unwrap();
-    assert_eq!(tried.len(), usize::from(MIN_FEDERATION_SIZE));
-    assert!(!tried.contains(&test_invite_for_peer(last, last, 1)));
+    assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls);
 }
 
 #[tokio::test]
-async fn remembered_endpoints_follow_the_federation_id_not_the_invite_string() {
-    let (client, _, _, _) = formed_client_for_liquidity().await;
+async fn a_one_guardian_saved_invite_gets_the_other_guardians_from_every_seat_mg() {
+    let (client, _, state, _) = formed_client_for_liquidity().await;
     let authority = client
         .post_formed_authority(TestIdentity::fa_id())
         .await
         .unwrap();
-    let remembered = client.consensus_invite(&authority.invite_code).await;
-    assert_ne!(
-        remembered, authority.invite_code,
-        "formation remembered endpoints"
-    );
+    // An invite saved by an older formation names one guardian.
+    let saved = test_invite_for_peer(5, 5, 0);
 
-    // Another invite string for the same federation reuses the endpoints.
-    let same_federation = test_invite_for_peer(1, 1, 0);
-    assert_ne!(same_federation, authority.invite_code);
-    assert_eq!(client.consensus_invite(&same_federation).await, remembered);
-
-    // An invite to another federation does not.
-    let other_federation = test_invite_for_peer(1, 1, 1);
+    let invite_calls = state.invite_calls.load(Ordering::SeqCst);
+    let invite = client.dial_invite(&saved, authority.seat_routes()).await;
     assert_eq!(
-        client.consensus_invite(&other_federation).await,
-        other_federation
+        state.invite_calls.load(Ordering::SeqCst),
+        invite_calls + usize::from(MIN_FEDERATION_SIZE),
+        "every seat MG is asked",
     );
+    let invite = invite.0.parse::<FedimintInviteCode>().unwrap();
+    assert_eq!(
+        invite.federation_id(),
+        test_federation_config().calculate_federation_id()
+    );
+    // The f+1 lowest of the guardians the MGs named.
+    let expected = (0..3)
+        .map(|peer| {
+            let peer = u16::try_from(peer).unwrap();
+            (PeerId::from(peer), test_guardian_url(usize::from(peer)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(invite.peers(), expected);
 }
 
 #[tokio::test]
@@ -4684,7 +4669,6 @@ async fn open_client_with_store_and_registry(
     let (progress, _) = tokio::sync::watch::channel(status);
     FaClient {
         inner: Arc::new(FaClientInner {
-            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FaClientPorts {
                 identity: TestIdentity,
@@ -8458,8 +8442,6 @@ async fn completed_setup_stays_formed_through_failed_rechecks() {
     for fault in ["none", "identity", "directory"] {
         let fail = fault != "none";
         let mut reader = TestConsensusReader::new(state.clone());
-        // Yield during readback so the observer sees the phase while checking.
-        reader.fail_next(1);
         if fault == "identity" {
             reader
                 .config

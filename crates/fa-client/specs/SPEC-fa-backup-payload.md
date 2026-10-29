@@ -72,12 +72,14 @@ New-seed openings skip recovery.
 A restored payload imports the formed federation record as `Unsynced`; reconciliation
 gates mutations until fresh guardian consensus confirms the saved federation
 identity and complete signed seat-binding directory. It checks the saved MG
-identities and any liquidity commitment against that directory. If the saved
-invite cannot reach consensus, recovery signs invite requests through the saved
-manager locators and tries alternatives for the same federation without
-requiring every manager online or every seat healthy. Verified guardian
-addresses are remembered only in memory for subsequent reads; the backup and
-signed liquidity commitment remain unchanged.
+identities and any liquidity commitment against that directory. A saved
+invite that names fewer than f+1 guardians, from an older formation, is
+completed first: recovery signs invite requests to every saved manager at the
+same time and adds the guardians of the same federation that answer. After it
+verifies consensus, reconciliation saves the invite of the verified config:
+the f+1 lowest guardians at their current endpoints. The next backup carries
+that invite. The signed liquidity commitment stays unchanged; it is matched by
+federation id, not by invite.
 A restored seat list that disagrees with consensus, for example because a
 guardian transfer reached consensus before its new seat list reached the
 relays, fails reconciliation. The restored FA then cannot manage the

@@ -238,31 +238,21 @@ where
         let mut guardian_errors = BTreeMap::new();
         let mut consensus_error = None;
         let mut retry_delay = run.poll_interval();
+        let invite = self
+            .dial_invite(&authority.invite_code, authority.seat_routes())
+            .await;
 
         loop {
             if accepted.len() >= threshold {
-                let view = self
-                    .with_invite_fallback(
-                        &authority.invite_code,
-                        authority.seat_routes(),
-                        |invite| async move {
-                            match run
-                                .call("reading the LNv2 gateway view", || {
-                                    Ok(self
-                                        .inner
-                                        .ports
-                                        .consensus_reader
-                                        .read_lnv2_gateways(&invite))
-                                })
-                                .await
-                            {
-                                Ok(Ok(gateways)) => Ok(Ok(Ok(gateways))),
-                                other => Err(other),
-                            }
-                        },
-                    )
-                    .await
-                    .unwrap_or_else(|failure| failure);
+                let view = run
+                    .call("reading the LNv2 gateway view", || {
+                        Ok(self
+                            .inner
+                            .ports
+                            .consensus_reader
+                            .read_lnv2_gateways(&invite))
+                    })
+                    .await;
                 match view {
                     Ok(Ok(gateways)) if gateways.contains(&gateway_api) => return Ok(()),
                     Ok(Ok(_)) => {

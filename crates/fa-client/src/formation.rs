@@ -4009,11 +4009,10 @@ where
             context.matches_commitment(commitment)?;
         }
 
-        self.remember_read_invite(&snapshot.federation_invite, &consensus)
-            .await?;
+        let invite = verified_dial_invite(&snapshot.federation_invite, &consensus)?;
         self.inner
             .store
-            .reconcile_formed_federation(fa_id, federation_name)
+            .reconcile_formed_federation(fa_id, federation_name, invite)
             .await?;
         self.publish_formed(fa_id).await
     }
@@ -4236,7 +4235,6 @@ where
                         .confirm_formation_meta_target(&recovery.snapshot.formation_id))
                 })
                 .await??;
-                self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
             }
             if let Some(error) = pending_error.take() {
@@ -4488,89 +4486,51 @@ where
         Ok(true)
     }
 
-    /// Choose remembered guardian addresses for the saved invite's federation,
-    /// if available.
-    /// Otherwise return the saved invite. Only connection information is reused;
-    /// callers must still read fresh consensus.
-    pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
-        let Ok(federation_id) = invite_federation_id(saved) else {
+    /// The invite that dials the formed federation. A saved invite names the
+    /// f+1 lowest guardians, as Fedimint builds it: at least one of them is
+    /// honest and online while the federation can make progress. An older
+    /// formation saved an invite naming one guardian. Then every seat's MG is
+    /// asked at the same time for its own invite, and the guardians of the
+    /// same federation that the saved invite lacks are added. An MG only adds
+    /// a way to dial; callers still verify the federation they read.
+    pub(crate) async fn dial_invite<'a>(
+        &self,
+        saved: &InviteCode,
+        seats: impl IntoIterator<Item = (&'a SeatId, &'a Locator)>,
+    ) -> InviteCode {
+        let seats = seats.into_iter().collect::<Vec<_>>();
+        let Ok(parsed) = FedimintInviteCode::from_str(&saved.0) else {
             return saved.clone();
         };
-        self.inner
-            .read_invite
-            .lock()
-            .await
-            .as_ref()
-            .filter(|(remembered, _)| *remembered == federation_id)
-            .map(|(_, invite)| invite.clone())
-            .unwrap_or_else(|| saved.clone())
-    }
-
-    /// Remember several guardian addresses from a verified consensus snapshot.
-    /// Call after verifying the directory and saved authority. This checks the
-    /// federation identity again before storing the connection hint in memory;
-    /// the saved invite, backups, and signed liquidity request stay unchanged.
-    async fn remember_read_invite(
-        &self,
-        saved: &InviteCode,
-        snapshot: &FederationConsensusSnapshot,
-    ) -> FaResult<()> {
-        verify_consensus_identity(snapshot, saved)?;
-        let peers = snapshot
-            .config
-            .global
-            .api_endpoints
-            .iter()
-            .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
-            .collect();
-        let parsed = FedimintInviteCode::from_str(&saved.0)
-            .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
-        let invite =
-            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
-        *self.inner.read_invite.lock().await =
-            Some((parsed.federation_id(), InviteCode(invite.to_string())));
-        Ok(())
-    }
-
-    /// Run `read` with the remembered invite for `saved`. If that fails, ask
-    /// the saved seats' MGs for an invite to the same federation, one MG at a
-    /// time, and run `read` with each until one succeeds. Each working invite
-    /// queries the whole federation, so the MGs are only a fallback. An older
-    /// saved invite can name a single guardian, and this keeps that guardian
-    /// from blocking the read. Returns the first failure when nothing works.
-    pub(crate) async fn with_invite_fallback<T, E, Fut>(
-        &self,
-        saved: &InviteCode,
-        seats: impl IntoIterator<Item = (&SeatId, &Locator)>,
-        mut read: impl FnMut(InviteCode) -> Fut,
-    ) -> Result<T, E>
-    where
-        Fut: Future<Output = Result<T, E>>,
-    {
-        let remembered = self.consensus_invite(saved).await;
-        let mut tried = BTreeSet::from([remembered.0.clone()]);
-        let first = read(remembered).await;
-        if first.is_ok() {
-            return first;
+        let mut peers = parsed.peers();
+        let essential = seats.len().saturating_sub(1) / 3 + 1;
+        if peers.len() >= essential {
+            return saved.clone();
         }
-        let (Ok(expected), Ok(fa_id)) = (invite_federation_id(saved), self.fa_id()) else {
-            return first;
+        let Ok(fa_id) = self.fa_id() else {
+            return saved.clone();
         };
-        for (seat_id, locator) in seats {
-            let Some(invite) = self.seat_invite(fa_id, seat_id, locator).await else {
+        let mut pending = seats
+            .into_iter()
+            .map(|(seat_id, locator)| self.seat_invite(fa_id, seat_id, locator))
+            .collect::<FuturesUnordered<_>>();
+        while let Some(invite) = pending.next().await {
+            let Some(invite) =
+                invite.and_then(|invite| FedimintInviteCode::from_str(&invite.0).ok())
+            else {
                 continue;
             };
-            // A manager supplies another way to dial, never a trust verdict.
-            if invite_federation_id(&invite).ok() != Some(expected)
-                || !tried.insert(invite.0.clone())
-            {
+            if invite.federation_id() != parsed.federation_id() {
                 continue;
             }
-            if let Ok(value) = read(invite).await {
-                return Ok(value);
+            for (peer, url) in invite.peers() {
+                peers.entry(peer).or_insert(url);
             }
         }
-        first
+        InviteCode(
+            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret())
+                .to_string(),
+        )
     }
 
     /// The invite one saved seat's MG gives for its federation.
@@ -4596,31 +4556,21 @@ where
         .flatten()
     }
 
-    /// Read fresh consensus of the formed federation, with the invite
-    /// fallback of [`Self::with_invite_fallback`]. The caller must still
-    /// verify the federation identity, the directory and saved authority.
+    /// Read fresh consensus of the formed federation through
+    /// [`Self::dial_invite`]. The caller must still verify the federation
+    /// identity, the directory and saved authority.
     pub(crate) async fn read_formed_consensus(
         &self,
         authority: &PostFormedAuthority,
         run: DriverRun<'_>,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
-        let saved = &authority.invite_code;
-        let read = self
-            .with_invite_fallback(saved, authority.seat_routes(), |invite| async move {
-                let result = run
-                    .call("reading federation consensus metadata", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-                    })
-                    .await;
-                match result {
-                    // Another invite cannot help a run that already failed.
-                    Ok(Ok(_)) => Ok(result),
-                    Err(ref error) if !matches!(error, FaError::Timeout(_)) => Ok(result),
-                    other => Err(other),
-                }
-            })
+        let invite = self
+            .dial_invite(&authority.invite_code, authority.seat_routes())
             .await;
-        read.unwrap_or_else(|failure| failure)
+        run.call("reading federation consensus metadata", || {
+            Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+        })
+        .await
     }
 
     async fn fetch_agreed_invite(
@@ -4734,6 +4684,30 @@ where
 
 /// Reject a configuration whose federation id differs from the saved invite.
 /// This checks identity only; the caller verifies the guardian directory separately.
+/// The invite of a verified consensus config for the federation of `saved`:
+/// the f+1 lowest guardians at their current endpoints, which follow a
+/// guardian transfer. Call after the caller verified the directory and saved
+/// authority. It keeps the saved invite's API secret, if any.
+fn verified_dial_invite(
+    saved: &InviteCode,
+    snapshot: &FederationConsensusSnapshot,
+) -> FaResult<InviteCode> {
+    verify_consensus_identity(snapshot, saved)?;
+    let peers = snapshot
+        .config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .collect();
+    let parsed = FedimintInviteCode::from_str(&saved.0)
+        .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
+    Ok(InviteCode(
+        FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret())
+            .to_string(),
+    ))
+}
+
 fn verify_consensus_identity(
     snapshot: &FederationConsensusSnapshot,
     invite: &InviteCode,

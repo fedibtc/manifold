@@ -1131,6 +1131,7 @@ impl FaStore {
         &self,
         fa_id: FaId,
         federation_name: Option<crate::FederationName>,
+        invite: crate::InviteCode,
     ) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let mut formed = dbtx.get_value(&FormedFederationKey).await.ok_or_else(|| {
@@ -1145,6 +1146,9 @@ impl FaStore {
         // Consensus has the current name. A formation on this device saved
         // its intent's name, which stays when consensus names none.
         formed.federation_name = federation_name.or(formed.federation_name);
+        // The verified config's endpoints, so later reads and backups dial
+        // each guardian where it is now.
+        formed.payload.federation_invite = invite;
         if let Some(commitment) = formed.payload.liquidity.clone() {
             let details_payload_hash =
                 fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(
