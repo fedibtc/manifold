@@ -725,13 +725,7 @@ async fn transient_failure_retries_and_then_succeeds() {
 
     let worker = harness.state.start_delivery_worker();
     harness.state.notify_delivery_worker();
-    wait_for_status(&harness, "retrying", 1).await;
-    sqlx::query("UPDATE delivery_outbox SET next_attempt_at = 0 WHERE status = 'retrying'")
-        .execute(harness.state.database().pool())
-        .await
-        .expect("force due");
-    harness.state.notify_delivery_worker();
-    wait_for_status(&harness, "succeeded", 1).await;
+    force_retries_until_attempt_status(&harness, 1, "succeeded").await;
     worker.shutdown().await;
 }
 
@@ -782,15 +776,7 @@ async fn transient_retry_exhaustion_dead_letters() {
     );
 
     let worker = harness.state.start_delivery_worker();
-    for expected_attempts in 1..5 {
-        wait_for_attempt_status(&harness, expected_attempts, "retrying").await;
-        sqlx::query("UPDATE delivery_outbox SET next_attempt_at = 0 WHERE status = 'retrying'")
-            .execute(harness.state.database().pool())
-            .await
-            .expect("force retry due");
-        harness.state.notify_delivery_worker();
-    }
-    wait_for_attempt_status(&harness, 5, "dead_letter").await;
+    force_retries_until_attempt_status(&harness, 5, "dead_letter").await;
     worker.shutdown().await;
     assert_eq!(outbox_count(&harness, "dead_letter").await, 1);
     let metrics = harness.text("GET", "/metrics").await;
@@ -1138,26 +1124,38 @@ async fn wait_for_status_maybe(harness: &Harness, status: &str, count: i64) -> b
     false
 }
 
-async fn wait_for_attempt_status(harness: &Harness, attempts: i64, status: &str) {
+/// Makes every retrying row due at once until the row reaches `attempts`
+/// and `status`. The first retry is due after only 1s, so a test that waited
+/// to observe each `retrying` state could miss it under load and then wait
+/// for a state the row has already left.
+async fn force_retries_until_attempt_status(harness: &Harness, attempts: i64, status: &str) {
     const MAX_STATUS_POLLS: usize = 400;
     const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     for _ in 0..MAX_STATUS_POLLS {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM delivery_outbox
-             WHERE attempts = $1 AND status = $2",
-        )
-        .bind(attempts)
-        .bind(status)
-        .fetch_one(harness.state.database().pool())
-        .await
-        .expect("read attempt status");
-        if count == 1 {
+        if attempt_status_count(harness, attempts, status).await == 1 {
             return;
         }
+        sqlx::query("UPDATE delivery_outbox SET next_attempt_at = 0 WHERE status = 'retrying'")
+            .execute(harness.state.database().pool())
+            .await
+            .expect("force retry due");
+        harness.state.notify_delivery_worker();
         tokio::time::sleep(STATUS_POLL_INTERVAL).await;
     }
     panic!("timed out waiting for attempt {attempts} status {status}");
+}
+
+async fn attempt_status_count(harness: &Harness, attempts: i64, status: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM delivery_outbox
+         WHERE attempts = $1 AND status = $2",
+    )
+    .bind(attempts)
+    .bind(status)
+    .fetch_one(harness.state.database().pool())
+    .await
+    .expect("read attempt status")
 }
 
 fn assert_constraint_error(result: Result<sqlx::any::AnyQueryResult, sqlx::Error>) {
