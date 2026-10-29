@@ -28,13 +28,14 @@ async fn run_restart() -> anyhow::Result<()> {
             .public_key()
             .to_string();
     let temp = mg_e2e_temp_dir()?;
-    let overrides = local_iroh_overrides_for_grid(42_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoin,
         1,
-        42_000,
+        port_base,
         Some(&overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
