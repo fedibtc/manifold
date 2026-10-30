@@ -71,6 +71,9 @@ async fn harness(origin: Option<&str>) -> Harness {
         db,
         FleetConfig {
             transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+            replacement_guardian_verifier: Arc::new(
+                crate::replacement_guardian::UnverifiedReplacementGuardian,
+            ),
             guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
             process_spawner: SeatProcessSpawner::Fake(Arc::new(
                 crate::seat_process::fake::FakeSeatProcessSpawner::default(),
