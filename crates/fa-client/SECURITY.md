@@ -198,8 +198,12 @@ is no pinned/BYO exception. The sealed five-minute preview approval is the only 
 to selected creation. Its usable window begins after the verified walk and it
 binds the complete request plus canonical verifier/environment provenance. The
 stable provenance is persisted separately on every selected or replacement
-seat. Reopening under a different profile requires fresh approval for every
-unconsumed seat before an irreversible effect. Each admission has a private
+seat. Reopening under a different environment requires fresh approval for
+every unconsumed seat before an irreversible effect. Within one environment,
+a release that changes its trust mappings does not invalidate an unconsumed
+admission: consuming it checks the saved environment and the five-minute
+deadline, and does not verify the badge again against the new issuers,
+authorities or minimum trust level, or fetch fresh revocation state. Each admission has a private
 monotone state: `Fresh`, or `EffectAuthorized` bound to the exact quote and to
 either paid output generation or free `CreateSeat` presentation. Initial paid
 rows transition in the aggregate output-start transaction; every post-output
