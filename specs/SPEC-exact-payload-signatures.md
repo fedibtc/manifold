@@ -103,8 +103,9 @@ A verifier applies these steps in order and stops at the first failure:
 4. Verify the signature over the purpose tag that the context selects and the
    payload bytes.
 5. Only then parse the payload as JSON with a 128-level nesting bound. Reject
-   duplicate known names. Ignore unknown names (see below). Then validate the
-   payload against its schema.
+   duplicate known names. Duplicate unknown names are skipped like any other
+   unknown name. Numbers follow the rule below. Then validate the payload
+   against its schema.
 6. Apply purpose checks: bind the signer to the transport identity (for Nostr,
    the event author) and to the payload's identity field when it has one.
    Then apply freshness, authorization and semantic validation.
@@ -117,6 +118,26 @@ whole-event cap. An admissible message fits every applicable bound. Writers
 check the encoded size of the outer message, not only the payload size.
 Verifying first narrows unauthenticated processing to the ingress bound and the
 envelope decode. It does not replace any later check.
+
+## Numbers
+
+Signature verification never interprets numbers. Only the payload parse in
+step 5 does, under one rule for every implementation.
+
+- **Known number fields.** Every known number field in these schemas is an
+  integer. A reader validates the decimal token exactly against the field's
+  integer range. It rejects a token with a fraction or exponent, such as `1.0`
+  or `1e3`, and a token outside the range. A token is never converted through a
+  floating-point or other rounding representation. For example,
+  `9007199254740993` in a `u64` field is that exact value, and a reader that
+  cannot represent it exactly rejects the payload instead of rounding it.
+- **Numbers inside unknown fields.** A reader checks only that the token
+  matches the RFC 8259 number grammar, and then skips it. Magnitude and
+  precision never decide acceptance, so `1e400` or a 500-digit integer in an
+  unknown field is accepted and ignored. A malformed token such as `01`, `1.`
+  or `NaN` makes the payload invalid JSON and is rejected. A decoder that
+  buffers unknown values into a native number representation before skipping
+  them does not meet this rule, because its own range would decide acceptance.
 
 ## Unknown fields
 
