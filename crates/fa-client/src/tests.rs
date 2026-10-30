@@ -18,7 +18,9 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::setup_payment_federations::{
     SETUP_PAYMENT_FEDERATIONS_D_TAG, SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
 };
-use fedi_decentralized_nostr_clients::{FaNostrClient, NostrClientError, NostrClientResult};
+use fedi_decentralized_nostr_clients::{
+    FaNostrClient, MgAdvertisementFormat, NostrClientError, NostrClientResult,
+};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_liquidity_manager as liquidity_api;
 use fedi_decentralized_service_manifold_guardian::*;
@@ -183,7 +185,11 @@ impl FaNostrClient for TestRegistry {
         Ok(self.candidates.lock().expect("test lock").clone())
     }
 
-    async fn fetch_mg_advertisements(&self, _timeout: Duration) -> NostrClientResult<Vec<Event>> {
+    async fn fetch_mg_advertisements(
+        &self,
+        format: MgAdvertisementFormat,
+        _timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
         if self.fail.load(Ordering::SeqCst) {
             // The registry client's fail-closed enumeration reports a stalled
             // or truncated relay answer as a typed incomplete query.
@@ -194,7 +200,15 @@ impl FaNostrClient for TestRegistry {
         if !self.advertisement_delay.is_zero() {
             tokio::time::sleep(self.advertisement_delay).await;
         }
-        Ok(self.advertisements.lock().expect("test lock").clone())
+        // Relays answer each format's query with that format's kind only.
+        Ok(self
+            .advertisements
+            .lock()
+            .expect("test lock")
+            .iter()
+            .filter(|event| event.kind == Kind::Custom(format.kind()))
+            .cloned()
+            .collect())
     }
 
     async fn fetch_liquidity_provider_advertisements(

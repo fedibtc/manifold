@@ -22,9 +22,9 @@ use std::time::Duration;
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::has_exact_d_tag;
 use fedi_decentralized_nostr::mg::{
-    AdvertisementDocument, AdvertisementPayload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, MG_ADVERTISEMENT_D_TAG,
-    MG_ADVERTISEMENT_EVENT_KIND, verify_advertisement_self_signature,
+    AdvertisedUptime, AdvertisementDocument, AdvertisementV2Error, AdvertisementV2Payload,
+    ApiEndpoint, Availability, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    MgAdvertisementFormat, verify_advertisement_self_signature, verify_advertisement_v2,
 };
 use fedi_decentralized_nostr_clients::{FaNostrClient, MG_ADVERTISEMENTS_CANDIDATE_LIMIT};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
@@ -195,6 +195,9 @@ pub struct EligibleMgCandidate {
 
     /// Embedded envelopes, verified lazily during the selection walk.
     pub(crate) holder_authorizations: Vec<HolderAuthorizationEnvelope>,
+
+    /// Uptime scores the MG reports about itself in a v2 advertisement.
+    pub(crate) self_reported_uptime: Option<AdvertisedUptime>,
 }
 
 impl EligibleMgCandidate {
@@ -271,6 +274,16 @@ impl EligibleMgCandidate {
     pub fn claimed_issuer(&self) -> PublicKey {
         self.claimed_issuer
     }
+
+    /// Uptime scores the MG reports about itself, or `None` when the chosen
+    /// advertisement reports none (a legacy advertisement never does).
+    ///
+    /// Signed by the MG but measured by its own clock: display them, but
+    /// never admit, reject, rank or select on them (`SPEC-mg-nostr-events`).
+    #[must_use]
+    pub fn self_reported_uptime(&self) -> Option<AdvertisedUptime> {
+        self.self_reported_uptime
+    }
 }
 
 /// Typed reason one fetched advertisement event was not admitted or seated.
@@ -286,13 +299,16 @@ pub enum AdvertisementRejection {
     /// The event content is not a parsable advertisement document.
     UnparsableDocument,
 
-    /// The document's own payload proof failed verification.
+    /// The document's own payload proof, or the v2 envelope signature, failed
+    /// verification.
     InvalidAdvertisementProof,
 
-    /// The signed payload `fman_id_pubkey` does not equal the event author.
+    /// The signed payload `fman_id_pubkey`, or the v2 envelope signer, does
+    /// not equal the event author.
     AuthorMismatch,
 
-    /// A newer valid advertisement from the same author replaced this event.
+    /// A newer valid advertisement from the same author replaced this event,
+    /// or the author's fresh v2 advertisement replaced this legacy one.
     Superseded,
 
     /// The advertisement embeds no holder authorization.
@@ -526,24 +542,67 @@ pub(crate) async fn discover_mg_candidates_with(
     deadline: Instant,
     now: u64,
 ) -> FaResult<MgDiscovery> {
-    let events = registry
-        .fetch_mg_advertisements(deadline.saturating_duration_since(Instant::now()))
-        .await
-        .map_err(|error| FaError::Registry(error.to_string()))?;
+    let timeout = deadline.saturating_duration_since(Instant::now());
+    // Each format has its own query and bounds (`SPEC-mg-nostr-events`, *MG
+    // advertisement v2*). Both must complete: an MG on a v1-only release
+    // publishes only the legacy format.
+    let (legacy_events, v2_events) = futures::join!(
+        registry.fetch_mg_advertisements(MgAdvertisementFormat::Legacy, timeout),
+        registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, timeout),
+    );
+    let legacy_events = legacy_events.map_err(|error| FaError::Registry(error.to_string()))?;
+    let v2_events = v2_events.map_err(|error| FaError::Registry(error.to_string()))?;
 
     let mut discovery = MgDiscovery::default();
     // The transport bound belongs to the client; re-applying it here keeps a
     // misbehaving injected registry from expanding the admission workload.
-    let admitted = statically_admit_newest_per_author(
-        events
+    let mut legacy = statically_admit_newest_per_author(
+        legacy_events
             .into_iter()
             .take(usize::from(MG_ADVERTISEMENTS_CANDIDATE_LIMIT)),
         deadline,
         &mut discovery.rejected,
+        statically_admit_legacy,
+    );
+    let v2 = statically_admit_newest_per_author(
+        v2_events
+            .into_iter()
+            .take(usize::from(MG_ADVERTISEMENTS_CANDIDATE_LIMIT)),
+        deadline,
+        &mut discovery.rejected,
+        statically_admit_v2,
     );
 
-    for (author, admitted) in admitted {
-        match admit_eligible_advertisement(requirements, author, admitted.document, now, deadline) {
+    let mut chosen = Vec::new();
+    for (author, v2) in v2 {
+        let legacy = legacy.remove(&author);
+        match fresh(&v2.offer, now) {
+            Ok(()) => {
+                if legacy.is_some() {
+                    discovery.rejected.push(RejectedAdvertisement {
+                        author,
+                        reason: AdvertisementRejection::Superseded,
+                    });
+                }
+                chosen.push((author, v2.offer));
+                continue;
+            }
+            Err(reason) => discovery
+                .rejected
+                .push(RejectedAdvertisement { author, reason }),
+        }
+        if let Some(legacy) = legacy {
+            chosen.push((author, legacy.offer));
+        }
+    }
+    chosen.extend(
+        legacy
+            .into_iter()
+            .map(|(author, legacy)| (author, legacy.offer)),
+    );
+
+    for (author, offer) in chosen {
+        match admit_eligible_advertisement(requirements, author, offer, now, deadline) {
             Ok(candidate) => discovery.candidates.push(candidate),
             Err(reason) => discovery
                 .rejected
@@ -562,20 +621,22 @@ pub(crate) async fn discover_mg_candidates_with(
 struct AdmittedAdvertisement {
     created_at: u64,
     event_id: EventId,
-    document: AdvertisementDocument,
+    /// The signed offer; a legacy advertisement has no uptime report.
+    offer: AdvertisementV2Payload,
 }
 
-/// Statically authenticate every event and keep one newest document per author.
+/// Statically authenticate every event of one format and keep one newest
+/// offer per author.
 ///
-/// Static admission covers the event role, the event signature, document
-/// parsing, the document's own proof, and the payload-author identity rule.
-/// Replacement order is newest `created_at` first with the NIP-01 lowest
-/// event id breaking ties; superseded valid events are reported as typed
-/// rejections.
+/// Static admission covers the event role, the event signature, the
+/// format's own signature, and the signer-author identity rule. Replacement
+/// order is newest `created_at` first with the NIP-01 lowest event id
+/// breaking ties; superseded valid events are reported as typed rejections.
 fn statically_admit_newest_per_author(
     events: impl Iterator<Item = Event>,
     deadline: Instant,
     rejected: &mut Vec<RejectedAdvertisement>,
+    statically_admit: fn(&Event) -> Result<AdvertisementV2Payload, AdvertisementRejection>,
 ) -> BTreeMap<PublicKey, AdmittedAdvertisement> {
     let mut admitted: BTreeMap<PublicKey, AdmittedAdvertisement> = BTreeMap::new();
     for event in events {
@@ -588,11 +649,11 @@ fn statically_admit_newest_per_author(
             continue;
         }
         match statically_admit(&event) {
-            Ok(document) => {
+            Ok(offer) => {
                 let candidate = AdmittedAdvertisement {
                     created_at: event.created_at.as_secs(),
                     event_id: event.id,
-                    document,
+                    offer,
                 };
                 match admitted.entry(author) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
@@ -618,15 +679,19 @@ fn statically_admit_newest_per_author(
     admitted
 }
 
-fn statically_admit(event: &Event) -> Result<AdvertisementDocument, AdvertisementRejection> {
-    if event.kind != Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND)
-        || !has_exact_d_tag(event, MG_ADVERTISEMENT_D_TAG)
-    {
+fn has_role(event: &Event, format: MgAdvertisementFormat) -> Result<(), AdvertisementRejection> {
+    if event.kind != Kind::Custom(format.kind()) || !has_exact_d_tag(event, format.d_tag()) {
         return Err(AdvertisementRejection::WrongEventRole);
     }
     event
         .verify()
-        .map_err(|_| AdvertisementRejection::InvalidEventSignature)?;
+        .map_err(|_| AdvertisementRejection::InvalidEventSignature)
+}
+
+fn statically_admit_legacy(
+    event: &Event,
+) -> Result<AdvertisementV2Payload, AdvertisementRejection> {
+    has_role(event, MgAdvertisementFormat::Legacy)?;
     let document = serde_json::from_str::<AdvertisementDocument>(&event.content)
         .map_err(|_| AdvertisementRejection::UnparsableDocument)?;
     verify_advertisement_self_signature(&document)
@@ -634,22 +699,45 @@ fn statically_admit(event: &Event) -> Result<AdvertisementDocument, Advertisemen
     if document.payload.mg_id_pubkey != event.pubkey.to_string() {
         return Err(AdvertisementRejection::AuthorMismatch);
     }
-    Ok(document)
+    Ok(document.payload.into())
+}
+
+fn statically_admit_v2(event: &Event) -> Result<AdvertisementV2Payload, AdvertisementRejection> {
+    has_role(event, MgAdvertisementFormat::V2)?;
+    verify_advertisement_v2(&event.content, event.pubkey).map_err(|error| match error {
+        AdvertisementV2Error::Unparsable => AdvertisementRejection::UnparsableDocument,
+        AdvertisementV2Error::InvalidSignature => AdvertisementRejection::InvalidAdvertisementProof,
+        AdvertisementV2Error::AuthorMismatch => AdvertisementRejection::AuthorMismatch,
+    })
+}
+
+/// The freshness policy on the signed validity window.
+fn fresh(offer: &AdvertisementV2Payload, now: u64) -> Result<(), AdvertisementRejection> {
+    if offer.expires_at <= now {
+        return Err(AdvertisementRejection::Expired);
+    }
+    if offer.issued_at > now {
+        return Err(AdvertisementRejection::IssuedInFuture);
+    }
+    if now - offer.issued_at > MG_ADVERTISEMENT_MAX_AGE.as_secs() {
+        return Err(AdvertisementRejection::Stale);
+    }
+    Ok(())
 }
 
 fn admit_eligible_advertisement(
     requirements: &MgCandidateRequirements,
     author: PublicKey,
-    document: AdvertisementDocument,
+    offer: AdvertisementV2Payload,
     now: u64,
     deadline: Instant,
 ) -> Result<EligibleMgCandidate, AdvertisementRejection> {
-    let (payload, advertised_price_msats, locator, fedimintd_dkg_version) =
-        admit_eligible_payload(requirements, document, now, deadline)?;
+    let (offer, advertised_price_msats, locator, fedimintd_dkg_version) =
+        admit_eligible_payload(requirements, offer, now, deadline)?;
     // An advertisement with no envelope can never verify during selection,
     // and the claimed issuer used for bucketing comes from the first
     // envelope, so the empty case is rejected here where it is free.
-    let claimed_issuer = payload
+    let claimed_issuer = offer
         .holder_authorizations
         .first()
         .map(|envelope| envelope.signed_credential.credential.issuer_id_pubkey.0)
@@ -657,38 +745,30 @@ fn admit_eligible_advertisement(
 
     Ok(EligibleMgCandidate {
         mg_id: author,
-        api_endpoints: payload.api_endpoints,
+        api_endpoints: offer.api_endpoints,
         locator,
         advertised_price_msats,
         fedimintd_dkg_version,
-        availability: payload.availability,
-        issued_at: Timestamp(payload.issued_at),
-        expires_at: Timestamp(payload.expires_at),
+        availability: offer.availability,
+        issued_at: Timestamp(offer.issued_at),
+        expires_at: Timestamp(offer.expires_at),
         claimed_issuer,
-        holder_authorizations: payload.holder_authorizations,
+        holder_authorizations: offer.holder_authorizations,
+        self_reported_uptime: offer.uptime_permille,
     })
 }
 
 /// Apply every non-credential eligibility check of verified discovery.
 fn admit_eligible_payload(
     requirements: &MgCandidateRequirements,
-    document: AdvertisementDocument,
+    payload: AdvertisementV2Payload,
     now: u64,
     deadline: Instant,
-) -> Result<(AdvertisementPayload, u64, Locator, FedimintdDkgVersion), AdvertisementRejection> {
+) -> Result<(AdvertisementV2Payload, u64, Locator, FedimintdDkgVersion), AdvertisementRejection> {
     if Instant::now() >= deadline {
         return Err(AdvertisementRejection::DeadlineExpired);
     }
-    let payload = document.payload;
-    if payload.expires_at <= now {
-        return Err(AdvertisementRejection::Expired);
-    }
-    if payload.issued_at > now {
-        return Err(AdvertisementRejection::IssuedInFuture);
-    }
-    if now - payload.issued_at > MG_ADVERTISEMENT_MAX_AGE.as_secs() {
-        return Err(AdvertisementRejection::Stale);
-    }
+    fresh(&payload, now)?;
     let availability = &payload.availability;
     if !availability
         .federation_sizes
@@ -729,7 +809,7 @@ fn admit_eligible_payload(
 /// commitment-signing `service_pubkey`. A malformed service key or the absence
 /// of a parseable iroh endpoint makes the advertisement ineligible rather than
 /// surfacing a candidate that cannot be dialed with verifiable responses.
-fn dialing_locator(payload: &AdvertisementPayload) -> Result<Locator, AdvertisementRejection> {
+fn dialing_locator(payload: &AdvertisementV2Payload) -> Result<Locator, AdvertisementRejection> {
     let service_pubkey = payload
         .service_pubkey
         .parse::<secp256k1::XOnlyPublicKey>()

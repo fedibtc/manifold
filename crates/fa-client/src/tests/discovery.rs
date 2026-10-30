@@ -8,6 +8,10 @@
 
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::mg::{
+    AdvertisedUptime, AdvertisementV2Payload, MG_ADVERTISEMENT_V2_D_TAG,
+    MG_ADVERTISEMENT_V2_EVENT_KIND, MG_ADVERTISEMENT_V2_HASHTAG, Permille, sign_advertisement_v2,
+};
+use fedi_decentralized_nostr::mg::{
     AdvertisementPayload, ApiEndpoint, Availability, IROH_API_ENDPOINT_TRANSPORT,
     IROH_API_ENDPOINT_URL_SCHEME, MG_ADVERTISEMENT_D_TAG, MG_ADVERTISEMENT_EVENT_KIND,
     MG_ADVERTISEMENT_HASHTAG, sign_advertisement,
@@ -636,9 +640,15 @@ async fn candidate_cap_is_enforced_locally() {
             ad_event(&mg, self_authorized_payload(&mg))
         })
         .collect::<Vec<_>>();
-    let filler = EventBuilder::text_note("wrong-role filler")
-        .sign_with_keys(&mg_keys(0xff))
-        .expect("test filler event signs");
+    // The test relay answers each format's query by kind, so the filler
+    // keeps the legacy kind and has the wrong role through its `d` tag.
+    let filler = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND),
+        "wrong-role filler",
+    )
+    .tag(Tag::identifier("not-the-mg-ad"))
+    .sign_with_keys(&mg_keys(0xff))
+    .expect("test filler event signs");
     events.extend(std::iter::repeat_n(filler, over_limit - admitted));
 
     let discovery = discover(events).await;
@@ -680,9 +690,13 @@ impl FaNostrClient for SlowRegistry {
             .await
     }
 
-    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>> {
+    async fn fetch_mg_advertisements(
+        &self,
+        format: MgAdvertisementFormat,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
         tokio::time::sleep(self.delay).await;
-        self.registry.fetch_mg_advertisements(timeout).await
+        self.registry.fetch_mg_advertisements(format, timeout).await
     }
 }
 
@@ -716,9 +730,13 @@ fn discovery_timeout_is_clamped_to_the_runtime_timer_domain() {
 async fn deadline_expiry_reports_unadmitted_advertisements() {
     let first = mg_keys(1);
     let second = mg_keys(2);
-    let invalid = EventBuilder::text_note("static admission must not start")
-        .sign_with_keys(&mg_keys(3))
-        .expect("test event signs");
+    let invalid = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND),
+        "static admission must not start",
+    )
+    .tag(Tag::identifier("not-the-mg-ad"))
+    .sign_with_keys(&mg_keys(3))
+    .expect("test event signs");
     let slow = SlowRegistry {
         registry: registry(vec![
             ad_event(&first, self_authorized_payload(&first)),
@@ -785,5 +803,214 @@ async fn candidates_come_back_in_a_fresh_random_order() {
     assert!(
         orders.iter().any(|order| order != &orders[0]),
         "candidates were returned in the same order every time",
+    );
+}
+
+fn uptime() -> AdvertisedUptime {
+    AdvertisedUptime {
+        day: Permille::try_from(998).expect("in range"),
+        week: Permille::try_from(991).expect("in range"),
+        month: Permille::try_from(964).expect("in range"),
+    }
+}
+
+/// The v2 rendering of `payload`, priced differently so a test can tell which
+/// format discovery chose.
+fn v2_offer(payload: AdvertisementPayload) -> AdvertisementV2Payload {
+    let mut offer = AdvertisementV2Payload::from(payload);
+    offer.plans = vec![Plan::InfiniteBestEffort {
+        price_msats: OTHER_AD_PRICE_MSATS,
+    }];
+    offer.uptime_permille = Some(uptime());
+    offer
+}
+
+/// A kind-37709 event authored by `author`, its envelope signed by `signer`.
+fn v2_event_signed_by(
+    author: &Keys,
+    signer: &Keys,
+    offer: &AdvertisementV2Payload,
+    created_at: u64,
+) -> Event {
+    let content = sign_advertisement_v2(offer, signer)
+        .expect("test v2 advertisement signs")
+        .to_json();
+    EventBuilder::new(Kind::Custom(MG_ADVERTISEMENT_V2_EVENT_KIND), content)
+        .tag(Tag::identifier(MG_ADVERTISEMENT_V2_D_TAG))
+        .tag(Tag::hashtag(MG_ADVERTISEMENT_V2_HASHTAG))
+        .custom_created_at(nostr_sdk::Timestamp::from_secs(created_at))
+        .sign_with_keys(author)
+        .expect("test v2 event signs")
+}
+
+fn v2_event(mg: &Keys, offer: &AdvertisementV2Payload) -> Event {
+    v2_event_signed_by(mg, mg, offer, NOW - 600)
+}
+
+fn reasons(discovery: &crate::MgDiscovery) -> Vec<&'static str> {
+    let mut reasons = discovery
+        .rejected
+        .iter()
+        .map(|rejected| rejected.reason.code())
+        .collect::<Vec<_>>();
+    reasons.sort_unstable();
+    reasons
+}
+
+/// A fresh v2 advertisement wins over the same author's legacy one, even a
+/// newer legacy one, and carries the uptime report.
+#[tokio::test]
+async fn fresh_v2_advertisement_is_preferred_over_legacy() {
+    let mg = mg_keys(1);
+    let legacy_only = mg_keys(2);
+    let discovery = discover(vec![
+        // The legacy event is newer than the v2 one.
+        ad_event_at(&mg, self_authorized_payload(&mg), NOW - 60),
+        v2_event(&mg, &v2_offer(self_authorized_payload(&mg))),
+        ad_event(&legacy_only, self_authorized_payload(&legacy_only)),
+    ])
+    .await;
+
+    assert_eq!(reasons(&discovery), ["superseded"]);
+    assert_eq!(discovery.seen(), 3, "each event is counted once");
+    let candidate = |author: &Keys| {
+        discovery
+            .candidates
+            .iter()
+            .find(|candidate| candidate.mg_id() == author.public_key())
+            .expect("author is a candidate")
+    };
+    assert_eq!(
+        candidate(&mg).advertised_price_msats(),
+        OTHER_AD_PRICE_MSATS
+    );
+    assert_eq!(candidate(&mg).self_reported_uptime(), Some(uptime()));
+    assert_eq!(
+        candidate(&legacy_only).advertised_price_msats(),
+        AD_PRICE_MSATS
+    );
+    assert_eq!(
+        candidate(&legacy_only).self_reported_uptime(),
+        None,
+        "a legacy advertisement has no uptime report",
+    );
+}
+
+/// An author whose v2 advertisement is stale or invalid falls back to its
+/// legacy advertisement, with no uptime and no field taken from the v2 one.
+#[tokio::test]
+async fn stale_or_invalid_v2_advertisement_falls_back_to_legacy() {
+    let stale = mg_keys(1);
+    let mut stale_offer = v2_offer(self_authorized_payload(&stale));
+    stale_offer.issued_at = NOW - MG_ADVERTISEMENT_MAX_AGE.as_secs() - 1;
+    let republished = mg_keys(2);
+    let other = mg_keys(3);
+    let discovery = discover(vec![
+        ad_event(&stale, self_authorized_payload(&stale)),
+        v2_event(&stale, &stale_offer),
+        ad_event(&republished, self_authorized_payload(&republished)),
+        // Another MG's valid envelope republished under this author.
+        v2_event_signed_by(
+            &republished,
+            &other,
+            &v2_offer(self_authorized_payload(&republished)),
+            NOW - 600,
+        ),
+    ])
+    .await;
+
+    assert_eq!(reasons(&discovery), ["author_mismatch", "stale"]);
+    assert_eq!(discovery.candidates.len(), 2);
+    for candidate in &discovery.candidates {
+        assert_eq!(candidate.advertised_price_msats(), AD_PRICE_MSATS);
+        assert_eq!(candidate.self_reported_uptime(), None);
+    }
+}
+
+#[tokio::test]
+async fn v2_only_author_is_admitted_and_bad_v2_signatures_are_rejected() {
+    let mg = mg_keys(1);
+    let discovery = discover(vec![v2_event(&mg, &v2_offer(self_authorized_payload(&mg)))]).await;
+    assert!(discovery.rejected.is_empty(), "{:?}", discovery.rejected);
+    assert_eq!(discovery.candidates.len(), 1);
+    assert_eq!(discovery.candidates[0].mg_id(), mg.public_key());
+
+    // A valid envelope with one payload byte changed.
+    let event = v2_event(&mg, &v2_offer(self_authorized_payload(&mg)));
+    let mut envelope = serde_json::from_str::<serde_json::Value>(&event.content).unwrap();
+    let tampered = envelope["payload"].as_str().unwrap().replacen(
+        &OTHER_AD_PRICE_MSATS.to_string(),
+        &AD_PRICE_MSATS.to_string(),
+        1,
+    );
+    envelope["payload"] = serde_json::json!(tampered);
+    let event = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_V2_EVENT_KIND),
+        envelope.to_string(),
+    )
+    .tag(Tag::identifier(MG_ADVERTISEMENT_V2_D_TAG))
+    .sign_with_keys(&mg)
+    .unwrap();
+    assert!(matches!(
+        sole_rejection(vec![event]).await,
+        AdvertisementRejection::InvalidAdvertisementProof
+    ));
+
+    // A v1 document under the v2 coordinate is not a v2 advertisement.
+    let document = sign_advertisement(self_authorized_payload(&mg), &mg).unwrap();
+    let event = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_V2_EVENT_KIND),
+        serde_json::to_string(&document).unwrap(),
+    )
+    .tag(Tag::identifier(MG_ADVERTISEMENT_V2_D_TAG))
+    .sign_with_keys(&mg)
+    .unwrap();
+    assert!(matches!(
+        sole_rejection(vec![event]).await,
+        AdvertisementRejection::UnparsableDocument
+    ));
+
+    // The v2 kind with the legacy `d` tag has the wrong role.
+    let event = EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_V2_EVENT_KIND),
+        v2_event(&mg, &v2_offer(self_authorized_payload(&mg))).content,
+    )
+    .tag(Tag::identifier(MG_ADVERTISEMENT_D_TAG))
+    .sign_with_keys(&mg)
+    .unwrap();
+    assert!(matches!(
+        sole_rejection(vec![event]).await,
+        AdvertisementRejection::WrongEventRole
+    ));
+}
+
+/// Each format has its own candidate bound: a legacy query filled to its
+/// cap does not crowd out a v2 advertisement.
+#[tokio::test]
+async fn each_format_has_its_own_candidate_bound() {
+    let mut events = (0..u64::from(MG_ADVERTISEMENTS_CANDIDATE_LIMIT))
+        .map(|index| {
+            let spammer = mg_keys_u64(10_000 + index);
+            ad_event(&spammer, self_authorized_payload(&spammer))
+        })
+        .collect::<Vec<_>>();
+    let honest = mg_keys(1);
+    events.push(v2_event(
+        &honest,
+        &v2_offer(self_authorized_payload(&honest)),
+    ));
+
+    let discovery = discover(events).await;
+    assert_eq!(
+        discovery.seen(),
+        usize::from(MG_ADVERTISEMENTS_CANDIDATE_LIMIT) + 1
+    );
+    assert!(
+        discovery
+            .candidates
+            .iter()
+            .any(|candidate| candidate.mg_id() == honest.public_key()
+                && candidate.self_reported_uptime() == Some(uptime())),
+        "the v2 advertisement is admitted beside a full legacy query",
     );
 }

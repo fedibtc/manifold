@@ -11,9 +11,14 @@ and the badge chain by
 ## Discovery
 
 `discover_mg_candidates` does not write durable state, take a driver lease, or
-change formation status. For each kind-37701 event it checks the event role and
-signature, payload proof, `fman_id_pubkey == event author`, newest event per
-author (with the NIP-01 lowest-id tie break), freshness, and caller eligibility.
+change formation status. It queries kind 37701 and kind 37709 separately, each
+with its own candidate and byte bounds, and fails when either query fails. For
+each event it checks the event role and signature, the payload proof (for v2,
+the exact-payload envelope signature and payload parse), the signer equal to the
+event author, and the newest event per author and format (with the NIP-01
+lowest-id tie break). Per author it uses the fresh v2 advertisement when one
+exists and otherwise the legacy one, which has no uptime report, and never
+merges fields across formats. It then checks freshness and caller eligibility.
 It returns typed rejection reasons as well as candidates, so consumers can
 report the observed and eligible counts.
 

@@ -2,16 +2,17 @@
 
 ## Status
 
-The additive-field compatibility required by
-[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md) is
-not yet implemented. Current typed consumers discard unknown payload fields
-during deserialization and reconstruct the payload for signature verification,
-so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients.
+The kind-`37701` advertisement does not meet the additive-field compatibility
+required by
+[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md).
+Its typed consumers discard unknown payload fields during deserialization and
+reconstruct the payload for signature verification, so an otherwise valid
+advertisement with a newly added signed field fails its proof in those
+clients. The MG advertisement v2 (kind `37709`) meets it: readers verify the
+exact signed bytes and then ignore unknown fields.
 
-The MG advertisement v2 (kind `37709`) is not implemented. No MG publishes it
-and no FA reads it. Its section below is the agreed target from
-fedibtc/manifold#247.
+The MG publishes both advertisements, and the in-repo FA reads both, as the
+v2 section below describes.
 
 ## Record justification
 

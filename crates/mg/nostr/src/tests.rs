@@ -244,21 +244,24 @@ fn test_snapshot() -> AdvertisementSnapshot {
         plans: vec![Plan::InfiniteBestEffort {
             price_msats: 250000,
         }],
+        uptime: Some(mg_core::seat_readiness::UptimePermille {
+            day: 998,
+            week: 991,
+            month: 964,
+        }),
     }
 }
 
 #[tokio::test]
 async fn built_payload_advertises_the_service_pubkey() {
     let keys = Keys::generate();
-    let payload = build_payload(test_snapshot(), &keys);
+    let payload = build_payload(test_snapshot(), Vec::new());
 
-    assert_eq!(payload.version, ProtocolV1);
     assert_eq!(
         payload.expires_at - payload.issued_at,
         60 * 60,
         "30-minute publications remain valid through one missed cycle",
     );
-    assert_eq!(payload.mg_id_pubkey, keys.public_key().to_string());
     assert_eq!(
         payload.service_pubkey, TEST_SERVICE_PUBKEY,
         "the advertisement must carry the commitment-signing service pubkey \
@@ -271,8 +274,83 @@ async fn built_payload_advertises_the_service_pubkey() {
             url: format!("{IROH_API_ENDPOINT_URL_SCHEME}endpoint"),
         }],
     );
-    let document = sign_advertisement(payload, &keys).expect("built payload signs");
+    let document = sign_advertisement(payload.to_legacy(keys.public_key()), &keys)
+        .expect("built payload signs");
     verify_advertisement_self_signature(&document).expect("built payload verifies");
+}
+
+/// One snapshot yields both formats: the same offer and validity window, the
+/// uptime only in v2, and the legacy content in the exact v1 shape.
+#[tokio::test]
+async fn both_advertisement_formats_publish_one_snapshot() {
+    let keys = Keys::generate();
+    let payload = build_payload(test_snapshot(), Vec::new());
+    let event = |format| {
+        advertisement_event(format, &payload, &keys)
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap()
+    };
+
+    let legacy = event(MgAdvertisementFormat::Legacy);
+    assert_eq!(legacy.kind, Kind::Custom(37701));
+    assert!(fedi_decentralized_nostr::has_exact_d_tag(
+        &legacy, "fman-ad"
+    ));
+    let content = serde_json::from_str::<Value>(&legacy.content).unwrap();
+    let mut members = content["payload"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    members.sort();
+    assert_eq!(
+        members,
+        [
+            "api_endpoints",
+            "availability",
+            "expires_at",
+            "fman_id_pubkey",
+            "holder_authorizations",
+            "issued_at",
+            "plans",
+            "service_pubkey",
+            "version",
+        ],
+        "kind 37701 keeps the v1 payload, with no uptime",
+    );
+    assert_eq!(
+        content.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["payload", "proof"],
+    );
+    let document = serde_json::from_str::<AdvertisementDocument>(&legacy.content).unwrap();
+    verify_advertisement_self_signature(&document).unwrap();
+
+    let v2 = event(MgAdvertisementFormat::V2);
+    assert_eq!(v2.kind, Kind::Custom(37709));
+    assert!(fedi_decentralized_nostr::has_exact_d_tag(&v2, "mg-ad"));
+    assert!(
+        v2.tags.iter().any(|tag| tag.as_slice() == ["t", "fedi-mg"]),
+        "v2 carries its own index hashtag",
+    );
+    let verified =
+        fedi_decentralized_nostr::mg::verify_advertisement_v2(&v2.content, keys.public_key())
+            .unwrap();
+    assert_eq!(verified, payload);
+    assert_eq!(
+        serde_json::to_value(verified.uptime_permille).unwrap(),
+        serde_json::json!({"1d": 998, "7d": 991, "30d": 964}),
+    );
+    assert_eq!(
+        (document.payload.issued_at, document.payload.expires_at),
+        (verified.issued_at, verified.expires_at),
+    );
+    assert_eq!(AdvertisementV2Payload::from(document.payload), {
+        let mut offer = payload.clone();
+        offer.uptime_permille = None;
+        offer
+    });
 }
 
 #[tokio::test]

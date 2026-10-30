@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MgVersion, MinUptimePercent};
+use fedi_decentralized_nostr::mg::{AdvertisedUptime, Permille};
 use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
 use tokio::sync::watch;
 
@@ -99,6 +100,18 @@ pub struct UptimePermille {
     pub week: u16,
     #[serde(rename = "30d")]
     pub month: u16,
+}
+
+impl From<UptimePermille> for AdvertisedUptime {
+    fn from(scores: UptimePermille) -> Self {
+        let permille =
+            |value: u16| Permille::try_from(value).expect("uptime scores are clamped to 0..=1000");
+        Self {
+            day: permille(scores.day),
+            week: permille(scores.week),
+            month: permille(scores.month),
+        }
+    }
 }
 
 impl From<MinUptimePercent> for UptimePermille {

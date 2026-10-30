@@ -6,10 +6,10 @@ Advertisement availability depends only on a configured offer, physical
 capacity, and the daemon's readiness checks. Setup-payment membership is
 enforced when a priced quote is requested.
 
-The MG publishes only the kind-37701 advertisement. Publication of the v2
-advertisement next to it
+The MG publishes the kind-37701 advertisement and the kind-37709 v2
+advertisement from each snapshot
 ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md), *MG
-advertisement v2*) is not implemented.
+advertisement v2*).
 
 ## Record justification
 
@@ -18,8 +18,9 @@ No single artifact can own the advertisement contract because daemon projection 
 When configured with a relay, the daemon immediately begins a periodic Nostr
 publication cycle. It connects lazily, snapshots the fleet, and publishes only
 when that snapshot says a seat would be accepted. An eligible cycle reads
-durably enrolled Holder authorizations, signs a portable kind-37701 MG
-advertisement, and publishes it. Cycles run every 30 minutes and promptly after
+durably enrolled Holder authorizations, signs the portable kind-37701 MG
+advertisement and the kind-37709 v2 advertisement from that one snapshot, and
+publishes each. Each publication is attempted even when the other fails. Cycles run every 30 minutes and promptly after
 daemon-owned offer or capacity changes; repeated changes may coalesce into one
 fresh snapshot. A failed cycle is logged and
 retried at the next trigger or interval, and advertising failure never stops RPC
@@ -53,7 +54,11 @@ discovery hint rather than a capacity reservation. The payload contains:
 - the MG identity's bounded set of durably enrolled Holder authorizations and
   backing signed credentials, deduplicated by credential digest.
 
-The inner document is Schnorr-signed by the Nostr identity over
+The v2 payload carries the same offer without the Nostr public key, which
+the envelope signer states, and adds the uptime scores of the latest
+readiness run (*Readiness gate*) once a run has recorded uptime.
+
+The inner kind-37701 document is Schnorr-signed by the Nostr identity over
 `SHA256(fedi-fman-advertisement-domain || JCS(payload))`; the Nostr event supplies
 its own signature as well. The payload identity is required to match the signing
 key. Availability fields are discovery hints, not trust claims. Setup-payment
@@ -65,7 +70,7 @@ Fleet runtime and advertisement publication do not begin until onboarding has
 retained at least one structurally verified, subject-bound Holder authorization.
 The relying consumer still owns issuer trust, revocation, and policy evaluation;
 onboarding does not turn structural verification into an issuer endorsement.
-The MG publishes no ad while it is not accepting seats. A previously published
+The MG publishes neither ad while it is not accepting seats. A previously published
 ad remains visible until its signed expiry, at most 60 minutes after issue;
 `GetAvailability` and `GetQuote` remain authoritative for races during that window.
 
