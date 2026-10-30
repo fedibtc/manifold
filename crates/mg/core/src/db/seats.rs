@@ -1046,11 +1046,14 @@ impl Db {
             if let Some(outgoing) = &seat.outgoing_transfer {
                 sqlx::query("INSERT INTO seat_transfer_out (quote_id, phase) VALUES (?, ?)")
                     .bind(quote_id)
-                    .bind(if outgoing.removed {
-                        "removed"
-                    } else {
-                        "retired"
-                    })
+                    .bind(
+                        if outgoing.removed {
+                            crate::transfer_state::OutgoingTransfer::Removed
+                        } else {
+                            crate::transfer_state::OutgoingTransfer::Stopped
+                        }
+                        .as_db_str(),
+                    )
                     .execute(&mut *tx)
                     .await?;
             }

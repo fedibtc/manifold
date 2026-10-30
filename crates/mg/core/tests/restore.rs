@@ -306,6 +306,55 @@ async fn accepted_import_restores_its_iroh_identity_and_remains_fenced() {
     );
 }
 
+/// A source fenced mid-transfer keeps its guardian material until RemoveSeat.
+/// Its restore must reinstall that fence, not reject the backup.
+#[tokio::test]
+async fn stopped_source_restores_its_fence_and_guardian_material() {
+    use crate::backup::{OutgoingTransferBackup, TransferBackup};
+    let (mut document, archive) = transferred_document(3);
+    let invite = document
+        .guardian
+        .as_ref()
+        .unwrap()
+        .federation_invite
+        .clone()
+        .unwrap();
+    document.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            removed: false,
+            federation_invite: invite.clone(),
+        }),
+    });
+    let recovered = recovered(
+        vec![document.clone()],
+        vec![(document.seat_id.clone(), archive)],
+    );
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &test_identity(), &recovered)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.outgoing_transfer(&document.seat_id).await.unwrap(),
+        Some(crate::transfer_state::OutgoingTransfer::Stopped)
+    );
+    assert_eq!(
+        db.formed_federation_invite(&document.seat_id)
+            .await
+            .unwrap(),
+        Some(invite)
+    );
+    assert!(crate::seat_process::seat_data_dir(&process, SeatNo(0)).exists());
+    let facts = db.list_seats().await.unwrap().remove(0).facts;
+    let plan = crate::backup::seat_publication_plan(&db, &process, &facts, None)
+        .await
+        .unwrap();
+    assert_eq!(plan.document, document);
+    assert_eq!(plan.archive.unwrap(), recovered.archives[&facts.seat_id]);
+}
+
 #[tokio::test]
 async fn removed_source_restores_formed_accounting_without_guardian_material() {
     use crate::backup::{OutgoingTransferBackup, TransferBackup};
