@@ -544,14 +544,18 @@ pub(crate) async fn discover_mg_candidates_with(
 ) -> FaResult<MgDiscovery> {
     let timeout = deadline.saturating_duration_since(Instant::now());
     // Each format has its own query and bounds (`SPEC-mg-nostr-events`, *MG
-    // advertisement v2*). Both must complete: an MG on a v1-only release
-    // publishes only the legacy format.
+    // advertisement v2*). Every MG publishes the legacy format, so only its
+    // enumeration decides completeness. A failed v2 enumeration degrades to
+    // legacy advertisements alone, which lack only the uptime reports.
     let (legacy_events, v2_events) = futures::join!(
         registry.fetch_mg_advertisements(MgAdvertisementFormat::Legacy, timeout),
         registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, timeout),
     );
     let legacy_events = legacy_events.map_err(|error| FaError::Registry(error.to_string()))?;
-    let v2_events = v2_events.map_err(|error| FaError::Registry(error.to_string()))?;
+    let v2_events = v2_events.unwrap_or_else(|error| {
+        tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
+        Vec::new()
+    });
 
     let mut discovery = MgDiscovery::default();
     // The transport bound belongs to the client; re-applying it here keeps a

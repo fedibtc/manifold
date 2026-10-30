@@ -200,7 +200,10 @@ accepting seats, it stops publishing both, and both lapse at their signed
 expiry. Retiring `37701` publication is a separate, approved change.
 
 **Reading.** An FA queries the two kinds separately, and each query has its
-own copy of the legacy candidate and retained-byte bounds. For each author, it
+own copy of the legacy candidate and retained-byte bounds. While every MG
+publishes kind `37701`, the legacy query alone decides whether the enumeration
+is complete. A failed v2 query leaves every author on its legacy
+advertisement. For each author, it
 statically admits each format. The legacy format is admitted as today. A v2
 event must pass the event signature, the envelope verification, the payload
 parse and the author binding. The FA then applies the existing freshness rule

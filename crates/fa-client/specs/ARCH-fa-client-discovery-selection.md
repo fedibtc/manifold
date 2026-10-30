@@ -12,7 +12,10 @@ and the badge chain by
 
 `discover_mg_candidates` does not write durable state, take a driver lease, or
 change formation status. It queries kind 37701 and kind 37709 separately, each
-with its own candidate and byte bounds, and fails when either query fails. For
+with its own candidate and byte bounds. It fails when the kind-37701 query
+fails. Every MG publishes kind 37701, so that query alone decides completeness.
+A failed kind-37709 query only leaves every candidate on its legacy
+advertisement, without uptime, so discovery continues. For
 each event it checks the event role and signature, the payload proof (for v2,
 the exact-payload envelope signature and payload parse), the signer equal to the
 event author, and the newest event per author and format (with the NIP-01

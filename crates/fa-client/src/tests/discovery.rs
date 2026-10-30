@@ -1014,3 +1014,66 @@ async fn each_format_has_its_own_candidate_bound() {
         "the v2 advertisement is admitted beside a full legacy query",
     );
 }
+
+/// Registry whose kind-37709 enumeration fails, like a relay that handles the
+/// new kind badly.
+struct NoV2Registry(TestRegistry);
+
+impl FaNostrClient for NoV2Registry {
+    async fn fetch_mg_advertisement(
+        &self,
+        mg_pubkey: PublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Event> {
+        self.0.fetch_mg_advertisement(mg_pubkey, timeout).await
+    }
+
+    async fn fetch_setup_payment_federations(
+        &self,
+        publisher: PublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        self.0
+            .fetch_setup_payment_federations(publisher, timeout)
+            .await
+    }
+
+    async fn fetch_mg_advertisements(
+        &self,
+        format: MgAdvertisementFormat,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        match format {
+            MgAdvertisementFormat::Legacy => self.0.fetch_mg_advertisements(format, timeout).await,
+            MgAdvertisementFormat::V2 => Err(NostrClientError::IncompleteQuery {
+                reason: "test relay stalled before EOSE",
+            }),
+        }
+    }
+}
+
+/// Every MG publishes the legacy format, so a failed v2 enumeration leaves
+/// discovery complete: each author falls back to its legacy advertisement.
+#[tokio::test]
+async fn failed_v2_enumeration_falls_back_to_legacy() {
+    let mg = mg_keys(1);
+    let discovery = discover_mg_candidates_with(
+        &NoV2Registry(registry(vec![
+            ad_event(&mg, self_authorized_payload(&mg)),
+            v2_event(&mg, &v2_offer(self_authorized_payload(&mg))),
+        ])),
+        &requirements(),
+        generous_deadline(),
+        NOW,
+    )
+    .await
+    .expect("the legacy enumeration completes discovery");
+
+    assert!(discovery.rejected.is_empty(), "{:?}", discovery.rejected);
+    assert_eq!(discovery.candidates.len(), 1);
+    assert_eq!(
+        discovery.candidates[0].advertised_price_msats(),
+        AD_PRICE_MSATS
+    );
+    assert_eq!(discovery.candidates[0].self_reported_uptime(), None);
+}
