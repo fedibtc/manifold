@@ -2493,7 +2493,7 @@ fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
             "federations": invites,
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
-            "guardian_transfer": true,
+            "guardian_transfer_v2": true,
         })
         .to_string(),
     )

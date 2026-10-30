@@ -508,16 +508,16 @@ fn fa_backup_empty_read_quorum_tracks_the_canonical_relay_set() {
 }
 
 #[test]
-fn a_published_guardian_transfer_flag_wins_over_the_environment_default() {
+fn a_published_guardian_transfer_v2_flag_wins_over_the_environment_default() {
     for environment in [
         ManifoldEnvironment::Development,
         ManifoldEnvironment::Staging,
         ManifoldEnvironment::Production,
     ] {
-        assert!(environment.guardian_transfer(Some(true)));
-        assert!(!environment.guardian_transfer(Some(false)));
+        assert!(environment.guardian_transfer_v2(Some(true)));
+        assert!(!environment.guardian_transfer_v2(Some(false)));
     }
-    assert!(ManifoldEnvironment::Development.guardian_transfer(None));
-    assert!(ManifoldEnvironment::Staging.guardian_transfer(None));
-    assert!(!ManifoldEnvironment::Production.guardian_transfer(None));
+    assert!(ManifoldEnvironment::Development.guardian_transfer_v2(None));
+    assert!(ManifoldEnvironment::Staging.guardian_transfer_v2(None));
+    assert!(!ManifoldEnvironment::Production.guardian_transfer_v2(None));
 }

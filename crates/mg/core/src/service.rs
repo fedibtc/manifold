@@ -104,7 +104,7 @@ pub trait TrustMaterialSource: Send + Sync {
 
 impl ManifoldGuardianRpc {
     /// Whether this MG may start a new guardian transfer now: the
-    /// `guardian_transfer` flag of the setup-payment policy it holds, or,
+    /// `guardian_transfer_v2` flag of the setup-payment policy it holds, or,
     /// without one, its Manifold environment's default. A transfer the MG
     /// already stored continues either way
     /// ([`SPEC-guardian-transfer`](../specs/SPEC-guardian-transfer.md)).
@@ -113,11 +113,11 @@ impl ManifoldGuardianRpc {
             .setup_payment_policy
             .borrow()
             .as_ref()
-            .and_then(AdmittedSetupPaymentFederations::guardian_transfer);
+            .and_then(AdmittedSetupPaymentFederations::guardian_transfer_v2);
         self.fleet
             .config()
             .manifold_environment
-            .guardian_transfer(published)
+            .guardian_transfer_v2(published)
     }
 
     /// Build the service with its deployment policy inputs.

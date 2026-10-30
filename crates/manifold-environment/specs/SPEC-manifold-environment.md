@@ -36,10 +36,13 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   `None` for production); and
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`); and
-- whether MGs start guardian transfers when the setup-payment policy does not
-  say (`ManifoldEnvironment::guardian_transfer`): on in development and
-  staging, off in production. A published `guardian_transfer` flag always
+- whether MGs start guardian transfers when the setup-payment policy omits
+  the flag (`ManifoldEnvironment::guardian_transfer_v2`): on in development and
+  staging, off in production. A published `guardian_transfer_v2` flag always
   wins ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+  Current readers ignore the retired `guardian_transfer` field. Publishers
+  must never set it to `true` in production: older readers use it to enable
+  the incompatible old `TransferSeat` shape.
 
 The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);

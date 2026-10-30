@@ -25,7 +25,7 @@ vote, so no single implementation artifact can own it coherently.
 
 The setup-payment policy
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
-carries an optional `guardian_transfer` flag. An MG may start a new transfer
+carries an optional `guardian_transfer_v2` flag. An MG may start a new transfer
 only while transfer is on: the latest policy it admitted sets the flag to
 `true`, or, without an admitted policy or a flag in it, its Manifold
 environment's default is on. Development and staging default to on and
@@ -36,6 +36,25 @@ publish `true`. A published `false` turns transfer off in any environment.
 The MG reads the flag from the policy it holds when a request arrives; it
 keeps no copy. The FA resolves the same flag the same way before it buys a
 destination seat.
+
+The retired `guardian_transfer` field must never be set to `true` in
+production. MG 0.1.9 shipped transfer RPCs using that flag, with transfers
+off by default in production; the FA client at that release did not drive
+transfers.
+Those MGs use the old, proofless `TransferSeat` shape. They ignore the new
+flag and stay off in production when the retired field is absent. The new
+flag is the compatibility boundary for starting direct-proof transfers,
+not a wire-compatibility fallback.
+
+Before production activation, upgrade both source and destination MGs to
+support the new shape. A policy enabling the new flag must also set
+`min_mg_version` to the first release with that shape. MGs that understand
+this minimum stop advertising new seats when below it; older readers may
+still advertise. The minimum does not replace endpoint upgrades or establish
+transfer RPC compatibility.
+To recover an existing mixed-version transfer, upgrade both endpoints;
+changing flags or the minimum version alone does not recover a previously
+retired source/destination pair.
 
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never

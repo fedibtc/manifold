@@ -5,13 +5,21 @@
 Paid quoting checks the authenticated common setup-payment membership and quotes a configured gross price; minimum-net-revenue pricing remains unimplemented.
 
 The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`,
-and `RemoveSeat` are implemented in normal daemon builds. While transfer
-is off — the setup-payment policy's `guardian_transfer` flag, or without it
-the environment default (off only in production) — an MG answers a
-`PullSeat` or `TransferSeat` that would start a transfer `UnsupportedVerb`;
-stored transfers continue. Recovery assumes
+and `RemoveSeat` are implemented in normal daemon builds. The setup-payment
+policy's `guardian_transfer_v2` flag controls whether an MG starts new
+transfers. Without the flag, the MG uses the environment default (off only
+in production). While transfer is off, an MG answers a `PullSeat` or
+`TransferSeat` that would start a transfer with `UnsupportedVerb`;
+it continues stored transfers. Recovery assumes
 latest published backups and excludes stale local snapshots
 ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
+The retired `guardian_transfer` field must never be set to `true` in production:
+MGs that read it use the old `TransferSeat` shape. Production activation
+requires upgrading both transfer endpoints and setting `min_mg_version`
+to the first release with the new shape. MGs that understand this minimum
+stop advertising new seats when below it; older readers may still advertise,
+so endpoint upgrades remain required. See
+[Enabling transfer](./SPEC-guardian-transfer.md#enabling-transfer).
 
 ## Record justification
 

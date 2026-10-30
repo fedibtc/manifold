@@ -274,11 +274,12 @@ async fn current_input(
 fn transfer_policy()
 -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
-    policy_with_guardian_transfer(Some(true))
+    policy_with_transfer_flag("guardian_transfer_v2", Some(true))
 }
 
-/// A setup-payment policy with the given `guardian_transfer` flag.
-fn policy_with_guardian_transfer(
+/// A setup-payment policy with the given current or retired transfer flag.
+fn policy_with_transfer_flag(
+    field: &str,
     flag: Option<bool>,
 ) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
@@ -289,13 +290,20 @@ fn policy_with_guardian_transfer(
         "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
     });
     if let Some(flag) = flag {
-        content["guardian_transfer"] = serde_json::json!(flag);
+        content[field] = serde_json::json!(flag);
     }
     let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         content.to_string().as_bytes(),
     )
     .expect("test policy parses");
-    assert_eq!(policy.guardian_transfer(), flag);
+    assert_eq!(
+        policy.guardian_transfer_v2(),
+        if field == "guardian_transfer_v2" {
+            flag
+        } else {
+            None
+        }
+    );
     tokio::sync::watch::channel(Some(policy)).1
 }
 

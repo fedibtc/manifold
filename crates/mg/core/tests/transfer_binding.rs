@@ -285,7 +285,7 @@ async fn transfer_binding_shares_admission_with_ordinary_metadata_and_bounds_tar
     f.fleet.shutdown().await;
 }
 
-/// The setup-payment policy's `guardian_transfer` flag decides whether an
+/// Only the setup-payment policy's `guardian_transfer_v2` flag decides whether an
 /// MG starts a guardian transfer; without the flag, the environment does
 /// (staging on, production off). When starting is off, an MG answers
 /// `PullSeat` and `TransferSeat` for a seat with no stored transfer
@@ -301,21 +301,36 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
         TransferSeatRequest,
     };
 
-    for (environment, policy, enabled, port) in [
-        (ManifoldEnvironment::Production, None, false, 33_200),
-        (ManifoldEnvironment::Production, Some(None), false, 33_212),
+    for (environment, field, flag, enabled, port) in [
+        (ManifoldEnvironment::Production, None, None, false, 33_200),
         (
             ManifoldEnvironment::Production,
-            Some(Some(true)),
+            Some("guardian_transfer_v2"),
+            None,
+            false,
+            33_212,
+        ),
+        (
+            ManifoldEnvironment::Production,
+            Some("guardian_transfer_v2"),
+            Some(true),
             true,
             33_224,
         ),
-        (ManifoldEnvironment::Staging, None, true, 33_236),
+        (ManifoldEnvironment::Staging, None, None, true, 33_236),
         (
             ManifoldEnvironment::Staging,
-            Some(Some(false)),
+            Some("guardian_transfer_v2"),
+            Some(false),
             false,
             33_248,
+        ),
+        (
+            ManifoldEnvironment::Production,
+            Some("guardian_transfer"),
+            Some(true),
+            false,
+            33_260,
         ),
     ] {
         let root = TempDir::new().unwrap();
@@ -332,8 +347,8 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
             secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[83; 32]).unwrap();
         let rpc = crate::service::ManifoldGuardianRpc::new(
             fleet.clone(),
-            match policy {
-                Some(flag) => policy_with_guardian_transfer(flag),
+            match field {
+                Some(field) => policy_with_transfer_flag(field, flag),
                 None => tokio::sync::watch::channel(None).1,
             },
         );
@@ -418,13 +433,13 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
                 assert_eq!(
                     result,
                     Err(refused),
-                    "{verb} in {environment:?}, {policy:?}"
+                    "{verb} in {environment:?}, {field:?}={flag:?}"
                 );
             } else {
                 assert_ne!(
                     result,
                     Err(refused),
-                    "{verb} in {environment:?}, {policy:?}"
+                    "{verb} in {environment:?}, {field:?}={flag:?}"
                 );
             }
         }

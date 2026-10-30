@@ -48,20 +48,38 @@ nix run .#setup-payment-publisher -- republish \
   --expected-publisher <hex-or-npub>
 ```
 
-To let MGs start guardian transfers, set `"guardian_transfer": true` in the
-policy file; set `false` to stop new transfers. Omitted, each environment's
-default applies: on in development and staging, off in production. Transfers
-MGs already stored continue either way.
+To let MGs start direct-proof guardian transfers, set
+`"guardian_transfer_v2": true` in the policy file; set `false` to stop new
+transfers. If you omit the flag, each environment's default applies: on in
+development and staging, off in production. MGs continue transfers they
+already stored regardless of the flag.
 
-To stop MGs older than a release from advertising new seats, set
+The retired `guardian_transfer` field must never be set to `true` in production.
+MG 0.1.9 and older FA transfer readers use it to enable the incompatible old
+`TransferSeat` shape; they ignore the new flag and stay off in production
+when the retired field is absent. This publisher no longer accepts the
+retired field.
+
+Before enabling the new flag in production, upgrade both source and destination
+MGs and set `min_mg_version` to the first release with the new shape. MGs
+that understand this minimum stop advertising new seats when below it;
+older readers may still advertise, so endpoint upgrades remain required.
+The minimum version is not a protocol
+handshake and does not recover existing mixed-version transfers. To recover
+those transfers, upgrade both endpoints. See
+[Enabling transfer](../mg/specs/SPEC-guardian-transfer.md#enabling-transfer).
+
+To stop MGs below a release from advertising new seats, for versions that
+understand the minimum, set
 `"min_mg_version": "0.1.9"` (a SemVer release no newer than `fman_version`).
 Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
 
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
-serialized defaults to be reflected in operator policy files, while old
-binaries reject fields they do not know.
+serialized defaults to be reflected in operator policy files. Older consumers
+that admit unknown fields ignore the new flag; only the initial release
+rejects fields it does not know.
 
 ## Testing
 
