@@ -339,6 +339,49 @@ impl ManifoldGuardianNostr {
         self.inner.holder_authorizations.borrow().clone()
     }
 
+    /// Co-sign one transfer attempt with the live enrolled badge subject.
+    ///
+    /// Missing or malformed local material is unavailable, never an invitation
+    /// to downgrade a new destination to legacy discovery.
+    pub fn transfer_admission_proof(
+        &self,
+        request: &fedi_decentralized_service_manifold_guardian::MgSignedRequest<
+            fedi_decentralized_service_manifold_guardian::TransferSeatRequest,
+        >,
+    ) -> anyhow::Result<fedi_decentralized_service_manifold_guardian::DestinationAdmissionProof>
+    {
+        use fedi_decentralized_service_manifold_guardian::{
+            DestinationAdmissionProof, ManagerSignature,
+        };
+        let envelopes = self.holder_authorizations();
+        let [envelope] = envelopes.as_slice() else {
+            anyhow::bail!("transfer admission material unavailable");
+        };
+        anyhow::ensure!(
+            envelope.holder_authorization.authorization.subject_pubkey.0
+                == self.inner.keys.public_key(),
+            "transfer admission subject mismatch"
+        );
+        let digest = DestinationAdmissionProof::signing_digest(request, envelope)?;
+        let signature = self
+            .inner
+            .keys
+            .sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest));
+        let proof = DestinationAdmissionProof {
+            version: 1,
+            holder_authorization: envelope.clone(),
+            signature: ManagerSignature(secp256k1::schnorr::Signature::from_slice(
+                signature.as_ref(),
+            )?),
+        };
+        anyhow::ensure!(
+            serde_json::to_vec(&proof)?.len()
+                <= fedi_decentralized_service_manifold_guardian::DESTINATION_ADMISSION_MAX_BYTES,
+            "transfer admission material too large"
+        );
+        Ok(proof)
+    }
+
     pub fn subscribe_setup_payment_federations(
         &self,
     ) -> watch::Receiver<Option<AdmittedSetupPaymentFederations>> {

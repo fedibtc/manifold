@@ -99,12 +99,24 @@ online once. The FA does not have to be online at the same time.
      them confidential. It answers every later valid grant for the seat with
      the same guardian only if the destination passes a fresh admission check.
 
+   New destinations also co-sign the exact service-signed request and their
+   current holder-authorization envelope with the badge subject's Nostr key.
+   This optional proof travels outside the unchanged signed request payload.
+   A source that understands it verifies the request-bound subject signature,
+   issuance, and authorization, applies its own issuer/minimum-trust policy,
+   and checks fresh revocation without discovering advertisements. The source
+   rejects invalid present proofs without fallback; only missing or null proofs
+   select complete legacy discovery verification. The proof shares the request's
+   one-hour freshness window: whole-request replay inside that window still
+   requires fresh admission on every attempt.
+
    Destinations keep their identity documents fresh even after the FA buys the
    last slot: full or closed MGs publish no purchase plans, but still refresh
    their signed identity and badges. Operators must upgrade older destinations
    that suppress publication when full, or make them available again before
-   their last document expires. The source never accepts expired identity
-   documents as a compatibility fallback. Rejection after a successful stop
+   their last document expires when a legacy source or destination requires
+   discovery. The source never accepts expired identity documents as a
+   compatibility fallback. Rejection after a successful stop
    request cannot cancel that stop or restart a retired source; the source must
    be able to verify a valid destination again for the pull to continue.
 4. The destination validates the guardian against the grant, durably
@@ -232,10 +244,23 @@ hold its old key share, and no credential proves that it deleted it. The FA
 keeps past hosts in its own backup for this check. Independently of the FA,
 the source verifies the destination's PeerBadge on every `TransferSeat`,
 including retries after retirement or a prior package release, using the
-complete shared verifier and its own canonical environment profile. The source
-resolves signed MG advertisements from its configured relays and requires a
-current, authenticated advertisement binding the badge's MG Nostr subject to
-the distinct RPC commitment key that the request authenticates and the grant
-names. The source never falls back to a superseded binding or badge set.
+complete shared verifier and its own canonical environment profile. Direct
+admission binds the badge's MG Nostr subject to the exact service-signed
+request and credential envelope. The subject approves the grant's distinct
+RPC commitment key, seats and federation, not just a reusable identity
+document. Honest destinations regenerate the proof from current local
+enrollment on every attempt; missing local material fails closed, including
+while startup has not yet bound the signing capability.
+
+Legacy requests instead require a current, authenticated advertisement from
+the configured relays binding the badge subject to the service key. That path
+never falls back to a superseded binding or badge set. An older source ignores
+the optional outer proof and retains its existing discovery requirement.
+Removing a proof can therefore select full legacy verification, not bypass
+trust. Direct admission does not promise global latest-credential selection:
+a subject can approve an older still-authorized, still-valid credential until
+the issuer revokes it. Republishing such a credential in a new advertisement
+was already possible. Neither path introduces holder revocation or one-time
+request authentication.
 An FA signature alone cannot authorize an unverified destination.
 The FA retains responsibility for custody-history and holder-diversity checks.

@@ -485,6 +485,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .bind()
         .await?;
     let wallet_origin = db.wallet_origin().await?;
+    let transfer_source = Arc::new(transfer_source::IrohTransferSource::new(endpoint.clone()));
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db.clone(),
@@ -494,9 +495,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         manifold_environment.clone(),
                     )?,
                 ),
-                transfer_source: Arc::new(transfer_source::IrohTransferSource::new(
-                    endpoint.clone(),
-                )),
+                transfer_source: transfer_source.clone(),
                 guardian_config_validator: Arc::new(guardian_config::NativeGuardianConfigValidator),
                 manifold_environment: manifold_environment.environment(),
                 first_port_base: PortBase::new(args.first_port_base).ok_or_else(|| {
@@ -603,6 +602,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         router.endpoint().id().to_string(),
         nostr.clone(),
     )));
+    transfer_source.bind_proof_source(nostr.clone());
     let _nostr = nostr.start(host, policy_store);
     let telemetry_registration = mg_telemetry::start_registration(
         fleet.clone(),

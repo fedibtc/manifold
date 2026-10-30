@@ -1420,9 +1420,7 @@ impl ManifoldGuardianService for TestMg {
 
     async fn transfer_seat(
         &self,
-        _request: MgSignedRequest<
-            fedi_decentralized_service_manifold_guardian::TransferSeatRequest,
-        >,
+        _request: fedi_decentralized_service_manifold_guardian::TransferSeatCall,
     ) -> FmResult<fedi_decentralized_service_manifold_guardian::TransferSeatResponse> {
         unsupported_test_verb("TransferSeat")
     }

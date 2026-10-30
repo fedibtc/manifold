@@ -311,7 +311,7 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     };
     anyhow::ensure!(
         matches!(
-            source_rpc.transport().transfer_seat(pull()?).await?,
+            source_rpc.transport().transfer_seat(pull()?.into()).await?,
             Err(ManifoldGuardianError::AwaitingSessionEnd)
         ),
         "the source admits the destination and schedules its session-boundary stop"
@@ -343,7 +343,7 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         .await?;
     anyhow::ensure!(
         matches!(
-            source_rpc.transport().transfer_seat(pull()?).await?,
+            source_rpc.transport().transfer_seat(pull()?.into()).await?,
             Err(ManifoldGuardianError::Unauthorized)
         ),
         "retirement cannot bypass expired destination identity"

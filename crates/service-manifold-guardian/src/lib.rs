@@ -31,6 +31,11 @@ mod telemetry;
 mod transfer;
 mod types;
 
+pub use signing::{
+    DESTINATION_ADMISSION_MAX_BYTES, DestinationAdmission, DestinationAdmissionProof,
+    TransferSeatCall,
+};
+
 pub use availability::{GetAvailabilityRequest, GetAvailabilityResponse};
 pub use decommission::{DecommissionSeatRequest, DecommissionSeatResponse};
 pub use dkg::{

@@ -86,11 +86,14 @@ marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.
 
-Guardian transfer is enabled only in development and staging MGs; a production
-MG refuses its four verbs and resumes no stored transfer. The source durably fences
-and stops its guardian and confirms its exact retirement backup before releasing
-the package; the destination starts the imported guardian at once and backs it
-up like any formed seat.
+The MG uses its environment's admitted setup-payment policy to decide whether
+to start a guardian transfer; production defaults to disabled without an
+admitted policy. The MG resumes stored transfers regardless of the current
+start policy and keeps binding replacement and retired-seat removal available
+to finish an existing move. The source durably fences and stops its guardian
+and confirms its exact retirement backup before releasing the package. The
+destination starts the imported guardian at once and backs it up like any
+formed seat.
 Recovery relies on the configured backup relay returning the latest published
 state and on operators never restarting stale local snapshots. Publication
 confirmation is not anti-rollback protection: a hostile relay replaying an older
@@ -131,6 +134,16 @@ credentials are missing or verification inputs are unavailable.
 The source rejects subject mismatches and invalid issuance offline, before
 network trust queries. It bounds concurrent admissions and rejects excess
 requests without queueing shared RPC handlers.
+
+New destinations supply their credential envelope directly. The badge subject
+co-signs both the envelope and the exact service-signed transfer request. The
+source verifies this binding and applies its complete current trust policy
+without advertisement discovery. Missing or null proof selects full legacy
+verification; the source rejects invalid present proof without fallback. A whole
+valid request remains replayable within the existing one-hour freshness window,
+but the source repeats admission and fresh revocation checks on each replay.
+This protocol guarantees neither the latest credential nor holder revocation.
+
 Full and closed MGs keep publishing fresh signed identity and credentials with
 empty purchase plans, so the source can still verify a destination after the FA
 buys its last slot. Older destinations that stop publishing when full require an

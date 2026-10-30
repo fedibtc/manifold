@@ -26,13 +26,13 @@ use fedi_decentralized_service_manifold_guardian::{
     GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest,
     GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
     GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
-    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest, Plan,
+    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
     ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
     QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
     RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
     RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest,
-    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp,
-    TransferSeatRequest, TransferSeatResponse, VerifiedFaRequest,
+    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp, TransferSeatCall,
+    TransferSeatResponse, VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -941,16 +941,13 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
         Ok(PullSeatResponse)
     }
 
-    async fn transfer_seat(
-        &self,
-        request: MgSignedRequest<TransferSeatRequest>,
-    ) -> FmResult<TransferSeatResponse> {
-        let request = request.verify(now()).map_err(|err| {
+    async fn transfer_seat(&self, request: TransferSeatCall) -> FmResult<TransferSeatResponse> {
+        let (request, admission) = request.verify(now()).map_err(|err| {
             tracing::warn!(verb = "transfer_seat", error = %err, "rejecting unauthorized request");
             ManifoldGuardianError::Unauthorized
         })?;
         self.fleet
-            .transfer_seat(request, self.may_start_guardian_transfer())
+            .transfer_seat_with_admission(request, admission, self.may_start_guardian_transfer())
             .await
             .map_err(|err| match err {
                 SeatVerbError::TransferDisabled => ManifoldGuardianError::UnsupportedVerb {

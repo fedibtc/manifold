@@ -14,6 +14,7 @@ pub trait ReplacementGuardianVerifier: Send + Sync {
     async fn verify(
         &self,
         destination: secp256k1::XOnlyPublicKey,
+        admission: Option<&fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
     ) -> Result<(), ReplacementGuardianUnverified>;
 }
 
@@ -26,6 +27,7 @@ impl ReplacementGuardianVerifier for UnverifiedReplacementGuardian {
     async fn verify(
         &self,
         _: secp256k1::XOnlyPublicKey,
+        _: Option<&fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
     ) -> Result<(), ReplacementGuardianUnverified> {
         Err(ReplacementGuardianUnverified)
     }

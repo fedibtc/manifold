@@ -14,6 +14,8 @@ pub(super) struct RelayProbe {
     pub url: String,
     /// Number of revocation subscriptions sent to the real relay.
     pub revocation_reads: Arc<AtomicUsize>,
+    /// Number of advertisement-discovery subscriptions.
+    pub discovery_reads: Arc<AtomicUsize>,
     /// Own every proxy connection; aborting drops their task set too.
     task: JoinHandle<()>,
 }
@@ -25,6 +27,8 @@ impl RelayProbe {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let revocation_reads = Arc::new(AtomicUsize::new(0));
         let count = revocation_reads.clone();
+        let discovery_reads = Arc::new(AtomicUsize::new(0));
+        let discovery_count = discovery_reads.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
@@ -33,6 +37,7 @@ impl RelayProbe {
                         let (stream, _) = accepted.unwrap();
                         let upstream = upstream.clone();
                         let count = count.clone();
+                        let discovery_count = discovery_count.clone();
                         connections.spawn(async move {
                             let downstream = tokio_tungstenite::accept_async(stream).await.unwrap();
                             let (upstream, _) = tokio_tungstenite::connect_async(upstream).await.unwrap();
@@ -50,9 +55,21 @@ impl RelayProbe {
                                                     kinds.iter().any(|kind| kind.as_u64() == Some(37704))
                                                 })
                                             })
-                                        {
-                                            count.fetch_add(1, Ordering::SeqCst);
-                                        }
+                                         {
+                                             count.fetch_add(1, Ordering::SeqCst);
+                                         }
+                                         if let Message::Text(text) = &message
+                                             && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+                                             && let Some(fields) = value.as_array()
+                                             && fields.first().and_then(|v| v.as_str()) == Some("REQ")
+                                             && fields.iter().skip(2).any(|filter| {
+                                                 filter["kinds"].as_array().is_some_and(|kinds| {
+                                                     kinds.iter().any(|kind| kind.as_u64() == Some(37701))
+                                                 })
+                                             })
+                                         {
+                                             discovery_count.fetch_add(1, Ordering::SeqCst);
+                                         }
                                         if to_relay.send(message).await.is_err() {
                                             break;
                                         }
@@ -75,6 +92,7 @@ impl RelayProbe {
         Self {
             url,
             revocation_reads,
+            discovery_reads,
             task,
         }
     }

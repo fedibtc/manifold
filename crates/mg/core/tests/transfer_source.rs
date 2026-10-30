@@ -29,6 +29,7 @@ impl crate::replacement_guardian::ReplacementGuardianVerifier for DestinationAdm
     async fn verify(
         &self,
         destination: secp256k1::XOnlyPublicKey,
+        _: Option<&fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
     ) -> Result<(), crate::replacement_guardian::ReplacementGuardianUnverified> {
         self.calls.lock().unwrap().push(destination);
         if self.stalled.load(Ordering::SeqCst) {
@@ -375,7 +376,7 @@ async fn saturated_replacement_admission_leaves_other_rpcs_available() {
     for _ in 0..132 {
         let rpc = rpc.clone();
         let request = MgSignedRequest::create(&source.pull(), &source.destination).unwrap();
-        requests.spawn(async move { rpc.transfer_seat(request).await });
+        requests.spawn(async move { rpc.transfer_seat(request.into()).await });
     }
     tokio::time::timeout(Duration::from_secs(5), async {
         for _ in 0..128 {
@@ -420,7 +421,11 @@ async fn replacement_admission_fences_stop_and_every_package_release() {
         source.fleet.clone(),
         tokio::sync::watch::channel(None).1,
     );
-    let request = || MgSignedRequest::create(&source.pull(), &source.destination).unwrap();
+    let request = || {
+        MgSignedRequest::create(&source.pull(), &source.destination)
+            .unwrap()
+            .into()
+    };
     let child = source.child().await;
     eventually("the guardian is configured", || {
         source.seat.child_configured_for_test()

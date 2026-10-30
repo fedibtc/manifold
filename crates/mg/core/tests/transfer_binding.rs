@@ -386,9 +386,13 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
         let results = [
             (
                 "TransferSeat",
-                rpc.transfer_seat(MgSignedRequest::create(&transfer, &destination).unwrap())
-                    .await
-                    .map(drop),
+                rpc.transfer_seat(
+                    MgSignedRequest::create(&transfer, &destination)
+                        .unwrap()
+                        .into(),
+                )
+                .await
+                .map(drop),
             ),
             (
                 "ReplaceSeatBinding",

@@ -9,11 +9,11 @@ use crate::{
     GetInviteCodeRequest, GetInviteCodeResponse, GetMgTrustMaterialRequest,
     GetMgTrustMaterialResponse, GetPeerAttestationRequest, GetPeerAttestationResponse,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GetStatusResponse, ManifoldGuardianError,
-    MgSignedRequest, ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest,
-    PullSeatResponse, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
-    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
-    RestartDkgResponse, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse,
-    StartDkgRequest, StartDkgResponse, TransferSeatRequest, TransferSeatResponse,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
+    RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
+    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
+    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse, TransferSeatCall, TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -137,10 +137,7 @@ pub trait ManifoldGuardianService {
 
     /// Stop this MG's seat named by the grant and hand its guardian over to
     /// the grant's destination, which signs this call.
-    async fn transfer_seat(
-        &self,
-        request: MgSignedRequest<TransferSeatRequest>,
-    ) -> FmResult<TransferSeatResponse>;
+    async fn transfer_seat(&self, request: TransferSeatCall) -> FmResult<TransferSeatResponse>;
 
     /// Vote to replace one moved peer's directory entry and fee recipient.
     async fn replace_seat_binding(

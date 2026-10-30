@@ -676,9 +676,13 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         grant: SignedRequest::create(&transfer, &attacker_key).unwrap(),
     };
     assert_eq!(
-        rpc.transfer_seat(MgSignedRequest::create(&pull, &attacker_key).unwrap())
-            .await
-            .unwrap_err(),
+        rpc.transfer_seat(
+            MgSignedRequest::create(&pull, &attacker_key)
+                .unwrap()
+                .into()
+        )
+        .await
+        .unwrap_err(),
         ManifoldGuardianError::UnknownSeat,
     );
 
@@ -933,7 +937,7 @@ async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
         grant: SignedRequest::create(&transfer, &key).unwrap(),
     };
     assert!(matches!(
-        rpc.transfer_seat(MgSignedRequest::create(&pull, &key).unwrap())
+        rpc.transfer_seat(MgSignedRequest::create(&pull, &key).unwrap().into())
             .await,
         Err(ManifoldGuardianError::Unauthorized),
     ));

@@ -25,6 +25,12 @@
 
 use std::marker::PhantomData;
 
+mod transfer_seat_call;
+pub use transfer_seat_call::{
+    DESTINATION_ADMISSION_MAX_BYTES, DestinationAdmission, DestinationAdmissionProof,
+    TransferSeatCall,
+};
+
 use secp256k1::{Keypair, SECP256K1, XOnlyPublicKey};
 use serde::Serialize;
 use serde::de::DeserializeOwned;

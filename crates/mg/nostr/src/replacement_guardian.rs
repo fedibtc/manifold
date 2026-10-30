@@ -10,6 +10,7 @@ use fedi_decentralized_nostr::mg::{
 };
 use fedi_decentralized_nostr_clients::{FaNostrClient, NostrFaClient, NostrRelayClient};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
+use fedi_decentralized_service_manifold_guardian::DestinationAdmission;
 use mg_core::replacement_guardian::{ReplacementGuardianUnverified, ReplacementGuardianVerifier};
 use nostr_sdk::{Event, Keys, Kind};
 
@@ -84,6 +85,19 @@ impl NostrReplacementGuardianVerifier {
         }
         anyhow::bail!("no verified destination advertisement")
     }
+
+    async fn verify_admission(&self, admission: &DestinationAdmission) -> anyhow::Result<()> {
+        let envelope = admission.verify_subject()?;
+        // Screen forged issuance before spending the deadline on relay reads.
+        self.verifier
+            .verify_issuance_at(envelope, super::now_secs())?;
+        let badge = self.verifier.verify(envelope).await?;
+        anyhow::ensure!(
+            badge.subject() == &envelope.holder_authorization.authorization.subject_pubkey,
+            "wrong admission subject"
+        );
+        Ok(())
+    }
 }
 
 /// Authenticate both the registry event and its portable MG identity binding.
@@ -117,11 +131,14 @@ impl ReplacementGuardianVerifier for NostrReplacementGuardianVerifier {
     async fn verify(
         &self,
         destination: secp256k1::XOnlyPublicKey,
+        admission: Option<&DestinationAdmission>,
     ) -> Result<(), ReplacementGuardianUnverified> {
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            self.verify_destination(destination),
-        )
+        tokio::time::timeout(Duration::from_secs(30), async {
+            match admission {
+                Some(admission) => self.verify_admission(admission).await,
+                None => self.verify_destination(destination).await,
+            }
+        })
         .await
         .map_err(|_| ReplacementGuardianUnverified)?
         .map_err(|_| ReplacementGuardianUnverified)

@@ -100,6 +100,27 @@ source; the separately persisted canonical-directory prediction is only for
 consensus readback. Once adopted, the canonical directory gives every MG the
 authenticated complete account set for fee-policy validation.
 
+## Transfer destination co-signature
+
+MG-to-MG `transfer_seat` retains the exact legacy service-signed JSON payload,
+label, and response. Its extensible outer map can also carry a
+`destination_proof` with version 1, a holder-authorization envelope, and a
+BIP-340 signature by that envelope's subject. The subject signs SHA256 of the
+domain `fedi-fman-transfer-admission/v1\0`, the fixed 32-byte
+`manager_request_signing_digest` for the exact request bytes, and the JCS
+holder-authorization envelope, in that order. This binds both the request and
+credential snapshot without canonicalizing the service-signed payload.
+
+The source must verify the original service signature, signer equality, and
+one-hour freshness window before using the proof for admission. Proofs have a
+128 KiB canonical-size cap in addition to the unchanged transport frame cap.
+For missing or null proof, the source performs complete legacy admission.
+It rejects unsupported, oversized, invalid, or mismatched present proof without
+discovery fallback. Older decoders ignore the additional outer field.
+Neither the strict inner payload nor the
+persisted transfer changes. Source trust and every-release verification follow
+[`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md).
+
 ## FA request verification
 
 A request envelope contains an outer FA id, opaque payload bytes, and signature.

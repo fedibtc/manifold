@@ -22,6 +22,9 @@ use peerbadge_protocol::{
 };
 use serde_json::json;
 
+#[path = "mg_replacement_admission/direct.rs"]
+mod direct;
+
 #[path = "mg_replacement_admission/relay_probe.rs"]
 mod relay_probe;
 
@@ -166,7 +169,10 @@ async fn check_admission(relay: &str) {
     let mg = Keys::generate();
     let destination = Keys::generate().public_key();
     assert!(
-        verifier.verify(service_key(destination)).await.is_err(),
+        verifier
+            .verify(service_key(destination), None)
+            .await
+            .is_err(),
         "an FA-nominated key alone is insufficient"
     );
 
@@ -180,11 +186,14 @@ async fn check_admission(relay: &str) {
     )
     .await;
     verifier
-        .verify(service_key(another_destination))
+        .verify(service_key(another_destination), None)
         .await
         .unwrap();
     assert!(
-        verifier.verify(service_key(destination)).await.is_err(),
+        verifier
+            .verify(service_key(destination), None)
+            .await
+            .is_err(),
         "a verified advertisement for a different commitment key is insufficient"
     );
 
@@ -196,7 +205,10 @@ async fn check_admission(relay: &str) {
     )
     .await;
     assert!(
-        verifier.verify(service_key(destination)).await.is_err(),
+        verifier
+            .verify(service_key(destination), None)
+            .await
+            .is_err(),
         "a malicious advertisement cannot borrow another MG's badge"
     );
 
@@ -206,7 +218,10 @@ async fn check_admission(relay: &str) {
     rebound.payload.service_pubkey = destination.to_string();
     publish(relay, &rebound_mg, &rebound).await;
     assert!(
-        verifier.verify(service_key(destination)).await.is_err(),
+        verifier
+            .verify(service_key(destination), None)
+            .await
+            .is_err(),
         "rewriting the commitment key invalidates the portable advertisement proof"
     );
 
@@ -220,7 +235,10 @@ async fn check_admission(relay: &str) {
     )
     .await;
     assert!(
-        verifier.verify(service_key(low_destination)).await.is_err(),
+        verifier
+            .verify(service_key(low_destination), None)
+            .await
+            .is_err(),
         "trusted issuance below the profile minimum is insufficient"
     );
 
@@ -236,7 +254,7 @@ async fn check_admission(relay: &str) {
     .await;
     assert!(
         verifier
-            .verify(service_key(forged_destination))
+            .verify(service_key(forged_destination), None)
             .await
             .is_err(),
         "a holder signature cannot bless a forged issuer proof"
@@ -271,7 +289,10 @@ async fn check_admission(relay: &str) {
         .unwrap();
         publisher.publish_signed_event(&event).await.unwrap();
     }
-    verifier.verify(service_key(destination)).await.unwrap();
+    verifier
+        .verify(service_key(destination), None)
+        .await
+        .unwrap();
 
     let revocation = issuer
         .revoke_credential(&accepted.signed_credential)
@@ -302,7 +323,10 @@ async fn check_admission(relay: &str) {
         .await
         .unwrap();
     assert!(
-        verifier.verify(service_key(destination)).await.is_err(),
+        verifier
+            .verify(service_key(destination), None)
+            .await
+            .is_err(),
         "prior success cannot authorize a later release after revocation"
     );
 }
