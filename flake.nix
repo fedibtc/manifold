@@ -407,6 +407,23 @@
                 # Keep every workspace runner on the artifact feature set.
                 # A mismatch makes Cargo recompile inside each isolated runner.
                 workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-mg-telemetry/defe-test-support";
+                # Unpack each artifact chain once, before its isolated runners
+                # start. Each runner can then clone a private writable target
+                # instead of rewriting the same archives beside fsyncing tests.
+                runnerArtifacts =
+                  artifacts:
+                  pkgs.runCommand "${projectName}-nextest-runner-artifacts"
+                    {
+                      nativeBuildInputs = [
+                        craneLib.inheritCargoArtifactsHook
+                        pkgs.zstd
+                      ];
+                    }
+                    ''
+                      inheritCargoArtifacts ${artifacts} "$out/target"
+                      # Build-directory locks are not reusable artifact state.
+                      find "$out/target" -name .cargo-lock -delete
+                    '';
                 # Linux Nix sandboxes isolate each runner's loopback network.
                 # Darwin runners share host loopback while keeping independent
                 # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
@@ -425,7 +442,19 @@
                     # Darwin includes the derivation name in its build TMPDIR;
                     # keep it short enough for nested Unix-domain sockets.
                     pname = if pkgs.stdenv.isDarwin then "df-nextest-${name}" else "${projectName}-nextest-${name}";
-                    cargoArtifacts = artifacts;
+                    cargoArtifacts = null;
+                    preConfigure = ''
+                      # Keep Cargo's target private and writable. On filesystems
+                      # with reflinks, this shares immutable data blocks without
+                      # making a compiler write reach another runner or the store.
+                      # Other filesystems retain ordinary copy semantics.
+                      cargoTargetDir="''${CARGO_TARGET_DIR:-target}"
+                      mkdir -p "$cargoTargetDir"
+                      cp --recursive --reflink=auto --no-target-directory \
+                        --preserve=timestamps --no-preserve=ownership \
+                        ${runnerArtifacts artifacts}/target "$cargoTargetDir"
+                      chmod -R u+w "$cargoTargetDir"
+                    '';
                     doCheck = true;
                     doInstallCargoArtifacts = false;
                     env = {
