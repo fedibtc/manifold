@@ -6,6 +6,11 @@ Advertisement availability depends only on a configured offer, physical
 capacity, and the daemon's readiness checks. Setup-payment membership is
 enforced when a priced quote is requested.
 
+The MG publishes only the kind-37701 advertisement. Publication of the v2
+advertisement next to it
+([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md), *MG
+advertisement v2*) is not implemented.
+
 ## Record justification
 
 No single artifact can own the advertisement contract because daemon projection and Nostr publication must stay interoperable with service-wire availability shapes, holder authorization verification, and independent FA consumers.
