@@ -8,10 +8,9 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 /// Stored state does not depend on the trust settings: every registration,
 /// heartbeats included, verifies its PeerBadge with the running build's
 /// trust settings, and an admission lapses when its lease ends. The
-/// `profile-9` suffix is frozen persisted text, the shared profile revision
-/// that was current when these stores were created. It is not compared
-/// with the running profile revision, which moves for settings the
-/// collector does not use.
+/// `profile-9` suffix is frozen persisted text left from a profile version
+/// that Manifold no longer has; changing it would mean re-encrypting every
+/// stored secret for no gain.
 pub(crate) fn store_binding_label(environment: ManifoldEnvironment) -> String {
     format!("{environment}:profile-9")
 }

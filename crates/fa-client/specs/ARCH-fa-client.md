@@ -45,11 +45,14 @@ and cap invariants are rejected rather than producing an invalid intent.
 The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FA storage is a separate fail-closed schema:
-schema 11 also persists the selected major/minor/vendor DKG identity beside
-the optional explicit payer, durable verifier provenance, selected preview
+schema 12 persists the selected major/minor/vendor DKG identity beside
+the optional explicit payer, durable verifier provenance (the verifier's
+environment alone), selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. A schema 11 formation from the removed pinned
-mode cannot be loaded, because its MGs have no authenticated identity; opening
+and wallet-output tombstone. Schema 11 differs only in that its verifier
+provenance also carried the removed Manifold profile revision; opening a
+schema 11 formation migrates it to schema 12 in one transaction. A formation
+from the removed pinned mode cannot be loaded, because its MGs have no authenticated identity; opening
 it fails with reset guidance. Every older record must be
 reset rather than migrated because it predates the production compatibility
 baseline. Subsequent schema changes are governed by
@@ -92,7 +95,7 @@ for a replacement aggregate after its one-shot authorization. Before any
 output generation it never publishes or accepts an exact-quote authorization
 action. It instead returns typed
 `SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 11 preserves the payer and approval
+If a process dies before cleanup, the schema preserves the payer and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement MG always
@@ -153,7 +156,7 @@ only source of lifecycle progress after the app resumes.
 Cross-component durability verification is recorded in
 [`crates/mg/testing.md`](../../mg/testing.md).
 
-Formation storage schema 11 owns this callback lifecycle and the selected
+Formation storage schema 12 owns this callback lifecycle and the selected
 Fedimint DKG identity. Older records from before the production compatibility
 baseline fail closed and require reset.
 FA retains the bearer across every pre-`DkgComplete` crash, then clears it in

@@ -194,7 +194,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     future_client
         .inner
         .store
-        .set_schema_version_for_test(12)
+        .set_schema_version_for_test(13)
         .await;
     assert!(matches!(
         future_client
@@ -203,7 +203,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             .load_recovery(TestIdentity::fa_id())
             .await,
         Err(FaError::Storage(error))
-            if error.contains("unsupported FA storage schema version 12")
+            if error.contains("unsupported FA storage schema version 13")
     ));
     assert!(
         !future_client

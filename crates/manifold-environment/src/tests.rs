@@ -337,13 +337,6 @@ fn environment_aliases_round_trip_to_canonical_names() {
             expected.profile_with_env(|_| None).unwrap().environment(),
             expected
         );
-        assert_eq!(
-            expected
-                .profile_with_env(|_| None)
-                .unwrap()
-                .profile_revision(),
-            10
-        );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());
 }

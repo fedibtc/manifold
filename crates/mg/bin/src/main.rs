@@ -333,7 +333,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     memory_report::spawn("mg");
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
-        manifold_profile_revision = manifold_environment.profile_revision(),
         "selected Manifold environment profile"
     );
 

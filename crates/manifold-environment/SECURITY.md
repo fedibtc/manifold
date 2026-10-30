@@ -13,10 +13,9 @@ environment identity must never be inferred from a relay URL.
 Any relay, issuer-identity, issuer-authority, PeerBadge minimum-trust-level,
 setup-payment-publisher, Guardian Verification Fee account, Bitcoin-network,
 or default-Esplora
-mapping change must bump the public profile revision and be rolled out across
-FA, MG, FLIP, and push-gateway telemetry as one coordinated deployment; mixed revisions can
-otherwise make components disagree while displaying the same environment
-name.
+mapping change must be rolled out across FA, MG, FLIP, and push-gateway
+telemetry as one coordinated deployment; a mixed rollout can otherwise make
+components disagree while displaying the same environment name.
 
 The Bitcoin network is environment identity, while the default Esplora URL is
 public routing configuration. An operator-owned Bitcoin Core connection may
@@ -67,7 +66,7 @@ the complete old issuer secret when possible; otherwise coordinate reissuance
 before rolling out the replacement.
 
 Loss, suspected compromise, or custodian offboarding triggers an emergency
-profile revision removing that root and a tracked rollout to every FA, FLIP,
+release removing that root and a tracked rollout to every FA, FLIP,
 and push-gateway telemetry consumer. Older deployed binaries continue to trust the removed root until
 updated, so credential revocation alone does not contain a root compromise.
 Consumers must fail closed if either deployment-owned key is absent; they must

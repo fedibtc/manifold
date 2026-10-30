@@ -94,6 +94,35 @@ impl FaStore {
         (formation, seat)
     }
 
+    /// Overwrite the active formation and its first seat with raw JSON.
+    pub(crate) async fn replace_raw_formation_rows_for_test(
+        &self,
+        formation: &serde_json::Value,
+        seat: &serde_json::Value,
+    ) {
+        let seat_key = SeatKey {
+            formation_id: formation["formation_id"]
+                .as_str()
+                .expect("stored formation id is a string")
+                .to_owned(),
+            index: 0,
+        };
+        let mut dbtx = self.database.begin_transaction().await;
+        dbtx.raw_insert_bytes(
+            &DatabaseKeyPrefix::to_bytes(&ActiveFormationKey),
+            &serde_json::to_vec(formation).expect("test fixture serializes"),
+        )
+        .await
+        .expect("test raw write succeeds");
+        dbtx.raw_insert_bytes(
+            &DatabaseKeyPrefix::to_bytes(&seat_key),
+            &serde_json::to_vec(seat).expect("test fixture serializes"),
+        )
+        .await
+        .expect("test raw write succeeds");
+        dbtx.commit_tx().await;
+    }
+
     /// Rewrite the active formation as one from the removed pinned mode.
     pub(crate) async fn mark_formation_pinned_for_test(&self) {
         self.mutate_active_formation_json_for_test(|formation| {
