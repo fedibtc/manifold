@@ -4394,9 +4394,8 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
             .event_id,
         "event-a"
     );
-    let backup_tasks = fedimint_core::task::TaskGroup::new();
     crate::backup_worker::spawn_workers(
-        &backup_tasks,
+        &client.inner.backup_tasks,
         client.inner.store.clone(),
         client.inner.ports.identity.scoped_root(),
         vec![nostr_sdk::RelayUrl::parse("ws://127.0.0.1:1").unwrap()],
@@ -4407,7 +4406,43 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
         .await
         .expect("ordinary FA operation did not wait for relay")
         .unwrap();
-    backup_tasks.shutdown_join_all(None).await.unwrap();
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_joins_workers_across_clones_and_cancelled_waiters() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, mut finished_rx) = tokio::sync::oneshot::channel();
+    client
+        .inner
+        .backup_tasks
+        .spawn("shutdown barrier", |handle| async move {
+            started_tx.send(()).unwrap();
+            handle.make_shutdown_rx().await;
+            finish_rx.await.unwrap();
+            finished_tx.send(()).unwrap();
+        });
+    started_rx.await.unwrap();
+
+    let mut first = Box::pin(client.shutdown());
+    assert!(futures::poll!(&mut first).is_pending());
+    let clone = client.clone();
+    let mut second = Box::pin(clone.shutdown());
+    assert!(futures::poll!(&mut second).is_pending());
+    assert!(finished_rx.try_recv().is_err());
+    drop(first);
+    drop(second);
+
+    let mut resumed = Box::pin(client.shutdown());
+    assert!(futures::poll!(&mut resumed).is_pending());
+    finish_tx.send(()).unwrap();
+    resumed.await.unwrap();
+    finished_rx
+        .try_recv()
+        .expect("shutdown returned before the worker finished");
+    client.shutdown().await.unwrap();
 }
 
 fn options() -> FormationRunOptions {
@@ -4758,6 +4793,7 @@ async fn open_client_with_store_and_registry(
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
             backup_tasks: fedimint_core::task::TaskGroup::new(),
             replacement_checks: replacement_checks::ReplacementChecks::default(),
+            backup_shutdown: std::sync::OnceLock::new(),
         }),
     }
 }

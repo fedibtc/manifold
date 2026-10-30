@@ -24,13 +24,16 @@ mod state;
 mod transfer;
 mod unavailable;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
 use fedimint_core::task::TaskGroup;
+use fedimint_core::util::BoxFuture;
+use futures::FutureExt as _;
+use futures::future::Shared;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
@@ -128,6 +131,8 @@ pub struct FaClient<I, P, N, F, C> {
     inner: Arc<FaClientInner<I, P, N, F, C>>,
 }
 
+type BackupShutdown = Shared<BoxFuture<'static, Result<(), String>>>;
+
 struct FaClientInner<I, P, N, F, C> {
     store: FaStore,
     ports: FaClientPorts<I, P, N, F, C>,
@@ -141,6 +146,38 @@ struct FaClientInner<I, P, N, F, C> {
     manifold_environment: ManifoldEnvironment,
     backup_tasks: TaskGroup,
     replacement_checks: replacement_checks::ReplacementChecks,
+    /// One retained join future, shared by repeated or concurrent shutdown calls.
+    backup_shutdown: OnceLock<BackupShutdown>,
+}
+
+impl<I, P, N, F, C> FaClient<I, P, N, F, C> {
+    /// Cancel and join the client's backup publication and recovery workers.
+    ///
+    /// Call this after foreground operations finish and before destroying the
+    /// async runtime. This stops workers for every clone; it neither flushes
+    /// pending backups to relays nor closes consumer-owned capabilities.
+    /// Workers are cancellable, so shutdown does not wait for relay deadlines.
+    ///
+    /// Repeated and concurrent calls await the same completion and result.
+    /// Dropping a pending shutdown future leaves that join available to a later
+    /// call. Dropping the last client without awaiting shutdown still requests
+    /// cancellation, but cannot guarantee completion before runtime teardown.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.inner
+            .backup_shutdown
+            .get_or_init(|| {
+                let tasks = self.inner.backup_tasks.clone();
+                let join: BoxFuture<'static, Result<(), String>> = Box::pin(async move {
+                    tasks
+                        .shutdown_join_all(None)
+                        .await
+                        .map_err(|error| error.to_string())
+                });
+                join.shared()
+            })
+            .clone()
+            .await
+    }
 }
 
 impl<I, P, N, F, C> Drop for FaClientInner<I, P, N, F, C> {
@@ -404,6 +441,7 @@ where
                 manifold_environment,
                 backup_tasks,
                 replacement_checks: replacement_checks::ReplacementChecks::default(),
+                backup_shutdown: OnceLock::new(),
             }),
         })
     }
