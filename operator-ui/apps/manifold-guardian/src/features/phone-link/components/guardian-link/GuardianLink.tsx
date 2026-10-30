@@ -83,11 +83,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                 <header className={styles.cardHead}>
                   <h2 className={styles.cardTitle}>{link.device_label}</h2>
 
-                  {terminal ? (
-                    <Chip tone="warn">Stopped</Chip>
-                  ) : (
-                    <Chip tone="ok">Linked</Chip>
-                  )}
+                  {terminal ? <Chip tone="warn">Stopped</Chip> : <Chip tone="ok">Linked</Chip>}
                 </header>
                 {terminal && (
                   <div role="alert">
