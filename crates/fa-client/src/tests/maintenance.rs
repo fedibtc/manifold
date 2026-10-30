@@ -1037,7 +1037,7 @@ async fn terminal_guardian_refusal_is_typed_and_not_retried() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn pinned_target_conflict_stops_same_base_retries_and_is_distinguishable() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();

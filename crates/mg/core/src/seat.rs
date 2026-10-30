@@ -120,6 +120,9 @@ pub enum SeatVerbError {
     /// transfer, and the seat stores none to continue.
     #[error("guardian transfer is not enabled")]
     TransferDisabled,
+    /// The destination failed independent PeerBadge admission.
+    #[error("replacement guardian is not verified")]
+    ReplacementGuardianUnverified,
     #[error(transparent)]
     Internal(anyhow::Error),
 }
@@ -154,6 +157,7 @@ fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
         SeatVerbError::MetaTargetConflict => "meta_target_conflict",
         SeatVerbError::TransferGrantMismatch => "transfer_grant_mismatch",
         SeatVerbError::TransferDisabled => "transfer_disabled",
+        SeatVerbError::ReplacementGuardianUnverified => "replacement_guardian_unverified",
         SeatVerbError::Internal(_) => "internal",
     }
 }

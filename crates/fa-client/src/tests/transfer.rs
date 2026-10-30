@@ -1217,10 +1217,10 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
     );
 }
 
-/// The newest policy does not enable transfer, so the FA neither buys a seat
+/// The retired flag cannot enable transfer, so the FA neither buys a seat
 /// nor opens a transfer: the MG would refuse to start it.
 #[tokio::test]
-async fn a_policy_without_transfer_buys_no_seat() {
+async fn a_policy_without_v2_transfer_buys_no_seat() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     client
         .inner
@@ -1237,6 +1237,7 @@ async fn a_policy_without_transfer_buys_no_seat() {
                 "federations": [PAYMENT_INVITE],
                 "telemetry_registration_url":
                     "https://push.fedi.example/v1/telemetry/registrations",
+                "guardian_transfer": true,
             })
             .to_string(),
         ));
@@ -1265,23 +1266,59 @@ async fn a_policy_without_transfer_buys_no_seat() {
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
-/// A deployment whose publisher has published no policy follows its Manifold
-/// environment's default instead of failing, as its MGs do: a development
-/// stack publishes none.
+/// The FA admits only the v2 flag and otherwise follows its environment's default,
+/// even when a production policy sets the retired flag to true.
 #[tokio::test]
-async fn an_unpublished_policy_leaves_transfer_to_the_environment_default() {
-    for (environment, enabled) in [
-        (ManifoldEnvironment::Development, true),
-        (ManifoldEnvironment::Production, false),
+async fn transfer_policy_uses_only_v2_and_the_environment_default() {
+    for (environment, field, flag, enabled) in [
+        (ManifoldEnvironment::Development, None, true, true),
+        (ManifoldEnvironment::Production, None, true, false),
+        (
+            ManifoldEnvironment::Production,
+            Some("guardian_transfer_v2"),
+            true,
+            true,
+        ),
+        (
+            ManifoldEnvironment::Production,
+            Some("guardian_transfer_v2"),
+            false,
+            false,
+        ),
+        (
+            ManifoldEnvironment::Production,
+            Some("guardian_transfer"),
+            true,
+            false,
+        ),
     ] {
         let (payments, _) = TestPayments::new();
         let state = Arc::new(MgState::default());
+        let registry = TestRegistry::default();
+        if let Some(field) = field {
+            let mut content = serde_json::json!({
+                "version": 1,
+                "fman_version": "0.1.0",
+                "federations": [PAYMENT_INVITE],
+                "telemetry_registration_url":
+                    "https://push.fedi.example/v1/telemetry/registrations",
+            });
+            content[field] = serde_json::json!(flag);
+            registry
+                .candidates
+                .lock()
+                .expect("test lock")
+                .push(setup_payment_raw_event(
+                    test_now_secs(),
+                    content.to_string(),
+                ));
+        }
         let client = FaClient::open_inner(
             MemDatabase::new().into_database(),
             FaClientPorts {
                 identity: TestIdentity,
                 payments,
-                registry: TestRegistry::default(),
+                registry,
                 mg_connector: TestConnector {
                     state: state.clone(),
                     config: MgConfig::given_away(),
@@ -1306,6 +1343,10 @@ async fn an_unpublished_policy_leaves_transfer_to_the_environment_default() {
             client.inner.store.release_driver_lease(lease).await,
         );
 
-        assert_eq!(result.unwrap(), enabled, "{environment:?}");
+        assert_eq!(
+            result.unwrap(),
+            enabled,
+            "{environment:?}, {field:?}={flag}"
+        );
     }
 }

@@ -39,6 +39,7 @@ libc = "0.2"
 lnurl-rs = { version = "0.9", default-features = false }
 mg-core = { path = "../mg/core" }
 mg-fedimint = { path = "../mg/fedimint" }
+mg-nostr = { path = "../mg/nostr" }
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 peerbadge-protocol.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

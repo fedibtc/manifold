@@ -1,6 +1,59 @@
 use crate::db::{Db, NewSeat, now_ms};
 use crate::facts::{SeatFacts, SeatNo};
 
+/// Build an authenticated transfer call for lifecycle tests with a mock verifier.
+///
+/// Issuance is deliberately fake: these tests control trust through that mock.
+pub(crate) fn transfer_call(
+    request: &fedi_decentralized_service_manifold_guardian::TransferSeatRequest,
+    destination: &secp256k1::Keypair,
+) -> fedi_decentralized_service_manifold_guardian::TransferSeatCall {
+    use fedi_decentralized_service_manifold_guardian::{
+        DestinationAdmissionProof, ManagerSignature, MgSignedRequest, TransferSeatCall,
+    };
+    use peerbadge_protocol::{
+        Credential, CredentialProof, HolderAuthorizationRequest, HolderContext, IssuerId,
+        ProtocolV1, SignedCredential, SubjectPubkey,
+    };
+    let holder = HolderContext::generate();
+    let subject = nostr_sdk::Keys::generate();
+    let credential = SignedCredential {
+        version: ProtocolV1,
+        credential: Credential {
+            issuer_id_pubkey: IssuerId(subject.public_key()),
+            info: serde_json::json!({"schema": "fedi-trust-score-v1.0", "trust_level": 9}),
+            blind_msg: serde_json::json!(holder.public_key().to_string()),
+        },
+        proof: CredentialProof {
+            signature: blind_rsa_signatures::Signature(vec![1, 2, 3, 4]),
+        },
+    };
+    let envelope = fedi_decentralized_domain::HolderAuthorizationEnvelope {
+        holder_authorization: holder
+            .authorize_credential_use(
+                HolderAuthorizationRequest {
+                    subject_pubkey: SubjectPubkey(subject.public_key()),
+                },
+                &credential,
+            )
+            .unwrap(),
+        signed_credential: credential,
+    };
+    let signed = MgSignedRequest::create(request, destination).unwrap();
+    let digest = DestinationAdmissionProof::signing_digest(&signed, &envelope).unwrap();
+    let signature = subject.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest));
+    TransferSeatCall::new(
+        signed,
+        DestinationAdmissionProof {
+            version: 1,
+            holder_authorization: envelope,
+            signature: ManagerSignature(
+                secp256k1::schnorr::Signature::from_slice(signature.as_ref()).unwrap(),
+            ),
+        },
+    )
+}
+
 /// Seed the bare seat row needed by tests that exercise post-admission work.
 pub(crate) async fn insert_test_seat(db: &Db, new_seat: NewSeat) -> SeatFacts {
     let created_at_ms = now_ms();

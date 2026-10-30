@@ -25,7 +25,7 @@ vote, so no single implementation artifact can own it coherently.
 
 The setup-payment policy
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
-carries an optional `guardian_transfer` flag. An MG may start a new transfer
+carries an optional `guardian_transfer_v2` flag. An MG may start a new transfer
 only while transfer is on: the latest policy it admitted sets the flag to
 `true`, or, without an admitted policy or a flag in it, its Manifold
 environment's default is on. Development and staging default to on and
@@ -36,6 +36,25 @@ publish `true`. A published `false` turns transfer off in any environment.
 The MG reads the flag from the policy it holds when a request arrives; it
 keeps no copy. The FA resolves the same flag the same way before it buys a
 destination seat.
+
+The retired `guardian_transfer` field must never be set to `true` in
+production. MG 0.1.9 shipped transfer RPCs using that flag, with transfers
+off by default in production; the FA client at that release did not drive
+transfers.
+Those MGs use the old, proofless `TransferSeat` shape. They ignore the new
+flag and stay off in production when the retired field is absent. The new
+flag is the compatibility boundary for starting direct-proof transfers,
+not a wire-compatibility fallback.
+
+Before production activation, upgrade both source and destination MGs to
+support the new shape. A policy enabling the new flag must also set
+`min_mg_version` to the first release with that shape. MGs that understand
+this minimum stop advertising new seats when below it; older readers may
+still advertise. The minimum does not replace endpoint upgrades or establish
+transfer RPC compatibility.
+To recover an existing mixed-version transfer, upgrade both endpoints;
+changing flags or the minimum version alone does not recover a previously
+retired source/destination pair.
 
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never
@@ -75,7 +94,15 @@ online once. The FA does not have to be online at the same time.
 3. The destination signs `TransferSeat` with the service key the grant names
    as its destination. The source checks that signature, the FA signature,
    that the FA owns the source seat, and that the grant names this seat and
-   its federation. Each call answers from durable state and never waits;
+   its federation. It also independently verifies a destination-bound
+   PeerBadge against its own environment's issuer roots and minimum trust
+   level, including fresh revocation checks. The source fails closed if it
+   cannot verify that trust, before stopping the guardian or releasing its
+   package. The source bounds concurrent admissions and rejects excess requests
+   without waiting, so slow revocation queries cannot occupy all shared RPC handlers.
+   It rejects subject mismatches and invalid issuance offline, before revocation
+   queries. On each admitted call, the source performs a bounded trust lookup, then
+   answers from durable state without waiting for a session boundary or backup;
    the destination retries until it gets the guardian, with a capped
    backoff. A development destination instead asks again about once a
    second while the source answers `AwaitingSessionEnd` or `AwaitingBackup`:
@@ -89,7 +116,23 @@ online once. The FA does not have to be online at the same time.
    - Then it returns the guardian's three config files and its two Iroh
      secrets in plain form; the Iroh connection between the two MGs keeps
      them confidential. It answers every later valid grant for the seat with
-     the same guardian.
+     the same guardian only if the destination passes a fresh admission check.
+
+   Destinations must also co-sign the exact service-signed request and their
+   current holder-authorization envelope with the badge subject's Nostr key.
+   This required proof travels outside the unchanged signed request payload.
+   The source verifies the request-bound subject signature,
+   issuance, and authorization, applies its own issuer/minimum-trust policy,
+   and checks fresh revocation without discovering advertisements. The source
+   rejects missing, null, invalid, unsupported or oversized proofs without
+    discovery fallback. The proof shares the request's one-hour freshness
+    window: whole-request replay inside that window still
+   requires fresh admission on every attempt.
+
+   Admission does not depend on advertisement discovery or spare capacity.
+    Rejection after a successful stop request cannot cancel that stop or
+    restart a retired source; the source must
+   be able to verify a valid destination again for the pull to continue.
 4. The destination validates the guardian against the grant, durably
    stores it, and starts it. From then on the seat is a formed seat that
    reports `Running`: its backup follows asynchronously as for a natively
@@ -122,7 +165,8 @@ online once. The FA does not have to be online at the same time.
   `TransferSeat` asks for it. A guardian that stops in any other way,
   including a shutdown an operator schedules through the older `shutdown`
   endpoint, restarts and keeps its seat.
-- The grant is the only authority. Possession of a grant gives no access to
+- The grant authorizes the move but cannot bypass destination PeerBadge
+  admission. Possession of a grant gives no access to
   the guardian, because the source answers only the destination the grant
   names, authenticated by its service-key signature.
 - The moved guardian keeps its peer id, consensus keys, and Iroh node ids.
@@ -207,9 +251,26 @@ rollback.
 
 ## Custody
 
-The FA chooses the destination and is the only party that checks it. Before
-it signs a grant, it refuses a destination whose MG or verified badge
-holder hosts, or ever hosted, a peer of the federation. A past host may still
+The FA chooses the destination. Before it signs a grant, it refuses a
+destination whose MG or verified badge holder hosts, or ever hosted, a peer of
+the federation. A past host may still
 hold its old key share, and no credential proves that it deleted it. The FA
-keeps past hosts in its own backup for this check. The source checks only the
-FA's signature and ownership.
+keeps past hosts in its own backup for this check. Independently of the FA,
+the source verifies the destination's PeerBadge on every `TransferSeat`,
+including retries after retirement or a prior package release, using the
+complete shared verifier and its own canonical environment profile. Direct
+admission binds the badge's MG Nostr subject to the exact service-signed
+request and credential envelope. The subject approves the grant's distinct
+RPC commitment key, seats and federation, not just a reusable identity
+document. Honest destinations regenerate the proof from current local
+enrollment on every attempt; missing local material fails closed, including
+while startup has not yet bound the signing capability.
+
+The source rejects requests without proof; advertisements cannot substitute
+for the subject's approval. Direct admission does not promise global
+latest-credential selection: a subject can approve an older still-authorized,
+still-valid credential until the issuer revokes it. The subject could already
+republish such a credential in a new advertisement. Direct admission does not
+introduce holder revocation or one-time request authentication.
+An FA signature alone cannot authorize an unverified destination.
+The FA retains responsibility for custody-history and holder-diversity checks.

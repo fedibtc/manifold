@@ -97,8 +97,11 @@ where
             .replacement_policy()
             .await
             .ok()
-            .and_then(|policy| policy.guardian_transfer());
-        Ok(self.inner.manifold_environment.guardian_transfer(published))
+            .and_then(|policy| policy.guardian_transfer_v2());
+        Ok(self
+            .inner
+            .manifold_environment
+            .guardian_transfer_v2(published))
     }
 
     pub(crate) async fn replacement_policy(

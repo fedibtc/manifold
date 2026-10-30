@@ -1420,9 +1420,7 @@ impl ManifoldGuardianService for TestMg {
 
     async fn transfer_seat(
         &self,
-        _request: MgSignedRequest<
-            fedi_decentralized_service_manifold_guardian::TransferSeatRequest,
-        >,
+        _request: fedi_decentralized_service_manifold_guardian::TransferSeatCall,
     ) -> FmResult<fedi_decentralized_service_manifold_guardian::TransferSeatResponse> {
         unsupported_test_verb("TransferSeat")
     }
@@ -2495,7 +2493,7 @@ fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
             "federations": invites,
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
-            "guardian_transfer": true,
+            "guardian_transfer_v2": true,
         })
         .to_string(),
     )

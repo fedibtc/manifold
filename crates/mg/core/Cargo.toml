@@ -81,6 +81,7 @@ fedimint-build = { workspace = true }
 blind-rsa-signatures = "0.17"
 humantime = "2.4.0"
 jsonrpsee-server = "0.24"
+peerbadge-protocol.workspace = true
 reqwest = { version = "0.12", default-features = false }
 safe-tracing = { path = "../../safe-tracing" }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

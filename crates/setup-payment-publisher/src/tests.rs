@@ -119,14 +119,14 @@ fn manifest_rejects_only_the_injected_unknown_field() {
 }
 
 #[test]
-fn manifest_keeps_the_guardian_transfer_flag() {
+fn manifest_keeps_the_guardian_transfer_v2_flag() {
     let temp = TempDir::new().unwrap();
     for enabled in [true, false] {
         let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
-        content["guardian_transfer"] = serde_json::json!(enabled);
+        content["guardian_transfer_v2"] = serde_json::json!(enabled);
         let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
         assert_eq!(
-            read_content(&path).unwrap().guardian_transfer,
+            read_content(&path).unwrap().guardian_transfer_v2,
             Some(enabled)
         );
     }

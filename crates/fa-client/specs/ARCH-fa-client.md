@@ -724,12 +724,19 @@ shares no service key with a current guardian, and refuses a priced preview
 without a payer. It then refreshes the setup-payment policy, falling back to
 the retained one on a relay timeout, and refuses with
 `FaError::GuardianTransferDisabled` (category `capability_unavailable`)
-unless transfer is enabled: the policy's `guardian_transfer` flag, or, when
+unless transfer is enabled: the policy's `guardian_transfer_v2` flag, or, when
 the policy omits it, the default of the client's Manifold environment, the
 same resolution the MG uses
 ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
 MGs start no transfer otherwise, so the FA buys no seat for one. A client
 opened without a Manifold profile takes the production default. Then it records the transfer.
+The retired `guardian_transfer` field must never be set to `true` in production:
+older consumers read it to enable the incompatible old `TransferSeat` shape.
+Before production activation, upgrade both transfer endpoints and set
+`min_mg_version` to the first release with the new shape. MGs that understand
+this minimum stop advertising new seats when below it; older readers may
+still advertise, so endpoint upgrades remain required. See
+[Enabling transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer).
 
 The transfer first buys the destination seat with the normal `GetQuote` and
 `CreateSeat` for the federation's size. The purchase follows the formation

@@ -60,9 +60,9 @@ Fleet runtime and advertisement publication do not begin until onboarding has
 retained at least one structurally verified, subject-bound Holder authorization.
 The relying consumer still owns issuer trust, revocation, and policy evaluation;
 onboarding does not turn structural verification into an issuer endorsement.
-The ad is not published when the MG is not accepting seats. A previously published ad remains visible
-until its signed expiry, at most 60 minutes after issue; `GetAvailability` and
-`GetQuote` remain authoritative for races during that window.
+The MG publishes no ad while it is not accepting seats. A previously published
+ad remains visible until its signed expiry, at most 60 minutes after issue;
+`GetAvailability` and `GetQuote` remain authoritative for races during that window.
 
 The commitment-signing pubkey inside the signed payload is what binds the dialing identity to the Nostr identity: consumers build their dialing locator from it and the advertised endpoint, trusting it exactly as far as they trust the advertisement's badge-vouched author ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md), trust-chain paragraph).
 

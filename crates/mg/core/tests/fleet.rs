@@ -274,11 +274,12 @@ async fn current_input(
 fn transfer_policy()
 -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
-    policy_with_guardian_transfer(Some(true))
+    policy_with_transfer_flag("guardian_transfer_v2", Some(true))
 }
 
-/// A setup-payment policy with the given `guardian_transfer` flag.
-fn policy_with_guardian_transfer(
+/// A setup-payment policy with the given current or retired transfer flag.
+fn policy_with_transfer_flag(
+    field: &str,
     flag: Option<bool>,
 ) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
@@ -289,13 +290,20 @@ fn policy_with_guardian_transfer(
         "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
     });
     if let Some(flag) = flag {
-        content["guardian_transfer"] = serde_json::json!(flag);
+        content[field] = serde_json::json!(flag);
     }
     let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         content.to_string().as_bytes(),
     )
     .expect("test policy parses");
-    assert_eq!(policy.guardian_transfer(), flag);
+    assert_eq!(
+        policy.guardian_transfer_v2(),
+        if field == "guardian_transfer_v2" {
+            flag
+        } else {
+            None
+        }
+    );
     tokio::sync::watch::channel(Some(policy)).1
 }
 
@@ -310,6 +318,9 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
     drop(db);
     FleetConfig {
         transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+        replacement_guardian_verifier: Arc::new(
+            crate::replacement_guardian::UnverifiedReplacementGuardian,
+        ),
         guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
         process_spawner: SeatProcessSpawner::Fake(Arc::new(
             crate::seat_process::fake::FakeSeatProcessSpawner::default(),
@@ -1171,8 +1182,7 @@ fn journaled_seat_capacity(directory: &std::path::Path) -> Vec<serde_json::Value
         .collect()
 }
 
-/// Every advertisement cycle journals the seat capacity, also when it
-/// publishes nothing.
+/// Every advertisement cycle journals capacity, even without publication.
 #[tokio::test]
 async fn advertisement_cycle_shares_seat_capacity() {
     use tracing_subscriber::layer::SubscriberExt as _;

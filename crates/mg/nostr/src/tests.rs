@@ -378,6 +378,107 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
     );
 }
 
+#[tokio::test]
+async fn transfer_proofs_follow_live_enrollment_and_reloaded_material() {
+    use fedi_decentralized_service_manifold_guardian::{
+        FaId, FederationId, Locator, MgSignedRequest, QuoteId, SeatId, SeatTransferGrant,
+        SignedRequest, Timestamp as RequestTimestamp, TransferSeatCall, TransferSeatRequest,
+    };
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = mg_core::db::Db::open(temp.path()).await.unwrap();
+    let keys = Keys::generate();
+    let store = Arc::new(FleetHolderAuthorizationStore::new(db.clone()));
+    let service = ManifoldGuardianNostr::new(
+        keys.clone(),
+        None,
+        Vec::new(),
+        None,
+        ManifoldEnvironment::Development.profile().unwrap(),
+        store.clone(),
+        db.clone(),
+    );
+    let signing_key =
+        secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[31; 32]).unwrap();
+    let grant = SeatTransferGrant {
+        ts: RequestTimestamp(now_secs()),
+        fa_id: FaId(signing_key.x_only_public_key().0),
+        federation_id: FederationId("proof-generation-test".into()),
+        source: Locator::new(
+            RootMnemonic::generate()
+                .unwrap()
+                .derive_iroh_secret_key()
+                .public()
+                .into(),
+            signing_key.x_only_public_key().0,
+        ),
+        source_seat_id: SeatId::from(QuoteId([32; 32])),
+        destination_service_pubkey: signing_key.x_only_public_key().0,
+        destination_seat_id: SeatId::from(QuoteId([33; 32])),
+    };
+    let request = MgSignedRequest::create(
+        &TransferSeatRequest {
+            ts: RequestTimestamp(now_secs()),
+            destination_service_pubkey: signing_key.x_only_public_key().0,
+            grant: SignedRequest::create(&grant, &signing_key).unwrap(),
+        },
+        &signing_key,
+    )
+    .unwrap();
+    assert!(service.transfer_admission_proof(&request).is_err());
+    let mut proofs = Vec::new();
+    for issued_at in [now_secs() - 1, now_secs()] {
+        let event = issued_authorization_event_at(&Keys::generate(), keys.public_key(), issued_at);
+        service
+            .inner
+            .retain_authorization(Some(
+                verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
+            ))
+            .await
+            .unwrap();
+        let proof = service.transfer_admission_proof(&request).unwrap();
+        assert_eq!(
+            proof.holder_authorization,
+            service.holder_authorizations()[0]
+        );
+        TransferSeatCall::new(request.clone(), proof.clone())
+            .verify(RequestTimestamp(now_secs()))
+            .unwrap()
+            .1
+            .verify_subject()
+            .unwrap();
+        proofs.push(proof);
+    }
+    assert_ne!(
+        proofs[0], proofs[1],
+        "no enrollment snapshot is cached in the adapter"
+    );
+    let retained = load_retained_holder_authorizations(&store, keys.public_key())
+        .await
+        .unwrap();
+    drop(service);
+    let reloaded = ManifoldGuardianNostr::new(
+        keys,
+        None,
+        retained,
+        None,
+        ManifoldEnvironment::Development.profile().unwrap(),
+        store,
+        db,
+    );
+    assert_eq!(
+        reloaded
+            .transfer_admission_proof(&request)
+            .unwrap()
+            .holder_authorization,
+        proofs[1].holder_authorization,
+    );
+    reloaded
+        .inner
+        .holder_authorizations
+        .send_replace(Vec::new());
+    assert!(reloaded.transfer_admission_proof(&request).is_err());
+}
+
 #[test]
 fn setup_payment_admission_retains_only_the_highest_admitted_event() {
     let keys = Keys::generate();
