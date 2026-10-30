@@ -139,7 +139,10 @@ impl std::fmt::Debug for IncomingTransfer {
 
 /// The terminal source fence, retained independently of incoming provenance.
 /// An imported guardian may later move again without forgetting its old keys.
+///
+/// Serialized in backups as the string the database stores.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutgoingTransfer {
     /// The source proved its child's exit and committed the fence: the
     /// guardian never starts again, and its config may be exported.

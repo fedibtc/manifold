@@ -163,6 +163,8 @@ directory and restores the accepted row; the seat starts like any formed seat,
 and expiry cannot cancel an accepted guardian.
 
 A retired source carries a permanent transfer fence and formed federation invite.
+The fence is the `phase` the source's database stores, `stopped` or `removed`,
+and recovery stores it unchanged.
 The narrow FA-authorized transfer-removal operation removes only local guardian
 material and records the removal; the seat's next publication is the
 archive-less removal tombstone. A restore between the two resurrects at most a
