@@ -2,12 +2,15 @@
 
 ## Status
 
-The additive-field compatibility required by
-[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md) is
-not yet implemented. Current typed consumers discard unknown payload fields
-during deserialization and reconstruct the payload for signature verification,
-so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients.
+`fa-client` authenticates the complete received payload, including unknown
+members, as required by
+[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md).
+Previously released readers discard unknown payload members before reconstructing
+the proof and reject otherwise valid additive extensions. Writers must wait for
+compatible deployed readers before adding signed payload fields; merging the
+reader fix alone does not establish rollout compatibility. Optional data can
+instead remain beside `payload` and `proof`, authenticated only by the outer
+Nostr event.
 
 ## Record justification
 
@@ -68,8 +71,9 @@ Kind-`37701` events and relay tags never carry an MG-local payment set.
 
 The event `content` is a portable signed document (Nostr is only one
 publication transport): a `payload` plus a `proof.signature` — a Schnorr
-signature by the MG service key over
-`SHA256("fedi-fman-advertisement/v1\0" || JCS(payload))`. The MVP identity
+signature by the MG Nostr identity key named `fman_id_pubkey` over
+`SHA256("fedi-fman-advertisement/v1\0" || JCS(payload))`. This key is distinct
+from the commitment-signing `service_pubkey`. The MVP identity
 rule is `MG id == MG Nostr pubkey`: the event author must equal
 `payload.fman_id_pubkey`, and this is the MG's self-generated service
 identity, never the operator's holder identity.
@@ -106,7 +110,7 @@ version. Consumers ignore fields they do not understand when interpreting an
 advertisement, but signature verification canonicalizes the complete payload
 received from the publisher, including unknown fields. Consumers must not
 deserialize into a type that drops unknown fields and then verify a
-reconstructed payload. Consequently, changing or removing any received signed
+reconstructed payload. Changing or removing any received signed
 field, whether understood by the consumer or not, invalidates the proof.
 
 This rule applies to the payload and protocol-owned objects nested within it.
