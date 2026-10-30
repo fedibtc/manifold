@@ -75,7 +75,7 @@ A rooted identity signs its issuance key and revocation locations, while the
 environment profile fixes which signed authority a release accepts. Compromise
 of that identity cannot be contained by credential revocation or relay
 freshness: the root must be removed from the environment profile and the new
-revision deployed to every relying consumer. A production release must
+release deployed to every relying consumer. A production release must
 therefore confirm the exact pinned authority with every retained issuer and
 preflight every listed revocation location.
 The `test-support` feature exposes explicit issuer-root, relay, and minimum

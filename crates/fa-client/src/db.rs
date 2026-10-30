@@ -455,30 +455,79 @@ where
 }
 
 /// Serializable stable projection of the verifier's canonical provenance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+///
+/// Admissions written before the profile revision was removed stored it
+/// inside the environment variant, for example
+/// `{"production":{"profile_revision":9}}`. They still read as their
+/// environment; the revision is ignored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StoredVerifierProvenance {
-    Development { profile_revision: u32 },
-    Staging { profile_revision: u32 },
-    Production { profile_revision: u32 },
+    Development,
+    Staging,
+    Production,
     ExplicitTestConfiguration,
+}
+
+impl<'de> serde::Deserialize<'de> for StoredVerifierProvenance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Current {
+            Development,
+            Staging,
+            Production,
+            ExplicitTestConfiguration,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum WithProfileRevision {
+            Development {
+                #[serde(rename = "profile_revision")]
+                _profile_revision: u32,
+            },
+            Staging {
+                #[serde(rename = "profile_revision")]
+                _profile_revision: u32,
+            },
+            Production {
+                #[serde(rename = "profile_revision")]
+                _profile_revision: u32,
+            },
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Current(Current),
+            WithProfileRevision(WithProfileRevision),
+        }
+
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Current(Current::Development)
+            | Stored::WithProfileRevision(WithProfileRevision::Development { .. }) => {
+                Self::Development
+            }
+            Stored::Current(Current::Staging)
+            | Stored::WithProfileRevision(WithProfileRevision::Staging { .. }) => Self::Staging,
+            Stored::Current(Current::Production)
+            | Stored::WithProfileRevision(WithProfileRevision::Production { .. }) => {
+                Self::Production
+            }
+            Stored::Current(Current::ExplicitTestConfiguration) => Self::ExplicitTestConfiguration,
+        })
+    }
 }
 
 impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
     fn from(value: PeerBadgeVerifierProvenance) -> Self {
         match value {
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Development,
-                profile_revision,
-            } => Self::Development { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Staging,
-                profile_revision,
-            } => Self::Staging { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Production,
-                profile_revision,
-            } => Self::Production { profile_revision },
+            PeerBadgeVerifierProvenance::ManifoldProfile { environment } => match environment {
+                ManifoldEnvironment::Development => Self::Development,
+                ManifoldEnvironment::Staging => Self::Staging,
+                ManifoldEnvironment::Production => Self::Production,
+            },
             PeerBadgeVerifierProvenance::ExplicitTestConfiguration => {
                 Self::ExplicitTestConfiguration
             }
@@ -4591,5 +4640,78 @@ mod formed_record_tests {
         let mut stored = record(Vec::new());
         stored["origin"] = serde_json::json!("this_device");
         assert_eq!(decode(stored).origin, crate::FormedOrigin::ThisDevice);
+    }
+}
+
+#[cfg(test)]
+mod verifier_provenance_tests {
+    use super::{MgAdmission, StoredVerifierProvenance};
+    use crate::{FaError, SelectionReauthorizationReason};
+    use fedi_decentralized_domain::Timestamp;
+    use nostr_sdk::PublicKey;
+
+    fn decode(value: serde_json::Value) -> StoredVerifierProvenance {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_provenance_stored_with_a_profile_revision_reads_as_its_environment() {
+        for (stored, expected) in [
+            (
+                serde_json::json!({"development": {"profile_revision": 3}}),
+                StoredVerifierProvenance::Development,
+            ),
+            (
+                serde_json::json!({"staging": {"profile_revision": 9}}),
+                StoredVerifierProvenance::Staging,
+            ),
+            (
+                serde_json::json!({"production": {"profile_revision": 10}}),
+                StoredVerifierProvenance::Production,
+            ),
+        ] {
+            assert_eq!(decode(stored), expected);
+        }
+    }
+
+    #[test]
+    fn a_provenance_is_stored_as_its_environment_alone() {
+        for (provenance, stored) in [
+            (StoredVerifierProvenance::Development, "development"),
+            (StoredVerifierProvenance::Staging, "staging"),
+            (StoredVerifierProvenance::Production, "production"),
+            (
+                StoredVerifierProvenance::ExplicitTestConfiguration,
+                "explicit_test_configuration",
+            ),
+        ] {
+            let value = serde_json::to_value(provenance).unwrap();
+            assert_eq!(value, serde_json::json!(stored));
+            assert_eq!(decode(value), provenance);
+        }
+    }
+
+    #[test]
+    fn a_fresh_admission_stored_with_a_profile_revision_stays_valid_in_its_environment() {
+        let admission = MgAdmission::fresh_peer_badge(
+            PublicKey::from_slice(&[2; 32]).unwrap(),
+            PublicKey::from_slice(&[3; 32]).unwrap(),
+            StoredVerifierProvenance::Staging,
+            Timestamp(200),
+        );
+        let mut stored = serde_json::to_value(&admission).unwrap();
+        stored["verifier_provenance"] = serde_json::json!({"staging": {"profile_revision": 9}});
+        let admission: MgAdmission = serde_json::from_value(stored).unwrap();
+
+        admission
+            .validate_if_fresh(StoredVerifierProvenance::Staging, Timestamp(100))
+            .unwrap();
+        assert!(matches!(
+            admission.validate_if_fresh(StoredVerifierProvenance::Production, Timestamp(100)),
+            Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
+                ..
+            })
+        ));
     }
 }

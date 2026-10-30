@@ -555,13 +555,13 @@ issuer identity roots, each a personal key held individually by its custodian.
 The profile pins one identity-signed public authority per root, fixing its
 issuance key and revocation locations for that release. Compromise of a pinned
 issuance key permits arbitrary PeerBadge issuance until an authority-changing
-profile revision reaches every relying consumer. Compromise of an identity root
+release reaches every relying consumer. Compromise of an identity root
 also permits forged revocations and requires removing that root.
 
 Adding a production root or replacing its authority requires out-of-band
 authorization and possession verification plus an internal custodian record;
 names and private operational records do not belong in this public repository.
-Every such change bumps the profile revision and rolls out to every relying
+Every such change ships in a coordinated release to every relying
 consumer. Replacing an issuance key makes badges signed by the old key
 unverifiable; restore the complete old issuer secret when possible, otherwise
 coordinate reissuance. Loss, suspected identity compromise, or custodian
@@ -590,7 +590,7 @@ them only for synthetic conversations.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must
-roll out across all of them as one revisioned deployment so mixed versions
+roll out across all of them as one coordinated deployment so mixed versions
 cannot disagree about admission.
 
 Treat FA-, app-, Nostr-, metadata-, and MG API-provided trust material as

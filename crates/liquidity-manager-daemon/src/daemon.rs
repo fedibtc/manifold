@@ -814,20 +814,17 @@ pub async fn run_daemon(
             .map_err(|error| anyhow::anyhow!("invalid Manifold PeerBadge trust policy: {error}"))?;
     let expected_verifier_provenance = PeerBadgeVerifierProvenance::ManifoldProfile {
         environment: selected_profile.environment(),
-        profile_revision: selected_profile.profile_revision(),
     };
     anyhow::ensure!(
         peer_badge_verifier.provenance() == expected_verifier_provenance,
-        "PeerBadge verifier provenance does not match the selected Manifold environment: selected {} revision {}, verifier {:?}",
+        "PeerBadge verifier provenance does not match the selected Manifold environment: selected {}, verifier {:?}",
         selected_profile.environment(),
-        selected_profile.profile_revision(),
         peer_badge_verifier.provenance(),
     );
     let paths = args.paths();
     info!(
         ?args,
         manifold_environment = %selected_profile.environment(),
-        manifold_profile_revision = selected_profile.profile_revision(),
         "starting FLIP liquidity manager daemon"
     );
 

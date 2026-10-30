@@ -58,8 +58,8 @@ issuer. FA, FLIP, push-gateway guardian telemetry, and the cloud MG telemetry
 collector use the cloneable verifier in `crates/peer-badge-verifier`; each
 verification uses the profile-pinned authority, fetches current revocation
 state without durable caching, then applies the environment's minimum to the
-authenticated badge. Authority replacement requires a coordinated profile
-revision and invalidates badges signed by the previous issuance key.
+authenticated badge. Authority replacement requires a coordinated component
+release and invalidates badges signed by the previous issuance key.
 FLIP's request-carried MG trust pipeline applies the same shared domain
 policy after its direct envelope verification.
 MG carries its own HolderAuthorization but does not judge its own badge

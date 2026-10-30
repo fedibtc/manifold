@@ -45,21 +45,17 @@ The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);
 development relay overrides follow the same rule.
 
-The profile exposes `profile_revision()`, currently `10`. Every change to an
-environment's relay, issuer identity or authority, committed issuer secret,
-PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
-Fee account, Bitcoin network, default Esplora, or default guardian-transfer
-mapping must increment the
-shared revision. The Fedi support key is outside the revision: only the MG
-reads it, so a mixed rollout cannot disagree about anything that another
-component checks.
-Operators must roll out such a change across
-independently released FA, MG, FLIP, push-gateway telemetry, and cloud MG
-telemetry collector components as one coordinated deployment and use the revision in diagnostics to identify a
-mixed-profile rollout. MG and FLIP log the selected environment and revision
-at normal startup; the opaque verifier passed into FA and FLIP and the concrete
+A change to an environment's relay, issuer identity or authority, committed
+issuer secret, PeerBadge minimum trust level, setup-payment publisher, Guardian
+Verification Fee account, Bitcoin network, default Esplora, or default
+guardian-transfer mapping is a change to the release itself: components that
+read the changed value must be rolled out together, because a mixed rollout
+can make them disagree while they show the same environment name. Each
+component's release version identifies the mappings it carries; there is no
+separate profile version. MG and FLIP log the selected environment at normal
+startup, and the opaque verifier passed into FA and FLIP and the concrete
 verifier constructed by push-gateway and the cloud MG telemetry collector
-also exposes both values to embedding diagnostics.
+expose it to embedding diagnostics.
 
 Development and staging use `wss://relay-staging.dev.fedibtc.com`.
 Production uses, in order, `wss://relay.dev.fedibtc.com`,
@@ -99,8 +95,7 @@ Production must never receive a generated or known-secret placeholder.
 `PeerBadgeVerifier` construction still fails closed when an environment's
 issuer list is empty, so removing the last production issuer disables
 production verification rather than widening trust. Changing the production
-roster or an authority is a profile-revision change shipped in a coordinated
-component release, never a runtime or operator-supplied value. Replacing an
+roster or an authority ships in a coordinated component release, never a runtime or operator-supplied value. Replacing an
 authority changes the issuance key accepted for that issuer and makes badges
 signed by the previous issuance key unverifiable in the new release.
 
