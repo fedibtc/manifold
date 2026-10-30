@@ -83,13 +83,13 @@
           "linked-specs-review"
           "linked-specs-claims"
           "linked-specs-claims-verification"
-          "dpc-general-multipart-review"
-          "dpc-review-coordination"
-          "dpc-review-architecture"
-          "dpc-review-judgment"
-          "dpc-review-maintainability"
-          "dpc-review-rust-style"
-          "dpc-review-reliability"
+          "multipart-review"
+          "multipart-review-coordination"
+          "multipart-review-architecture"
+          "multipart-review-judgment"
+          "multipart-review-maintainability"
+          "multipart-review-rust-style"
+          "multipart-review-reliability"
         ];
         linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
           set -eu
@@ -111,6 +111,9 @@
 
           remove_old_link dpc-public-skills
           remove_old_link maan2003-skills
+          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability; do
+            remove_old_link "$name"
+          done
 
           for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
             target="$skills_dir/$name"
