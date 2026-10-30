@@ -939,6 +939,17 @@ where
             .await
     }
 
+    /// An unfinished request names the current seats; moving one would strand it.
+    pub(crate) async fn replacement_liquidity_blocker(
+        &self,
+    ) -> FaResult<Option<LiquidityOperationId>> {
+        Ok(self
+            .find_live_liquidity_operation(|_| true)
+            .await?
+            .filter(|operation| !operation.is_complete())
+            .map(|operation| operation.operation_id))
+    }
+
     /// Refuse to mint a second live request identity for one federation.
     ///
     /// Every start embeds a fresh expiry, so a consumer retry after an

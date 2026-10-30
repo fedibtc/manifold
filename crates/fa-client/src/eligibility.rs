@@ -72,6 +72,9 @@ pub struct ReplacementCheck {
     pub federation_id: FederationId,
     pub checked_at: u64,
     pub candidates: Vec<ReplacementCandidate>,
+    /// Unfinished liquidity blocking every candidate as of `checked_at`.
+    /// Refresh before opening replacement; starting it checks again.
+    pub blocking_liquidity_operation: Option<crate::LiquidityOperationId>,
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
@@ -147,6 +150,7 @@ where
             federation_id,
             checked_at: now,
             candidates,
+            blocking_liquidity_operation: self.replacement_liquidity_blocker().await?,
         })
     }
 
