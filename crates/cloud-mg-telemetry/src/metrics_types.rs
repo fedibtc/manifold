@@ -23,3 +23,15 @@ pub(crate) struct MetricsCommit {
     /// Whether discovery and every advertised seat scrape succeeded.
     pub(crate) complete: bool,
 }
+
+/// Result of one revision-fenced metrics commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MetricsCommitOutcome {
+    /// Every observation was stored.
+    Committed,
+    /// The commit was applied, but at least one observation did not fit the
+    /// persisted-state cap and that seat kept its previous snapshot.
+    Saturated,
+    /// Lease, status, or revision changed and the output was discarded.
+    Stale,
+}

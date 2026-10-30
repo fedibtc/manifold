@@ -53,7 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
-        guardian_transfer: None,
+        guardian_transfer_v2: None,
         min_mg_version: None,
     })
     .expect("test content serializes")
@@ -237,7 +237,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
-            guardian_transfer: None,
+            guardian_transfer_v2: None,
             min_mg_version: None,
         })
         .unwrap();
@@ -470,7 +470,7 @@ fn unset_seat_limits_stay_off_the_wire() {
     let encoded = String::from_utf8(content(vec![])).unwrap();
     assert!(!encoded.contains("seat_memory_budget_mib"));
     assert!(!encoded.contains("max_seats_per_mg"));
-    assert!(!encoded.contains("guardian_transfer"));
+    assert!(!encoded.contains("guardian_transfer_v2"));
     assert!(!encoded.contains("min_mg_version"));
 }
 
@@ -525,28 +525,28 @@ fn min_mg_version_is_optional_semver_and_at_most_the_latest() {
 }
 
 #[test]
-fn guardian_transfer_is_absent_unless_the_policy_sets_it() {
+fn guardian_transfer_v2_is_absent_unless_the_policy_sets_it() {
     let raw = |field: &str| {
         format!(
             r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert_eq!(admitted("").unwrap().guardian_transfer(), None);
+    assert_eq!(admitted("").unwrap().guardian_transfer_v2(), None);
     assert_eq!(
-        admitted(r#","guardian_transfer":false"#)
+        admitted(r#","guardian_transfer_v2":false"#)
             .unwrap()
-            .guardian_transfer(),
+            .guardian_transfer_v2(),
         Some(false)
     );
     assert_eq!(
-        admitted(r#","guardian_transfer":true"#)
+        admitted(r#","guardian_transfer_v2":true"#)
             .unwrap()
-            .guardian_transfer(),
+            .guardian_transfer_v2(),
         Some(true)
     );
     assert_eq!(
-        admitted(r#","guardian_transfer":"yes""#),
+        admitted(r#","guardian_transfer_v2":"yes""#),
         Err(SetupPaymentFederationsContentError::MalformedContent)
     );
 }

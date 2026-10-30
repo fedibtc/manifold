@@ -26,7 +26,7 @@ use fedi_decentralized_service_manifold_guardian::{
     RefundTransaction, RefusalReason, SEAT_CAPACITY_EVENT, SafeEventJournal, SeatHealth, SeatId,
     SeatScopedFaRequest, SignedResponse, TelemetryCapability, VerifiedFaRequest,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::guardian_fee::{
     AccountId, Collected, FederationFeeStatus, FeePolicy, GuardianFeeAccountKey, GuardianFeeVault,
@@ -88,6 +88,9 @@ pub struct FleetConfig {
     pub guardian_config_validator: Arc<dyn crate::transfer_native::GuardianConfigValidator>,
     /// Outbound RPC transport; retries and acceptance belong to this fleet.
     pub transfer_source: Arc<dyn crate::transfer_source::TransferSource>,
+    /// Fresh destination trust admission, independent of the FA's grant.
+    pub replacement_guardian_verifier:
+        Arc<dyn crate::replacement_guardian::ReplacementGuardianVerifier>,
 }
 
 /// Payment has already been authenticated and verified offline. Fleet owns
@@ -212,13 +215,10 @@ impl FleetNostrHost {
     /// What a directory runtime reads out of the daemon each cycle.
     ///
     /// Read-only and whole: `None` suppresses publication while the MG is not
-    /// accepting seats; otherwise the snapshot is everything an advertisement
-    /// needs, so no runtime assembles one from reads that could disagree.
+    /// accepting seats; otherwise the snapshot contains the whole advertisement.
     pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
-        // Each advertisement cycle reports capacity, including cycles that
-        // publish nothing, so telemetry can count free seats across hosts and
-        // the release each host runs.
+        // Each advertisement cycle reports capacity, even without publication.
         tracing::info!(
             safe_to_share = true,
             mg_version = env!("CARGO_PKG_VERSION"),
@@ -350,6 +350,9 @@ pub struct Fleet {
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
     advertisement_changed: Arc<Notify>,
+    /// Fail-fast bound on admitted transfer requests, shared by every seat and
+    /// held through the seat reply, below the transport's shared RPC limit.
+    replacement_admissions: Semaphore,
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
@@ -564,6 +567,7 @@ impl Fleet {
             telemetry_generation: AtomicU64::new(telemetry_generation),
             telemetry_registration_changed: Notify::new(),
             advertisement_changed,
+            replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
             guardian_link: Default::default(),
             iroh_endpoint_id: std::sync::OnceLock::new(),

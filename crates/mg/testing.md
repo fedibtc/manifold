@@ -110,11 +110,15 @@ In-tree unit and integration tests stop at the `fedimintd` process boundary:
   vote, the transfer document version, single-snapshot publication, and
   restore of imported and retired seats.
 
+One opt-in end-to-end test moves a real guardian between two MGs:
+`fa_moves_a_formed_guardian_to_a_new_mg_under_defe` (`MG_E2E`, described in
+the [tests-e2e README](../tests-e2e/README.md#guardian-transfer)) drives the
+transfer through `fa-cli` against real `fedimintd` children, and checks that
+the federation keeps working with the moved guardian. It observes that one
+transfer completes; it does not show when the source's `fedimintd` stops.
 That a real `fedimintd` exits with the boundary code only after its last
 session completed is the pinned Fedimint fork's contract, unit-tested there
-at the request and consensus-engine level; no native end-to-end transfer
-between two MGs runs in this tree. Treat the tests above as boundary
-coverage, not as evidence of a native handover.
+at the request and consensus-engine level.
 
 ## Memory profiling
 

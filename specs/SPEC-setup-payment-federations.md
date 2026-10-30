@@ -155,13 +155,21 @@ replacement ordering as the new shared high-water mark.
   other invalid field, so consumers keep the policy they hold; the publisher
   refuses to sign it. MG and FA releases from 0.1.1 on admit unknown fields
   and ignore it, so a 0.1.8 MG keeps advertising; and
-- `guardian_transfer`, a boolean that lets MGs start new guardian transfers
+- `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
+  guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
   Optional: absent means the Manifold environment's default, on in
-  development and staging and off in production. Transfers an MG already stored continue
-  whatever it says. MG and FA releases from 0.1.1 on admit unknown fields
-  and ignore it; only the initial release rejects a publication that sets
-  it.
+  development and staging and off in production. MGs continue transfers they
+  already stored regardless of the flag. Older MGs and FAs that admit unknown
+  fields ignore it.
+  The retired `guardian_transfer` field must never be set to `true` in
+  production: MG 0.1.9 and older FA transfer readers use it to enable the old,
+  incompatible `TransferSeat` shape. A production policy enabling the new
+  flag must also set `min_mg_version` to the first release with the new shape.
+  MGs that understand this minimum stop advertising new seats when below it;
+  older readers may still advertise. Upgrade both transfer endpoints before
+  activation; the minimum version is not a transfer protocol handshake or
+  recovery mechanism for existing mixed-version transfers.
 
 Neither seat field changes the operator's own maximum. Each MG sells up to
 the lowest of the operator maximum and its runtime limits
@@ -263,10 +271,10 @@ cross-environment restart before reading environment-derived policy
 ([SPEC-manifold-environment](../crates/manifold-environment/specs/SPEC-manifold-environment.md)).
 
 This helper bounds event content before signature verification. Relay and
-transport code must additionally bound the complete incoming event frame,
+transport code must also bound the complete incoming event frame,
 including tags, before invoking admission. FA relay and CLI transports reject a
-normalized complete event larger than 256 KiB. Relay lookup observes at most 16
-candidates and retains at most 4 MiB across one common-set query.
+normalized complete event larger than 64 KiB. Relay lookup observes at most 16
+candidates and retains at most 1 MiB per common-set query.
 
 ## Convergence boundary
 

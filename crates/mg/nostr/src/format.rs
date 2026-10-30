@@ -590,7 +590,9 @@ pub fn recover_from_events(
                 .transfer
                 .as_ref()
                 .and_then(|transfer| transfer.outgoing.as_ref())
-                .is_some_and(|outgoing| outgoing.removed)
+                .is_some_and(|outgoing| {
+                    outgoing.phase == mg_core::transfer_state::OutgoingTransfer::Removed
+                })
             {
                 // A removed source's tombstone drops its archive reference,
                 // but addressable slices cannot be deleted from a relay

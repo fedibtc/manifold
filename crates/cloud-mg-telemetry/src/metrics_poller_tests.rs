@@ -173,6 +173,7 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
         BadSeatFailure::Delayed,
         false,
         Duration::from_secs(1),
+        Some("deadline"),
     )
     .await;
     assert_eq!(exported.len(), 1);
@@ -186,6 +187,7 @@ async fn a_seat_invite_without_a_canonical_form_is_scraped_and_not_exported() {
         BadSeatFailure::Delayed,
         false,
         Duration::from_secs(1),
+        Some("deadline"),
     )
     .await;
     assert!(exported.is_empty());
@@ -193,13 +195,16 @@ async fn a_seat_invite_without_a_canonical_form_is_scraped_and_not_exported() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_seat_does_not_suppress_a_later_healthy_snapshot() {
-    for failure in [
-        BadSeatFailure::MissingInvite,
-        BadSeatFailure::InvalidInvite,
-        BadSeatFailure::HttpFailure,
-        BadSeatFailure::RejectedMetrics,
+    // Invite and policy failures have their own admission events, so only an
+    // unusable scrape response is a collection failure.
+    for (failure, stage) in [
+        (BadSeatFailure::MissingInvite, None),
+        (BadSeatFailure::InvalidInvite, None),
+        (BadSeatFailure::HttpFailure, Some("scrape")),
+        (BadSeatFailure::RejectedMetrics, None),
     ] {
-        assert_healthy_seat_survives(VALID_INVITE, failure, true, Duration::from_secs(5)).await;
+        assert_healthy_seat_survives(VALID_INVITE, failure, true, Duration::from_secs(5), stage)
+            .await;
     }
 }
 
@@ -210,6 +215,7 @@ async fn assert_healthy_seat_survives(
     bad_failure: BadSeatFailure,
     bad_first: bool,
     budget: Duration,
+    failed_stage: Option<&str>,
 ) -> Vec<crate::store::ExportedFederation> {
     let good_seat = SeatId::new("22".repeat(32)).unwrap();
     let bad_seat = SeatId::new("33".repeat(32)).unwrap();
@@ -290,6 +296,7 @@ async fn assert_healthy_seat_survives(
     let started = tokio::time::Instant::now();
     let commit = poller.collect_target(&target, started + budget).await;
     assert!(started.elapsed() < budget + Duration::from_secs(1));
+    assert_collection_failures(&poller, failed_stage);
     assert!(!commit.complete);
     assert_eq!(commit.snapshots.len(), 1);
     assert_eq!(commit.snapshots[0].guardian_seat_id, good_seat.to_string());
@@ -327,6 +334,87 @@ async fn assert_healthy_seat_survives(
     let exported = store.exported_federations(101).await.unwrap();
     router.shutdown().await.unwrap();
     exported
+}
+
+/// Asserts that exactly `stage` counted one collection failure.
+fn assert_collection_failures(poller: &MetricsPoller, stage: Option<&str>) {
+    let mut rendered = String::new();
+    poller.observability().render(&mut rendered, 0).unwrap();
+    for label in ["connect", "list", "scrape", "deadline", "saturated"] {
+        let count = u64::from(stage == Some(label));
+        let line = format!(
+            "cloud_fman_telemetry_metrics_collection_failures_total{{stage=\"{label}\"}} {count} 0"
+        );
+        assert!(rendered.contains(&line), "{line} missing from\n{rendered}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_expiry_counts_one_deadline_failure_and_no_rejection() {
+    // The policy fails with the same opaque error when its cooperative
+    // deadline expires. A real end-to-end race between the scrape and the
+    // admission deadline would be timing-dependent, so this exercises the
+    // admission-error branch with a budget that has and has not run out.
+    let directory = tempfile::tempdir().unwrap();
+    let (store, _, _) = registered_test_store(&directory).await;
+    let poller = test_poller(store).await;
+    let rendered = |poller: &MetricsPoller| {
+        let mut output = String::new();
+        poller.observability().render(&mut output, 0).unwrap();
+        output
+    };
+
+    let expired = tokio::time::Instant::now();
+    let mut failures = FailureRecorder::new(&poller.observability, expired);
+    assert_eq!(
+        poller.admission_failed(&mut failures, expired),
+        AdmissionFailure::BudgetExhausted
+    );
+    assert_collection_failures(&poller, Some("deadline"));
+    assert!(
+        rendered(&poller)
+            .contains("cloud_fman_telemetry_metrics_admission_total{event=\"rejected\"} 0 0")
+    );
+
+    let open = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut failures = FailureRecorder::new(&poller.observability, open);
+    assert_eq!(
+        poller.admission_failed(&mut failures, open),
+        AdmissionFailure::Rejected
+    );
+    assert_collection_failures(&poller, Some("deadline"));
+    assert!(
+        rendered(&poller)
+            .contains("cloud_fman_telemetry_metrics_admission_total{event=\"rejected\"} 1 0")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreachable_target_counts_one_connect_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    // The registered target's endpoint id does not parse, so no dial starts.
+    let (store, _, now) = registered_test_store(&directory).await;
+    let poller = test_poller(store.clone()).await;
+    let scheduled = store.due_metric_targets(now).await.unwrap().remove(0);
+    assert!(
+        store
+            .reserve_metric_attempt(&scheduled, now, 1800)
+            .await
+            .unwrap()
+    );
+    let target = store
+        .begin_collection_work(&scheduled, now)
+        .await
+        .unwrap()
+        .unwrap();
+    let commit = poller
+        .collect_target(
+            &target,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+    assert!(commit.snapshots.is_empty());
+    assert_collection_failures(&poller, Some("connect"));
 }
 
 #[test]

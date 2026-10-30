@@ -15,6 +15,15 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
+It never contains an open guardian transfer: the seats change only when a
+transfer puts its destination in the seat list, after consensus confirmed
+the new binding. It lists every past host: the MG identity, and the verified
+badge holder when known, of each source that a guardian transfer moved a peer
+away from. Destination selection excludes them, because a past host may still
+hold its key share. An empty list is omitted from the encoding, so a payload
+without one keeps its earlier bytes and older readers. The writer applies the
+same validation as restore before it seals a payload, so a payload that
+restore refuses is never published.
 
 The payload omits FA identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
@@ -23,8 +32,10 @@ terminal liquidity history, and all secrets or spendable value. Restore keeps
 locators exactly; later operation-specific trust checks do not refresh them
 from advertisements.
 
-A snapshot becomes eligible only after the existing formed-metadata target is
-confirmed. There is no deletion, tombstone, or second federation payload.
+The FA's formed federation record holds this payload. Formation writes the
+record when consensus confirms the formed-metadata target, and import writes it
+from a backup. A snapshot is eligible only from that record. There is no
+deletion, tombstone, or second federation payload.
 
 ## Sealed document and relay reconciliation
 
@@ -58,15 +69,23 @@ When opened with a restored-mnemonic hint, `fa-client` starts the lookup and
 retries failures in its own task group while holding its mutation guard.
 New-seed openings skip recovery.
 
-A restored payload imports local recovery state as `Unsynced`; reconciliation
+A restored payload imports the formed federation record as `Unsynced`; reconciliation
 gates mutations until fresh guardian consensus confirms the saved federation
 identity and complete signed seat-binding directory. It checks the saved MG
-identities and any liquidity commitment against that directory. If the saved
-invite cannot reach consensus, recovery signs invite requests through the saved
-manager locators and tries alternatives for the same federation without
-requiring every manager online or every seat healthy. Verified guardian
-addresses are remembered only in memory for subsequent reads; the backup and
-signed liquidity commitment remain unchanged.
+identities and any liquidity commitment against that directory. A saved
+invite from an older formation can name one guardian, and recovery then needs
+that guardian online. After it
+verifies consensus, reconciliation saves the invite of the verified config:
+the f+1 lowest guardians at their current endpoints. The next backup carries
+that invite. A restored record has no backup generation of its own yet, so a
+changed invite advances the imported generation; a later restore then prefers
+the refreshed backup. The signed liquidity commitment stays unchanged; it is matched by
+federation id, not by invite.
+A restored seat list that disagrees with consensus, for example because a
+guardian transfer reached consensus before its new seat list reached the
+relays, fails reconciliation. The restored FA then cannot manage the
+federation. This is an accepted loss, as for a formation lost before its
+backup.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FA expose fresh post-formed authority and hydrate the

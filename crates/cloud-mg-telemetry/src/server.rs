@@ -16,7 +16,6 @@ use axum::{
     routing::{get, post},
 };
 use fedi_decentralized_domain::ProtocolV1;
-use fedi_decentralized_manifold_environment::MANIFOLD_ENVIRONMENT_PROFILE_REVISION;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_manifold_guardian::{
     GuardianTelemetryRegistrationRequest, GuardianTelemetryRegistrationResponse,
@@ -40,6 +39,7 @@ use crate::{
     metrics_snapshot::render_metrics,
     mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
     store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
+    store_binding::store_binding_label,
 };
 
 const REGISTRATION_PATH: &str = "/v1/telemetry/registrations";
@@ -155,7 +155,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let key = read_key(&args.key_file)?;
     let store = Store::open(
         &args.data_dir.join("state.sqlite"),
-        &format!("{environment}:profile-{MANIFOLD_ENVIRONMENT_PROFILE_REVISION}"),
+        &store_binding_label(environment),
         SecretCipher::new(&key),
         args.key_id.clone(),
         args.lease_seconds,

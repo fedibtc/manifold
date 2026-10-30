@@ -198,13 +198,16 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
 
-    /// Whether MGs start new guardian transfers. Optional on the wire:
+    /// Whether MGs start new direct-proof guardian transfers. Optional on the wire:
     /// absent, the Manifold environment's default applies (on in development
     /// and staging, off in production). Transfers an MG already stored run to
     /// completion either way
     /// ([`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md)).
+    ///
+    /// The retired `guardian_transfer` field must never be true in production:
+    /// older consumers use it to enable the incompatible proofless RPC shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guardian_transfer: Option<bool>,
+    pub guardian_transfer_v2: Option<bool>,
 
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
@@ -228,7 +231,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
-    guardian_transfer: Option<bool>,
+    guardian_transfer_v2: Option<bool>,
     min_mg_version: Option<MgVersion>,
 }
 
@@ -337,7 +340,7 @@ impl AdmittedSetupPaymentFederations {
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
-            guardian_transfer: content.guardian_transfer,
+            guardian_transfer_v2: content.guardian_transfer_v2,
             min_mg_version: content.min_mg_version,
         })
     }
@@ -418,12 +421,12 @@ impl AdmittedSetupPaymentFederations {
         self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
     }
 
-    /// Return the published guardian-transfer flag. `None` when the event
+    /// Return the published direct-proof guardian-transfer flag. `None` when the event
     /// omits it; the Manifold environment then supplies the default
-    /// (`ManifoldEnvironment::guardian_transfer`).
+    /// (`ManifoldEnvironment::guardian_transfer_v2`).
     #[must_use]
-    pub fn guardian_transfer(&self) -> Option<bool> {
-        self.guardian_transfer
+    pub fn guardian_transfer_v2(&self) -> Option<bool> {
+        self.guardian_transfer_v2
     }
 
     /// Return the oldest MG release that may advertise new seats, or `None`

@@ -52,6 +52,52 @@ impl AdmissionOutcome {
     }
 }
 
+/// The collection stage at which one target poll lost data before admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CollectionFailure {
+    /// No authenticated connection to the MG.
+    Connect,
+    /// The seat listing failed or was malformed.
+    List,
+    /// One seat's scrape failed or returned an unusable response.
+    Scrape,
+    /// The target budget ran out; recorded at most once per target poll.
+    Deadline,
+    /// The persisted-state cap left at least one observation unstored;
+    /// recorded at most once per target poll.
+    Saturated,
+}
+
+impl CollectionFailure {
+    const ALL: [Self; 5] = [
+        Self::Connect,
+        Self::List,
+        Self::Scrape,
+        Self::Deadline,
+        Self::Saturated,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Connect => 0,
+            Self::List => 1,
+            Self::Scrape => 2,
+            Self::Deadline => 3,
+            Self::Saturated => 4,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::List => "list",
+            Self::Scrape => "scrape",
+            Self::Deadline => "deadline",
+            Self::Saturated => "saturated",
+        }
+    }
+}
+
 /// Process-local fixed-cardinality admission counters and diagnostic limiter.
 #[derive(Clone, Default)]
 pub(crate) struct MetricsObservability {
@@ -61,6 +107,7 @@ pub(crate) struct MetricsObservability {
 #[derive(Default)]
 struct MetricsObservabilityInner {
     counts: [AtomicU64; 6],
+    collection_failures: [AtomicU64; 5],
     last_rejection_diagnostic: Mutex<Option<Instant>>,
 }
 
@@ -86,7 +133,12 @@ impl MetricsObservability {
         }
     }
 
-    /// Render the complete fixed-cardinality Prometheus counter family.
+    /// Record one collection failure. It carries no target or error detail.
+    pub(crate) fn record_collection_failure(&self, failure: CollectionFailure) {
+        self.inner.collection_failures[failure.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Render the complete fixed-cardinality Prometheus counter families.
     pub(crate) fn render(&self, output: &mut String, now_ms: i64) -> Result<(), std::fmt::Error> {
         output.push_str("# HELP cloud_fman_telemetry_metrics_admission_total Guardian metrics projection events by bounded category.\n");
         output.push_str("# TYPE cloud_fman_telemetry_metrics_admission_total counter\n");
@@ -103,6 +155,16 @@ impl MetricsObservability {
                 "cloud_fman_telemetry_metrics_admission_total{{event=\"{}\"}} {} {now_ms}",
                 outcome.label(),
                 self.inner.counts[outcome.index()].load(Ordering::Relaxed),
+            )?;
+        }
+        output.push_str("# HELP cloud_fman_telemetry_metrics_collection_failures_total Guardian metrics target-poll failures by collection stage.\n");
+        output.push_str("# TYPE cloud_fman_telemetry_metrics_collection_failures_total counter\n");
+        for failure in CollectionFailure::ALL {
+            writeln!(
+                output,
+                "cloud_fman_telemetry_metrics_collection_failures_total{{stage=\"{}\"}} {} {now_ms}",
+                failure.label(),
+                self.inner.collection_failures[failure.index()].load(Ordering::Relaxed),
             )?;
         }
         Ok(())

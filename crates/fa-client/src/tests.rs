@@ -2,7 +2,9 @@ mod callback;
 mod discovery;
 mod maintenance;
 mod recovery_policy;
+mod seat_purchase;
 mod selection;
+mod transfer;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::pending;
@@ -776,6 +778,10 @@ struct CreateRecord {
 
 #[derive(Default)]
 struct MgState {
+    /// What the guardians report from `fedimintd_version`, when a test sets it.
+    guardian_versions: Mutex<Option<Vec<String>>>,
+    /// Invites through which `fedimintd_version` reaches no guardian.
+    unreachable_version_invites: Mutex<HashSet<String>>,
     connect_calls: AtomicUsize,
     connect_attempts: Mutex<HashMap<usize, usize>>,
     fail_connect_on_attempt: Mutex<Option<(usize, usize)>>,
@@ -819,6 +825,7 @@ struct MgState {
     release_accepts: AtomicBool,
     create_release: Notify,
     disagreeing_invite: AtomicBool,
+
     /// Seat index -> the exact (key, value) that seat accepted.
     meta_submissions: Mutex<HashMap<usize, (String, String)>>,
     /// Seat index -> the exact guardian-fee policy that seat accepted.
@@ -867,10 +874,22 @@ struct MgState {
     attest_foreign_peer: AtomicBool,
     /// Seat 0 signs an account different from its earlier signed acceptance.
     attest_wrong_fee_account: AtomicBool,
+    /// Sign every attestation with a new `issued_at`, as real MGs do.
+    attest_with_fresh_timestamps: AtomicBool,
+    /// The federation stops answering once a transfer binding has votes.
+    consensus_down_after_binding_votes: AtomicBool,
     /// One entry per public trust-material request, preserving the MG queried.
     trust_material_requests: Mutex<Vec<usize>>,
     /// Corrupt the first MG trust-material response signature.
     corrupt_trust_material_signature: AtomicBool,
+    /// Per-MG seat status; absent reports `Running`.
+    seat_statuses: Mutex<HashMap<usize, ServiceStatus>>,
+    /// Every accepted `PullSeat`, by destination MG.
+    pull_requests: Mutex<Vec<(usize, PullSeatRequest)>>,
+    /// Seat index -> the moved-peer attestation that seat voted for.
+    binding_votes: Mutex<HashMap<usize, fedi_decentralized_domain::MgPeerAttestation>>,
+    /// Every accepted `RemoveSeat`, by MG.
+    removed_seats: Mutex<Vec<(usize, SeatId)>>,
 }
 
 #[derive(Clone)]
@@ -1354,34 +1373,109 @@ impl ManifoldGuardianService for TestMg {
 
     async fn pull_seat(
         &self,
-        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::PullSeatRequest>,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::PullSeatResponse> {
-        unsupported_test_verb("PullSeat")
+        request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        // Like the real MG, the first pull binds the seat to its move and
+        // completion callback. A later pull must carry a grant for the same
+        // move, signed at any time, and the same callback.
+        let grant_move = |pull: &PullSeatRequest| {
+            let mut grant = pull
+                .grant
+                .clone()
+                .verify(Timestamp(test_now_secs()))
+                .map(|grant| grant.into_inner());
+            if let Ok(grant) = &mut grant {
+                grant.ts = Timestamp(0);
+            }
+            grant.ok()
+        };
+        let another_move = self
+            .state
+            .pull_requests
+            .lock()
+            .expect("test lock")
+            .iter()
+            .any(|(index, earlier)| {
+                *index == self.index
+                    && earlier.seat_id == request.seat_id
+                    && (earlier.completion_callback != request.completion_callback
+                        || grant_move(earlier) != grant_move(&request))
+            });
+        if another_move {
+            return Err(ManifoldGuardianError::SeatTransferGrantMismatch);
+        }
+        self.state
+            .seat_statuses
+            .lock()
+            .expect("test lock")
+            .insert(self.index, ServiceStatus::AwaitingTransfer);
+        self.state
+            .pull_requests
+            .lock()
+            .expect("test lock")
+            .push((self.index, request));
+        Ok(PullSeatResponse)
     }
 
     async fn transfer_seat(
         &self,
-        _request: MgSignedRequest<
-            fedi_decentralized_service_manifold_guardian::TransferSeatRequest,
-        >,
+        _request: fedi_decentralized_service_manifold_guardian::TransferSeatCall,
     ) -> FmResult<fedi_decentralized_service_manifold_guardian::TransferSeatResponse> {
         unsupported_test_verb("TransferSeat")
     }
 
     async fn replace_seat_binding(
         &self,
-        _request: SignedRequest<
-            fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingRequest,
-        >,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingResponse> {
-        unsupported_test_verb("ReplaceSeatBinding")
+        request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        if let Some(error) = self
+            .state
+            .meta_terminal_errors
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+        {
+            return Err(error);
+        }
+        let current = self
+            .state
+            .meta_consensus_raw
+            .lock()
+            .expect("test lock")
+            .clone();
+        let actual_base = MetaConsensusBase::from_consensus(current.as_deref().map(|value| {
+            (
+                self.state.meta_consensus_revision.load(Ordering::SeqCst),
+                value,
+            )
+        }));
+        if request.expected_base != actual_base {
+            return Err(ManifoldGuardianError::MetaConsensusChanged);
+        }
+        self.state
+            .binding_votes
+            .lock()
+            .expect("test lock")
+            .insert(self.index, request.seat_binding.attestation);
+        Ok(ReplaceSeatBindingResponse)
     }
 
     async fn remove_seat(
         &self,
-        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::RemoveSeatRequest>,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::RemoveSeatResponse> {
-        unsupported_test_verb("RemoveSeat")
+        request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        self.state
+            .removed_seats
+            .lock()
+            .expect("test lock")
+            .push((self.index, request.seat_id));
+        Ok(RemoveSeatResponse {
+            already_removed: false,
+        })
     }
 
     async fn restart_dkg(
@@ -1400,7 +1494,14 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetStatusResponse {
-            status: ServiceStatus::Running,
+            status: self
+                .state
+                .seat_statuses
+                .lock()
+                .expect("test lock")
+                .get(&self.index)
+                .cloned()
+                .unwrap_or(ServiceStatus::Running),
             detail: StatusDetail::None,
             seat_health: Some(SeatHealth::Healthy),
         })
@@ -1436,6 +1537,7 @@ impl ManifoldGuardianService for TestMg {
         let foreign = self.index == 0 && self.state.attest_foreign_peer.load(Ordering::SeqCst);
         let wrong_fee_account =
             self.index == 0 && self.state.attest_wrong_fee_account.load(Ordering::SeqCst);
+        let call = self.state.attestation_calls.load(Ordering::SeqCst) as u64;
         let mut attestation = if foreign {
             foreign_peer_attestation()
         } else if let Some(peer) = self
@@ -1452,8 +1554,17 @@ impl ManifoldGuardianService for TestMg {
         } else {
             test_attestation_for_peer(self.index, 0)
         };
+        let fresh_timestamp = self
+            .state
+            .attest_with_fresh_timestamps
+            .load(Ordering::SeqCst);
+        if fresh_timestamp {
+            attestation.attestation.issued_at = Timestamp(1_700_000_000 + call);
+        }
         if wrong_fee_account {
             attestation.attestation.guardian_fee_account = guardian_fee_account(60);
+        }
+        if wrong_fee_account || fresh_timestamp {
             let message = nostr_sdk::secp256k1::Message::from_digest(
                 attestation
                     .attestation
@@ -1888,6 +1999,12 @@ struct TestConsensusReader {
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
     reads_before_meta_advance: Arc<AtomicUsize>,
     revision_bump_after_next_read: Arc<AtomicU64>,
+    /// Reads that never complete, consumed before any other behavior.
+    stalled_reads: Arc<AtomicUsize>,
+    /// How long every completing read takes.
+    read_delay: Arc<Mutex<Duration>>,
+    /// Every started consensus read.
+    started_reads: Arc<AtomicUsize>,
 }
 
 impl TestConsensusReader {
@@ -1903,7 +2020,18 @@ impl TestConsensusReader {
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
             reads_before_meta_advance: Arc::new(AtomicUsize::new(0)),
             revision_bump_after_next_read: Arc::new(AtomicU64::new(0)),
+            stalled_reads: Arc::new(AtomicUsize::new(0)),
+            read_delay: Arc::new(Mutex::new(Duration::ZERO)),
+            started_reads: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    fn stall_next(&self, count: usize) {
+        self.stalled_reads.store(count, Ordering::SeqCst);
+    }
+
+    fn delay_reads(&self, delay: Duration) {
+        *self.read_delay.lock().expect("test lock") = delay;
     }
 
     fn check_invite(&self, invite: &InviteCode) -> Result<(), FederationConsensusError> {
@@ -2004,6 +2132,15 @@ impl TestConsensusReader {
             .map(|(field, _)| field)
     }
 
+    fn agreed_binding_replacement(&self) -> Option<fedi_decentralized_domain::MgPeerAttestation> {
+        let votes = self.state.binding_votes.lock().expect("test lock");
+        let threshold = test_federation_seats().consensus_threshold() as usize;
+        votes
+            .values()
+            .find(|vote| votes.values().filter(|other| other == vote).count() >= threshold)
+            .cloned()
+    }
+
     fn agreed_fee_policy(&self) -> Option<(u64, String)> {
         let submissions = self.state.fee_submissions.lock().expect("test lock");
         let threshold = test_federation_seats().consensus_threshold() as usize;
@@ -2035,7 +2172,34 @@ impl FederationConsensusReader for TestConsensusReader {
         &self,
         invite_code: &InviteCode,
     ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
+        self.started_reads.fetch_add(1, Ordering::SeqCst);
+        if self
+            .stalled_reads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            std::future::pending::<()>().await;
+        }
+        let delay = *self.read_delay.lock().expect("test lock");
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         self.check_invite(invite_code)?;
+        if self
+            .state
+            .consensus_down_after_binding_votes
+            .load(Ordering::SeqCst)
+            && !self
+                .state
+                .binding_votes
+                .lock()
+                .expect("test lock")
+                .is_empty()
+        {
+            return Err(FederationConsensusError::new("test federation unreachable"));
+        }
         if self
             .failures
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
@@ -2115,6 +2279,36 @@ impl FederationConsensusReader for TestConsensusReader {
             self.adopt(next.clone());
             meta_value = Some(next);
         }
+        if let Some(attestation) = self.agreed_binding_replacement()
+            && let Some(current) = meta_value.clone()
+        {
+            let mut fields: BTreeMap<String, serde_json::Value> =
+                serde_json::from_slice(&current).expect("test metadata is valid JSON");
+            let field = |key: &str| match &fields[key] {
+                serde_json::Value::String(value) => value.clone(),
+                _ => panic!("test metadata field is a string"),
+            };
+            let fedi_decentralized_service_manifold_guardian::ReboundSeat {
+                seat_bindings: directory,
+                recipients,
+            } = rebind_transferred_seat(
+                &field(fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY),
+                &field(GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY),
+                &attestation,
+            )
+            .expect("test rebind applies");
+            fields.insert(
+                fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String(directory),
+            );
+            fields.insert(
+                GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String(recipients),
+            );
+            let next = serde_json::to_vec(&fields).expect("test metadata serializes");
+            self.adopt(next.clone());
+            meta_value = Some(next);
+        }
         // The returned occurrence pairs the bytes above with the revision as
         // of this read; the deferred advances below only affect what later
         // reads and enforcing guardians observe.
@@ -2167,6 +2361,29 @@ impl FederationConsensusReader for TestConsensusReader {
             })
             .collect::<Result<BTreeSet<_>, _>>()
             .map(|urls| urls.into_iter().collect())
+    }
+
+    async fn read_fedimintd_versions(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<Vec<String>, FederationConsensusError> {
+        self.check_invite(invite_code)?;
+        if self
+            .state
+            .unreachable_version_invites
+            .lock()
+            .expect("test lock")
+            .contains(&invite_code.0)
+        {
+            return Err(FederationConsensusError::new("test guardian unreachable"));
+        }
+        Ok(self
+            .state
+            .guardian_versions
+            .lock()
+            .expect("test lock")
+            .clone()
+            .unwrap_or_else(|| vec![fedimintd_version().to_string(); MIN_FEDERATION_SIZE.into()]))
     }
 }
 
@@ -2265,6 +2482,8 @@ fn setup_payment_keys() -> Keys {
         .expect("fixed test setup-payment key is valid")
 }
 
+/// A setup-payment policy over `invites` that lets MGs start guardian
+/// transfers.
 fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
     setup_payment_raw_event(
         created_at,
@@ -2274,6 +2493,7 @@ fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
             "federations": invites,
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
+            "guardian_transfer_v2": true,
         })
         .to_string(),
     )
@@ -3255,7 +3475,7 @@ async fn formed_client_for_liquidity() -> (
         )
         .await
         .expect("form selected test federation");
-    let formation_id = formation(&client.status()).formation_id.clone();
+    let formation_id = formed(&client.status()).formation_id.clone();
     let provider = TestLiquidityProviderState::new(client.inner.store.clone());
     (
         client,
@@ -3313,12 +3533,22 @@ async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() 
         ])
     );
 
-    client
-        .inner
-        .store
-        .unconfirm_formation_meta_target_for_test()
-        .await;
-    assert!(client.inner.store.backup_payload().await.is_err());
+    // A formation that is not formed has no backup.
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    mg_state.disagreeing_invite.store(true, Ordering::SeqCst);
+    let unformed = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state,
+        MgConfig::given_away(),
+    )
+    .await;
+    unformed
+        .create_at(intent(), locators(), options())
+        .await
+        .expect_err("guardians that disagree on the federation do not form it");
+    assert!(unformed.inner.store.backup_payload().await.is_err());
 }
 
 async fn open_with_backup_recovery_hint(
@@ -3344,6 +3574,22 @@ async fn open_with_backup_recovery_hint(
     )
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn shutdown_returns_once_the_backup_workers_have_stopped() {
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let client = open_with_backup_recovery_hint(
+        MemDatabase::new().into_database(),
+        BackupRecoveryHint::Skip,
+    )
+    .await;
+    assert!(
+        metrics.num_alive_tasks() > 0,
+        "the staging profile starts backup workers"
+    );
+    client.shutdown().await;
+    assert_eq!(metrics.num_alive_tasks(), 0);
 }
 
 #[tokio::test]
@@ -3513,11 +3759,20 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             .await,
         "the authenticated import and completion record commit together"
     );
-    let FaStatus::Restored(snapshot) = restored.status() else {
+    let FaStatus::Formed(snapshot) = restored.status() else {
         panic!("restored status");
     };
     assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
-    assert_eq!(snapshot.snapshot_generation, 4);
+    assert_eq!(
+        restored
+            .inner
+            .store
+            .formed_federation_payload(restored.inner.ports.identity.public_key().unwrap())
+            .await
+            .unwrap()
+            .snapshot_generation,
+        4
+    );
     let profile = ManifoldEnvironment::Production.profile().unwrap();
     assert_eq!(
         crate::backup_worker::restore_from_relays(
@@ -3578,7 +3833,7 @@ async fn backup_import_keeps_cached_policy_and_waits_only_for_live_lease() {
         .restore_backup_payload_with_completion(TestIdentity::fa_id(), payload, Some(&key))
         .await
         .unwrap();
-    assert!(matches!(status, FaStatus::Restored(_)));
+    assert!(matches!(status, FaStatus::Formed(_)));
     assert!(store.recovery_completed(&key).await);
     assert_eq!(
         store
@@ -3617,24 +3872,31 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
         .unwrap();
     restored.inner.progress.send_replace(status);
 
-    let FaRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
+    let FaRecovery::Formed(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
     else {
         panic!("expected restored recovery");
     };
     assert!(!snapshot.backup_eligible);
+    assert_eq!(snapshot.origin, crate::FormedOrigin::Backup);
+    assert_eq!(
+        formed(&source.status()).origin,
+        crate::FormedOrigin::ThisDevice
+    );
 
     restored
         .inner
         .store
-        .reconcile_restored_backup(fa_id, None)
+        .reconcile_formed_federation(fa_id, None, snapshot.federation_invite.clone())
         .await
         .unwrap();
 
-    let FaRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
+    let FaRecovery::Formed(snapshot) = restored.inner.store.load_recovery(fa_id).await.unwrap()
     else {
         panic!("expected restored recovery");
     };
     assert!(snapshot.backup_eligible);
+    // Reconciliation proves the seats, not where the record came from.
+    assert_eq!(snapshot.origin, crate::FormedOrigin::Backup);
 }
 
 #[tokio::test]
@@ -3669,7 +3931,7 @@ async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
             .unwrap();
         restored.inner.progress.send_replace(status);
         restored.resume().await.unwrap();
-        let FaStatus::Restored(snapshot) = restored.status() else {
+        let FaStatus::Formed(snapshot) = restored.status() else {
             panic!("restored status");
         };
         assert_eq!(
@@ -3763,13 +4025,19 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .await
         .unwrap();
     restored.inner.progress.send_replace(status);
-    let FaStatus::Restored(imported) = restored.status() else {
+    let FaStatus::Formed(imported) = restored.status() else {
         panic!("restored status");
     };
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
-    assert_eq!(imported.phase, FormationPhase::Formed);
     let restored_formation_id = imported.formation_id.clone();
-    let restored_generation = imported.snapshot_generation;
+    let restored_generation = restored
+        .inner
+        .store
+        .formed_federation_payload(fa_id)
+        .await
+        .unwrap()
+        .snapshot_generation;
+    let restored_invite = imported.federation_invite.clone();
     assert!(
         !imported.backup_eligible,
         "restored snapshot is not backup-eligible before reconciliation"
@@ -3787,7 +4055,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .resume()
         .await
         .expect("verify restored seats through consensus while managers are unreachable");
-    let FaStatus::Restored(reconciled) = restored.status() else {
+    let FaStatus::Formed(reconciled) = restored.status() else {
         panic!("reconciled restored status");
     };
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
@@ -3795,11 +4063,16 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         reconciled.backup_eligible,
         "reconciliation must publish backup_eligible on the live status"
     );
-    assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
-    assert_eq!(republished.payload.snapshot_generation, restored_generation);
+    // Recovery saved the config's endpoints instead of the MGs' addresses, so
+    // the republished backup must win over the restored one.
+    assert_ne!(republished.payload.federation_invite, restored_invite);
+    assert_eq!(
+        republished.payload.snapshot_generation,
+        restored_generation + 1
+    );
     assert_eq!(
         republished.payload.liquidity.as_ref().map(|commitment| {
             liquidity_api::request_liquidity_details_hash(commitment).unwrap()
@@ -3875,7 +4148,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .resume()
         .await
         .expect_err("a failed fresh reconciliation invalidates prior authority");
-    let FaStatus::Restored(invalidated) = restored.status() else {
+    let FaStatus::Formed(invalidated) = restored.status() else {
         panic!("invalidated restored status");
     };
     assert_eq!(invalidated.freshness, FormationFreshness::Unsynced);
@@ -3887,6 +4160,98 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             .is_none(),
         "post-formed mutations remain gated after failed reconciliation",
     );
+}
+
+#[tokio::test]
+async fn reconciliation_saves_the_endpoints_of_the_verified_config() {
+    let (client, _, state, _) = formed_client_for_liquidity().await;
+    // Formation saved the seat MGs' own addresses; consensus names others.
+    client.resume().await.unwrap();
+    let authority = client
+        .post_formed_authority(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    let saved = authority
+        .invite_code
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap();
+    let config = test_federation_config();
+    assert_eq!(saved.federation_id(), config.calculate_federation_id());
+    let expected = config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect::<BTreeMap<_, _>>();
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    assert_eq!(saved.peers(), expected);
+
+    // A recovery with the saved f+1 invite asks no MG.
+    let invite_calls = state.invite_calls.load(Ordering::SeqCst);
+    client.resume().await.unwrap();
+    assert_eq!(state.invite_calls.load(Ordering::SeqCst), invite_calls);
+}
+
+/// A restored FA whose backup, from a formation before f+1 invites, names
+/// only `peer`.
+async fn restored_with_one_guardian_invite(peer: usize) -> (TestClient, Arc<MgState>) {
+    let (source, _, mg_state, _) = formed_client_for_liquidity().await;
+    let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
+    payload.federation_invite = test_invite_for_peer(peer, peer, 0);
+    let (payments, _) = TestPayments::new();
+    let restored = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let fa_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fa_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+    (restored, mg_state)
+}
+
+fn config_invite_peers() -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    // f+1 of 7 guardians, the lowest peer ids, at the config's endpoints.
+    test_federation_config()
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .take(3)
+        .collect()
+}
+
+fn saved_invite_peers(client: &TestClient) -> BTreeMap<PeerId, fedimint_core::util::SafeUrl> {
+    let FaStatus::Formed(snapshot) = client.status() else {
+        panic!("formed status");
+    };
+    snapshot
+        .federation_invite
+        .0
+        .parse::<FedimintInviteCode>()
+        .unwrap()
+        .peers()
+}
+
+#[tokio::test]
+async fn the_first_recovery_moves_a_one_guardian_invite_to_the_verified_config() {
+    let (restored, mg_state) = restored_with_one_guardian_invite(5).await;
+    restored.resume().await.unwrap();
+    assert_eq!(saved_invite_peers(&restored), config_invite_peers());
+
+    // Later recoveries dial the saved f+1 invite and ask no MG.
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    restored.resume().await.unwrap();
+    assert_eq!(mg_state.invite_calls.load(Ordering::SeqCst), invite_calls);
 }
 
 #[tokio::test]
@@ -3950,10 +4315,9 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
                     .contains("identity differs from the saved invite")
             );
         }
-        let FaStatus::Restored(snapshot) = restored.status() else {
+        let FaStatus::Formed(snapshot) = restored.status() else {
             panic!("expected restored status");
         };
-        assert_eq!(snapshot.phase, FormationPhase::Formed);
         assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
         assert!(!snapshot.backup_eligible);
         assert!(
@@ -4201,6 +4565,7 @@ async fn open_client_that_cannot_pay(
         test_peer_badge_verifier(),
         None,
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client")
@@ -4304,6 +4669,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client")
@@ -4338,6 +4704,7 @@ async fn open_client_with_verifier(
         verifier,
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
     .await
     .expect("open test FA client with explicit verifier")
@@ -4366,10 +4733,10 @@ async fn open_client_with_store_and_registry(
     registry: TestRegistry,
 ) -> TestClient {
     let status = store.load_status(TestIdentity::fa_id()).await.unwrap();
+    store.load_guardian_transfer_watch().await;
     let (progress, _) = tokio::sync::watch::channel(status);
     FaClient {
         inner: Arc::new(FaClientInner {
-            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FaClientPorts {
                 identity: TestIdentity,
@@ -4387,6 +4754,8 @@ async fn open_client_with_store_and_registry(
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
+            manifold_environment:
+                fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
             backup_tasks: fedimint_core::task::TaskGroup::new(),
             replacement_checks: replacement_checks::ReplacementChecks::default(),
         }),
@@ -4396,8 +4765,17 @@ async fn open_client_with_store_and_registry(
 fn formation(status: &FaStatus) -> &FormationSnapshot {
     match status {
         FaStatus::Formation(snapshot) => snapshot,
-        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Restored(_) => {
+        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Formed(_) => {
             panic!("expected active formation")
+        }
+    }
+}
+
+fn formed(status: &FaStatus) -> &crate::FormedFederationSnapshot {
+    match status {
+        FaStatus::Formed(snapshot) => snapshot,
+        FaStatus::Idle | FaStatus::Recovery { .. } | FaStatus::Formation(_) => {
+            panic!("expected a formed federation")
         }
     }
 }
@@ -4415,7 +4793,7 @@ fn payment_requirements(status: &FaStatus) -> &PaymentRequirements {
 fn active_recovery(recovery: FaRecovery) -> crate::db::ActiveFormationRecovery {
     match recovery {
         FaRecovery::Formation(recovery) => *recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("expected active formation"),
+        FaRecovery::Idle | FaRecovery::Formed(_) => panic!("expected active formation"),
     }
 }
 
@@ -5107,14 +5485,7 @@ async fn an_fa_that_cannot_pay_forms_against_seats_offered_at_zero() {
         .unwrap();
 
     let status = client.status();
-    let formed = formation(&status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_formed_test_invite(
-        formed
-            .invite_code
-            .as_ref()
-            .expect("formed federation has an invite"),
-    );
+    assert_formed_test_invite(&formed(&status).federation_invite);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -5174,32 +5545,19 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
         .unwrap();
 
     let formed_status = client.status();
-    let formed = formation(&formed_status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(formed.freshness, FormationFreshness::Fresh);
-    assert!(formed.action_required.is_none());
-    assert_formed_test_invite(
-        formed
-            .invite_code
-            .as_ref()
-            .expect("formed federation has an invite"),
-    );
-    assert!(
-        formed
-            .seats
-            .iter()
-            .all(|seat| seat.phase == SeatPhase::Running)
-    );
-    let generated_name = formed.intent.federation_name.clone();
+    let snapshot = formed(&formed_status);
+    assert_eq!(snapshot.freshness, FormationFreshness::Fresh);
+    assert!(snapshot.backup_eligible);
+    assert_formed_test_invite(&snapshot.federation_invite);
+    let generated_name = snapshot
+        .federation_name
+        .clone()
+        .expect("a formation names its federation");
     assert_eq!(generated_name.0.split_whitespace().count(), 2);
 
     let json = serde_json::to_value(&formed_status).unwrap();
-    assert_eq!(json["formation"]["phase"], "formed");
-    assert_eq!(
-        json["formation"]["intent"]["federation_name"],
-        generated_name.0
-    );
-    assert_eq!(json["formation"]["seats"][0]["phase"], "running");
+    assert_eq!(json["formed"]["federation_name"], generated_name.0);
+    assert!(json["formed"].get("phase").is_none());
     assert_eq!(
         serde_json::from_value::<FaStatus>(json).unwrap(),
         formed_status
@@ -5215,23 +5573,20 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
         .store(usize::MAX, Ordering::SeqCst);
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
     let reloaded_status = reopened.status();
-    let reloaded = formation(&reloaded_status);
-    assert_eq!(reloaded.phase, FormationPhase::Formed);
+    let reloaded = formed(&reloaded_status);
     assert_eq!(reloaded.freshness, FormationFreshness::Unsynced);
-    assert_eq!(reloaded.intent.federation_name, generated_name);
-    assert!(
-        reloaded
-            .seats
-            .iter()
-            .all(|seat| seat.freshness == FormationFreshness::Unsynced)
-    );
+    assert_eq!(reloaded.federation_name.as_ref(), Some(&generated_name));
 
     reopened.resume().await.unwrap();
     let reconciled_status = reopened.status();
-    let reconciled = formation(&reconciled_status);
-    assert_eq!(reconciled.phase, FormationPhase::Formed);
+    let reconciled = formed(&reconciled_status);
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
-    assert_eq!(reconciled.intent.federation_name, generated_name);
+    // Reconciliation takes the name from consensus, which the test reader
+    // fixes.
+    assert_eq!(
+        reconciled.federation_name.as_ref(),
+        Some(&crate::FederationName("Test Federation".to_owned()))
+    );
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), create_calls);
     assert_eq!(mg_state.status_calls.load(Ordering::SeqCst), status_calls);
@@ -5259,11 +5614,92 @@ async fn an_already_started_reply_resumes_through_status_instead_of_stranding_fo
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         mg_state.start_callbacks.lock().expect("test lock").len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
+}
+
+/// Stop a formation after it published its metadata, and mark it formed
+/// in place as builds before the formed record did.
+async fn legacy_formed_formation(
+    database: Database,
+    payments: TestPayments,
+    mg_state: Arc<MgState>,
+) -> crate::FormationSnapshot {
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.force_value("{}");
+    let client =
+        open_client_with_reader(database, payments, mg_state, MgConfig::given_away(), reader).await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    assert_eq!(
+        formation(&client.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+    let snapshot = formation(&client.status()).clone();
+    client.inner.store.mark_formation_formed_for_test().await;
+    snapshot
+}
+
+#[tokio::test]
+async fn formed_formation_record_from_an_older_build_converts_on_load() {
+    let database = MemDatabase::new().into_database();
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let legacy =
+        legacy_formed_formation(database.clone(), payments.clone(), mg_state.clone()).await;
+    let create_calls = mg_state.create_calls.load(Ordering::SeqCst);
+
+    let reopened = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let status = reopened.status();
+    let snapshot = formed(&status);
+    assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
+    assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert_eq!(snapshot.formation_id, legacy.formation_id);
+    assert_eq!(
+        Some(&snapshot.federation_invite),
+        legacy.invite_code.as_ref()
+    );
+    assert!(snapshot.federation_name.is_some());
+    assert!(!reopened.inner.store.has_formation_record_for_test().await);
+    // The converted record was never published, so its first backup is
+    // generation 1.
+    assert_eq!(
+        reopened
+            .inner
+            .store
+            .backup_payload()
+            .await
+            .unwrap()
+            .payload
+            .snapshot_generation,
+        1
+    );
+    let formation_id = snapshot.formation_id.clone();
+    drop(reopened);
+
+    // The conversion is durable: a second load reads the formed record.
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    assert_eq!(formed(&reopened.status()).formation_id, formation_id);
+
+    *mg_state.meta_consensus_raw.lock().unwrap() = None;
+    reopened.resume().await.unwrap();
+    assert_eq!(
+        formed(&reopened.status()).freshness,
+        FormationFreshness::Fresh
+    );
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), create_calls);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -5281,26 +5717,13 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
         let database = MemDatabase::new().into_database();
         let (payments, _) = TestPayments::new();
         let mg_state = Arc::new(MgState::default());
-        let client = open_client(
-            database.clone(),
-            payments.clone(),
-            mg_state.clone(),
-            MgConfig::given_away(),
-        )
-        .await;
-        client
-            .create_at(intent(), locators(), options())
-            .await
-            .unwrap();
-
-        client
-            .inner
-            .store
-            .remove_formed_fact_for_test(missing_fact)
-            .await;
+        legacy_formed_formation(database.clone(), payments.clone(), mg_state.clone()).await;
+        let store = FaStore::new(database.clone());
+        store.remove_formed_fact_for_test(missing_fact).await;
+        drop(store);
 
         let reopened = FaClient::open(
-            database,
+            database.clone(),
             TestIdentity,
             payments,
             TestRegistry::default(),
@@ -5317,6 +5740,8 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
             matches!(reopened, Err(FaError::Storage(_))),
             "corrupted terminal fact {missing_fact:?} was accepted"
         );
+        // A failed conversion leaves the old record for a fixed build.
+        assert!(FaStore::new(database).has_formation_record_for_test().await);
     }
 }
 
@@ -5325,16 +5750,19 @@ async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
+    // Guardians that disagree on the federation stop the formation before
+    // its DKG completes.
+    mg_state.disagreeing_invite.store(true, Ordering::SeqCst);
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
     client
         .create_at(intent(), locators(), options())
         .await
-        .unwrap();
+        .expect_err("guardians that disagree on the federation do not form it");
     let formation_id = formation(&client.status()).formation_id.clone();
     client
         .inner
         .store
-        .rewind_formed_without_guardian_for_test()
+        .remove_first_guardian_code_for_test()
         .await;
 
     assert!(matches!(
@@ -6548,7 +6976,7 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
     // refreshes every one of them before the run self-authorizes and spends.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     let refreshed = quote_ids(&mg_state.quote_records.lock().expect("test lock"));
     assert_eq!(refreshed.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(required.is_disjoint(&refreshed));
@@ -6616,7 +7044,7 @@ async fn one_ecash_note_pays_every_seat_and_returns_change_sequentially() {
         .await
         .expect("one note is reused only after each accepted payment returns spendable change");
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         payment_state
             .single_note_balance_msats
@@ -6847,7 +7275,7 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
     );
     assert!(formation(&recovered_status).action_required.is_none());
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -7084,7 +7512,7 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_after_funding
@@ -7272,7 +7700,7 @@ async fn lost_free_create_seat_response_replays_exact_quote_and_allocation() {
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_before_resume
@@ -7317,10 +7745,8 @@ async fn formed_fa_proposes_and_confirms_the_fixed_4_1_1_policy() {
         .unwrap();
 
     let formed_status = client.status();
-    let formed_invite = formation(&formed_status)
-        .invite_code
-        .as_ref()
-        .expect("formed FA persisted its invite");
+    let formed_invite = formed(&formed_status).federation_invite.clone();
+
     let formed_federation_id = formed_invite
         .0
         .parse::<FedimintInviteCode>()
@@ -7845,7 +8271,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
     .await;
     reopened.resume().await.unwrap();
 
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         quote_calls_before_resume,
@@ -7939,7 +8365,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
         )
         .await
         .expect("a newly approved selection can start a fresh formation");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         mg_state
             .create_records
@@ -8035,7 +8461,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         // Let the fake consensus adopt the submitted directory on the next read.
         *state.meta_consensus_raw.lock().unwrap() = None;
         reopened.resume().await.unwrap();
-        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        formed(&reopened.status());
         assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
         assert_eq!(state.create_calls.load(Ordering::SeqCst), seats);
         assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
@@ -8043,7 +8469,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
 }
 
 #[tokio::test]
-async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
+async fn completed_setup_stays_formed_through_failed_rechecks() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let state = Arc::new(MgState::default());
@@ -8070,23 +8496,13 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         reader.clone(),
     )
     .await;
-    // Cancel after the first failed consensus read, while resume waits to retry.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            result = client.resume() => panic!("recheck unexpectedly finished: {result:?}"),
-            () = async {
-                while reader.failures.load(Ordering::SeqCst) == usize::MAX {
-                    tokio::task::yield_now().await;
-                }
-            } => {}
-        }
-    })
-    .await
-    .unwrap();
+    // An unreachable federation fails the recheck. The caller retries.
+    assert!(matches!(
+        client.resume().await,
+        Err(FaError::InvalidManifoldGuardians(message)) if message.contains("unreachable")
+    ));
     let status = client.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert_eq!(formation(&status).freshness, FormationFreshness::Unsynced);
-    assert_eq!(formation(&status).last_error, None);
+    assert_eq!(formed(&status).freshness, FormationFreshness::Unsynced);
     drop(client);
     // Let the cancelled driver's lease cleanup finish before reopening.
     tokio::task::yield_now().await;
@@ -8094,8 +8510,6 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     for fault in ["none", "identity", "directory"] {
         let fail = fault != "none";
         let mut reader = TestConsensusReader::new(state.clone());
-        // Yield during readback so the observer sees the phase while checking.
-        reader.fail_next(1);
         if fault == "identity" {
             reader
                 .config
@@ -8115,9 +8529,8 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
             reader,
         )
         .await;
-        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
         assert_eq!(
-            formation(&client.status()).freshness,
+            formed(&client.status()).freshness,
             FormationFreshness::Unsynced
         );
         let mut observed = client.observe();
@@ -8129,7 +8542,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
                     biased;
                     changed = observed.changed() => {
                         changed.unwrap();
-                        assert_eq!(formation(&observed.borrow_and_update()).phase, FormationPhase::Formed);
+                        formed(&observed.borrow_and_update());
                     }
                     result = &mut operation => break result,
                 }
@@ -8137,9 +8550,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         };
         assert_eq!(result.is_err(), fail);
         let status = client.status();
-        let snapshot = formation(&status);
-        assert_eq!(snapshot.phase, FormationPhase::Formed);
-        assert_eq!(snapshot.last_error.is_some(), fail);
+        let snapshot = formed(&status);
         assert_eq!(
             snapshot.freshness,
             if fail {
@@ -8154,7 +8565,95 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
             .load_status(TestIdentity::fa_id())
             .await
             .unwrap();
-        assert_eq!(formation(&saved).phase, FormationPhase::Formed);
+        formed(&saved);
+    }
+}
+
+#[tokio::test]
+async fn a_formation_without_a_prepared_backup_records_a_publishable_generation() {
+    // An older build reads the formed record as a restored backup and
+    // publishes its generation unchanged when the contents match. No backup
+    // may carry generation 0, so the record must not either.
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(MgState::default());
+    let client = open_client(database, payments, state, MgConfig::given_away()).await;
+    client
+        .create_at(intent(), locators(), options())
+        .await
+        .unwrap();
+
+    let stored = client
+        .inner
+        .store
+        .formed_federation_payload(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    assert_eq!(stored.snapshot_generation, 1);
+    let prepared = client.inner.store.backup_payload().await.unwrap();
+    assert_eq!(prepared.payload.snapshot_generation, 1);
+}
+
+/// Replace one field of the live consensus metadata, or remove it with `None`.
+fn edit_consensus_meta(state: &MgState, key: &str, value: Option<&str>) {
+    let mut raw = state.meta_consensus_raw.lock().expect("test lock");
+    let mut fields: BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(raw.as_deref().expect("formed metadata")).unwrap();
+    match value {
+        Some(value) => fields.insert(key.to_owned(), serde_json::Value::String(value.to_owned())),
+        None => fields.remove(key),
+    }
+    .expect("the field exists before the edit");
+    *raw = Some(serde_json::to_vec(&fields).unwrap());
+}
+
+#[tokio::test]
+async fn a_formed_federation_accepts_changed_fee_metadata() {
+    // Guardians may vote new fee metadata. The recheck verifies the
+    // federation and its seats, not the economics agreed at formation.
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(MgState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), options())
+        .await
+        .unwrap();
+    drop(client);
+    tokio::task::yield_now().await;
+    let original = state.meta_consensus_raw.lock().unwrap().clone();
+
+    for (key, value) in [
+        ("fedi:guardian_fee_send_ppm", Some("12345")),
+        (
+            "fedi:guardian_fee_remittance_account",
+            Some(r#"{"recipients":[]}"#),
+        ),
+        ("fedi:guardian_fee_remittance_account", None),
+    ] {
+        *state.meta_consensus_raw.lock().unwrap() = original.clone();
+        edit_consensus_meta(&state, key, value);
+        let client = open_client(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            MgConfig::given_away(),
+        )
+        .await;
+        client.resume().await.unwrap();
+        assert_eq!(
+            formed(&client.status()).freshness,
+            FormationFreshness::Fresh,
+            "{key} = {value:?}"
+        );
+        drop(client);
+        tokio::task::yield_now().await;
     }
 }
 
@@ -8187,7 +8686,7 @@ async fn an_mg_claiming_a_foreign_peer_is_not_pinned_for_recovery() {
 
     mg_state.attest_foreign_peer.store(false, Ordering::SeqCst);
     client.resume().await.unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8279,7 +8778,7 @@ async fn formed_resume_accepts_a_later_rate_without_fee_account_capabilities() {
     )
     .await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
 }
 
 #[tokio::test]
@@ -8365,7 +8864,7 @@ async fn exact_formation_readback_wins_over_late_already_published() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8401,6 +8900,212 @@ async fn fee_rate_uses_terminal_maintenance_rejection() {
 }
 
 #[tokio::test]
+async fn a_post_dkg_consensus_read_may_outlast_the_request_timeout() {
+    // A large federation's config download and threshold agreement can take
+    // longer than one ordinary MG request; the read must not be cut at it.
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    let read_delay = Duration::from_millis(400);
+    assert!(
+        read_delay > Duration::from_millis(200),
+        "longer than options() request_timeout"
+    );
+    reader.delay_reads(read_delay);
+    let started_reads = reader.started_reads.clone();
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(1),
+        run_timeout: Duration::from_secs(10),
+        request_timeout: Duration::from_millis(200),
+    })
+    .unwrap();
+
+    client
+        .create_at(intent(), locators(), options)
+        .await
+        .unwrap();
+
+    formed(&client.status());
+    let invite_calls = mg_state.invite_calls.load(Ordering::SeqCst);
+    let reads = started_reads.load(Ordering::SeqCst);
+    // No read was abandoned: the config read, the metadata base read and the
+    // confirming read each ran once.
+    assert_eq!(reads, 3, "consensus reads started");
+    assert_eq!(invite_calls, locators().len(), "one invite fetch per seat");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_post_dkg_consensus_read_is_retried_within_the_run() {
+    // A read that hangs is cut at its own budget and retried, instead of
+    // failing the run and repeating MG connection, status and invite calls.
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.stall_next(1);
+    let started_reads = reader.started_reads.clone();
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+
+    client
+        .create_at(intent(), locators(), FormationRunOptions::default())
+        .await
+        .unwrap();
+
+    formed(&client.status());
+    assert_eq!(
+        started_reads.load(Ordering::SeqCst),
+        4,
+        "one stalled read, then three"
+    );
+    assert_eq!(
+        mg_state.invite_calls.load(Ordering::SeqCst),
+        locators().len(),
+        "the run did not restart"
+    );
+}
+
+/// A formation stopped in `PublishingSeatBindings`, as when its run timed
+/// out before the metadata vote reached consensus, reopened on a new client.
+async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> TestClient {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.force_value("{}");
+    let client = open_client_with_reader(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    drop(client);
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    assert_eq!(
+        formation(&reopened.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+    // Let the fake consensus adopt the submitted directory on the next read.
+    *mg_state.meta_consensus_raw.lock().unwrap() = None;
+    reopened
+}
+
+#[tokio::test]
+async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
+    // On a poor network single MG connections fail intermittently. The seats
+    // exist, so one failed dial is retried instead of ending the run.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let connects = mg_state.connect_calls.load(Ordering::SeqCst);
+    mg_state
+        .connect_failures_remaining
+        .store(3, Ordering::SeqCst);
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst) - connects,
+        locators().len() + 3,
+        "every seat connected once, plus one retry per injected failure"
+    );
+}
+
+#[tokio::test]
+async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial() {
+    // A dial that hangs until the request timeout must neither hold back the
+    // other seats' dials nor end the run.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let next = mg_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
+    let effect_log = Arc::new(Mutex::new(Vec::new()));
+    *mg_state.effect_log.lock().unwrap() = Some(effect_log.clone());
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
+        Some(next + 1),
+        "the hung dial was retried once"
+    );
+    let connected: Vec<usize> = effect_log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|effect| match effect {
+            TestEffect::MgConnected(index) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let mut others: Vec<usize> = connected[..connected.len() - 1].to_vec();
+    others.sort_unstable();
+    assert_eq!(
+        (others, connected.last().copied()),
+        ((1..locators().len()).collect::<Vec<_>>(), Some(0)),
+        "every other seat connected while seat 0's first dial hung: {connected:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_post_dkg_resume_still_ends_at_the_deadline_when_an_mg_stays_unreachable() {
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    mg_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
+
+    let started = std::time::Instant::now();
+    let result = reopened.resume_with_options(options()).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(FaError::Mg(MgFailure {
+                operation: MgOperation::Connect,
+                cause: MgCause::Transport,
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "bounded by the 2 s run"
+    );
+    assert_eq!(
+        formation(&reopened.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+}
+
+#[tokio::test]
 async fn a_transient_consensus_read_failure_is_retried() {
     // An unreachable federation is a reason to wait, not to fail a formation
     // whose directory may already be in consensus.
@@ -8423,7 +9128,7 @@ async fn a_transient_consensus_read_failure_is_retried() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -8468,7 +9173,7 @@ async fn pre_payment_abandon_wipes_a_parked_paid_formation_to_idle() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
 }
 
 #[tokio::test]
@@ -8620,21 +9325,10 @@ async fn completed_payment_is_durable_before_the_next_funding_call_starts() {
     );
     drop(effects);
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(
-        recovery
-            .snapshot
-            .seats
-            .iter()
-            .all(|seat| seat.seat_id.is_some()),
+    // A formed federation records a seat id for every seat.
+    assert_eq!(
+        formed(&client.status()).seats.len(),
+        usize::from(MIN_FEDERATION_SIZE),
         "every paid seat is durable after the blocked next payment resumes",
     );
 }
@@ -8952,7 +9646,7 @@ async fn abandon_after_formed_is_a_typed_error() {
         .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 
     let error = client.abandon_formation(options()).await.unwrap_err();
     assert!(
@@ -8962,7 +9656,7 @@ async fn abandon_after_formed_is_a_typed_error() {
         ),
         "{error}"
     );
-    assert!(matches!(client.status(), FaStatus::Formation(_)));
+    assert!(matches!(client.status(), FaStatus::Formed(_)));
 }
 
 #[tokio::test]
@@ -9173,7 +9867,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
                 .resume()
                 .await
                 .expect("recover signatures without another payment");
-            assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+            formed(&reopened.status());
             assert_eq!(
                 payment_state
                     .created_quotes
@@ -9186,7 +9880,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             );
         } else {
             result.expect("payment preparation can outlast a network request");
-            assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+            formed(&client.status());
         }
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
@@ -9213,27 +9907,13 @@ async fn under_cap_paid_formation_self_authorizes_and_forms() {
         .unwrap();
 
     let status = client.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert!(formation(&status).action_required.is_none());
+    formed(&status);
+
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE),
         "the self-authorized run funded every paid seat without an explicit call",
     );
-    // The self-authorization recorded the same durable quote-bound
-    // authorization an explicit call would have written.
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    let (_, authorized) = recovery
-        .test_payment_authorization()
-        .expect("durable aggregate authorization exists");
-    assert_eq!(authorized.len(), usize::from(MIN_FEDERATION_SIZE));
 }
 
 #[tokio::test]
@@ -9254,8 +9934,7 @@ async fn pay_and_create_uses_the_explicit_ready_payer_and_arms_outputs() {
         .await
         .unwrap();
 
-    let status = formation(&client.status()).clone();
-    assert_eq!(status.phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(
         mg_state
             .quote_records
@@ -9265,7 +9944,6 @@ async fn pay_and_create_uses_the_explicit_ready_payer_and_arms_outputs() {
             .all(|record| record.payment_federation_id.as_ref() == Some(&payment_federation_id())),
         "every paid quote must name the explicitly selected payer",
     );
-    assert!(status.payment_outputs_started);
     assert!(payment_state.readiness_calls.load(Ordering::SeqCst) >= 1);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -9292,20 +9970,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
         .await
         .expect("every live MG offers a build in the sealed cohort");
 
-    let formed = formation(&client.status()).clone();
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(
-        formed.intent.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
-    );
-    assert_eq!(
-        formed
-            .intent
-            .fedimintd_versions
-            .maximum_exclusive()
-            .to_string(),
-        "0.12.3"
-    );
+    formed(&client.status());
     assert!(
         mg_state
             .quote_records
@@ -9420,7 +10085,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
         .resume()
         .await
         .expect("reopen accepts patch skew inside the persisted DKG identity");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -9519,7 +10184,7 @@ async fn selected_connection_failure_retries_before_requesting_replacement() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.connect_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9549,7 +10214,7 @@ async fn selected_availability_transport_failure_reconnects_before_payment() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.availability_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9579,7 +10244,7 @@ async fn selected_quote_transport_failure_reconnects_before_payment() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.quote_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9655,7 +10320,7 @@ async fn selected_acquisition_connection_failure_retries_before_output_generatio
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert!(mg_state.connect_calls.load(Ordering::SeqCst) > 2 * usize::from(MIN_FEDERATION_SIZE));
 }
 
@@ -9687,7 +10352,7 @@ async fn selected_connection_timeouts_retry_in_quote_and_acquisition_phases() {
             .await
             .unwrap();
 
-        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+        formed(&client.status());
         assert!(state.connect_attempts.lock().unwrap()[&3] > attempt);
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
@@ -10403,7 +11068,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .authorize_payments(authorization_id, options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE) + 1,
@@ -10542,7 +11207,7 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
     .await;
     reopened.resume().await.unwrap();
 
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         spends_before_resume,
@@ -10603,7 +11268,7 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
         .pay_and_create(intent(), approval, payment_federation_id(), options())
         .await
         .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
 }
 
 #[tokio::test]
@@ -10665,7 +11330,7 @@ async fn selected_lost_reservation_result_reconstructs_the_same_wallet_journal()
         .resume()
         .await
         .expect("resume reconstructs the wallet capability under the same id");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.reservations.lock().expect("test lock").len(),
         1,
@@ -11155,7 +11820,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
         .resume()
         .await
         .expect("post-output recovery uses persisted admission facts");
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert!(payment_state.create_calls.load(Ordering::SeqCst) > 0);
 }
 
@@ -12637,8 +13302,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     reopened.resume().await.unwrap();
     let status = reopened.status();
-    assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert_eq!(formation(&status).intent.max_total_msats, Some(cap));
+    formed(&status);
 }
 
 #[tokio::test]
@@ -13672,7 +14336,7 @@ async fn liquidity_reopen_resumes_the_exact_persisted_commitment() {
         )
         .await
         .expect("form selected test federation");
-    let formation_id = formation(&client.status()).formation_id.clone();
+    let formation_id = formed(&client.status()).formation_id.clone();
     let connector =
         TestLiquidityConnector(TestLiquidityProviderState::new(client.inner.store.clone()));
     connector.0.fail_next_connect.store(true, Ordering::SeqCst);
@@ -13790,7 +14454,7 @@ async fn late_stale_base_responses_do_not_fail_an_adopted_directory() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         mg_state.meta_submissions.lock().expect("test lock").len(),
         threshold,
@@ -13824,7 +14488,7 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     let bases = mg_state.meta_request_bases.lock().expect("test lock");
     let seats = usize::from(MIN_FEDERATION_SIZE);
     assert_eq!(bases.len(), seats * 2, "one all-stale wave and one retry");
@@ -14331,7 +14995,7 @@ async fn eligibility_missing_reports_and_unverified_holder_do_not_create_candida
     assert!(result.candidates.is_empty());
     assert_eq!(
         result.federation_id.0,
-        formation::invite_federation_id(formation(&client.status()).invite_code.as_ref().unwrap())
+        formation::invite_federation_id(&formed(&client.status()).federation_invite)
             .unwrap()
             .to_string()
     );
@@ -14400,6 +15064,86 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
             .candidates
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
+    let mg_state = Arc::new(MgState::default());
+    // Seats 0 and 1 hold Fedimint peers 1 and 0.
+    mg_state
+        .attested_peer_overrides
+        .lock()
+        .expect("test lock")
+        .extend([(0, 1), (1, 0)]);
+    let registry = TestRegistry::default();
+    registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_registry(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state,
+        MgConfig::given_away(),
+        registry,
+    )
+    .await;
+    client
+        .pay_and_create(
+            intent(),
+            selection_approval(1),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .expect("form selected test federation");
+    let authority = client
+        .post_formed_authority(client.fa_id().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(authority.seats[0].mg_id, test_mg_id(0));
+    let down = PeerId::from(1);
+    let peers = (0..MIN_FEDERATION_SIZE)
+        .map(PeerId::from)
+        .collect::<BTreeSet<_>>();
+    let sessions = peers
+        .iter()
+        .filter(|peer| **peer != down)
+        .map(|peer| {
+            (
+                *peer,
+                fedi_decentralized_domain::GuardianSessionReport {
+                    session_count: 1000,
+                    disconnected: BTreeSet::new(),
+                    last_contribution: BTreeMap::from([(down, Some(1))]),
+                },
+            )
+        })
+        .collect();
+    *client
+        .inner
+        .ports
+        .consensus_reader
+        .guardian_reports
+        .lock()
+        .unwrap() = Some(fedi_decentralized_domain::GuardianReports {
+        federation_id: FederationId(
+            formation::invite_federation_id(&authority.invite_code)
+                .unwrap()
+                .to_string(),
+        ),
+        peers,
+        sessions,
+        availability: BTreeMap::new(),
+    });
+
+    let check = client.check_replacement_candidates().await.unwrap();
+
+    assert_eq!(check.candidates.len(), 1);
+    assert_eq!(check.candidates[0].seat_index, 0);
+    assert_eq!(check.candidates[0].mg_id, test_mg_id(0));
 }
 
 #[path = "tests/replacement_receipts.rs"]

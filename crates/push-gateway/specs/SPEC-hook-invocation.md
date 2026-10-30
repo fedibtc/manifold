@@ -150,8 +150,8 @@ must not persist the row. Registration attestation is not part of this protocol;
 a future verifier must define a typed, versioned evidence contract before the
 wire format adds such a field.
 
-Permanent token-specific FCM failures (`UNREGISTERED`, or FCM-error-detail
-`INVALID_ARGUMENT`) mark the outbox row `invalid_token` and disable the
+Permanent token-specific FCM failures (`UNREGISTERED`, `SENDER_ID_MISMATCH`, or
+FCM-error-detail `INVALID_ARGUMENT`) mark the outbox row `invalid_token` and disable the
 registration in one transaction, only if the current registration still
 matches the snapshotted `(recipient_id, installation_id, fcm_token)` — an
 old invalid token can never disable a newer registration after device-token

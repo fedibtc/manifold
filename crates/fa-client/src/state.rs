@@ -387,18 +387,14 @@ pub enum FormationPhase {
     /// Every guardian is running and the common invite is saved.
     DkgComplete,
     /// Every guardian is running; the MG seat-binding directory is being
-    /// written to consensus metadata and read back.
+    /// written to consensus metadata and read back. Once consensus confirms
+    /// it, the FA reports [`FaStatus::Formed`].
     PublishingSeatBindings,
-    /// The guardian directory and initial fees are confirmed in consensus.
-    Formed,
 }
 
 impl FormationPhase {
     pub(crate) fn dkg_complete(self) -> bool {
-        matches!(
-            self,
-            Self::DkgComplete | Self::PublishingSeatBindings | Self::Formed
-        )
+        matches!(self, Self::DkgComplete | Self::PublishingSeatBindings)
     }
 }
 
@@ -722,32 +718,45 @@ pub enum FaStatus {
     /// No durable formation exists and FA operations may run.
     #[default]
     Idle,
-    /// One active or completed formation exists.
+    /// A formation is being set up.
     Formation(FormationSnapshot),
-    /// Authenticated backup facts awaiting authoritative reconciliation.
-    Restored(RestoredFormationSnapshot),
+    /// A formed federation, from a formation on this device or from a
+    /// restored backup.
+    Formed(FormedFederationSnapshot),
 }
 
-/// Lean recovery facts imported from an authenticated FA backup.
+/// The seats of a formed federation, as this device last recorded them.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct RestoredFormationSnapshot {
-    pub snapshot_generation: u64,
-    /// Stable local handle derived when the authenticated backup is imported.
+pub struct FormedFederationSnapshot {
+    /// Stable local handle: the formation id of a formation on this device,
+    /// or one derived when an authenticated backup is imported.
     pub formation_id: FormationId,
     pub federation_invite: InviteCode,
-    /// Fresh display metadata, when federation consensus published it.
+    /// Display name: the formation intent's, then the one in consensus.
     pub federation_name: Option<FederationName>,
-    pub seats: Vec<RestoredSeat>,
-    pub phase: FormationPhase,
+    pub seats: Vec<FormedSeat>,
+    /// `Unsynced` until this run checked the seats against consensus.
     pub freshness: FormationFreshness,
-    /// Whether this device has reconciled the restored backup against the
-    /// Manifold Guardians at least once. False until the first successful
-    /// reconciliation; persisted.
+    /// Whether this device checked the seats against the federation at least
+    /// once: always for a formation on this device, and after the first
+    /// successful reconciliation for a restored backup. Persisted.
     pub backup_eligible: bool,
+    /// Whether this device formed the federation or restored it.
+    pub origin: FormedOrigin,
+}
+
+/// Where this device got a formed federation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormedOrigin {
+    /// A formation on this device.
+    ThisDevice,
+    /// An authenticated backup imported on this device.
+    Backup,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct RestoredSeat {
+pub struct FormedSeat {
     #[serde(rename = "fman_identity")]
     pub mg_identity: PublicKey,
     pub seat_id: SeatId,

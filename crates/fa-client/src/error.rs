@@ -178,6 +178,8 @@ pub enum MgOperation {
     GetPeerAttestation,
     ProposeFormationMeta,
     WaitForRunning,
+    PullSeat,
+    RemoveSeat,
 }
 impl MgOperation {
     pub(crate) fn as_str(self) -> &'static str {
@@ -194,6 +196,8 @@ impl MgOperation {
             Self::GetPeerAttestation => "get_peer_attestation",
             Self::ProposeFormationMeta => "propose_formation_meta",
             Self::WaitForRunning => "wait_for_running",
+            Self::PullSeat => "pull_seat",
+            Self::RemoveSeat => "remove_seat",
         }
     }
 }
@@ -412,12 +416,21 @@ pub enum FaError {
         /// Semantic id of the live operation to resume.
         operation_id: crate::LiquidityOperationId,
     },
+    /// The setup-payment policy this FA holds does not let MGs start a
+    /// guardian transfer, so the FA does not buy a seat for one. Fedi turns
+    /// transfer on by republishing the policy.
+    #[error("the setup-payment policy does not enable guardian transfer")]
+    GuardianTransferDisabled,
     /// A post-formation maintenance verb was attempted in another phase.
     #[error("federation maintenance requires formed state, found {phase:?}")]
     MaintenanceWrongState {
         /// Durable phase observed before any maintenance network effect.
         phase: crate::FormationPhase,
     },
+    /// A post-formation maintenance verb was attempted before this run
+    /// checked the formed federation against consensus. A resume does that.
+    #[error("federation maintenance requires a reconciled formed federation")]
+    MaintenanceUnsynced,
     /// One guardian returned a terminal typed refusal for this maintenance
     /// request. Retryable unavailability and stale-base responses never use
     /// this variant.
@@ -503,12 +516,18 @@ impl FaError {
             Self::SelectionReauthorizationRequired { .. } => {
                 FaErrorCode::SelectionReauthorizationRequired
             }
-            Self::CapabilityUnavailable(_) => FaErrorCode::CapabilityUnavailable,
+            // An existing category, so consumers need no new code; the Rust
+            // variant tells the two apart.
+            Self::CapabilityUnavailable(_) | Self::GuardianTransferDisabled => {
+                FaErrorCode::CapabilityUnavailable
+            }
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
             Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
             Self::Payment(_) => FaErrorCode::Payment,
             Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
-            Self::MaintenanceWrongState { .. } => FaErrorCode::MaintenanceWrongState,
+            Self::MaintenanceWrongState { .. } | Self::MaintenanceUnsynced => {
+                FaErrorCode::MaintenanceWrongState
+            }
             // Keep the serialized category stable; callers can distinguish
             // unsupported metadata through the public Rust error variant.
             Self::MaintenanceRejected { .. } | Self::MaintenanceUnsupported { .. } => {

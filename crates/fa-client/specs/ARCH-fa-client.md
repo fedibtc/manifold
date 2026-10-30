@@ -338,6 +338,8 @@ objects, trust conclusions, or lifecycle transitions:
   earn their guarantees from threshold peer queries and return no signatures,
   so an adapter that fabricates or caches a result defeats readback silently.
   The obligations are stated on the port and in [`SECURITY.md`](../SECURITY.md).
+  `ConnectorsConsensusReader` meets them over the consumer's Fedimint
+  connectors, so a consumer supplies connectors, not an implementation.
 - **Presentation** — collects intent, renders an uncached advertisement-only
   preview and authenticated payer choices, retains the sealed preview approval
   only for that screen visit, and invokes Pay-and-create with its explicit
@@ -371,17 +373,29 @@ against final configured endpoint keys, and derives
 the same recipients; FA waits for all three exact consensus fields and durably
 checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
-reconciliation requires the immutable directory and recipients to remain exact,
-accepts later rate changes, and needs no formation account provider.
-On restart, both a local `Formed` record and a restored backup start unsynced.
-Fresh threshold consensus must match the saved federation identity and verified
-directory before either becomes fresh; restored seats and any saved liquidity
-commitment must also match. This check needs no live Manifold Guardian and does not
+reconciliation checks the federation and its seats, not the agreed recipients,
+and needs no formation account provider.
+A formed federation has one durable record. Consensus confirmation replaces the
+formation record with it in one transaction, and a backup import writes the
+same record. The record keeps its `origin`, this device or a backup, so a
+consumer can show a restore as a restore. A record from before `origin` takes
+it from its badge holders: only a formation on this device records them. On restart it starts unsynced. Fresh threshold consensus must
+match the saved federation identity and verified directory before it becomes
+fresh; its seats and any saved liquidity commitment must also match. The
+directory and fee recipients agreed at formation may change by guardian vote
+(see `SECURITY.md`).
+Maintenance and liquidity require a fresh record, so consumers resume first. This check needs no live Manifold Guardian and does not
 repeat initial formation's all-seat health and invite checks.
-If the saved invite is unreachable, recovery tries alternative invites from
-the saved managers without waiting for every manager. It verifies the same
-federation and remembers multiple guardian addresses in memory for later
-liquidity and gateway reads. Backups and committed request bytes are unchanged.
+Every read of the formed federation (recovery, maintenance, liquidity,
+replacement checks and guardian transfer) dials the saved invite. The
+federation id, not the invite, is the identity. Recovery saves the invite of
+the verified config: the f+1 lowest guardians at their current endpoints, so
+it follows a guardian transfer. At least one of them is honest and online
+while the federation can make progress, so there is no fallback to other
+invites. An older formation saved an invite naming one guardian. Its first
+recovery needs that guardian online; it then saves the f+1 invite. This is an
+accepted limit for formations from before f+1 invites.
+Committed liquidity request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
@@ -391,7 +405,7 @@ the stored signed directory and compiled split before voting.
 ## Public state and concurrency
 
 The engine exposes `FaStatus::Recovery` while an opened restored-mnemonic FA
-has an unfinished backup check; `Idle`, `Formation`, and `Restored` mean the
+has an unfinished backup check; `Idle`, `Formation`, and `Formed` mean the
 check is complete or not required. A formation always carries its formation id
 and fully resolved persisted intent. Recovery lookup failures remain retryable;
 the status watch publishes the ready state only after releasing the mutation
@@ -400,14 +414,15 @@ persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
-`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
+`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
 with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
-submission; `Formed` records its confirmation in consensus. Reopening preserves
-these phases, and later checks keep `Formed` visible with freshness and errors
-reported separately. Inconsistent storage fails closed before status is published.
+submission; its confirmation in consensus ends the formation and publishes
+`FaStatus::Formed`. Reopening preserves these phases. A formation record that an
+older build marked formed converts to the formed record when it loads.
+Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
@@ -486,7 +501,7 @@ may be locked to quote-bound nonces; safe teardown needs recovery and refund
 handling before any state can be destroyed.
 
 `decommission_seats` is a testing-only developer command sitting outside all of
-that, not a second abandon. It reads the recorded formation, asks every MG
+that, not a second abandon. It reads the formation or formed record, asks every MG
 that accepted a seat to decommission it in one pass, and reports per seat
 whether the MG decommissioned it, had already done so, or refused. It takes
 no driver lease and writes nothing, so durable FA state is unchanged and a
@@ -546,15 +561,15 @@ connection, or network effects; every MG repeats the same authoritative
 validation. The API does not accept raw metadata keys, upload image bytes, or
 widen the MG allowlist. A setting is turned off with its explicit off value,
 never by deleting the field. The operation requires
-the durable FA formation to be `Formed`, reconstructs every FA-owned seat from
+a fresh formed record, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
 
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked
 `MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
-as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
-must first resume/reconcile to `Formed`.
+as `fedi:tos_url`; the result confirms fresh consensus adoption. After a restart or a
+backup import, the FA must first resume to reconcile the formed record.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
 removal of the former fixed terms URL. URL errors now use `InvalidUrl`
@@ -639,8 +654,12 @@ session. Historical absence decisions need f+1 other reporters. If neither
 last-seen nor session history is sufficient, f+1 other peers explicitly reporting
 current disconnection also qualify; this fallback does not establish duration.
 Sufficient recent history prevents that fallback. Missing responses alone never
-qualify. Peer scores use Fedimint's coverage-aware merge. Reports use the saved
-invite first, then alternate MG invites one at a time. A policy refresh timeout
+qualify. Peer scores use Fedimint's coverage-aware merge. Reports name
+Fedimint peers, which the FA maps to seats through the verified consensus seat
+bindings, matching each seat's MG; a seat's index is not its peer id. Without
+verified bindings naming every seat's MG once, reports are not used and only
+holder revocation can qualify. Reports dial the saved
+invite, as every read of the formed federation does. A policy refresh timeout
 can use an authenticated retained publication; invalid or missing policy fails. The policy's absence duration and weekly/monthly score floors are
 shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
 
@@ -653,10 +672,158 @@ result and its original timestamp through refresh errors, clearing it when its
 federation context is no longer ready. Each result carries its own opaque receipts.
 A receipt held for confirmation survives background refresh; it cannot be
 constructed or deserialized by a caller, is bound to this client instance and
-exact federation/seat, and is lost on restart. The replacement entry point
-validates that binding without rechecking health. It currently stops at a
-`NotImplemented` stub before any purchase or transfer. Once integrated, starting
-must persist the transfer; resume relies on that operation, not an unused receipt.
+exact federation/seat, and is lost on restart. `request_guardian_replacement`
+validates that binding without rechecking health, then starts a guardian
+transfer of the receipt's seat with the caller's destination approval, payer,
+and callback, exactly as `start_guardian_transfer` does (below). An invalid
+receipt is `ReplacementStartError::InvalidReceipt`, before any purchase or
+transfer row; a failed start is `ReplacementStartError::Transfer` with the
+transfer's error. The started transfer's row authorizes resume, not the
+receipt.
+
+## Guardian transfer
+
+`start_guardian_transfer` moves the guardian at one seat index onto a new
+seat, by the contract in
+[`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
+transfer row owns the whole move, including its destination seat. One
+transfer is open at a time. It moves any guardian, so it is crate-private.
+The consumer interface is three calls: `request_guardian_replacement` starts
+a transfer and needs a replacement receipt, `run_guardian_transfer` finishes
+it, and `observe_guardian_transfer` reports it. The watch follows every
+transfer write. After a move completes it keeps the completed transfer until
+the next start, so a consumer sees the end. A purchase that ends without a
+seat clears it. A start waits while another operation
+runs, until its approval expires, so the consumer does not keep its approval
+for a retry. A replacement checks its receipt under the same run, so another
+transfer cannot replace the receipt's seat in between. The watch belongs to
+one client instance: a subscription sees the writes of that client only,
+which matches the single active client per database. Resume and a start
+without a receipt are crate-private, so a test tool goes through the same
+calls as a consumer app.
+
+The FA can transfer a guardian of a federation it formed on this device or
+restored from a backup. `preview_transfer_destination` asks every guardian
+for its build through the public Fedimint `fedimintd_version` endpoint, by the
+consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
+invite names f+1 guardians, so the guardian that needs a new host does not
+block the read (see the formed reads above). The
+line most
+of the answering guardians report wins, then the newer line. It does not use
+the advertisements of the federation's own MGs: an MG that is full or offline,
+which is when a guardian needs a new host, advertises nothing. The preview
+then selects one MG on that line that does not host, and never
+hosted, a peer of the federation, and with a badge holder that holds none of
+its seats. The FA keeps the verified holder of each formed and each bought
+seat, also after a transfer. After a restore the badge holders of the seats
+are unknown, so the preview excludes their MGs but not their holders.
+`start_guardian_transfer` takes the approved preview with a price cap and an
+explicit payer. Before it asks any MG, it refuses an approval previewed for
+another federation, checks the same custody rule, checks that the destination
+shares no service key with a current guardian, and refuses a priced preview
+without a payer. It then refreshes the setup-payment policy, falling back to
+the retained one on a relay timeout, and refuses with
+`FaError::GuardianTransferDisabled` (category `capability_unavailable`)
+unless transfer is enabled: the policy's `guardian_transfer_v2` flag, or, when
+the policy omits it, the default of the client's Manifold environment, the
+same resolution the MG uses
+([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+MGs start no transfer otherwise, so the FA buys no seat for one. A client
+opened without a Manifold profile takes the production default. Then it records the transfer.
+The retired `guardian_transfer` field must never be set to `true` in production:
+older consumers read it to enable the incompatible old `TransferSeat` shape.
+Before production activation, upgrade both transfer endpoints and set
+`min_mg_version` to the first release with the new shape. MGs that understand
+this minimum stop advertising new seats when below it; older readers may
+still advertise, so endpoint upgrades remain required. See
+[Enabling transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer).
+
+The transfer first buys the destination seat with the normal `GetQuote` and
+`CreateSeat` for the federation's size. The purchase follows the formation
+purchase rules: it persists a paid quote before the reservation, refreshes a
+stale quote and releases its reservation before the payment output starts,
+and replays the exact quote after that point. A purchase that ends without a
+seat and with no value at risk closes the transfer: a refusal with its refund
+settled, a quote above the cap, a payment the wallet proved rejected, a quote
+that needs reauthorization (for example, a seat that now charges but has no
+payer), or a payer that the current policy no longer allows when a payment
+that never started resumes. The last case releases its reservation first.
+Each of these returns `SelectionReauthorizationRequired` with the reason that
+Pay-and-create uses: a refusal is `SelectedMgUnavailable` with the MG failure,
+and a rejected payment is `SelectedPayerUnavailable`. No closed state is
+stored: the transfer row is deleted. Any other failure leaves the purchase in
+the row for the next resume.
+
+With the seat bought, the FA signs a grant, which has no expiry, and
+sends `PullSeat` with an optional completion callback. From then on the seat
+stays bound to this move: the source may have answered already, so the FA
+never offers the seat to another guardian. The FA stores no grant. It signs
+one from the transfer row whenever it sends `PullSeat`, and the destination
+takes a grant signed again for the same move as a replay.
+
+Until the source is removed, the FA checks the destination's status before
+every vote and before each `RemoveSeat`. A destination that reports `New`,
+for example after it restored a backup from before its import, gets
+`PullSeat` again with the move's completion callback, and the transfer
+stays in its phase until the destination runs the guardian. `Running` once
+does not prove that the destination's backup holds the guardian, and the
+stopped source still does. Any status other than `New`, `AwaitingTransfer`
+or `Running` is an error, and the transfer stays open.
+
+A resume continues from the recorded stage. It asks the
+destination once and does not wait for the source: while the destination is
+`AwaitingTransfer`, the resume reports `AwaitingSource` at once. So the run
+deadline bounds work, not a wait.
+
+`run_guardian_transfer` is a consumer-driven future, like
+`run_replacement_checks`, and the transfer timing belongs to `fa-client`. It
+resumes an open transfer at once, so a reopened client continues it. While
+the transfer waits for the source or its removal, it checks every 30 s. A
+failed step retries with a backoff from 1 s to 5 min, and `Busy` retries
+after 1 s. Each step holds the run only for that step. With no transfer open,
+the loop sleeps until a start wakes it.
+
+When the destination is `Running`, the FA reads the
+destination's attestation, saves it in the transfer, and votes it through
+every guardian except the source, like a metadata update. The destination
+signs a new attestation on each request, so a resume votes the saved one. It
+confirms by readback that consensus holds exactly the values from
+`rebind_transferred_seat`, for the saved attestation or another one of the
+destination for the same peer. This step does not need a reconciled seat
+list, because consensus may already name the destination. In the same
+transaction it replaces the source seat in the federation's seat list with
+the destination, and records the source MG and its known holder as a past
+host. The source seat is the last other copy of the guardian, so the FA
+sends `RemoveSeat` only right after the destination reports `Running`. A
+destination that is unreachable or still pulling, or an unreachable source,
+leaves the transfer in `RemovingSource` for a later resume.
+
+A transfer and a liquidity request do not overlap: the liquidity commitment
+names the current seats, so each refuses to start while the other is live.
+
+A transfer that completes puts the destination seat in the formed record in
+place of the source seat, and adds the source to the record's past hosts.
+
+The FA backup never names an open transfer. The backup changes only when the
+rebind puts the destination in the seat list, after consensus confirmed the
+new binding, and the backup worker then publishes it as any seat-list change.
+These restore cases are accepted:
+
+- A device lost before the vote restores the old seat list while consensus
+  names the source. The restored FA knows of no transfer. It may start another
+  move of the same guardian, and two hosts can then run that guardian.
+- A device lost after a vote reached consensus but before the relays held the
+  new seat list restores the old seat list while consensus names the
+  destination. Consensus does not hold the destination's seat id or locator,
+  so reconciliation fails and the restored FA cannot manage the federation.
+- A device lost in `RemovingSource` restores the new seat list. The restored
+  FA does not remove the source seat.
+
+When this device still has the move open and consensus already names the
+destination, for example after a run that ended between the vote and the
+rebind, reconciliation does the rebind and advances the transfer to
+`RemovingSource`, so the transfer still removes the source. The FA never
+seals a backup that restore would refuse.
 
 ## Modules
 
@@ -674,6 +841,8 @@ must persist the transfer; resume relies on that operation, not an unused receip
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
+- `seat_purchase` — selection and purchase of a transfer's destination seat.
+- `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 

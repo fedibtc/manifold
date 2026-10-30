@@ -86,11 +86,14 @@ marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.
 
-Guardian transfer is enabled only in development and staging MGs; a production
-MG refuses its four verbs and resumes no stored transfer. The source durably fences
-and stops its guardian and confirms its exact retirement backup before releasing
-the package; the destination starts the imported guardian at once and backs it
-up like any formed seat.
+The MG uses its environment's admitted setup-payment policy to decide whether
+to start a guardian transfer; production defaults to disabled without an
+admitted policy. The MG resumes stored transfers regardless of the current
+start policy and keeps binding replacement and retired-seat removal available
+to finish an existing move. The source durably fences and stops its guardian
+and confirms its exact retirement backup before releasing the package. The
+destination starts the imported guardian at once and backs it up like any
+formed seat.
 Recovery relies on the configured backup relay returning the latest published
 state and on operators never restarting stale local snapshots. Publication
 confirmation is not anti-rollback protection: a hostile relay replaying an older
@@ -123,13 +126,31 @@ encrypted recovery payloads, and the Iroh connection between the two MGs
 during the hand-over; never diagnostics.
 Destination service identity and fee/payment wallets remain local.
 
-Custody admission intentionally belongs to the FA. The source verifies the FA's
-signature and ownership, not destination credentials, and does not pin the
-first destination. Single-host operation therefore assumes a non-conflicting
-FA. Removing a retired guardian deletes only its local guardian material and
-then publishes an archive-less tombstone; it does not prove erasure of
-historical backups, revoke secrets already held by a past custodian, or justify
-forgetting that custodian in FA policy.
+The source verifies the FA's signature and ownership and independently requires
+the destination's PeerBadge to satisfy its own canonical environment policy,
+including fresh revocation checks on every transfer request. The source checks
+admission before retirement and every package release; it fails closed if
+credentials are missing or verification inputs are unavailable.
+The source rejects subject mismatches and invalid issuance offline, before
+network trust queries. It bounds concurrent admissions and rejects excess
+requests without queueing shared RPC handlers.
+
+Destinations must supply their credential envelope directly. The badge subject
+co-signs both the envelope and the exact service-signed transfer request. The
+source verifies this binding and applies its complete current trust policy
+without advertisement discovery. It rejects missing, null, invalid, unsupported
+or oversized proof without a discovery fallback. A complete valid request
+remains replayable within the existing one-hour freshness window,
+but the source repeats admission and fresh revocation checks on each replay.
+This protocol guarantees neither the latest credential nor holder revocation.
+
+Admission does not depend on the destination advertising spare capacity.
+The FA retains responsibility for custody-history and holder-diversity checks.
+The source does not pin the first destination. Single-host operation therefore
+still assumes a non-conflicting FA. Removing a retired guardian deletes only
+its local guardian material and then publishes an archive-less tombstone;
+it does not prove erasure of historical backups, revoke secrets already held by
+a past custodian, or justify forgetting that custodian in FA policy.
 
 ### Manifold Guardian bundled guardian process
 
@@ -350,7 +371,7 @@ retains the exclusive data-root lock, and shutdown aborts and joins tracked
 connections before the lock can be released.
 
 The database, WAL, archives, keys, and backups are confidential. Startup
-authenticates an AEAD key sentinel and the Manifold trust-profile revision and
+authenticates an AEAD key sentinel and the deployment environment and
 refuses missing, mismatched, or unsupported-format metadata on populated state.
 Each target ciphertext also authenticates its format, deployment profile, key
 identifier, target identity, generation, and authorization time. Candidate
@@ -398,11 +419,15 @@ Repeated exposition must preserve them; a collector must not make stale values
 look fresh. Prometheus/Agent must set both `honor_timestamps: true` and
 `track_timestamps_staleness: true` and own TSDB and remote-write semantics.
 Remote target failure is exported as stale snapshot metadata and does not make
-the process readiness route fail. Readiness covers the local database and
+the process readiness route fail. Per-seat freshness derives only from snapshots
+that passed persisted-row revalidation in the same exposition view, never from a
+raw stored timestamp. Readiness covers the local database and
 ability to serve. Quarantined/expired targets are suppressed immediately and
 their latest metric snapshots are deleted rather than reappearing after renewal.
 
-Metrics persistence is capped globally at 32 MiB and 100,000 samples. One
+Metrics persistence is capped globally at 64 MiB and 200,000 samples. A
+commit stores the snapshots that fit, refreshing already stored seats first,
+and leaves the other seats on their previous, aging snapshot. One
 immutable exposition generation may be live at a time; concurrent scrapes
 share it, while a changed revision gets HTTP 429 until slow readers release the
 old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization stays
@@ -971,8 +996,8 @@ and unique derived federation IDs. Checking content without the signed event or
 accepting a self-selected author would let an attacker choose payment policy.
 Transport code must bound the complete event frame before this content-bounded
 admission helper performs cryptography. FA relay and CLI inputs cap a complete
-normalized event at 256 KiB; one relay query observes at most 16 candidates and
-retains at most 4 MiB.
+normalized event at 64 KiB; each common-set relay query observes at most 16 candidates and
+retains at most 1 MiB.
 
 FA must atomically retain the complete highest admitted event, statically
 revalidate that trusted record after restart, and use its opaque admitted value

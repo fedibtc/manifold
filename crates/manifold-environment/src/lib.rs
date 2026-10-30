@@ -165,14 +165,14 @@ pub const DEV_SETUP_PAYMENT_PUBLISHER_ENV: &str = "MANIFOLD_DEV_SETUP_PAYMENT_PU
 
 impl ManifoldEnvironment {
     /// Whether MGs in this environment start guardian transfers, given the
-    /// `guardian_transfer` flag of the admitted setup-payment policy, if any.
+    /// `guardian_transfer_v2` flag of the admitted setup-payment policy, if any.
     ///
     /// A published flag always wins. Without one, development and staging
     /// start transfers and production does not, so test deployments need no
     /// policy publication while production waits for Fedi to enable it. MG
     /// and FA both resolve the flag here.
     #[must_use]
-    pub fn guardian_transfer(self, published: Option<bool>) -> bool {
+    pub fn guardian_transfer_v2(self, published: Option<bool>) -> bool {
         published.unwrap_or(match self {
             Self::Development | Self::Staging => true,
             Self::Production => false,

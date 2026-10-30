@@ -10,9 +10,10 @@ use tokio::sync::{Mutex, watch};
 
 use crate::formation::{PostFormedAuthority, invite_federation_id};
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
-    FederationId, FormationFreshness, FormationId, FormationPhase, ManifoldGuardianConnector,
-    ReplacementCandidate, ReplacementCheck,
+    DkgCompletionCallback, FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus,
+    FederationConsensusReader, FederationId, FormationFreshness, FormationId, GuardianTransfer,
+    MaintenanceRunOptions, ManifoldGuardianConnector, ReplacementCandidate, ReplacementCheck,
+    TransferDestinationApproval,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -39,13 +40,7 @@ impl Default for ReplacementChecks {
 // Ignore progress details that do not change which formed federation is ready.
 fn ready_federation(status: &FaStatus) -> Option<(FormationId, FederationId)> {
     let (formation, invite) = match status {
-        FaStatus::Formation(state) if state.phase == FormationPhase::Formed => {
-            (&state.formation_id, state.invite_code.as_ref()?)
-        }
-        FaStatus::Restored(state)
-            if state.phase == FormationPhase::Formed
-                && state.freshness == FormationFreshness::Fresh =>
-        {
+        FaStatus::Formed(state) if state.freshness == FormationFreshness::Fresh => {
             (&state.formation_id, &state.federation_invite)
         }
         _ => return None,
@@ -86,13 +81,16 @@ pub struct ReplacementReceipt {
     candidate: ReplacementCandidate,
 }
 
-/// The replacement entry point is intentionally a stub until transfer integration.
-#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+/// Why a guardian replacement did not start.
+#[derive(Debug, thiserror::Error)]
 pub enum ReplacementStartError {
+    /// The receipt is from another client or opening, or the guardian it
+    /// names no longer holds that seat. Check the candidates again.
     #[error("replacement receipt does not belong to this client's current guardian seat")]
     InvalidReceipt,
-    #[error("guardian replacement is not implemented yet")]
-    NotImplemented,
+    /// The receipt was valid, but the guardian transfer did not start.
+    #[error(transparent)]
+    Transfer(#[from] FaError),
 }
 
 impl ReplacementCheck {
@@ -213,16 +211,26 @@ where
         }
     }
 
-    /// Validate the eligibility receipt without asking about health again.
+    /// Replace the guardian a receipt names: validate the receipt without
+    /// asking about health again, then start a guardian transfer of that
+    /// guardian onto the approved destination. The start buys the seat and
+    /// asks the new MG to pull the guardian, within the default maintenance
+    /// timing; [`Self::run_guardian_transfer`] does the rest.
     ///
-    /// This stub performs no purchase, authorization, or transfer. A valid receipt
-    /// reaches NotImplemented; PR #184 can replace that final step with its driver.
-    /// Once a transfer starts, its durable operation authorizes resume; restarting
-    /// invalidates unused receipts, not transfers already started.
+    /// The receipt only authorizes the start. Once the transfer started, its
+    /// durable row authorizes [`Self::run_guardian_transfer`] to finish it; reopening
+    /// the client invalidates unused receipts, not transfers already started.
     pub async fn request_guardian_replacement(
         &self,
         receipt: &ReplacementReceipt,
-    ) -> Result<(), ReplacementStartError> {
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
+        completion_callback: Option<DkgCompletionCallback>,
+    ) -> Result<GuardianTransfer, ReplacementStartError> {
+        // The receipt names a seat of the current seat list. Check it under
+        // the run that starts the transfer, so another transfer cannot
+        // replace that seat in between.
+        let run = self.lock_run_for(&approval).await?;
         let authority = self
             .post_formed_authority(
                 self.fa_id()
@@ -233,6 +241,15 @@ where
         if !receipt.matches(&self.inner.replacement_checks.issuer, &authority) {
             return Err(ReplacementStartError::InvalidReceipt);
         }
-        Err(ReplacementStartError::NotImplemented)
+        Ok(self
+            .start_guardian_transfer_locked(
+                &run,
+                receipt.candidate.seat_index,
+                approval,
+                payment_federation_id,
+                completion_callback,
+                MaintenanceRunOptions::default(),
+            )
+            .await?)
     }
 }

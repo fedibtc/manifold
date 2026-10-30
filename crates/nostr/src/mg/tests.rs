@@ -228,14 +228,14 @@ fn worst_case_envelope(
 }
 
 /// Measure a worst-case *legitimate* kind-37701 advertisement event and pin
-/// it under the shared 256 KiB per-event relay cap.
+/// it under the shared 64 KiB per-event relay cap.
 ///
 /// Every field is filled to a generous realistic maximum: 8 long iroh
 /// endpoint URLs, one long fedimintd version, 64 federation sizes,
 /// 4 plans with verbose prices, and 4 complete holder-authorization
 /// envelopes (`MG_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS` examines at
 /// most 4). Measured size at the time of writing: 7299 bytes (~7.1 KiB) —
-/// roughly 3% of the 256 KiB cap. The consumers' per-event cap
+/// roughly 11% of the 64 KiB cap. The consumers' per-event cap
 /// (`ROLE_FETCHED_EVENT_MAX_BYTES` in `crates/nostr-clients`) should be
 /// tightened toward this measurement, with margin, in a follow-up; see the
 /// TODO beside `MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` in
@@ -245,7 +245,7 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
     // Restated literally: `ROLE_FETCHED_EVENT_MAX_BYTES` lives in
     // `crates/nostr-clients`, which depends on this crate, so importing it
     // here would invert the dependency.
-    const ROLE_FETCHED_EVENT_MAX_BYTES: usize = 256 * 1024;
+    const ROLE_FETCHED_EVENT_MAX_BYTES: usize = 64 * 1024;
 
     let mg = Keys::generate();
     let holder = Keys::generate();
@@ -300,6 +300,6 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
     assert!(
         event_bytes < ROLE_FETCHED_EVENT_MAX_BYTES,
         "a worst-case legitimate advertisement event ({event_bytes} bytes) must fit \
-         the shared 256 KiB per-event relay cap",
+         the shared 64 KiB per-event relay cap",
     );
 }

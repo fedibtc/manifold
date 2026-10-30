@@ -348,6 +348,7 @@ struct FcmError {
 struct FcmErrorDetail {
     #[serde(rename = "@type")]
     kind: Option<String>,
+    #[serde(rename = "errorCode")]
     error_code: Option<String>,
 }
 
@@ -365,7 +366,14 @@ fn classify_fcm_error(status: StatusCode, body: Option<&FcmErrorEnvelope>) -> Pu
             })
         });
 
-    if matches!(detail_code, Some("UNREGISTERED" | "INVALID_ARGUMENT")) {
+    // `SENDER_ID_MISMATCH` arrives as HTTP 403, but it says the token was
+    // issued by another Firebase project than this gateway's service account:
+    // the caller's app and this deployment do not match, which is a token
+    // problem for this gateway, not a provider outage.
+    if matches!(
+        detail_code,
+        Some("UNREGISTERED" | "INVALID_ARGUMENT" | "SENDER_ID_MISMATCH")
+    ) {
         return PushProviderError::invalid_token("invalid_token");
     }
     if status == StatusCode::BAD_REQUEST {

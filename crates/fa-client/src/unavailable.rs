@@ -299,7 +299,7 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
 
     async fn transfer_seat(
         &self,
-        _request: MgSignedRequest<TransferSeatRequest>,
+        _request: fedi_decentralized_service_manifold_guardian::TransferSeatCall,
     ) -> FmResult<TransferSeatResponse> {
         Err(unavailable())
     }
@@ -346,6 +346,15 @@ impl FederationConsensusReader for UnavailableFederationConsensusReader {
         &self,
         _invite_code: &InviteCode,
     ) -> Result<Vec<GatewayApiUrl>, FederationConsensusError> {
+        Err(FederationConsensusError::new(
+            "federation consensus read capability unavailable",
+        ))
+    }
+
+    async fn read_fedimintd_versions(
+        &self,
+        _invite_code: &InviteCode,
+    ) -> Result<Vec<String>, FederationConsensusError> {
         Err(FederationConsensusError::new(
             "federation consensus read capability unavailable",
         ))

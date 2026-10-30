@@ -123,8 +123,8 @@ shared-pool use. Badge verification can leave the same cleanup on its private
 ephemeral client. These detached cleanup tasks are not joined by the preview
 deadline, but neither owns durable state, a lease, a reservation, or selection
 authority.
-The bounds are 2048 observed candidates, 256 KiB per normalized event, 16
-MiB aggregate, and 4 examined trust envelopes per walked advertisement
+Discovery caps observed candidates at 2,048, each normalized event at 64 KiB,
+aggregate bytes at 16 MiB, and examined trust envelopes at 4 per walked advertisement
 (derivations and the walk in
 `specs/ARCH-fa-client-discovery-selection.md`). Reaching the
 candidate ceiling or the aggregate byte bound completes the enumeration
@@ -234,6 +234,32 @@ the per-run caps count deduplicated events so adding a relay neither
 multiplies badge-verification work nor shrinks the effective window.
 Re-check this section when the verification order or any cap changes, or
 when the sealed selected-creation contract changes.
+
+## Guardian transfer
+
+A transfer destination approval is a public, cloneable value, so a caller
+can hand one client's approval to another. The approval names the federation
+it was previewed for, and the start refuses an approval of another
+federation, before it asks any MG, opens a transfer, or reserves a payment:
+that approval's Fedimint line, size, and exclusions describe other
+guardians. The start also checks again, against the guardians it has now,
+that the destination is no MG or badge holder that hosts or hosted a peer
+of the federation, and that it shares no service key with a current
+guardian. `request_guardian_replacement` adds a replacement
+receipt in front of the same start: the receipt is bound to this client
+opening, the federation, and the guardian's seat, so it can start only the
+move of the guardian the caller was shown, and a receipt from another client
+or an earlier opening is refused before any purchase or transfer row. Re-check
+this when the approval gains or loses a field, or when the start reads guardians from a
+different source than the preview.
+
+The FA backup does not name an open transfer, so FA recovery does not keep
+transfer custody. A stopped source exports the guardian to any grant of the
+same FA. An FA restored before the vote does not know the first destination,
+and it can grant the same guardian to a second one. Two hosts then hold the
+guardian's keys and can both run it. This is an accepted risk: operators
+stop one copy by hand. Re-check this when the backup or the source's export
+rule changes.
 
 ## Durable ordering
 
@@ -352,8 +378,9 @@ contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
 
 The encrypted Nostr backup is not a database copy. Its purpose-built payload
-contains only the formed invite, stable seat identities/locators, and an
-optional exact live-liquidity commitment. It excludes quotes, guardian codes,
+contains only the formed invite, stable seat identities/locators, the MG
+identities (and badge holders, when known) that hosted a peer before a
+guardian transfer moved it, and an optional exact live-liquidity commitment. It excludes quotes, guardian codes,
 fee accounts, payment and trust state, signed responses, history, secrets, and
 value. One CBOR item is fixed-frame padded and authenticated under FA-specific
 key/AAD domains; restore ignores invalid candidates and chooses the highest
@@ -408,16 +435,22 @@ new durable sequence state in MVP.
 
 Rechecking an already formed federation uses fresh threshold consensus, not
 Manifold Guardian liveness. Verify the saved invite's federation identity and the
-complete signed directory; local formations also require their saved directory
-and fee recipients to remain exact. Restored backups must match every saved seat
-and any liquidity commitment before exposing fresh authority. Initial formation
+complete signed directory. Every formed federation, formed here or restored,
+must match every saved seat and any liquidity commitment before exposing fresh
+authority. The recheck does not require the directory or the fee recipients
+agreed at formation to stay exact. Guardians can vote new ones, and the FA
+keeps managing the federation after such a vote even though the FA did not
+consent to it. A guardian vote is not FA consent, so this is a deliberate
+tradeoff: the FA cannot undo the vote, and refusing management would only
+block maintenance. Protecting the FA's own fee share needs its own rule. Initial formation
 still requires every manager's health and agreed invite.
-If the saved invite cannot reach consensus, recovery may ask the saved managers
-for alternative invites. They are dialing hints only: reject a different
-federation id and apply the same consensus and directory checks. Retain a
-multi-guardian read invite in memory after verification, never a cached
-consensus result. The original invite, backup, and signed liquidity commitment
-remain unchanged; liquidity and gateway verification use the read invite.
+Every read of a formed federation dials the saved invite. After it verifies
+consensus, recovery saves the invite of the verified config: the f+1 lowest
+guardians at their current endpoints. It is a dialing hint only, never a
+cached consensus result, and the federation id, not the invite string, is the
+identity. A saved invite from an older formation can name one guardian;
+until its first recovery, the FA reaches the federation only while that
+guardian is online. The signed liquidity commitment stays unchanged.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a

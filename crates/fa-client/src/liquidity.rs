@@ -45,8 +45,8 @@ use crate::formation::{DriverRun, federation_name};
 use crate::ports::FaIdentityExt as _;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FormationFreshness, FormationId, FormationPhase, FormationRunOptions,
-    LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
+    FormationFreshness, FormationId, FormationRunOptions, LiquidityProviderConnector, Locator,
+    ManifoldGuardianConnector, SeatId,
 };
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -578,6 +578,13 @@ where
             crate::formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
             intent.validate()?;
+            // The request commits to the current seats, which an open
+            // guardian transfer is about to change.
+            if self.inner.store.load_guardian_transfer().await.is_some() {
+                return Err(FaError::InvalidIntent(
+                    "finish the open guardian transfer before a liquidity request".to_owned(),
+                ));
+            }
             lease.renew().await?;
             let context = self.formed_liquidity_context(formation_id).await?;
             self.ensure_no_live_liquidity_operation(context.federation.federation_id())
@@ -919,14 +926,14 @@ where
     ) -> FaResult<Option<LiquidityOperationSnapshot>> {
         let formation_id = match self.status() {
             crate::FaStatus::Formation(snapshot) => snapshot.formation_id,
-            crate::FaStatus::Restored(snapshot)
+            crate::FaStatus::Formed(snapshot)
                 if snapshot.freshness == FormationFreshness::Fresh =>
             {
                 snapshot.formation_id
             }
             crate::FaStatus::Idle
             | crate::FaStatus::Recovery { .. }
-            | crate::FaStatus::Restored(_) => return Ok(None),
+            | crate::FaStatus::Formed(_) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await
@@ -961,7 +968,7 @@ where
     ///
     /// The one-live-operation-per-federation invariant makes "first" also
     /// "only" for the filters used here.
-    async fn find_live_liquidity_operation<M>(
+    pub(crate) async fn find_live_liquidity_operation<M>(
         &self,
         matches: M,
     ) -> FaResult<Option<LiquidityOperationSnapshot>>
@@ -1050,13 +1057,8 @@ where
         expected_formation_id: &FormationId,
     ) -> FaResult<FormedLiquidityContext> {
         match self.status() {
-            crate::FaStatus::Formation(snapshot)
+            crate::FaStatus::Formed(snapshot)
                 if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
-                    && snapshot.freshness == FormationFreshness::Fresh => {}
-            crate::FaStatus::Restored(snapshot)
-                if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
                     && snapshot.freshness == FormationFreshness::Fresh => {}
             _ => {
                 return Err(FaError::Liquidity(
@@ -1083,13 +1085,10 @@ where
             ));
         }
         let invite_code = authority.invite_code.clone();
-        let read_invite = self.consensus_invite(&invite_code).await;
+        let invite = &invite_code;
         let consensus = timeout(
             FA_LIQUIDITY_RPC_TIMEOUT,
-            self.inner
-                .ports
-                .consensus_reader
-                .read_consensus(&read_invite),
+            self.inner.ports.consensus_reader.read_consensus(&invite),
         )
         .await
         .map_err(|_| FaError::Timeout("reading liquidity federation consensus".to_owned()))?
@@ -1462,8 +1461,8 @@ impl FormedLiquidityContext {
         // Display metadata is intentionally mutable after formation. Recovery
         // binds to final federation identity/config and replays the committed
         // name rather than making a later metadata edit strand an allocation.
+        // The invite is only a way to dial; the federation id is the identity.
         if self.network != commitment.network
-            || current.invite_code != commitment.federation_details.invite_code
             || current.federation_id != commitment.federation_details.federation_id
             || current.federation_config_hash
                 != commitment.federation_details.federation_config_hash
@@ -2046,6 +2045,29 @@ mod tests {
             bindings,
             seats,
         }
+    }
+
+    #[test]
+    fn a_commitment_matches_by_federation_id_not_invite_string() {
+        let commitment = commitment(Pubkey("provider".to_owned()));
+        let mut context = formed_context(Vec::new(), Vec::new());
+        context
+            .matches_commitment(&commitment)
+            .expect("same federation");
+
+        // A different way to dial the same federation still matches.
+        context.invite_code = InviteCode("another invite".to_owned());
+        context
+            .matches_commitment(&commitment)
+            .expect("invite is not identity");
+
+        context.federation = fedi_decentralized_domain::FederationSeats::from_parts(
+            FederationId("another federation".to_owned()),
+            HashBytes(vec![7; 32]),
+            3,
+            Vec::new(),
+        );
+        assert!(context.matches_commitment(&commitment).is_err());
     }
 
     #[test]

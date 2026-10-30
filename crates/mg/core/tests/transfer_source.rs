@@ -13,6 +13,33 @@ struct Source {
     destination: secp256k1::Keypair,
     seat: Arc<Seat>,
     spawner: Arc<FakeSeatProcessSpawner>,
+    verification: Arc<DestinationAdmission>,
+}
+
+/// A mutable external trust observation, not an FA-supplied assertion.
+struct DestinationAdmission {
+    accepted: std::sync::atomic::AtomicBool,
+    calls: std::sync::atomic::AtomicUsize,
+    /// Simulate revocation verification stalled until the caller drops its request.
+    stalled: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl crate::replacement_guardian::ReplacementGuardianVerifier for DestinationAdmission {
+    async fn verify(
+        &self,
+        _: &fedi_decentralized_service_manifold_guardian::DestinationAdmission,
+    ) -> Result<(), crate::replacement_guardian::ReplacementGuardianUnverified> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.stalled.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        if self.accepted.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(crate::replacement_guardian::ReplacementGuardianUnverified)
+        }
+    }
 }
 
 impl Source {
@@ -23,6 +50,13 @@ impl Source {
     /// The pull as the grant's destination makes it.
     fn pull(&self) -> TransferSeatRequest {
         pull_as(self.signed(), &self.destination)
+    }
+
+    fn admission(&self) -> fedi_decentralized_service_manifold_guardian::DestinationAdmission {
+        crate::test_support::transfer_call(&self.pull(), &self.destination)
+            .verify(Timestamp((crate::db::now_ms() / 1000) as u64))
+            .unwrap()
+            .1
     }
 
     async fn outgoing(&self) -> Option<OutgoingTransfer> {
@@ -42,7 +76,9 @@ impl Source {
     /// retries.
     async fn pull_awaits_session_end(&self) {
         assert!(matches!(
-            self.fleet.transfer_seat(self.pull(), true).await,
+            self.fleet
+                .transfer_seat(self.pull(), self.admission(), true)
+                .await,
             Err(SeatVerbError::AwaitingSessionEnd)
         ));
     }
@@ -52,7 +88,11 @@ impl Source {
     async fn pull_after_backup(&self) -> TransferSeatResponse {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                match self.fleet.transfer_seat(self.pull(), true).await {
+                match self
+                    .fleet
+                    .transfer_seat(self.pull(), self.admission(), true)
+                    .await
+                {
                     Err(SeatVerbError::AwaitingBackup) => {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
@@ -139,7 +179,7 @@ async fn removal_deletes_material_at_once_and_publishes_the_tombstone_afterwards
                         .transfer
                         .as_ref()
                         .and_then(|transfer| transfer.outgoing.as_ref())
-                        .is_some_and(|outgoing| outgoing.removed)
+                        .is_some_and(|outgoing| outgoing.phase == OutgoingTransfer::Removed)
             })
         }),
     )
@@ -231,6 +271,12 @@ async fn source_with(
 ) -> Source {
     let root = TempDir::new().unwrap();
     let mut config = config(&root, 1, port).await;
+    let verification = Arc::new(DestinationAdmission {
+        accepted: std::sync::atomic::AtomicBool::new(true),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        stalled: std::sync::atomic::AtomicBool::new(false),
+    });
+    config.replacement_guardian_verifier = verification.clone();
     config.respawn.initial_backoff = respawn_backoff;
     let db = Db::open(root.path()).await.unwrap();
     let identity = db.load_identity().await.unwrap().unwrap();
@@ -319,7 +365,102 @@ async fn source_with(
         destination,
         seat,
         spawner,
+        verification,
     }
+}
+
+/// Slow revocation verification must not turn concurrent transfer calls into a
+/// queue that consumes every shared RPC handler permit.
+#[tokio::test]
+async fn saturated_replacement_admission_leaves_other_rpcs_available() {
+    use fedi_decentralized_service_manifold_guardian::{
+        GetStatusRequest, ManifoldGuardianError, ManifoldGuardianService,
+    };
+    let source = running_source(35_610).await;
+    source.verification.stalled.store(true, Ordering::SeqCst);
+    let rpc = Arc::new(crate::service::ManifoldGuardianRpc::new(
+        source.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
+    ));
+    let mut requests = tokio::task::JoinSet::new();
+    // More simultaneous authorized calls than the daemon's 128 shared permits.
+    // Only the small source-wide admitted set may remain pending.
+    for _ in 0..132 {
+        let rpc = rpc.clone();
+        let request = crate::test_support::transfer_call(&source.pull(), &source.destination);
+        requests.spawn(async move { rpc.transfer_seat(request).await });
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for _ in 0..128 {
+            assert!(matches!(
+                requests.join_next().await.unwrap().unwrap(),
+                Err(ManifoldGuardianError::Unauthorized)
+            ));
+        }
+        let request = SignedRequest::create(
+            &GetStatusRequest {
+                ts: source.grant.ts,
+                fa_id: source.grant.fa_id,
+                seat_id: source.grant.source_seat_id.clone(),
+            },
+            &source.fa,
+        )
+        .unwrap();
+        assert_eq!(
+            rpc.get_status(request).await.unwrap().status,
+            fedi_decentralized_service_manifold_guardian::ServiceStatus::Running
+        );
+    })
+    .await
+    .expect("excess admissions fail fast and unrelated RPC completes");
+    assert_eq!(source.verification.calls.load(Ordering::SeqCst), 4);
+    assert!(source.outgoing().await.is_none());
+    requests.abort_all();
+    while requests.join_next().await.is_some() {}
+    source.verification.stalled.store(false, Ordering::SeqCst);
+    source.pull_awaits_session_end().await;
+}
+
+/// A fully authorized FA cannot stop or extract a guardian for an unverified
+/// replacement. Admission is repeated even after retirement and a prior release.
+#[tokio::test]
+async fn replacement_admission_fences_stop_and_every_package_release() {
+    use fedi_decentralized_service_manifold_guardian::{
+        ManifoldGuardianError, ManifoldGuardianService,
+    };
+    let source = running_source(35_600).await;
+    let rpc = crate::service::ManifoldGuardianRpc::new(
+        source.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
+    );
+    let request = || crate::test_support::transfer_call(&source.pull(), &source.destination);
+    let child = source.child().await;
+    eventually("the guardian is configured", || {
+        source.seat.child_configured_for_test()
+    })
+    .await;
+    source.verification.accepted.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        rpc.transfer_seat(request()).await,
+        Err(ManifoldGuardianError::Unauthorized)
+    ));
+    assert_eq!(source.outgoing().await, None);
+    assert!(child.state().shutdown_after_current_session.is_empty());
+    assert!(source.seat.child_configured_for_test());
+    assert_eq!(source.verification.calls.load(Ordering::SeqCst), 1);
+
+    source.verification.accepted.store(true, Ordering::SeqCst);
+    source.hand_over().await;
+    source.pull_after_backup().await;
+    source.verification.accepted.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        rpc.transfer_seat(request()).await,
+        Err(ManifoldGuardianError::Unauthorized)
+    ));
+    assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
+    source.verification.accepted.store(true, Ordering::SeqCst);
+    assert!(rpc.transfer_seat(request()).await.is_ok());
+    source.fleet.shutdown().await;
 }
 
 /// Without a policy that enables transfer, a running source with no stored
@@ -328,7 +469,10 @@ async fn source_with(
 async fn a_source_without_the_policy_starts_no_transfer() {
     let source = running_source(35_500).await;
     assert!(matches!(
-        source.fleet.transfer_seat(source.pull(), false).await,
+        source
+            .fleet
+            .transfer_seat(source.pull(), source.admission(), false)
+            .await,
         Err(SeatVerbError::TransferDisabled)
     ));
     assert_eq!(source.outgoing().await, None);
@@ -349,7 +493,10 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     source.sink.fails.store(true, Ordering::SeqCst);
     source.hand_over().await;
     assert!(matches!(
-        source.fleet.transfer_seat(source.pull(), true).await,
+        source
+            .fleet
+            .transfer_seat(source.pull(), source.admission(), true)
+            .await,
         Err(SeatVerbError::AwaitingBackup)
     ));
     assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
@@ -391,7 +538,7 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     assert!(
         source
             .fleet
-            .transfer_seat(source.pull(), false)
+            .transfer_seat(source.pull(), source.admission(), false)
             .await
             .is_ok(),
         "a stopped source answers without the policy"
@@ -424,7 +571,7 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
     assert!(matches!(
         source
             .fleet
-            .transfer_seat(pull_as(source.signed(), &other), true)
+            .transfer_seat(pull_as(source.signed(), &other), source.admission(), true)
             .await,
         Err(SeatVerbError::TransferGrantMismatch)
     ));
@@ -435,6 +582,7 @@ async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
         .fleet
         .transfer_seat(
             pull_as(SignedRequest::create(&grant, &source.fa).unwrap(), &other),
+            source.admission(),
             true,
         )
         .await
@@ -484,7 +632,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
     assert!(
         source
             .fleet
-            .transfer_seat(source.pull(), true)
+            .transfer_seat(source.pull(), source.admission(), true)
             .await
             .is_err()
     );
@@ -517,7 +665,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
                         transfer
                             .outgoing
                             .as_ref()
-                            .is_some_and(|outgoing| outgoing.removed)
+                            .is_some_and(|outgoing| outgoing.phase == OutgoingTransfer::Removed)
                     })
             });
             if published {
@@ -575,6 +723,7 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
                         SignedRequest::create(&grant, &source.fa).unwrap(),
                         &source.destination,
                     ),
+                    source.admission(),
                     true
                 )
                 .await
@@ -593,7 +742,10 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     .await
     .unwrap();
     assert!(matches!(
-        source.fleet.transfer_seat(source.pull(), true).await,
+        source
+            .fleet
+            .transfer_seat(source.pull(), source.admission(), true)
+            .await,
         Err(SeatVerbError::Internal(_))
     ));
     assert_eq!(source.outgoing().await, None);
@@ -610,7 +762,7 @@ async fn unproved_source_exit_forbids_export_and_removal() {
     assert!(
         source
             .fleet
-            .transfer_seat(source.pull(), true)
+            .transfer_seat(source.pull(), source.admission(), true)
             .await
             .is_err()
     );
@@ -640,7 +792,7 @@ async fn unproved_source_exit_forbids_export_and_removal() {
     assert!(
         source
             .fleet
-            .transfer_seat(source.pull(), true)
+            .transfer_seat(source.pull(), source.admission(), true)
             .await
             .is_err()
     );

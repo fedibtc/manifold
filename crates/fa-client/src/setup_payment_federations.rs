@@ -4,11 +4,12 @@ use std::collections::HashSet;
 
 use fedi_decentralized_domain::DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM;
 use fedi_decentralized_nostr::setup_payment_federations::{
-    admit_setup_payment_federations_event, restore_durably_admitted_setup_payment_federations_event,
+    AdmittedSetupPaymentFederationsEvent, admit_setup_payment_federations_event,
+    restore_durably_admitted_setup_payment_federations_event,
 };
 use fedi_decentralized_nostr_clients::{FaNostrClient, SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT};
 use fedi_decentralized_service_manifold_guardian::{FederationId, InviteCode};
-use nostr_sdk::Timestamp;
+use nostr_sdk::{PublicKey, Timestamp};
 
 use crate::formation::{DriverRun, finish_driver_run, start_driver_run};
 use crate::{
@@ -78,6 +79,29 @@ where
         let run = DriverRun::new(options, deadline, &lease);
         let result = self.refresh_setup_payment_federations(run).await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// Whether MGs start a guardian transfer now: the newest authenticated
+    /// setup-payment policy's flag, or, without one, the Manifold
+    /// environment's default, resolved as the MG resolves it. A relay
+    /// timeout falls back to the retained policy, as the replacement check
+    /// does.
+    pub(crate) async fn guardian_transfer_enabled(&self, run: DriverRun<'_>) -> FaResult<bool> {
+        if let Some(publisher) = self.inner.setup_payment_publisher {
+            match self.refresh_setup_payment_policy(publisher, run).await {
+                Ok(_) | Err(FaError::Timeout(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let published = self
+            .replacement_policy()
+            .await
+            .ok()
+            .and_then(|policy| policy.guardian_transfer_v2());
+        Ok(self
+            .inner
+            .manifold_environment
+            .guardian_transfer_v2(published))
     }
 
     pub(crate) async fn replacement_policy(
@@ -179,12 +203,40 @@ where
         &self,
         run: DriverRun<'_>,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
-        let request_timeout = run.request_timeout();
         let publisher = self.inner.setup_payment_publisher.ok_or_else(|| {
             FaError::Payment(
                 "paid formation requires a deployment-pinned setup-payment publisher".to_owned(),
             )
         })?;
+        let admitted = self
+            .refresh_setup_payment_policy(publisher, run)
+            .await?
+            .ok_or_else(|| {
+                FaError::Payment(
+                    "no authenticated setup-payment federation set is available".to_owned(),
+                )
+            })?;
+        Ok(admitted
+            .set()
+            .iter()
+            .map(
+                |(federation_id, invite_code)| AdmittedSetupPaymentFederation {
+                    federation_id: federation_id.clone(),
+                    invite_code: invite_code.clone(),
+                },
+            )
+            .collect::<Vec<_>>())
+    }
+
+    /// Fetch `publisher`'s policy candidates, admit the newest authenticated
+    /// one over the retained publication, and retain it. `None` when the
+    /// publisher has published nothing this FA could admit.
+    async fn refresh_setup_payment_policy(
+        &self,
+        publisher: PublicKey,
+        run: DriverRun<'_>,
+    ) -> FaResult<Option<AdmittedSetupPaymentFederationsEvent>> {
+        let request_timeout = run.request_timeout();
         let current =
             self.inner
                 .store
@@ -223,25 +275,12 @@ where
                 admitted = Some(candidate);
             }
         }
-        let admitted = admitted.ok_or_else(|| {
-            FaError::Payment(
-                "no authenticated setup-payment federation set is available".to_owned(),
-            )
-        })?;
-        self.inner
-            .store
-            .store_setup_payment_federations_event(admitted.event().clone())
-            .await?;
-
-        Ok(admitted
-            .set()
-            .iter()
-            .map(
-                |(federation_id, invite_code)| AdmittedSetupPaymentFederation {
-                    federation_id: federation_id.clone(),
-                    invite_code: invite_code.clone(),
-                },
-            )
-            .collect::<Vec<_>>())
+        if let Some(admitted) = &admitted {
+            self.inner
+                .store
+                .store_setup_payment_federations_event(admitted.event().clone())
+                .await?;
+        }
+        Ok(admitted)
     }
 }

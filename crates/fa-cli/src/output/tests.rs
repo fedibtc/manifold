@@ -71,23 +71,22 @@ fn active_status_json_has_exact_schema_on_stdout() {
 }
 
 #[test]
-fn restored_text_status_reports_current_freshness() {
+fn formed_text_status_reports_current_freshness() {
     for (freshness, expected) in [
         (fa_client::FormationFreshness::Unsynced, "unsynced"),
         (fa_client::FormationFreshness::Fresh, "fresh"),
     ] {
-        let status = FaStatus::Restored(fa_client::RestoredFormationSnapshot {
-            snapshot_generation: 1,
-            formation_id: fa_client::FormationId("restored-formation".to_owned()),
+        let status = FaStatus::Formed(fa_client::FormedFederationSnapshot {
+            formation_id: fa_client::FormationId("formed-federation".to_owned()),
             federation_invite: fa_client::InviteCode("invite".to_owned()),
             federation_name: None,
             seats: Vec::new(),
-            phase: fa_client::FormationPhase::Formed,
             freshness,
             backup_eligible: false,
+            origin: fa_client::FormedOrigin::Backup,
         });
         let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
-        assert_eq!(stdout, format!("invite\nrecovery state: {expected}\n"));
+        assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
         assert_eq!(stderr, "");
     }
 }
@@ -214,6 +213,62 @@ fn funded_wallet_notice_is_suppressed_in_json_mode() {
 
     assert_eq!(stdout, "");
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn guardian_transfer_json_has_exact_schema() {
+    let source = NostrPublicKey::from_hex(
+        "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
+    )
+    .unwrap();
+    let destination = NostrPublicKey::from_hex(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    )
+    .unwrap();
+    let source_seat_id = fedi_decentralized_service_manifold_guardian::SeatId::from(
+        fedi_decentralized_service_manifold_guardian::QuoteId([1; 32]),
+    );
+    let mut transfer = fa_client::GuardianTransfer {
+        seat_index: 2,
+        source_mg_id: source,
+        source_seat_id: source_seat_id.clone(),
+        destination_mg_id: destination,
+        destination_seat_id: None,
+        phase: fa_client::GuardianTransferPhase::BuyingSeat,
+    };
+    let expected = |destination_seat_id: &str, phase: &str| {
+        format!(
+            concat!(
+                r#"{{"seatIndex":2,"#,
+                r#""sourceFmanPubkey":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","#,
+                r#""sourceSeatId":"{}","#,
+                r#""destinationFmanPubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","#,
+                r#""destinationSeatId":{},"phase":"{}"}}"#,
+                "\n"
+            ),
+            source_seat_id, destination_seat_id, phase
+        )
+    };
+
+    let (stdout, stderr) =
+        capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
+    assert_eq!(stdout, expected("null", "buying_seat"));
+    assert_eq!(stderr, "");
+
+    let destination_seat_id = fedi_decentralized_service_manifold_guardian::SeatId::from(
+        fedi_decentralized_service_manifold_guardian::QuoteId([2; 32]),
+    );
+    transfer.destination_seat_id = Some(destination_seat_id.clone());
+    transfer.phase = fa_client::GuardianTransferPhase::AwaitingSource;
+    let (stdout, _) =
+        capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
+    assert_eq!(
+        stdout,
+        expected(&format!("\"{destination_seat_id}\""), "awaiting_source")
+    );
+
+    let (stdout, _) = capture(|output| output.guardian_transfer(None, OutputFormat::Json));
+    assert_eq!(stdout, "null\n");
 }
 
 #[test]

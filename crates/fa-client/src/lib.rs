@@ -9,6 +9,7 @@ mod decommission;
 mod discovery;
 mod eligibility;
 mod error;
+mod federation_reader;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -16,14 +17,16 @@ mod maintenance;
 mod mg;
 mod ports;
 mod replacement_checks;
+mod seat_purchase;
 mod selection;
 mod setup_payment_federations;
 mod state;
+mod transfer;
 mod unavailable;
 
 use std::sync::Arc;
 
-use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
+use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
@@ -43,6 +46,7 @@ pub use error::{
     AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
     MgOperation, SelectionReauthorizationReason,
 };
+pub use federation_reader::ConnectorsConsensusReader;
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
@@ -85,7 +89,8 @@ pub use replacement_checks::{ReplacementReceipt, ReplacementStartError};
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
-    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    MgSelectionRequest, SeatProvenance, SelectedMgSeat, TransferDestinationApproval,
+    TransferDestinationPreview, VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
@@ -96,13 +101,13 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
     FaStatus, FedimintdVersionRange, FormationActionRequired, FormationFreshness, FormationId,
-    FormationIntent, FormationPhase, FormationSnapshot, GuardianReplacementId,
-    GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
-    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
+    FormationIntent, FormationPhase, FormationSnapshot, FormedFederationSnapshot, FormedOrigin,
+    FormedSeat, GuardianReplacementId, GuardianReplacementRequirements, GuardianReplacementSeat,
+    MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
-    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
-    SeatPhase, SeatProgress,
+    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
+pub use transfer::{GuardianTransfer, GuardianTransferPhase};
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
     UnavailableManifoldGuardianConnector, UnavailablePayments, UnavailableRegistry,
@@ -128,11 +133,12 @@ struct FaClientInner<I, P, N, F, C> {
     ports: FaClientPorts<I, P, N, F, C>,
     progress: watch::Sender<FaStatus>,
     run_guard: Arc<Mutex<()>>,
-    // Connection hints only; consensus is still read and verified each time.
-    read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    /// Supplies the guardian-transfer default when the setup-payment policy
+    /// does not say.
+    manifold_environment: ManifoldEnvironment,
     backup_tasks: TaskGroup,
     replacement_checks: replacement_checks::ReplacementChecks,
 }
@@ -201,6 +207,9 @@ where
             peer_badge_verifier,
             None,
             None,
+            // Without a profile, guardian transfer defaults to production's
+            // rule.
+            ManifoldEnvironment::Production,
         )
         .await
     }
@@ -232,6 +241,7 @@ where
         fa_fee_account_provider: impl FaFeeAccountProvider,
         setup_payment_publisher: PublicKey,
         guardian_verification_fee_account: Option<Account>,
+        manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
         Self::open_inner(
             database,
@@ -246,6 +256,7 @@ where
             peer_badge_verifier,
             Some(setup_payment_publisher),
             guardian_verification_fee_account,
+            manifold_environment,
         )
         .await
     }
@@ -319,6 +330,7 @@ where
             peer_badge_verifier,
             setup_payment_publisher,
             guardian_verification_fee_account,
+            profile.environment(),
         )
         .await?;
         if recovery_hint == BackupRecoveryHint::RestoredMnemonic
@@ -372,10 +384,12 @@ where
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
+        manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
         let status = store.load_status(fa_id).await?;
+        store.load_guardian_transfer_watch().await;
         let (progress, _) = watch::channel(status);
         let backup_tasks = TaskGroup::new();
         Ok(Self {
@@ -384,10 +398,10 @@ where
                 ports,
                 progress,
                 run_guard: Arc::new(Mutex::new(())),
-                read_invite: Mutex::new(None),
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                manifold_environment,
                 backup_tasks,
                 replacement_checks: replacement_checks::ReplacementChecks::default(),
             }),
@@ -404,6 +418,19 @@ where
     #[must_use]
     pub fn status(&self) -> FaStatus {
         self.inner.progress.borrow().clone()
+    }
+
+    /// Stop this client's background work and wait until it has stopped.
+    ///
+    /// Dropping the last handle only asks that work to stop. A process that
+    /// is about to exit calls this first, so no client task still runs while
+    /// the async runtime shuts down. The work stops for every handle.
+    pub async fn shutdown(self) {
+        let tasks = self.inner.backup_tasks.clone();
+        drop(self);
+        if let Err(error) = tasks.shutdown_join_all(None).await {
+            tracing::warn!(%error, "FA background tasks did not stop cleanly");
+        }
     }
 
     /// Legacy registry-backed creation entry point.
@@ -454,11 +481,10 @@ where
     /// unchanged; changed terms expose a new payment action, which needs a new
     /// authorization.
     ///
-    /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reads fresh federation consensus and verifies
-    /// the saved identity, directory, and fee recipients. Restored backups likewise
-    /// verify their saved seats against the signed consensus directory. Neither
-    /// path requires every manager online; if the saved invite is unreachable,
+    /// A stored [`FaStatus::Formed`] federation is not treated as proof of
+    /// current remote state: resume reads fresh federation consensus and
+    /// verifies the saved seats against the signed consensus directory. It does
+    /// not require every manager online; if the saved invite is unreachable,
     /// recovery asks saved managers for alternative invites to the same federation.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
@@ -466,9 +492,10 @@ where
     /// After [`FormationPhase::DkgComplete`], resume finishes directory and
     /// initial fee publication without repeating DKG. The exact target is saved
     /// with [`FormationPhase::PublishingSeatBindings`] before submission, and
-    /// `Formed` is saved only after consensus confirms it. Reopening preserves
-    /// these checkpoints. Once confirmed, later checks keep `Formed` visible;
-    /// freshness and errors report the result separately.
+    /// the formed federation is saved only after consensus confirms it.
+    /// Reopening preserves these checkpoints. Once formed, later checks keep
+    /// [`FaStatus::Formed`] visible; freshness and errors report the result
+    /// separately.
     ///
     /// The returned [`std::future::Future`] owns no background task. Dropping it
     /// cancels local work, but completed durable checkpoints remain recoverable:
@@ -503,16 +530,16 @@ where
                     self.resume_formation(*recovery, options, deadline, &lease)
                         .await
                 }
-                db::FaRecovery::Restored(snapshot)
+                db::FaRecovery::Formed(snapshot)
                     if snapshot.freshness == FormationFreshness::Fresh =>
                 {
                     Ok(())
                 }
-                db::FaRecovery::Restored(snapshot) => {
+                db::FaRecovery::Formed(snapshot) => {
                     self.inner
                         .progress
-                        .send_replace(FaStatus::Restored(snapshot.clone()));
-                    self.reconcile_restored(
+                        .send_replace(FaStatus::Formed(snapshot.clone()));
+                    self.reconcile_formed(
                         snapshot,
                         fa_id,
                         formation::DriverRun::new(options, deadline, &lease),

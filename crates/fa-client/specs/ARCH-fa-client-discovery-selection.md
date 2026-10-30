@@ -39,9 +39,9 @@ A fresh, authenticated advertisement is eligible only when it:
   `iroh://<endpoint-id>` endpoint. These failures are respectively
   `MalformedServicePubkey` and `NoDialableEndpoint`.
 
-The complete enumeration is bounded at 2,048 retained candidates
+Discovery caps the enumeration at 2,048 retained candidates
 (`MG_ADVERTISEMENTS_CANDIDATE_LIMIT`), 16 MiB retained bytes
-(`MG_ADVERTISEMENTS_RETAINED_MAX_BYTES`), and the shared 256 KiB per-event
+(`MG_ADVERTISEMENTS_RETAINED_MAX_BYTES`), and the shared 64 KiB per-event
 cap (`ROLE_FETCHED_EVENT_MAX_BYTES`). Reaching either retained-prefix bound
 returns that prefix rather than letting an open-write publisher turn volume into
 a discovery failure. Consequently, discovery is not complete: a later honest

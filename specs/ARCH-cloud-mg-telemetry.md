@@ -159,9 +159,13 @@ already attributes the seat's metrics and carries no stronger guarantee.
 `/ready` reports only local store and serving health. One stale or unreachable
 MG cannot remove registration and exposition for healthy targets from service.
 The private exposition reports each seat's observation timestamp and stale bit.
-Both `snapshot_stale=1` and `target_fresh=0` use the same threshold: strictly
-more than two configured polling intervals since the relevant successful
-observation or complete target poll. Exposition refreshes that derived state
+It also reports `seat_fresh` for every seat of the MG's latest successful seat
+listing, including a seat with no observation yet. `seat_fresh=1` needs a
+snapshot that passed the same persisted-row revalidation as the forwarded
+samples, so a rejected, future-dated or missing observation reports 0.
+`snapshot_stale=1`, `seat_fresh=0` and `target_fresh=0` use the same threshold:
+strictly more than two configured polling intervals since the relevant
+successful observation or complete target poll. Exposition refreshes that derived state
 within 30 seconds. Responses for one revision share one immutable allocation.
 A revision cannot allocate its replacement until every response retaining the
 old backing has gone away; scrapes receive HTTP 429 during that bounded
@@ -174,9 +178,12 @@ and lease expiry suppress snapshots from every scrape ordered after that
 lifecycle transition. A scrape that overlaps the transition may finish with its
 coherent pre-transition body; it never combines lifecycle states from opposite
 sides of the transition. Renewal after expiry starts without the previous
-snapshot. The collector bounds all persisted metric state to 32 MiB and 100,000
-samples and admits one aggregate scrape at a time. It retains latest snapshots
-only; Prometheus retains metrics history.
+snapshot. The collector bounds all persisted metric state to 64 MiB and 200,000
+samples. A commit that would exceed the bound stores the snapshots that fit.
+Within one commit it applies replacements of already stored seats before new
+seats, so new seats do not take capacity ahead of them. A snapshot that does not
+fit, new or replacement, is skipped, and its seat keeps its old observation
+time. The collector admits one aggregate scrape at a time. It retains latest snapshots only; Prometheus retains metrics history.
 
 ## Seat reports from safe journals
 

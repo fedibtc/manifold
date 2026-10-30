@@ -30,8 +30,8 @@ use fedi_decentralized_peer_badge_verifier::{
     PeerBadgeVerificationError, PeerBadgeVerifier, PeerBadgeVerifierProvenance,
 };
 use fedi_decentralized_service_manifold_guardian::{
-    FederationSize, FedimintdDkgVersion, FedimintdVersion, GetAvailabilityRequest,
-    GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
+    FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
+    GetAvailabilityRequest, GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
 use futures::future::{Either, select};
@@ -1143,6 +1143,173 @@ pub(crate) async fn preview_mg_replacements_with(
         verifier_provenance,
         seats,
         total_advertised_msats,
+        valid_until: Timestamp(valid_until),
+    })
+}
+
+/// Read-only verified selection of one MG to receive a transferred guardian.
+#[derive(Debug)]
+pub struct TransferDestinationPreview {
+    /// The federation whose guardian moves onto the selected seat.
+    federation_id: FederationId,
+    verifier_provenance: PeerBadgeVerifierProvenance,
+    fedimintd_dkg_version: FedimintdDkgVersion,
+    seat: SelectedMgSeat,
+    valid_until: Timestamp,
+}
+
+impl TransferDestinationPreview {
+    /// The verified MG this preview selected.
+    #[must_use]
+    pub fn seat(&self) -> &SelectedMgSeat {
+        &self.seat
+    }
+
+    /// Advertised price of the seat.
+    #[must_use]
+    pub fn advertised_price_msats(&self) -> u64 {
+        self.seat.advertised_price_msats()
+    }
+
+    /// Unix timestamp at which this uncached preview becomes stale.
+    #[must_use]
+    pub fn valid_until(&self) -> Timestamp {
+        self.valid_until
+    }
+
+    /// Seal this selection to user authorization of at most `max_msats`.
+    /// A zero limit approves only a seat advertised as free.
+    pub fn approve(self, max_msats: u64) -> FaResult<TransferDestinationApproval> {
+        if max_msats < self.seat.advertised_price_msats() {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
+        }
+        Ok(TransferDestinationApproval {
+            federation_id: self.federation_id,
+            verifier_provenance: self.verifier_provenance,
+            fedimintd_dkg_version: self.fedimintd_dkg_version,
+            advertised_price_msats: self.seat.advertised_price_msats(),
+            seat: self.seat.into(),
+            max_msats,
+            valid_until: self.valid_until,
+        })
+    }
+}
+
+/// Sealed, short-lived approval to buy the seat of one guardian transfer.
+#[derive(Clone, Debug)]
+pub struct TransferDestinationApproval {
+    /// The federation the preview selected for. Starting a transfer of any
+    /// other federation with this approval fails.
+    pub(crate) federation_id: FederationId,
+    pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
+    /// The Fedimint line the federation ran at preview time.
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
+    pub(crate) seat: ApprovedMgSeat,
+    pub(crate) advertised_price_msats: u64,
+    pub(crate) max_msats: u64,
+    pub(crate) valid_until: Timestamp,
+}
+
+impl TransferDestinationApproval {
+    /// Approved maximum price.
+    #[must_use]
+    pub fn max_msats(&self) -> u64 {
+        self.max_msats
+    }
+
+    /// Unix timestamp at which buying with this approval must fail.
+    #[must_use]
+    pub fn valid_until(&self) -> Timestamp {
+        self.valid_until
+    }
+}
+
+/// Every release of the Fedimint major/minor line a DKG identity names.
+pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdVersionRange> {
+    let (major, minor) = dkg_version.major_minor();
+    FedimintdVersionRange::from_cores(
+        FedimintdVersionCore {
+            major,
+            minor,
+            patch: 0,
+        },
+        FedimintdVersionCore {
+            major,
+            minor: minor.saturating_add(1),
+            patch: 0,
+        },
+    )
+}
+
+/// Select one fresh MG, outside `excluded`, that advertises the Fedimint
+/// line the federation runs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn preview_transfer_destination_with(
+    registry: &impl FaNostrClient,
+    verifier: &impl SelectionBadgeVerifier,
+    prober: &impl SelectionAvailabilityProber,
+    verifier_provenance: PeerBadgeVerifierProvenance,
+    federation_id: FederationId,
+    federation_size: FederationSize,
+    fedimintd_dkg_version: FedimintdDkgVersion,
+    excluded: BTreeSet<PublicKey>,
+    retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
+    retained_holders: BTreeSet<PublicKey>,
+    deadline: Instant,
+    now: u64,
+    completed_at: impl FnOnce() -> u64,
+) -> FaResult<TransferDestinationPreview> {
+    // Only MGs on the federation's DKG line can host one of its guardians.
+    let discovery_requirements = MgCandidateRequirements {
+        federation_size,
+        fedimintd_versions: dkg_line(&fedimintd_dkg_version)?,
+    };
+    let mut discovery =
+        discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;
+    let request = MgSelectionRequest::new(
+        federation_size,
+        dkg_line(&fedimintd_dkg_version)?,
+        PlanPreference::default(),
+    )?;
+    discovery.candidates.retain(|candidate| {
+        !excluded.contains(&candidate.mg_id)
+            && candidate.fedimintd_dkg_version == fedimintd_dkg_version
+    });
+    let seen = discovery.seen();
+    let eligible = discovery.candidates.len();
+    let seat = select_mg_seats(
+        verifier,
+        prober,
+        &request,
+        &fedimintd_dkg_version,
+        discovery.candidates,
+        FederationSize(1),
+        retained_service_pubkeys,
+        retained_holders,
+        deadline,
+        &mut discovery.rejected,
+    )
+    .await
+    .pop()
+    .ok_or(FaError::InsufficientMgSeats {
+        requested: 1,
+        selected: 0,
+        seen,
+        eligible,
+    })?;
+    let valid_until = completed_at()
+        .checked_add(MG_SELECTION_PREVIEW_VALIDITY.as_secs())
+        .ok_or_else(|| {
+            FaError::Selection("transfer destination preview expiry overflows".to_owned())
+        })?;
+    Ok(TransferDestinationPreview {
+        federation_id,
+        verifier_provenance,
+        fedimintd_dkg_version,
+        seat,
         valid_until: Timestamp(valid_until),
     })
 }

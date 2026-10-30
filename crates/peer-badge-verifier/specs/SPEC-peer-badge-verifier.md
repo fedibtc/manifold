@@ -9,7 +9,9 @@ programs from acquiring subtly different authority, revocation, proof, or
 schema rules. MG verifies carriage integrity for its own HolderAuthorization
 and uses the verifier's offline issuance check to admit only badges a trusted
 issuer issued to the authorizing holder, but does not judge its own badge's
-revocation or trust level.
+revocation or trust level. As a guardian-transfer source, MG applies
+the complete verifier to the proposed destination before retirement and every
+package release.
 
 This record governs `fedi-decentralized-peer-badge-verifier`. Environment
 identity and public configuration are governed by
@@ -102,8 +104,8 @@ artifacts must not enable this feature or accept that provenance. FA receives th
 `FaClient::open`; push-gateway telemetry and the cloud collector construct it from their selected
 canonical profile; FLIP receives it in `run_daemon`, rejects non-matching
 canonical provenance, and retains it in `DaemonContext`. MG receives only
-its resolved environment profile at `ManifoldGuardianNostr::new` and does not
-depend on this crate.
+its resolved environment profile in its Nostr adapter, which uses this crate for
+offline enrollment checks and complete guardian-transfer destination admission.
 
 ## Verification algorithm
 

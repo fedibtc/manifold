@@ -5,10 +5,11 @@ Source: Fedi product requirement, required for MVP.
 A badge from a configured issuer is not sufficient on its own to admit an
 MG operator. Every relying decision that accepts an MG identity must also
 require the badge's authenticated `fedi-trust-score-v1.0` `trust_level` to meet
-the selected environment profile's minimum. This includes FA seat selection,
-FLIP liquidity-request endorsement and federation-policy evaluation, and
-push-gateway guardian-telemetry registration and cloud MG telemetry collector
-registration.
+the selected environment profile's minimum. This includes FA seat selection;
+FLIP liquidity-request endorsement and federation-policy evaluation;
+push-gateway guardian-telemetry registration; cloud MG telemetry collector
+registration; and the old MG's independent admission of a guardian-replacement
+destination.
 
 The current profile minimum is `9`. Manifold interprets the schema's bounded
 numeric `trust_level` as ordered relying-party policy and therefore accepts

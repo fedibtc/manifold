@@ -31,7 +31,7 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    formed(&client.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         0,
@@ -785,7 +785,7 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
         let reopened =
             open_client_with_registry(database, payments, mg_state, config, registry).await;
         reopened.resume().await.unwrap();
-        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        formed(&reopened.status());
         assert_eq!(
             payment_state.payable_calls.load(Ordering::SeqCst),
             payable_calls_before_resume
@@ -956,7 +956,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         )
         .await
         .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.funded_quotes.lock().expect("test lock").len(),
         usize::from(MIN_FEDERATION_SIZE) + 1,
@@ -1134,7 +1134,7 @@ async fn mixed_replacement_wave_with_clock(clock: Arc<AtomicU64>) {
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    formed(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         spends_before_reopen,

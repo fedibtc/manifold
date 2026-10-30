@@ -4,13 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, GetMgTrustMaterialRequest, GuardianReports, ProtocolV1, Pubkey,
+    AdmittedSetupPaymentFederations, GetMgTrustMaterialRequest, GuardianReports, MgSeatBindings,
+    ProtocolV1, Pubkey, federation_seats, parse_protocol_peer_id,
 };
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
-use fedi_decentralized_service_manifold_guardian::{
-    GetInviteCodeRequest, ManifoldGuardianService, Timestamp,
-};
+use fedi_decentralized_service_manifold_guardian::ManifoldGuardianService;
 use fedimint_core::peer_availability::merge_peer_availability;
 use fedimint_core::runtime::timeout;
 use fedimint_core::{NumPeersExt as _, PeerId};
@@ -18,6 +17,7 @@ use futures::future::join_all;
 use serde::Serialize;
 
 use crate::formation::{PostFormedAuthority, PostFormedSeat, invite_federation_id, now_secs};
+use crate::liquidity::liquidity_seat_bindings_field;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationId,
     FormationRunOptions, ManifoldGuardianConnector, SeatId,
@@ -100,17 +100,21 @@ where
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
         let authority = self.maintenance_authority(self.fa_id()?).await?;
         let federation_id = FederationId(invite_federation_id(&authority.invite_code)?.to_string());
-        let peers = authority
-            .seats
-            .iter()
-            .map(|seat| PeerId::from(seat.index))
-            .collect::<BTreeSet<_>>();
-        let reports = self.guardian_reports(&authority, &federation_id, &peers);
+        // Without the seats' peer ids, peer reports say nothing about a seat.
+        let seat_peers = self.seat_peers(&authority).await.unwrap_or_default();
+        let peers = seat_peers.values().copied().collect::<BTreeSet<_>>();
+        let reports = async {
+            if peers.is_empty() {
+                return None;
+            }
+            self.guardian_reports(&authority, &federation_id, &peers)
+                .await
+        };
         let revoked = join_all(authority.seats.iter().map(|seat| self.revoked_holder(seat)));
         let (reports, revoked) = futures::join!(reports, revoked);
         let reports = reports.unwrap_or_else(|| GuardianReports {
             federation_id: federation_id.clone(),
-            peers,
+            peers: peers.clone(),
             sessions: BTreeMap::new(),
             availability: BTreeMap::new(),
         });
@@ -121,8 +125,9 @@ where
             .iter()
             .zip(revoked)
             .filter_map(|(seat, revoked)| {
-                let mut reasons = reasons
-                    .get(&PeerId::from(seat.index))
+                let mut reasons = seat_peers
+                    .get(&seat.index)
+                    .and_then(|peer| reasons.get(peer))
                     .cloned()
                     .unwrap_or_default();
                 if revoked {
@@ -145,68 +150,63 @@ where
         })
     }
 
+    /// Each seat's Fedimint peer id, from the verified consensus seat
+    /// binding that names the seat's MG. The seat index is the FA's order of
+    /// the seats, not the peer id. `None` when the bindings cannot be read
+    /// or verified, or do not name every seat's MG exactly once.
+    async fn seat_peers(&self, authority: &PostFormedAuthority) -> Option<BTreeMap<u16, PeerId>> {
+        let invite = &authority.invite_code;
+        let consensus = timeout(
+            REQUEST_TIMEOUT,
+            self.inner.ports.consensus_reader.read_consensus(&invite),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        let federation = federation_seats(&consensus.config).ok()?;
+        let directory = liquidity_seat_bindings_field(&consensus.meta_value).ok()??;
+        let bindings = MgSeatBindings::parse_canonical(&directory)
+            .and_then(|bindings| bindings.verify_for_federation(&federation))
+            .ok()?;
+        authority
+            .seats
+            .iter()
+            .map(|seat| {
+                let mut named = bindings
+                    .iter()
+                    .filter(|binding| binding.mg_pubkey.0 == seat.mg_id.to_string());
+                let binding = named.next()?;
+                if named.next().is_some() {
+                    return None;
+                }
+                Some((seat.index, parse_protocol_peer_id(&binding.peer_id)?))
+            })
+            .collect()
+    }
+
     async fn guardian_reports(
         &self,
         authority: &PostFormedAuthority,
         federation_id: &FederationId,
         peers: &BTreeSet<PeerId>,
     ) -> Option<GuardianReports> {
-        let mut attempted = BTreeSet::new();
-        let mut read = async |invite: crate::InviteCode| {
-            if !attempted.insert(invite.0.clone())
-                || invite_federation_id(&invite).ok()?.to_string() != federation_id.0
-            {
-                return None;
-            }
-            // The invite reader allows 30s for setup and 10s for reports.
-            let report = timeout(
-                Duration::from_secs(45),
-                self.inner
-                    .ports
-                    .consensus_reader
-                    .read_guardian_reports(&invite),
-            )
-            .await
-            .ok()?
-            .ok()?;
-            (report.federation_id == *federation_id
+        let invite = &authority.invite_code;
+        // The invite reader allows 30s for setup and 10s for reports.
+        timeout(
+            Duration::from_secs(45),
+            self.inner
+                .ports
+                .consensus_reader
+                .read_guardian_reports(&invite),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .filter(|report| {
+            report.federation_id == *federation_id
                 && report.peers == *peers
-                && (!report.sessions.is_empty() || !report.availability.is_empty()))
-            .then_some(report)
-        };
-        if let Some(report) = read(self.consensus_invite(&authority.invite_code).await).await {
-            return Some(report);
-        }
-        // Try another host only when the known route fails. Each attempt reads
-        // the entire federation, so racing these repeats all the health queries.
-        for seat in &authority.seats {
-            let invite = timeout(REQUEST_TIMEOUT, async {
-                let client = self
-                    .inner
-                    .ports
-                    .mg_connector
-                    .connect(&seat.locator)
-                    .await
-                    .ok()?;
-                let request = self
-                    .sign(&GetInviteCodeRequest {
-                        ts: Timestamp(now_secs().ok()?),
-                        fa_id: self.fa_id().ok()?,
-                        seat_id: seat.seat_id.clone(),
-                    })
-                    .ok()?;
-                Some(client.get_invite_code(request).await.ok()?.invite_code)
-            })
-            .await
-            .ok()
-            .flatten();
-            if let Some(invite) = invite
-                && let Some(report) = read(invite).await
-            {
-                return Some(report);
-            }
-        }
-        None
+                && (!report.sessions.is_empty() || !report.availability.is_empty())
+        })
     }
 
     async fn revoked_holder(&self, seat: &PostFormedSeat) -> bool {

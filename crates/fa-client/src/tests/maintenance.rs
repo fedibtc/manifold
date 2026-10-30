@@ -1037,7 +1037,7 @@ async fn terminal_guardian_refusal_is_typed_and_not_retried() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn pinned_target_conflict_stops_same_base_retries_and_is_distinguishable() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
@@ -1353,6 +1353,18 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
         reader,
     )
     .await;
+    // Maintenance needs a reconciled formed record.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match reopened.resume().await {
+                Err(FaError::Busy) => tokio::task::yield_now().await,
+                result => break result,
+            }
+        }
+    })
+    .await
+    .expect("cancelled driver released its lease")
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match reopened

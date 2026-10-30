@@ -63,11 +63,19 @@ pub(crate) const MIN_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(1)
 /// Largest duration represented without overflow by native and WASM runtime timers.
 pub(crate) const MAX_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(i32::MAX as u64);
 const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
+/// Budget for one post-DKG consensus read through the new federation's invite.
+///
+/// One read downloads the client config, agrees it across a threshold of
+/// guardians and then reads the metadata consensus. Upstream retries the
+/// config download internally for about 45 seconds, and a large federation
+/// needs more guardians to answer, so one ordinary request timeout is too
+/// short. A read that still times out is retried within the same run.
+const FORMATION_CONSENSUS_READ_TIMEOUT: Duration = Duration::from_secs(120);
 const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum QuoteAttemptPolicy {
+pub(crate) enum QuoteAttemptPolicy {
     /// The verified row has not crossed its output/acceptance boundary, so a
     /// definite transport failure may be retried and eventually returned as
     /// a fresh-selection requirement.
@@ -167,6 +175,7 @@ pub struct FormationRunOptionsConfig {
     pub run_timeout: Duration,
     /// Maximum time for one ordinary capability call.
     /// Payment creation, recovery, and refund settlement use the remaining run timeout.
+    /// Post-DKG formation consensus reads use their own longer budget.
     pub request_timeout: Duration,
 }
 
@@ -292,6 +301,11 @@ impl<'a> DriverRun<'a> {
         self.options.request_timeout()
     }
 
+    /// Return the driver lease that fences this invocation's durable writes.
+    pub(crate) fn lease(self) -> &'a DriverLease {
+        self.lease
+    }
+
     /// Return this invocation's absolute monotonic deadline.
     pub(crate) fn deadline(self) -> Instant {
         self.deadline
@@ -316,6 +330,19 @@ impl<'a> DriverRun<'a> {
         Fut: Future<Output = T>,
     {
         self.call_with_timeout(operation, self.options.request_timeout(), make_future)
+            .await
+    }
+
+    /// Fence one post-DKG consensus read under its longer budget.
+    async fn call_consensus_read<T, Fut>(
+        &self,
+        operation: &'static str,
+        make_future: impl FnOnce() -> FaResult<Fut>,
+    ) -> FaResult<T>
+    where
+        Fut: Future<Output = T>,
+    {
+        self.call_with_timeout(operation, FORMATION_CONSENSUS_READ_TIMEOUT, make_future)
             .await
     }
 
@@ -373,7 +400,7 @@ impl<'a> DriverRun<'a> {
     /// This refreshes the coarse run guard and captures the call's time budget.
     /// Constructing the future remains effect-free; the wallet body starts only
     /// when `poll_value_call` polls it.
-    async fn prepare_value_call_budget(
+    pub(crate) async fn prepare_value_call_budget(
         &self,
         operation: &'static str,
     ) -> FaResult<ValueCallTimeoutBudget> {
@@ -425,13 +452,13 @@ impl<'a> DriverRun<'a> {
 }
 
 /// Absolute run deadline prepared for one wallet-output poll.
-struct ValueCallTimeoutBudget {
+pub(crate) struct ValueCallTimeoutBudget {
     operation: &'static str,
     deadline: Instant,
 }
 
 impl ValueCallTimeoutBudget {
-    async fn poll_value_call<T>(
+    pub(crate) async fn poll_value_call<T>(
         self,
         run: DriverRun<'_>,
         future: impl Future<Output = T>,
@@ -477,6 +504,7 @@ pub(crate) struct PostFormedSeat {
     pub(crate) seat_id: SeatId,
 }
 
+#[derive(Clone)]
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
@@ -499,25 +527,25 @@ pub(crate) enum MetaFieldSubmissionError {
     ManifoldGuardian(ManifoldGuardianError),
 }
 
-enum SeatCreation<T> {
+pub(crate) enum SeatCreation<T> {
     Accepted(SeatAcceptance),
     Refused(SeatRefusal<T>),
 }
 
 #[derive(Clone)]
-struct SeatAcceptance {
-    seat_id: SeatId,
-    guardian_fee_account: Account,
+pub(crate) struct SeatAcceptance {
+    pub(crate) seat_id: SeatId,
+    pub(crate) guardian_fee_account: Account,
 }
 
-struct FreeSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
+pub(crate) struct FreeSeatQuote {
+    pub(crate) signed: SignedResponse<GetQuoteResponse>,
+    pub(crate) verified: SignatureVerified<GetQuoteResponse>,
 }
 
-struct PaidSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
+pub(crate) struct PaidSeatQuote {
+    pub(crate) signed: SignedResponse<GetQuoteResponse>,
+    pub(crate) verified: SignatureVerified<GetQuoteResponse>,
 }
 
 enum SeatAcquisition<R> {
@@ -566,7 +594,7 @@ enum SeatCheckpoint {
     Required,
 }
 
-enum SeatPresentation<R> {
+pub(crate) enum SeatPresentation<R> {
     Free(FreeSeatQuote),
     Paid {
         quote: PaidSeatQuote,
@@ -574,9 +602,9 @@ enum SeatPresentation<R> {
     },
 }
 
-struct SeatRefusal<T> {
-    error: MgFailure,
-    release_proof: Option<T>,
+pub(crate) struct SeatRefusal<T> {
+    pub(crate) error: MgFailure,
+    pub(crate) release_proof: Option<T>,
 }
 
 enum TerminalSeatOutcome {
@@ -1137,7 +1165,15 @@ where
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
-            let mut recovery = self.active_recovery(fa_id).await?;
+            let mut recovery = match self.inner.store.load_recovery(fa_id).await? {
+                FaRecovery::Idle => return Err(FaError::NoActiveFormation),
+                FaRecovery::Formed(_) => {
+                    return Err(FaError::AbandonUnavailable(
+                        crate::AbandonUnavailableReason::DkgComplete,
+                    ));
+                }
+                FaRecovery::Formation(recovery) => *recovery,
+            };
             self.release_and_abandon_pre_output(
                 &mut recovery,
                 fa_id,
@@ -3078,11 +3114,7 @@ where
         self.publish_snapshot(recovery.snapshot.clone());
         self.publish_seat_bindings(sessions, recovery, fa_id, &invite, run)
             .await?;
-        recovery.snapshot.phase = FormationPhase::Formed;
-        recovery.snapshot.freshness = FormationFreshness::Fresh;
-        recovery.snapshot.last_error = None;
-        self.publish_snapshot(recovery.snapshot.clone());
-        Ok(())
+        self.publish_formed(fa_id).await
     }
 
     async fn checkpoint_accepted_seat(
@@ -3364,7 +3396,7 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn request_new_quote(
+    pub(crate) async fn request_new_quote(
         &self,
         index: usize,
         client: &MgClient<F::Client>,
@@ -3530,7 +3562,7 @@ where
         })
     }
 
-    fn verify_quote(
+    pub(crate) fn verify_quote(
         &self,
         index: usize,
         signed_quote: &SignedResponse<GetQuoteResponse>,
@@ -3611,7 +3643,7 @@ where
         Ok(PaidSeatQuote { signed, verified })
     }
 
-    async fn present_seat(
+    pub(crate) async fn present_seat(
         &self,
         formation_id: &FormationId,
         index: usize,
@@ -3832,10 +3864,7 @@ where
                     waiting.push(&sessions[position]);
                 }
             }
-            // A completed formation stays unsynced until its full recheck succeeds.
-            if recovery.snapshot.phase != FormationPhase::Formed {
-                recovery.snapshot.freshness = FormationFreshness::Fresh;
-            }
+            recovery.snapshot.freshness = FormationFreshness::Fresh;
             self.publish_snapshot(recovery.snapshot.clone());
             if running == sessions.len() {
                 return Ok(());
@@ -3866,72 +3895,76 @@ where
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FaError::Storage("formed FA record contains no persisted invite".to_owned())
         })?;
-        let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
-            // Consensus already confirmed formation. Recheck that proof without
-            // requiring every manager to be online again.
-            (Vec::new(), stored)
-        } else {
-            let manager_connections = self.seat_sessions(recovery, run).await?;
-            self.poll_until_running(&manager_connections, recovery, fa_id, run)
-                .await?;
-            let invite = self
-                .fetch_agreed_invite(&manager_connections, fa_id, run)
-                .await?;
-            if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "formed federation identity changed during reconciliation".to_owned(),
-                ));
-            }
-            (manager_connections, invite)
-        };
+        let manager_connections = self.seat_sessions(recovery, run).await?;
+        self.poll_until_running(&manager_connections, recovery, fa_id, run)
+            .await?;
+        let invite = self
+            .fetch_agreed_invite(&manager_connections, fa_id, run)
+            .await?;
+        if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
+            return Err(FaError::InvalidManifoldGuardians(
+                "formed federation identity changed during reconciliation".to_owned(),
+            ));
+        }
         self.publish_seat_bindings(&manager_connections, recovery, fa_id, &invite, run)
             .await?;
-        recovery.snapshot.phase = FormationPhase::Formed;
-        recovery.snapshot.freshness = FormationFreshness::Fresh;
-        recovery.snapshot.last_error = None;
-        self.publish_snapshot(recovery.snapshot.clone());
+        self.publish_formed(fa_id).await
+    }
+
+    /// Report the formed federation, which this run checked against
+    /// consensus.
+    async fn publish_formed(&self, fa_id: FaId) -> FaResult<()> {
+        let mut status = self.inner.store.load_status(fa_id).await?;
+        if let FaStatus::Formed(snapshot) = &mut status {
+            snapshot.freshness = FormationFreshness::Fresh;
+        }
+        self.inner.progress.send_replace(status);
         Ok(())
     }
 
-    pub(crate) async fn reconcile_restored(
+    /// Check the saved seats of a formed federation against consensus.
+    pub(crate) async fn reconcile_formed(
         &self,
-        snapshot: crate::RestoredFormationSnapshot,
+        snapshot: crate::FormedFederationSnapshot,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let payload = self.inner.store.restored_backup_payload(fa_id).await?;
+        let payload = self.inner.store.formed_federation_payload(fa_id).await?;
         if payload.seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
-                "restored FA backup contains no seats".to_owned(),
+                "formed FA federation record contains no seats".to_owned(),
             ));
         }
         let consensus = self
-            .read_recovery_consensus(&snapshot.federation_invite, run)
+            .read_formed_consensus(&self.post_formed_authority(fa_id).await?, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
-                    "reading restored federation consensus failed: {error}"
+                    "reading formed federation consensus failed: {error}"
                 ))
             })?;
         verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
-                "restored federation config is not usable: {error}"
+                "formed federation config is not usable: {error}"
             ))
         })?;
         let directory = crate::liquidity::liquidity_seat_bindings_field(&consensus.meta_value)?
             .ok_or_else(|| {
                 FaError::InvalidManifoldGuardians(
-                    "restored federation has no MG seat-binding directory".to_owned(),
+                    "formed federation has no MG seat-binding directory".to_owned(),
                 )
             })?;
         let bindings = MgSeatBindings::parse_canonical(&directory)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
-                    "restored federation seat-binding directory is invalid: {error}"
+                    "formed federation seat-binding directory is invalid: {error}"
                 ))
             })?;
+        let payload = self
+            .adopt_transferred_seat(fa_id, payload, &bindings, run)
+            .await?;
         let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
@@ -3960,49 +3993,102 @@ where
         };
         context.fleet_seat_hints().map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
-                "restored seats do not match federation consensus: {error}"
+                "saved seats do not match federation consensus: {error}"
             ))
         })?;
         if let Some(commitment) = &payload.liquidity {
             context.matches_commitment(commitment)?;
         }
 
-        self.remember_read_invite(&snapshot.federation_invite, &consensus)
-            .await?;
+        let invite = verified_dial_invite(&snapshot.federation_invite, &consensus)?;
         self.inner
             .store
-            .reconcile_restored_backup(fa_id, federation_name)
+            .reconcile_formed_federation(fa_id, federation_name, invite)
             .await?;
-        let mut status = self.inner.store.load_status(fa_id).await?;
-        if let FaStatus::Restored(snapshot) = &mut status {
-            snapshot.freshness = FormationFreshness::Fresh;
-            snapshot.backup_eligible = true;
-        }
-        self.inner.progress.send_replace(status);
-        Ok(())
+        self.publish_formed(fa_id).await
     }
 
+    /// Connect to every seat's MG for a run that needs all of them.
+    ///
+    /// The seats exist, so a definite connection failure is transient here:
+    /// it is retried with bounded backoff until the run deadline instead of
+    /// ending the run. MGs are dialed concurrently, so one slow MG does not
+    /// hold up the others.
     async fn seat_sessions(
         &self,
         recovery: &ActiveFormationRecovery,
         run: DriverRun<'_>,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
-        let mut sessions = Vec::with_capacity(recovery.seats.len());
+        let formation_id = &recovery.snapshot.formation_id;
+        let mut pending = FuturesUnordered::new();
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
                 FaError::Storage(format!("FA seat row {position} has no seat id"))
             })?;
-
-            let client =
-                MgClient::connect(&self.inner.ports.mg_connector, &seat.progress.locator, run)
+            let locator = &seat.progress.locator;
+            let index = seat.progress.index;
+            pending.push(async move {
+                let client = self
+                    .connect_seat_with_retry(locator, formation_id, run)
                     .await?;
-            sessions.push(SeatSession {
-                index: seat.progress.index,
-                client,
-                seat_id,
+                Ok::<_, FaError>((
+                    position,
+                    SeatSession {
+                        index,
+                        client,
+                        seat_id,
+                    },
+                ))
             });
         }
-        Ok(sessions)
+        let mut sessions = (0..recovery.seats.len()).map(|_| None).collect::<Vec<_>>();
+        while let Some(result) = pending.next().await {
+            let (position, session) = result?;
+            sessions[position] = Some(session);
+        }
+        sessions
+            .into_iter()
+            .enumerate()
+            .map(|(position, session)| {
+                session.ok_or_else(|| {
+                    FaError::Storage(format!("missing MG session for seat {position}"))
+                })
+            })
+            .collect()
+    }
+
+    /// Connect to one existing seat's MG, retrying timeouts and transport
+    /// failures with bounded exponential backoff until the run deadline.
+    async fn connect_seat_with_retry(
+        &self,
+        locator: &Locator,
+        formation_id: &FormationId,
+        run: DriverRun<'_>,
+    ) -> FaResult<MgClient<F::Client>> {
+        let mut retry_delay = run
+            .options
+            .poll_interval
+            .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
+            .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+        loop {
+            let error = match MgClient::connect(&self.inner.ports.mg_connector, locator, run).await
+            {
+                Ok(client) => return Ok(client),
+                Err(error) => error,
+            };
+            let FaError::Mg(failure) = error else {
+                return Err(error);
+            };
+            if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport)
+                || sleep_for_retry(run.deadline, retry_delay).await.is_err()
+            {
+                return Err(failure.into());
+            }
+            log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+        }
     }
 
     /// Publish the directory and initial fee policy as one formation vote.
@@ -4014,8 +4100,6 @@ where
         invite: &InviteCode,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let confirmed = recovery.snapshot.phase == FormationPhase::Formed;
-
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
         // invalid directory after pinning it. This read validates the signed
@@ -4024,13 +4108,16 @@ where
             loop {
                 ensure_time_remaining(run.deadline, "reading the formation config")?;
                 match run
-                    .call("reading the formation config", || {
+                    .call_consensus_read("reading the formation config", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                     })
-                    .await?
+                    .await
                 {
-                    Ok(snapshot) => break Some(snapshot.config),
-                    Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
+                    Ok(Ok(snapshot)) => break Some(snapshot.config),
+                    Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                        sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         } else {
@@ -4100,60 +4187,46 @@ where
             }
         };
 
-        if !confirmed {
-            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-            self.publish_snapshot(recovery.snapshot.clone());
-        }
+        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+        self.publish_snapshot(recovery.snapshot.clone());
         let mut pending_error = None;
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = if confirmed {
-                self.read_recovery_consensus(invite, run).await?
-            } else {
-                run.call("reading the formation metadata base", || {
+            let snapshot = match run
+                .call_consensus_read("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?
+                .await
+            {
+                Ok(Ok(snapshot)) => snapshot,
+                Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                    sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
-            let Ok(snapshot) = snapshot else {
-                sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-                continue;
-            };
-            if confirmed {
-                verify_consensus_identity(&snapshot, invite)?;
-            }
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
                     error.actual_bytes, error.max_bytes
                 ))
             })?;
-            let immutable_matches = self.seat_bindings_match(&snapshot, &target.seat_bindings)?
+            let exact_matches = self.seat_bindings_match(&snapshot, &target.seat_bindings)?
                 && guardian_fee_recipients_match(
                     snapshot.meta_value.as_deref(),
                     &target.recipients,
-                )?;
-            let exact_matches = immutable_matches
+                )?
                 && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?;
-            if (confirmed && immutable_matches) || exact_matches {
-                if !confirmed {
-                    run.call("confirming formation metadata consensus", || {
-                        Ok(self
-                            .inner
-                            .store
-                            .confirm_formation_meta_target(&recovery.snapshot.formation_id))
-                    })
-                    .await??;
-                }
-                self.remember_read_invite(invite, &snapshot).await?;
+            if exact_matches {
+                run.call("confirming formation metadata consensus", || {
+                    Ok(self
+                        .inner
+                        .store
+                        .confirm_formation_meta_target(&recovery.snapshot.formation_id))
+                })
+                .await??;
                 return Ok(());
-            }
-            if confirmed {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "formed federation changed its immutable directory or fee recipients"
-                        .to_owned(),
-                ));
             }
             if let Some(error) = pending_error.take() {
                 return Err(error);
@@ -4404,114 +4477,19 @@ where
         Ok(true)
     }
 
-    /// Choose remembered guardian addresses for this saved invite, if available.
-    /// Otherwise return the saved invite. Only connection information is reused;
-    /// callers must still read fresh consensus.
-    pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
-        self.inner
-            .read_invite
-            .lock()
-            .await
-            .as_ref()
-            .filter(|(original, _)| original == saved)
-            .map(|(_, invite)| invite.clone())
-            .unwrap_or_else(|| saved.clone())
-    }
-
-    /// Remember several guardian addresses from a verified consensus snapshot.
-    /// Call after verifying the directory and saved authority. This checks the
-    /// federation identity again before storing the connection hint in memory;
-    /// the saved invite, backups, and signed liquidity request stay unchanged.
-    async fn remember_read_invite(
+    /// Read fresh consensus of the formed federation through its saved
+    /// invite. The caller must still verify the federation identity, the
+    /// directory and saved authority.
+    pub(crate) async fn read_formed_consensus(
         &self,
-        saved: &InviteCode,
-        snapshot: &FederationConsensusSnapshot,
-    ) -> FaResult<()> {
-        verify_consensus_identity(snapshot, saved)?;
-        let peers = snapshot
-            .config
-            .global
-            .api_endpoints
-            .iter()
-            .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
-            .collect();
-        let parsed = FedimintInviteCode::from_str(&saved.0)
-            .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
-        let invite =
-            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
-        *self.inner.read_invite.lock().await =
-            Some((saved.clone(), InviteCode(invite.to_string())));
-        Ok(())
-    }
-
-    /// Read fresh consensus, trying saved managers' invites if the first read fails.
-    /// Alternative invites and returned configurations must name the saved
-    /// federation. Calls share the driver deadlines, and remaining attempts are
-    /// dropped once one succeeds. The caller must still verify the directory and
-    /// saved authority before marking recovery fresh.
-    async fn read_recovery_consensus(
-        &self,
-        saved: &InviteCode,
+        authority: &PostFormedAuthority,
         run: DriverRun<'_>,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
-        let invite = self.consensus_invite(saved).await;
-        let first = run
-            .call("reading federation recovery consensus", || {
-                Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-            })
-            .await;
-        match &first {
-            Ok(Ok(_)) => return first,
-            Err(error) if !matches!(error, FaError::Timeout(_)) => return first,
-            _ => {}
-        }
-
-        // A manager supplies another way to dial, never a trust verdict.
-        // Race the saved managers so one unavailable manager cannot hold up the rest.
-        let fa_id = self.fa_id()?;
-        let authority = self.post_formed_authority(fa_id).await?;
-        let expected = invite_federation_id(saved)?;
-        let mut pending = FuturesUnordered::new();
-        for seat in &authority.seats {
-            pending.push(async move {
-                let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
-                let request = run
-                    .construct("signing a recovery invite request", || {
-                        self.sign(&GetInviteCodeRequest {
-                            ts: Timestamp(now_secs()?),
-                            fa_id,
-                            seat_id: seat.seat_id.clone(),
-                        })
-                    })
-                    .await?;
-                let invite = client
-                    .call(run, MgOperation::GetInviteCode, |client| {
-                        client.get_invite_code(request)
-                    })
-                    .await?
-                    .invite_code;
-                if invite_federation_id(&invite)? != expected {
-                    return Err(FaError::InvalidManifoldGuardians(
-                        "recovery invite names another federation".to_owned(),
-                    ));
-                }
-                let snapshot = run
-                    .call("reading alternate recovery consensus", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
-                    })
-                    .await?
-                    .map_err(|error| FaError::InvalidManifoldGuardians(error.to_string()))?;
-                verify_consensus_identity(&snapshot, saved)?;
-                Ok::<_, FaError>(snapshot)
-            });
-        }
-        while let Some(result) = pending.next().await {
-            if let Ok(snapshot) = result {
-                return Ok(Ok(snapshot));
-            }
-        }
-        first
+        let invite = &authority.invite_code;
+        run.call("reading federation consensus metadata", || {
+            Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+        })
+        .await
     }
 
     async fn fetch_agreed_invite(
@@ -4570,69 +4548,35 @@ where
 
     pub(crate) async fn active_recovery(&self, fa_id: FaId) -> FaResult<ActiveFormationRecovery> {
         match self.inner.store.load_recovery(fa_id).await? {
-            FaRecovery::Idle | FaRecovery::Restored(_) => Err(FaError::NoActiveFormation),
+            FaRecovery::Idle | FaRecovery::Formed(_) => Err(FaError::NoActiveFormation),
             FaRecovery::Formation(recovery) => Ok(*recovery),
         }
     }
 
     pub(crate) async fn post_formed_authority(&self, fa_id: FaId) -> FaResult<PostFormedAuthority> {
-        match self.inner.store.load_recovery(fa_id).await? {
-            FaRecovery::Idle => Err(FaError::NoActiveFormation),
-            FaRecovery::Formation(recovery) => {
-                let recovery = *recovery;
-                if recovery.snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-                    FaError::Storage("formed FA record has no federation invite".to_owned())
-                })?;
-                let seats = recovery
-                    .seats
-                    .into_iter()
-                    .map(|seat| {
-                        Ok(PostFormedSeat {
-                            index: seat.progress.index,
-                            mg_id: seat.admission.mg_id(),
-                            locator: seat.progress.locator,
-                            seat_id: seat.progress.seat_id.ok_or_else(|| {
-                                FaError::Storage("formed FA seat has no seat id".to_owned())
-                            })?,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id: recovery.snapshot.formation_id,
-                    invite_code,
-                    seats,
+        let FaRecovery::Formed(snapshot) = self.inner.store.load_recovery(fa_id).await? else {
+            return Err(FaError::NoActiveFormation);
+        };
+        let seats = snapshot
+            .seats
+            .into_iter()
+            .enumerate()
+            .map(|(index, seat)| {
+                Ok(PostFormedSeat {
+                    index: u16::try_from(index).map_err(|_| {
+                        FaError::Storage("formed FA seat index overflow".to_owned())
+                    })?,
+                    mg_id: seat.mg_identity,
+                    locator: seat.locator,
+                    seat_id: seat.seat_id,
                 })
-            }
-            FaRecovery::Restored(snapshot) => {
-                if snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let formation_id = snapshot.formation_id;
-                let seats = snapshot
-                    .seats
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, seat)| {
-                        Ok(PostFormedSeat {
-                            index: u16::try_from(index).map_err(|_| {
-                                FaError::Storage("restored FA seat index overflow".to_owned())
-                            })?,
-                            mg_id: seat.mg_identity,
-                            locator: seat.locator,
-                            seat_id: seat.seat_id,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id,
-                    invite_code: snapshot.federation_invite,
-                    seats,
-                })
-            }
-        }
+            })
+            .collect::<FaResult<Vec<_>>>()?;
+        Ok(PostFormedAuthority {
+            formation_id: snapshot.formation_id,
+            invite_code: snapshot.federation_invite,
+            seats,
+        })
     }
 
     fn publish_snapshot(&self, snapshot: FormationSnapshot) {
@@ -4659,6 +4603,30 @@ where
 
 /// Reject a configuration whose federation id differs from the saved invite.
 /// This checks identity only; the caller verifies the guardian directory separately.
+/// The invite of a verified consensus config for the federation of `saved`:
+/// the f+1 lowest guardians at their current endpoints, which follow a
+/// guardian transfer. Call after the caller verified the directory and saved
+/// authority. It keeps the saved invite's API secret, if any.
+fn verified_dial_invite(
+    saved: &InviteCode,
+    snapshot: &FederationConsensusSnapshot,
+) -> FaResult<InviteCode> {
+    verify_consensus_identity(snapshot, saved)?;
+    let peers = snapshot
+        .config
+        .global
+        .api_endpoints
+        .iter()
+        .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+        .collect();
+    let parsed = FedimintInviteCode::from_str(&saved.0)
+        .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
+    Ok(InviteCode(
+        FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret())
+            .to_string(),
+    ))
+}
+
 fn verify_consensus_identity(
     snapshot: &FederationConsensusSnapshot,
     invite: &InviteCode,
@@ -4810,7 +4778,7 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
     }
 }
 
-fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
+pub(crate) fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
     const ADJECTIVES: [&str; 16] = [
         "Amber", "Bright", "Calm", "Cedar", "Clear", "Copper", "Gentle", "Golden", "Kind",
         "Lively", "Quiet", "Silver", "Solar", "Steady", "Warm", "Wild",

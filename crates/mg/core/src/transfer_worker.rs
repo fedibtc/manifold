@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
-    MgSignedRequest, SeatId, Timestamp, TransferSeatRequest,
+    ManifoldGuardianError, MgSignedRequest, SeatId, Timestamp, TransferSeatRequest,
 };
 use tokio::sync::{Notify, Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
@@ -39,6 +40,25 @@ impl TransferWake {
 }
 
 type Seats = Arc<RwLock<HashMap<SeatId, Arc<Seat>>>>;
+
+/// Retry bounds for transfer failures.
+const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// How soon a development destination asks again while the source reports
+/// that the guardian is on its way, so local tests do not wait up to
+/// [`MAX_BACKOFF`] after the source is ready. Staging and production keep
+/// the backoff for these answers too.
+const DEV_SOURCE_PROGRESS_RETRY: Duration = Duration::from_secs(1);
+
+/// The source is moving the guardian toward the handover and will answer a
+/// later request with it.
+fn source_in_progress(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ManifoldGuardianError>(),
+        Some(ManifoldGuardianError::AwaitingSessionEnd | ManifoldGuardianError::AwaitingBackup)
+    )
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("guardian transfer requires local repair")]
@@ -283,7 +303,7 @@ impl Jobs {
         mut cancel: watch::Receiver<bool>,
         mut retry: watch::Receiver<()>,
     ) {
-        let mut backoff = Duration::from_millis(500);
+        let mut backoff = INITIAL_BACKOFF;
         loop {
             if *cancel.borrow() || seat.is_decommissioned() {
                 return;
@@ -319,12 +339,21 @@ impl Jobs {
             }
             // Remote/process/storage failures get bounded retries; jitter
             // avoids synchronizing source and relay requests after restart.
-            let delay = backoff + Duration::from_millis(rand::random::<u64>() % 250);
+            let jitter = Duration::from_millis(rand::random::<u64>() % 250);
+            let delay = if self.config.manifold_environment == ManifoldEnvironment::Development
+                && source_in_progress(&error)
+            {
+                backoff = INITIAL_BACKOFF;
+                DEV_SOURCE_PROGRESS_RETRY + jitter
+            } else {
+                let delay = backoff + jitter;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                delay
+            };
             tokio::select! {
                 _ = cancelled(&mut cancel) => return,
                 _ = tokio::time::sleep(delay) => {}
             }
-            backoff = (backoff * 2).min(Duration::from_secs(30));
         }
     }
 

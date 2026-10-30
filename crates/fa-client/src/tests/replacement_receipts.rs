@@ -2,6 +2,13 @@ use super::*;
 
 async fn candidate_client() -> (TestClient, Arc<MgState>) {
     let (client, _, state, _) = formed_client_for_liquidity().await;
+    report_guardian_zero_down(&client).await;
+    (client, state)
+}
+
+/// Every guardian but the one at seat 0 reports a session count, and none
+/// has seen it contribute lately: it becomes a replacement candidate.
+async fn report_guardian_zero_down(client: &TestClient) {
     let authority = client
         .post_formed_authority(client.fa_id().unwrap())
         .await
@@ -41,16 +48,33 @@ async fn candidate_client() -> (TestClient, Arc<MgState>) {
         .guardian_reports
         .lock()
         .unwrap() = Some(reports);
-    (client, state)
 }
 
+/// Present `receipt` with an approval of the test destination.
+async fn request(
+    client: &TestClient,
+    receipt: &ReplacementReceipt,
+) -> Result<GuardianTransfer, ReplacementStartError> {
+    client
+        .request_guardian_replacement(
+            receipt,
+            seat_purchase::destination_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            None,
+        )
+        .await
+}
+
+/// A receipt starts the guardian transfer of the guardian it names, even
+/// after a later check no longer lists that guardian.
 #[tokio::test]
-async fn receipt_preserves_displayed_decision_through_refresh_without_purchase() {
-    let (client, state) = candidate_client().await;
+async fn a_receipt_starts_the_transfer_of_its_guardian_after_a_refresh() {
+    let (_database, _payments, _payment_state, state, client) =
+        seat_purchase::formed_paid_client().await;
+    report_guardian_zero_down(&client).await;
     let check = client.check_replacement_candidates().await.unwrap();
     let receipt = check.receipt(0).unwrap().clone();
     assert!(check.receipt(1).is_none());
-    let creates = state.create_records.lock().unwrap().len();
     *client
         .inner
         .ports
@@ -59,13 +83,7 @@ async fn receipt_preserves_displayed_decision_through_refresh_without_purchase()
         .lock()
         .unwrap() = None;
     let next = client.check_replacement_candidates().await.unwrap();
-    assert!(next.candidates.is_empty());
     assert!(next.receipt(0).is_none());
-    assert_eq!(
-        client.request_guardian_replacement(&receipt).await,
-        Err(ReplacementStartError::NotImplemented)
-    );
-    assert_eq!(state.create_records.lock().unwrap().len(), creates);
     // JSON is display-only: it cannot export an approval to reconstruct elsewhere.
     assert!(
         serde_json::to_value(&check)
@@ -73,6 +91,17 @@ async fn receipt_preserves_displayed_decision_through_refresh_without_purchase()
             .get("receipts")
             .is_none()
     );
+    state
+        .seat_statuses
+        .lock()
+        .unwrap()
+        .insert(seat_purchase::DESTINATION, ServiceStatus::New);
+
+    let transfer = request(&client, &receipt).await.unwrap();
+    assert_eq!(transfer.seat_index, 0);
+    assert_eq!(transfer.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(client.guardian_transfer().await, Some(transfer));
+    assert_eq!(state.pull_requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -82,15 +111,14 @@ async fn receipt_cannot_authorize_another_client_or_a_modified_display_target() 
     check.candidates[0].seat_index = 1; // Caller can edit display data, not approval.
     assert!(check.receipt(1).is_none());
     let receipt = check.receipt(0).unwrap();
-    let (other, _) = candidate_client().await;
-    assert_eq!(
-        other.request_guardian_replacement(receipt).await,
+    let (other, other_state) = candidate_client().await;
+    let creates = other_state.create_records.lock().unwrap().len();
+    assert!(matches!(
+        request(&other, receipt).await,
         Err(ReplacementStartError::InvalidReceipt)
-    );
-    assert_eq!(
-        client.request_guardian_replacement(receipt).await,
-        Err(ReplacementStartError::NotImplemented)
-    );
+    ));
+    assert_eq!(other.guardian_transfer().await, None);
+    assert_eq!(other_state.create_records.lock().unwrap().len(), creates);
 }
 
 #[tokio::test]
@@ -102,10 +130,11 @@ async fn receipt_is_invalid_after_reopening_the_same_database() {
     drop(client);
     let (payments, _) = TestPayments::new();
     let reopened = open_client_with_store(store, payments, state, MgConfig::given_away()).await;
-    assert_eq!(
-        reopened.request_guardian_replacement(&receipt).await,
+    assert!(matches!(
+        request(&reopened, &receipt).await,
         Err(ReplacementStartError::InvalidReceipt)
-    );
+    ));
+    assert_eq!(reopened.guardian_transfer().await, None);
     assert!(reopened.observe_replacement_candidates().borrow().is_none());
 }
 

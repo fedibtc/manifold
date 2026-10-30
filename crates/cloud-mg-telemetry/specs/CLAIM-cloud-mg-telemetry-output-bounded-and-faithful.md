@@ -2,7 +2,7 @@
 
 For an admitted target, an authorized private scraper sees only forwarded metric
 families and labels admitted by the current default-deny inventory plus the
-five bounded `cloud_fman_telemetry_{target_fresh,snapshot_observation_timestamp_seconds,snapshot_stale,snapshot_rejected_rows,metrics_admission_total}`
+seven bounded `cloud_fman_telemetry_{target_fresh,seat_fresh,snapshot_observation_timestamp_seconds,snapshot_stale,snapshot_rejected_rows,metrics_admission_total,metrics_collection_failures_total}`
 families. The archive contains only exact validated safe-journal JSONL. Public
 HTTP responses, private HTTP output, logs, traces, errors, archive paths and
 metric names or labels expose no collector-held capability, Holder envelope,

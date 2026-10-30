@@ -645,7 +645,8 @@ pub struct FederationConsensusSnapshot {
 /// responses. An unrelated LNv2 value outside
 /// [`GatewayApiUrl`](fedi_decentralized_domain::GatewayApiUrl) policy is
 /// omitted individually rather than turning target absence into a transport
-/// failure. `fedi-decentralized-federation-preview` provides these operations.
+/// failure. [`ConnectorsConsensusReader`](crate::ConnectorsConsensusReader)
+/// implements them with `fedi-decentralized-federation-preview`.
 ///
 /// `fa-client` cannot verify that the query happened. Fedimint's
 /// `get_consensus` derives its guarantee from the client performing threshold
@@ -689,6 +690,22 @@ pub trait FederationConsensusReader: Send + Sync + 'static {
         &self,
         invite_code: &InviteCode,
     ) -> Result<Vec<fedi_decentralized_domain::GatewayApiUrl>, FederationConsensusError>;
+
+    /// Ask each guardian for the `fedimintd` version it runs, through its
+    /// public `fedimintd_version` endpoint.
+    ///
+    /// Return one raw version string for each guardian that answered;
+    /// leave out a guardian that is offline or fails. The answers are not
+    /// threshold-agreed: each one is one guardian's claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FederationConsensusError`] when the invite or config is
+    /// invalid or cannot be read.
+    async fn read_fedimintd_versions(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<Vec<String>, FederationConsensusError>;
 }
 
 pub(crate) struct FaClientPorts<I, P, N, F, C> {

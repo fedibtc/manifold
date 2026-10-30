@@ -176,11 +176,13 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
                 mg_id: "11".into(),
                 mg_name: "same".into(),
                 fresh: true,
+                seats: vec![],
             },
             MetricsTargetHealth {
                 mg_id: "22".into(),
                 mg_name: "same".into(),
                 fresh: false,
+                seats: vec![],
             },
         ],
         0,
@@ -225,4 +227,35 @@ fn exposes_fixed_admission_outcomes_without_source_dimensions() {
     );
     assert!(!output.contains("family="));
     assert!(!output.contains("fman_id="));
+}
+
+#[test]
+fn exposes_fixed_collection_failure_stages() {
+    use metrics_observability::{CollectionFailure, MetricsObservability};
+
+    let observability = MetricsObservability::default();
+    observability.record_collection_failure(CollectionFailure::Scrape);
+    observability.record_collection_failure(CollectionFailure::Scrape);
+    observability.record_collection_failure(CollectionFailure::Deadline);
+    let output =
+        metrics_snapshot::render_metrics(vec![], vec![], 0, 2_000, 60_000, false, &observability)
+            .unwrap();
+    for (stage, count) in [
+        ("connect", 0),
+        ("list", 0),
+        ("scrape", 2),
+        ("deadline", 1),
+        ("saturated", 0),
+    ] {
+        let line = format!(
+            "cloud_fman_telemetry_metrics_collection_failures_total{{stage=\"{stage}\"}} {count} 2000\n"
+        );
+        assert!(output.contains(&line), "{line}");
+    }
+    assert_eq!(
+        output
+            .matches("cloud_fman_telemetry_metrics_collection_failures_total{")
+            .count(),
+        5
+    );
 }

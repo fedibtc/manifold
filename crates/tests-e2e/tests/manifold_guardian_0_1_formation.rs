@@ -43,6 +43,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "manifold_guardian_0_1_formation/guardian_transfer.rs"]
+mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
 mod restart_dkg;
 
@@ -62,6 +64,9 @@ const MG_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
 const PAYOUT_CRASH_SEAM_ENABLE: &str = "enable-payout-crash-seam";
 const PAYOUT_CRASH_SEAM_REACHED: &str = "payout-crash-seam-reached";
 const GUARDIAN_COUNT: usize = 7;
+/// Ports between consecutive MGs of one test's port grid: room for an MG's
+/// seat blocks and, in the transfer tests, its pinned endpoint.
+const MG_PORT_STRIDE: u16 = 100;
 const PAID_GUARDIAN_COUNT: usize = 7;
 const LOCATOR_TIMEOUT: Duration = Duration::from_secs(5);
 const FA_CLI_TIMEOUT: Duration = Duration::from_secs(60);
@@ -195,13 +200,14 @@ async fn run_manifold_guardian_formation() -> anyhow::Result<()> {
 
     let temp = mg_e2e_temp_dir()?;
     eprintln!("Manifold Guardian E2E data dir: {}", temp.display());
-    let iroh_overrides = local_iroh_overrides_for_grid(30_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        30_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -317,13 +323,13 @@ async fn run_multi_relay_liveness() -> anyhow::Result<()> {
 
     let temp = mg_e2e_temp_dir()?;
     eprintln!("MG multi-relay liveness data dir: {}", temp.display());
+    let port_base = reserve_mg_port_grid(1)?;
     let (daemons, _locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        // Every test picks a distinct per-host seat-port base.
-        58_000,
+        port_base,
         None,
         1,
         Some(NostrEnv {
@@ -426,13 +432,14 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
 
     let temp = mg_e2e_temp_dir()?;
     eprintln!("formed-fleet restore E2E data dir: {}", temp.display());
-    let iroh_overrides = local_iroh_overrides_for_grid(54_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        54_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(nostr),
@@ -515,7 +522,7 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        54_000,
+        port_base,
         Some(&iroh_overrides),
         Some(nostr),
         None,
@@ -657,13 +664,14 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
     eprintln!("diverged-hosts restore E2E data dir: {}", temp.display());
     // Index GUARDIAN_COUNT is host B, GUARDIAN_COUNT + 1 is the clean host C.
     let max_seats = 3;
-    let iroh_overrides = local_iroh_overrides_for_grid(54_000, 3, GUARDIAN_COUNT + 2);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT + 2)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 3, GUARDIAN_COUNT + 2);
     let (mut daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         max_seats,
-        54_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(nostr),
@@ -699,7 +707,7 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        54_000 + u16::try_from(GUARDIAN_COUNT).unwrap() * 100,
+        port_base + u16::try_from(GUARDIAN_COUNT).unwrap() * MG_PORT_STRIDE,
         Some(&iroh_overrides),
         Some(nostr),
         None,
@@ -764,7 +772,7 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        54_000 + u16::try_from(GUARDIAN_COUNT + 1).unwrap() * 100,
+        port_base + u16::try_from(GUARDIAN_COUNT + 1).unwrap() * MG_PORT_STRIDE,
         Some(&iroh_overrides),
         Some(nostr),
         None,
@@ -863,13 +871,14 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     let temp = mg_e2e_temp_dir()?;
     let data_dir = temp.join("mg-0");
     let state_dir = temp.join("fi-state");
-    let iroh_overrides = local_iroh_overrides_for_grid(50_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        50_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -962,7 +971,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        50_000,
+        port_base,
         Some(&iroh_overrides),
         None,
         None,
@@ -1017,7 +1026,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        50_000,
+        port_base,
         Some(&iroh_overrides),
         None,
         None,
@@ -1136,13 +1145,14 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         std::fs::create_dir_all(&mg0)?;
         std::fs::write(mg0.join(PAYOUT_CRASH_SEAM_ENABLE), b"enabled\n")?;
     }
-    let iroh_overrides = local_iroh_overrides_for_grid(56_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        56_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -1196,6 +1206,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         &bitcoin_cli,
         &miner_address,
         &temp,
+        port_base,
         &state_dir,
         &iroh_overrides,
         &invite,
@@ -1280,6 +1291,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     bitcoin_cli: &BitcoinCli<'_>,
     miner_address: &str,
     temp: &Path,
+    port_base: u16,
     state_dir: &Path,
     iroh_overrides: &str,
     invite: &str,
@@ -1584,7 +1596,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                     &bitcoind.rpc_url,
                     &bitcoind.rpc_username,
                     &bitcoind.rpc_password,
-                    56_000 + u16::try_from(index)? * 100,
+                    port_base + u16::try_from(index)? * MG_PORT_STRIDE,
                     Some(iroh_overrides),
                     None,
                     None,
@@ -1626,7 +1638,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                 &bitcoind.rpc_url,
                 &bitcoind.rpc_username,
                 &bitcoind.rpc_password,
-                56_000,
+                port_base,
                 Some(iroh_overrides),
                 None,
                 None,
@@ -2172,7 +2184,7 @@ async fn register_gateway_with_every_guardian(
     mg_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["formation"]["seats"]
+    let seats = status["formed"]["seats"]
         .as_array()
         .context("formed FA status carries seats")?;
     anyhow::ensure!(
@@ -2506,10 +2518,7 @@ async fn form_federation_in_state(
 /// The invite of a formed `fa-cli --json` status, or `None` before formation
 /// completes.
 fn formed_invite(status: &serde_json::Value) -> Option<&str> {
-    if status["formation"]["phase"] != "formed" {
-        return None;
-    }
-    status["formation"]["invite_code"].as_str()
+    status["formed"]["federation_invite"].as_str()
 }
 
 async fn wait_for_replacement_child(parent: u32, old_pid: u32) -> anyhow::Result<u32> {
@@ -2582,13 +2591,14 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
 
     let callback_server = CallbackServer::start().await?;
     let temp = mg_e2e_temp_dir()?;
-    let iroh_overrides = local_iroh_overrides_for_grid(40_000, 1, GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &manifold_guardian_bin,
         &temp,
         bitcoind,
         1,
-        40_000,
+        port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -2757,7 +2767,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        40_000,
+        port_base,
         Some(&iroh_overrides),
         None,
         Some(callback_server.origin()),
@@ -3407,8 +3417,8 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     let miner_address = bitcoin_cli.funded_miner_address().await?;
 
     // max-seats 2: seat 1 forms the payment federation, seat 2 the paid one.
-    // A port grid disjoint from the free test's, in case both run at once.
-    let iroh_overrides = local_iroh_overrides_for_grid(32_000, 2, PAID_GUARDIAN_COUNT);
+    let port_base = reserve_mg_port_grid(PAID_GUARDIAN_COUNT)?;
+    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 2, PAID_GUARDIAN_COUNT);
     let nostr = NostrEnv {
         relay_urls: &nostr_relay.url,
         holder_relay_url: &nostr_relay.url,
@@ -3419,7 +3429,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         &temp,
         bitcoind,
         2,
-        32_000,
+        port_base,
         Some(&iroh_overrides),
         PAID_GUARDIAN_COUNT,
         Some(nostr),
@@ -3541,6 +3551,14 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+    // Read the event log position before creating the address, so the wait
+    // below sees the receive that this address produces.
+    let receive_position = fedimint_cli
+        .run_json(&["dev", "next-event-log-id"], FEDIMINT_CLI_WALLETV2_TIMEOUT)
+        .await?
+        .as_u64()
+        .context("next-event-log-id returns a number")?
+        .to_string();
     let deposit_address = fedimint_cli
         .run_json(
             &["module", "walletv2", "receive"],
@@ -3565,9 +3583,13 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     // Keep one client process alive while WalletV2 finds the next valid
     // receive index and claims the output. Valid indices occur only about once
     // per 65,536 candidates; restarting a short-lived client repeats that CPU
-    // search from the same persisted index forever.
+    // search from the same persisted index forever. `await-receive` returns
+    // once the claim succeeds and its ecash is issued.
     fedimint_cli
-        .run(&["dev", "wait", "60"], Duration::from_secs(70))
+        .run(
+            &["module", "walletv2", "await-receive", &receive_position],
+            FEDIMINT_CLI_WALLETV2_TIMEOUT,
+        )
         .await?;
     let info = fedimint_cli
         .run_json(&["info"], Duration::from_secs(10))
@@ -3799,6 +3821,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         &bitcoin_cli,
         &miner_address,
         &temp,
+        port_base,
         &iroh_overrides,
         nostr,
         &setup_payment_keys,
@@ -3836,6 +3859,7 @@ async fn exercise_removed_payment_federation_sweeps(
     bitcoin_cli: &BitcoinCli<'_>,
     miner_address: &str,
     temp: &Path,
+    port_base: u16,
     iroh_overrides: &str,
     nostr: NostrEnv<'_>,
     setup_payment_keys: &NostrKeys,
@@ -3930,7 +3954,7 @@ async fn exercise_removed_payment_federation_sweeps(
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        32_000,
+        port_base,
         Some(iroh_overrides),
         Some(nostr),
         None,
@@ -3967,7 +3991,7 @@ async fn exercise_removed_payment_federation_sweeps(
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        32_100,
+        port_base + MG_PORT_STRIDE,
         Some(iroh_overrides),
         Some(nostr),
         None,
@@ -4451,6 +4475,20 @@ impl Drop for LnurlPayServer {
     }
 }
 
+/// Reserve a port grid for `mg_count` MGs, [`MG_PORT_STRIDE`] ports each,
+/// and return its first port.
+///
+/// The grid comes from defe's allocator rather than a fixed base: the
+/// allocator stays below the kernel's ephemeral port range, where any
+/// outgoing socket of the test could take a seat port before its fedimintd
+/// binds it, and it keeps tests that run at once on one host apart.
+fn reserve_mg_port_grid(mg_count: usize) -> anyhow::Result<u16> {
+    let ports = u16::try_from(mg_count)?
+        .checked_mul(MG_PORT_STRIDE)
+        .context("MG port grid exceeds the port range")?;
+    defe_portalloc::port_alloc(ports)
+}
+
 /// Spawn `guardian_count` daemons and collect their locators.
 #[expect(clippy::too_many_arguments)]
 async fn start_daemons(
@@ -4468,7 +4506,7 @@ async fn start_daemons(
     for index in 0..guardian_count {
         let data_dir = temp.join(format!("mg-{index}"));
         // The seat port grid is per-host; give each daemon a disjoint block.
-        let port_base = first_port_base + u16::try_from(index).unwrap() * 100;
+        let port_base = first_port_base + u16::try_from(index).unwrap() * MG_PORT_STRIDE;
         let daemon = spawn_manifold_guardian(
             manifold_guardian_bin,
             &data_dir,
@@ -4581,7 +4619,46 @@ fn spawn_manifold_guardian(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> std::io::Result<Child> {
+    spawn_routed_manifold_guardian(
+        manifold_guardian_bin,
+        data_dir,
+        bitcoind_url,
+        bitcoind_username,
+        bitcoind_password,
+        first_port_base,
+        iroh_overrides,
+        nostr,
+        push_gateway_origin,
+        None,
+        None,
+    )
+}
+
+/// [`spawn_manifold_guardian`] for an MG that dials other MGs, as a transfer
+/// destination does. `mg_endpoints` routes their endpoint ids, as
+/// `MG_E2E_MG_ENDPOINT_ADDRS` does for fa-cli. `endpoint_bind` pins this MG's
+/// own endpoint, so a route to it survives a restart.
+#[expect(clippy::too_many_arguments)]
+fn spawn_routed_manifold_guardian(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    bitcoind_url: &str,
+    bitcoind_username: &str,
+    bitcoind_password: &str,
+    first_port_base: u16,
+    iroh_overrides: Option<&str>,
+    nostr: Option<NostrEnv<'_>>,
+    push_gateway_origin: Option<&str>,
+    mg_endpoints: Option<&str>,
+    endpoint_bind: Option<&str>,
+) -> std::io::Result<Child> {
     let mut command = Command::new(manifold_guardian_bin);
+    if let Some(mg_endpoints) = mg_endpoints {
+        command.env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints);
+    }
+    if let Some(endpoint_bind) = endpoint_bind {
+        command.env("MG_E2E_IROH_BIND_ADDR", endpoint_bind);
+    }
     command
         .arg("serve")
         .arg("--data-dir")
@@ -4901,7 +4978,7 @@ async fn run_fa_cli(
                 .with_context(|| format!("paid formation did not reach Formed: {status}"))?;
             if let Some(recovery_formation_id) = recovery_formation_id {
                 anyhow::ensure!(
-                    status["formation"]["formation_id"].as_str()
+                    status["formed"]["formation_id"].as_str()
                         == Some(recovery_formation_id.as_str()),
                     "paid resume changed formation identity: {status}"
                 );
@@ -4947,7 +5024,7 @@ fn local_iroh_overrides_for_grid(
     let mut overrides = Vec::with_capacity(guardian_count * usize::from(max_seats) * 2);
     for guardian in 0..u16::try_from(guardian_count).unwrap() {
         for seat in 0..max_seats {
-            let base = first_port_base + guardian * 100 + seat * 4;
+            let base = first_port_base + guardian * MG_PORT_STRIDE + seat * 4;
             for (port, role) in [(base, b"p2p".as_slice()), (base + 1, b"api".as_slice())] {
                 let secret = SecretKey::from_bytes(&e2e_iroh_key(port, role));
                 let node_id: NodeId = secret.public();
@@ -5106,12 +5183,26 @@ async fn complete_onboarding_stages(
             Duration::from_secs(30),
         )
         .await?;
-        manifold_guardian_admin(
-            manifold_guardian_bin,
-            data_dir,
-            &["refresh-holder-authorizations"],
-        )
-        .await?;
+        // Each refresh is one relay read, and the relay may not serve the
+        // just-published event to the first one. Ask until the daemon has
+        // observed it, as the operator's setup screen does.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let refreshed = manifold_guardian_admin(
+                manifold_guardian_bin,
+                data_dir,
+                &["refresh-holder-authorizations"],
+            )
+            .await?;
+            if refreshed["stage"] != "holder_authorization" {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the daemon never observed its published Holder authorization: {refreshed}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
     let max_seats = max_seats.to_string();
     // Offer free seats right at onboarding so the daemon is accepting seats

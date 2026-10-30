@@ -23,6 +23,7 @@ mod metrics_worker;
 mod mg_reports;
 mod server;
 mod store;
+mod store_binding;
 
 pub use config::Args;
 pub use logging::init as init_logging;

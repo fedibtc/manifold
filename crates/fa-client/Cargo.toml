@@ -11,6 +11,7 @@ bitcoin_hashes = { version = "0.14", features = ["serde"] }
 chacha20poly1305 = "0.10"
 ciborium = "0.2"
 fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-federation-preview = { path = "../federation-preview" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
 fedi-decentralized-nostr-clients = { path = "../nostr-clients" }

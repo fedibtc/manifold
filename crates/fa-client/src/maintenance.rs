@@ -18,9 +18,8 @@ use crate::formation::{
     start_driver_run, validate_consensus_metadata_size,
 };
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusError,
-    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness, FormationPhase,
-    ManifoldGuardianConnector,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
+    FormationFreshness, ManifoldGuardianConnector,
 };
 
 const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -120,6 +119,10 @@ impl MaintenanceRunOptions {
         .map_err(InvalidMaintenanceRunOptions::from)
     }
 
+    pub(crate) fn run_options(self) -> FormationRunOptions {
+        self.0
+    }
+
     #[cfg(test)]
     pub(crate) fn lease_duration(self) -> Duration {
         self.0.lease_duration()
@@ -168,7 +171,7 @@ impl From<InvalidFormationRunOptions> for InvalidMaintenanceRunOptions {
     }
 }
 
-enum MaintenanceConnection<C> {
+pub(crate) enum MaintenanceConnection<C> {
     Connected(SeatSession<C>),
     Retryable { index: u16, message: String },
 }
@@ -209,9 +212,8 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
-        let invite = self.consensus_invite(&authority.invite_code).await;
         let snapshot = self
-            .read_metadata_consensus(&invite, run)
+            .read_formed_consensus(&authority, run)
             .await?
             .map_err(|error| FaError::MaintenanceConvergence {
                 unresolved: authority.seats.iter().map(|seat| seat.index).collect(),
@@ -236,10 +238,11 @@ where
         let mut guardian_errors = BTreeMap::new();
         let mut consensus_error = None;
         let mut retry_delay = run.poll_interval();
+        let invite = &authority.invite_code;
 
         loop {
             if accepted.len() >= threshold {
-                match run
+                let view = run
                     .call("reading the LNv2 gateway view", || {
                         Ok(self
                             .inner
@@ -247,8 +250,8 @@ where
                             .consensus_reader
                             .read_lnv2_gateways(&invite))
                     })
-                    .await
-                {
+                    .await;
+                match view {
                     Ok(Ok(gateways)) if gateways.contains(&gateway_api) => return Ok(()),
                     Ok(Ok(_)) => {
                         consensus_error = Some(
@@ -375,9 +378,10 @@ where
     /// is retained in the convergence result. Typed policy/lifecycle refusals
     /// return [`FaError::MaintenanceRejected`]. A `MetaKeyRefused` response
     /// stops retries to that seat, but returns [`FaError::MaintenanceUnsupported`]
-    /// only when too few other seats remain to reach the threshold. A non-formed durable
-    /// record returns [`FaError::MaintenanceWrongState`] before connector
-    /// work.
+    /// only when too few other seats remain to reach the threshold. A formation
+    /// that is not formed returns [`FaError::MaintenanceWrongState`], and a
+    /// formed federation that this run has not reconciled returns
+    /// [`FaError::MaintenanceUnsynced`], both before connector work.
     pub async fn update_federation_metadata(
         &self,
         update: FederationMetadataUpdate,
@@ -402,7 +406,6 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
-        let invite = self.consensus_invite(&authority.invite_code).await;
         let all_indices = authority
             .seats
             .iter()
@@ -431,7 +434,7 @@ where
                     consensus_error,
                 ));
             }
-            let snapshot = match self.read_metadata_consensus(&invite, run).await {
+            let snapshot = match self.read_formed_consensus(&authority, run).await {
                 Ok(Ok(snapshot)) => snapshot,
                 Ok(Err(error)) => {
                     consensus_error = Some(error.to_string());
@@ -565,7 +568,7 @@ where
             // Read back immediately even when some connects/submissions
             // failed. A threshold may already have adopted the value while a
             // late sibling returned a terminal refusal or timeout.
-            match self.read_metadata_consensus(&invite, run).await {
+            match self.read_formed_consensus(&authority, run).await {
                 Ok(Ok(snapshot)) => {
                     consensus_error = None;
                     validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(
@@ -611,18 +614,7 @@ where
         }
     }
 
-    pub(crate) async fn read_metadata_consensus(
-        &self,
-        invite: &fedi_decentralized_service_manifold_guardian::InviteCode,
-        run: DriverRun<'_>,
-    ) -> FaResult<Result<FederationConsensusSnapshot, FederationConsensusError>> {
-        run.call("reading federation consensus metadata", || {
-            Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-        })
-        .await
-    }
-
-    async fn connect_unresolved_formed_sessions(
+    pub(crate) async fn connect_unresolved_formed_sessions(
         &self,
         authority: &crate::formation::PostFormedAuthority,
         unresolved: &BTreeSet<u16>,
@@ -673,32 +665,28 @@ where
     ) -> FaResult<crate::formation::PostFormedAuthority> {
         match self.inner.store.load_recovery(fa_id).await? {
             crate::db::FaRecovery::Idle => return Err(FaError::NoActiveFormation),
-            crate::db::FaRecovery::Formation(recovery)
-                if recovery.snapshot.phase != FormationPhase::Formed =>
-            {
+            crate::db::FaRecovery::Formation(recovery) => {
                 return Err(FaError::MaintenanceWrongState {
                     phase: recovery.snapshot.phase,
                 });
             }
-            crate::db::FaRecovery::Restored(snapshot)
+            crate::db::FaRecovery::Formed(snapshot)
                 if !matches!(
                     self.status(),
-                    FaStatus::Restored(current)
+                    FaStatus::Formed(current)
                         if current.freshness == FormationFreshness::Fresh
                             && current.formation_id == snapshot.formation_id
                 ) =>
             {
-                return Err(FaError::MaintenanceWrongState {
-                    phase: snapshot.phase,
-                });
+                return Err(FaError::MaintenanceUnsynced);
             }
-            crate::db::FaRecovery::Formation(_) | crate::db::FaRecovery::Restored(_) => {}
+            crate::db::FaRecovery::Formed(_) => {}
         }
         self.post_formed_authority(fa_id).await
     }
 }
 
-fn maintenance_convergence(
+pub(crate) fn maintenance_convergence(
     unresolved: &BTreeSet<u16>,
     guardian_errors: &BTreeMap<u16, String>,
     consensus_error: Option<String>,
@@ -713,7 +701,7 @@ fn maintenance_convergence(
     }
 }
 
-async fn sleep_for_maintenance_retry(
+pub(crate) async fn sleep_for_maintenance_retry(
     run: DriverRun<'_>,
     delay: &mut Duration,
     unresolved: &BTreeSet<u16>,

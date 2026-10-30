@@ -213,18 +213,37 @@ threshold. Grafana queries Prometheus (or its remote-write backend), never this
 `/metrics` endpoint.
 
 The collector exports
-`cloud_fman_telemetry_metrics_admission_total{event=...}` with exactly five
+`cloud_fman_telemetry_metrics_admission_total{event=...}` with exactly six
 events: `admitted`, `known_deny_discarded`, `unknown_discarded`,
-`invalid_admitted_discarded`, and `rejected`. Discard events mean the collector
+`invalid_admitted_discarded`, `rejected`, and `invalid_federation_invite`. The
+last one counts a listed seat that the collector skipped because it had no valid
+current federation invite. Discard events mean the collector
 kept independently valid allowlisted families while omitting the affected
 family; they do not expose the discarded family's name, labels, or values.
 `target_fresh=1` therefore means the target completed a bounded safe projection,
-not that every desired family was present or valid. Alert on increases in
+not that every desired family was present or valid.
+`cloud_fman_telemetry_seat_fresh{fman_id,fman_name,guardian_seat_id}` reports
+each seat of the MG's latest successful seat listing. It shows which seat keeps
+`target_fresh` at 0, including a seat that never served an observation. Alert on increases in
 `unknown_discarded`, `invalid_admitted_discarded`, or `rejected` and investigate
 before changing the inventory. The collector also emits at most one fixed,
 `safe_to_share` projection-degradation warning per five minutes; it never puts
 the target, family, response, label, value, endpoint, or dependency error in that
 diagnostic.
+
+It also exports
+`cloud_fman_telemetry_metrics_collection_failures_total{stage=...}` with exactly
+five stages: `connect` (no connection to the MG), `list` (the seat listing
+failed or was malformed), `scrape` (one seat's scrape failed or returned an
+unusable response), `deadline` (the target's poll budget ran out, counted
+at most once per target poll), and `saturated` (the persisted-state cap left
+at least one seat snapshot unstored, counted at most once per target poll).
+A steadily increasing `saturated` count means the fleet has outgrown the cap. A
+failure that happens after the budget ran out counts as `deadline`, including a
+policy admission that ran out of the budget. Invite and policy failures are not
+counted here; they
+have their own admission events. When target snapshots stop advancing, the
+stage that increased shows where polls fail.
 
 ## Read-only staging comparison
 

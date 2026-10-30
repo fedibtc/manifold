@@ -274,11 +274,12 @@ async fn current_input(
 fn transfer_policy()
 -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
-    policy_with_guardian_transfer(Some(true))
+    policy_with_transfer_flag("guardian_transfer_v2", Some(true))
 }
 
-/// A setup-payment policy with the given `guardian_transfer` flag.
-fn policy_with_guardian_transfer(
+/// A setup-payment policy with the given current or retired transfer flag.
+fn policy_with_transfer_flag(
+    field: &str,
     flag: Option<bool>,
 ) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
 {
@@ -289,13 +290,20 @@ fn policy_with_guardian_transfer(
         "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
     });
     if let Some(flag) = flag {
-        content["guardian_transfer"] = serde_json::json!(flag);
+        content[field] = serde_json::json!(flag);
     }
     let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         content.to_string().as_bytes(),
     )
     .expect("test policy parses");
-    assert_eq!(policy.guardian_transfer(), flag);
+    assert_eq!(
+        policy.guardian_transfer_v2(),
+        if field == "guardian_transfer_v2" {
+            flag
+        } else {
+            None
+        }
+    );
     tokio::sync::watch::channel(Some(policy)).1
 }
 
@@ -310,6 +318,9 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
     drop(db);
     FleetConfig {
         transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+        replacement_guardian_verifier: Arc::new(
+            crate::replacement_guardian::UnverifiedReplacementGuardian,
+        ),
         guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
         process_spawner: SeatProcessSpawner::Fake(Arc::new(
             crate::seat_process::fake::FakeSeatProcessSpawner::default(),
@@ -1171,8 +1182,7 @@ fn journaled_seat_capacity(directory: &std::path::Path) -> Vec<serde_json::Value
         .collect()
 }
 
-/// Every advertisement cycle journals the seat capacity, also when it
-/// publishes nothing.
+/// Every advertisement cycle journals capacity, even without publication.
 #[tokio::test]
 async fn advertisement_cycle_shares_seat_capacity() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -2542,7 +2552,9 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     let temp = TempDir::new().unwrap();
     let mut config = config(&temp, 1, 31_252).await;
     config.respawn.initial_backoff = Duration::from_millis(10);
-    config.respawn.unresponsive_restart_after = Duration::from_millis(300);
+    // Longer than the API client's reconnect after a restart, which the
+    // replacement's first probe can wait out (see below).
+    config.respawn.unresponsive_restart_after = Duration::from_secs(2);
     let invite = fixture_invite_code(&fixture_client_config(), 0);
     let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
         vec![],
@@ -2566,18 +2578,18 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     // An answer in between restarts the limit.
     fake.set_consensus_running(false);
     seat.watchdog_tick_for_test().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
     fake.set_consensus_running(true);
     seat.watchdog_tick_for_test().await;
     fake.set_consensus_running(false);
     seat.watchdog_tick_for_test().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
     seat.watchdog_tick_for_test().await;
     // Longer than the respawn backoff, so a wrongful restart would show.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(spawner.spawn_count(), spawns, "no restart before the limit");
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
     seat.watchdog_tick_for_test().await;
     tokio::time::timeout(Duration::from_secs(1), async {
         while spawner.spawn_count() == spawns {
@@ -2587,11 +2599,21 @@ async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
     .await
     .expect("the unresponsive child is replaced");
 
-    // The replacement gets its own full limit.
+    // The replacement gets its own full limit. After a restart the seat's
+    // API client reconnects, and Fedimint's connection pool first waits
+    // 500ms plus up to as much jitter. The first probe can therefore reach
+    // its 1s timeout before it reaches the replacement. A timed-out probe
+    // also counts as unanswered, so a second tick within the limit must not
+    // restart the replacement either.
     let replacement = fleet
         .configure_fake_child(&seat_id, FakeApiState::default())
         .await;
-    seat.watchdog_tick_for_test().await;
+    for _ in 0..2 {
+        seat.watchdog_tick_for_test().await;
+        if replacement.state().probe_calls > 0 {
+            break;
+        }
+    }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(replacement.state().probe_calls, 1);
     assert_eq!(spawner.spawn_count(), spawns + 1);

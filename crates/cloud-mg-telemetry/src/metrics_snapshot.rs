@@ -27,7 +27,10 @@ pub(crate) struct MetricsSnapshot {
 pub(crate) struct MetricsTargetHealth {
     pub(crate) mg_id: String,
     pub(crate) mg_name: String,
+    /// Whether the MG completed a full metrics poll within the freshness threshold.
     pub(crate) fresh: bool,
+    /// Seat ids from the MG's latest successful seat listing.
+    pub(crate) seats: Vec<String>,
 }
 
 /// Render durable sparse observations without changing their observation time.
@@ -49,8 +52,37 @@ pub(crate) fn render_metrics(
     let mut target_samples = String::new();
     let mut observation_samples = String::new();
     let mut stale_samples = String::new();
+    let mut seat_samples = String::new();
+    // A seat is fresh only through a snapshot that passed persisted-row
+    // revalidation; a rejected or missing observation reports 0.
+    let observed: BTreeMap<(&str, &str), i64> = snapshots
+        .iter()
+        .map(|snapshot| {
+            (
+                (snapshot.mg_id.as_str(), snapshot.guardian_seat_id.as_str()),
+                snapshot.observed_at_ms,
+            )
+        })
+        .collect();
     targets.sort_by(|left, right| left.mg_id.cmp(&right.mg_id));
-    for target in targets {
+    for mut target in targets {
+        target.seats.sort();
+        for seat in &target.seats {
+            let fresh = observed
+                .get(&(target.mg_id.as_str(), seat.as_str()))
+                .is_some_and(|&observed_at_ms| {
+                    (0..=stale_after_ms).contains(&now_ms.saturating_sub(observed_at_ms))
+                });
+            writeln!(
+                seat_samples,
+                "cloud_fman_telemetry_seat_fresh{{fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"}} {} {now_ms}",
+                escape(&target.mg_id),
+                escape(&target.mg_name),
+                escape(seat),
+                i64::from(fresh),
+            )
+            .map_err(|_| ExpositionError)?;
+        }
         writeln!(
             target_samples,
             "cloud_fman_telemetry_target_fresh{{fman_id=\"{}\",fman_name=\"{}\"}} {} {now_ms}",
@@ -95,6 +127,9 @@ pub(crate) fn render_metrics(
     output.push_str("# HELP cloud_fman_telemetry_target_fresh Whether the active MG completed a full metrics poll within two configured polling intervals.\n");
     output.push_str("# TYPE cloud_fman_telemetry_target_fresh gauge\n");
     output.push_str(&target_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_fresh Whether a seat from the MG's latest seat listing has an admitted observation within two configured polling intervals.\n");
+    output.push_str("# TYPE cloud_fman_telemetry_seat_fresh gauge\n");
+    output.push_str(&seat_samples);
     output.push_str("# HELP cloud_fman_telemetry_snapshot_observation_timestamp_seconds Unix time of the latest admitted guardian observation.\n");
     output.push_str("# TYPE cloud_fman_telemetry_snapshot_observation_timestamp_seconds gauge\n");
     output.push_str(&observation_samples);

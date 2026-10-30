@@ -314,7 +314,7 @@ async fn removed_source_restores_formed_accounting_without_guardian_material() {
     document.transfer = Some(TransferBackup {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
-            removed: true,
+            phase: crate::transfer_state::OutgoingTransfer::Removed,
             federation_invite: invite.clone(),
         }),
     });
@@ -344,6 +344,61 @@ async fn removed_source_restores_formed_accounting_without_guardian_material() {
             .unwrap();
     assert_eq!(plan.document, document);
     assert!(plan.archive.is_none());
+}
+
+/// A source that stopped its guardian for a transfer still holds the config,
+/// so its backup carries the archive; the restore keeps the seat fenced.
+#[tokio::test]
+async fn stopped_source_restores_its_archive_and_stays_fenced() {
+    use crate::backup::{OutgoingTransferBackup, TransferBackup};
+    let (mut document, archive) = transferred_document(4);
+    let invite = document
+        .guardian
+        .as_ref()
+        .and_then(|guardian| guardian.federation_invite.clone())
+        .unwrap();
+    document.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            phase: crate::transfer_state::OutgoingTransfer::Stopped,
+            federation_invite: invite.clone(),
+        }),
+    });
+    let outgoing = &document.transfer.as_ref().unwrap().outgoing;
+    assert_eq!(
+        serde_json::to_value(outgoing).unwrap()["phase"],
+        "stopped",
+        "the backup carries the phase the database stores"
+    );
+    let recovered = recovered(
+        vec![document.clone()],
+        vec![(document.seat_id.clone(), archive)],
+    );
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &test_identity(), &recovered)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.transfer_phase(&document.seat_id).await.unwrap(),
+        Some(crate::transfer_state::TransferPhase::Outgoing(
+            crate::transfer_state::OutgoingTransfer::Stopped
+        )),
+        "the restored source never starts the moved guardian"
+    );
+    assert_eq!(
+        db.formed_federation_invite(&document.seat_id)
+            .await
+            .unwrap(),
+        Some(invite)
+    );
+    let facts = db.list_seats().await.unwrap().remove(0).facts;
+    let plan = crate::backup::seat_publication_plan(&db, &process, &facts, None)
+        .await
+        .unwrap();
+    assert_eq!(plan.document, document);
+    assert_eq!(plan.archive.unwrap(), recovered.archives[&facts.seat_id]);
 }
 
 /// The whole capability, end to end: a recovered backup produces a fleet with

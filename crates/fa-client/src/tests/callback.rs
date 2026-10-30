@@ -41,18 +41,16 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
         MgConfig::given_away(),
     )
     .await;
-    let recovery = match reopened
-        .inner
-        .store
-        .load_recovery(TestIdentity::fa_id())
-        .await
-        .unwrap()
-    {
-        FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("formed recovery remains available"),
-    };
-    assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
-    assert!(recovery.dkg_completion_callback.is_none());
+    // The formed record replaced the formation record and its callback.
+    assert!(matches!(
+        reopened
+            .inner
+            .store
+            .load_recovery(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+        FaRecovery::Formed(_)
+    ));
 }
 
 #[tokio::test]
@@ -93,18 +91,16 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
                 .all(|observed| observed.as_ref() == Some(&callback))
         );
     }
-    let recovery = match client
-        .inner
-        .store
-        .load_recovery(TestIdentity::fa_id())
-        .await
-        .unwrap()
-    {
-        FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("formed recovery remains available"),
-    };
-    assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
-    assert!(recovery.dkg_completion_callback.is_none());
+    // The formed record replaced the formation record and its callback.
+    assert!(matches!(
+        client
+            .inner
+            .store
+            .load_recovery(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+        FaRecovery::Formed(_)
+    ));
 }
 
 #[tokio::test]
@@ -153,7 +149,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         .unwrap()
     {
         FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("callback formation is durable"),
+        FaRecovery::Idle | FaRecovery::Formed(_) => panic!("callback formation is durable"),
     };
     assert_eq!(recovery.dkg_completion_callback, Some(callback));
     let public = serde_json::to_string(&recovery.snapshot).unwrap();

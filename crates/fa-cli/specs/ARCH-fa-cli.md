@@ -174,12 +174,12 @@ guardian, or Guardian Verification Fee account input. Omitting the rate uses
 5,000 ppm; fa-client also enforces the admitted published minimum with a
 1,500-ppm fallback.
 
-Every maintenance command reopens the existing active formation, reconciles it
+Every maintenance command reopens the formed federation, reconciles it
 through `fa-client::resume`, and invokes the typed library operation through the
 same open client and real consensus reader. A failed reconciliation prevents
 the mutation future from being polled. Reopening does not connect the live
 registry because neither reconciliation nor these operations uses it. The
-commands require a durable `Formed` record and return only after fa-client
+commands require a durable formed record and return only after fa-client
 rereads threshold consensus and observes the exact metadata value or requested guardian-fee rate. They do not persist a second CLI-side operation record.
 
 fa-client does not expose a standalone projection of arbitrary consensus
@@ -197,7 +197,7 @@ capability.
 `liquidity discover` performs the complete no-private-data FLIP admission walk
 for an explicit Bitcoin network and gateway amount range. `liquidity request`
 repeats that fresh discovery, chooses either the named admitted provider or the
-first deterministic provider, requires the active formation to be `Formed`,
+first deterministic provider, requires a formed federation,
 reconciles it through `fa-client::resume`, and invokes
 `fa-client::start_liquidity` in the same process through a generated Iroh
 public-RPC client. The CLI never constructs provider trust or sends the invite
@@ -214,6 +214,27 @@ for E2E assertions and launch-time recovery. Provider choice is not durable CLI
 state: the exact provider, request hash, endpoint hint, amounts, response, and
 item statuses are the library-owned liquidity journal governed by
 [`SPEC-fa-post-formation-liquidity`](../../fa-client/specs/SPEC-fa-post-formation-liquidity.md).
+
+## Guardian transfer
+
+fa-cli uses only the consumer calls of `fa-client`, as the app does.
+`transfer preview` reopens the FA database and prints the MG that
+`fa-client::preview_transfer_destination` would select. `transfer replace
+--seat-index N --max-msats M` reconciles the formed federation through
+`fa-client::resume`, runs a replacement check, repeats that preview, approves
+it with the cap, and starts the transfer through
+`fa-client::request_guardian_replacement` with the check's receipt for the
+seat, in the same process, so the sealed approval never leaves it. It refuses
+a guardian that is not eligible now. A paid seat takes the same
+payment-wallet flags as `resume`, and `--payment-federation-id` is the payer.
+`transfer run` drives `fa-client::run_guardian_transfer` without a
+reconciliation, because the seat list can lag consensus during a transfer. It
+returns when `observe_guardian_transfer` shows the transfer completed or
+closed, or when the run timeout passes, and prints the transfer as it stands
+then. It takes the payment-wallet flags too, for an interrupted purchase.
+`transfer status` is a storage-only projection. A replacement uses the default
+maintenance timing, as the app does. `--run-timeout-secs` bounds `transfer
+run`.
 
 Identity and state persist in `--state-dir`; secret-key bytes are never
 printed or logged. This disposable local state supports development and E2E
@@ -247,7 +268,12 @@ value. Guardian-fee rate configuration uses
 consensus readback. Every successful liquidity subcommand likewise writes exactly
 one stdout JSON value: discovery writes `{providers,rejected}`, request/resume/
 status write one `LiquidityOperationSnapshot`, and list writes one
-`LiquidityOperationPage`. Human-readable output may change independently.
+`LiquidityOperationPage`. `transfer preview` writes `{seat,validUntil}` with
+one preview seat row. `transfer start`, `replace`, `resume`, and `status` write one
+transfer object with `seatIndex`, `sourceFmanPubkey`, `sourceSeatId`,
+`destinationFmanPubkey`, `destinationSeatId`, and the
+lower-snake-case `phase`, or `null` when no transfer is open.
+Human-readable output may change independently.
 Every successful `payment-wallet` command likewise writes exactly one stdout
 JSON object and leaves stderr empty: join/balance expose `federationId` and
 `balanceMsats`; `accounting` reopens the wallet and exposes `federationId`,
@@ -268,7 +294,6 @@ the local caller; wallet root-secret bytes are never rendered.
 
 `replacement-candidates` asks `fa-client` for eligible seats and reasons.
 `--watch` drives the library's hourly checker and prints each successful
-snapshot; the CLI does not schedule its own polls. `--request-seat` presents
-that same check's opaque receipt to the replacement stub, which currently
-returns not implemented without buying or transferring a seat. JSON contains
-only display data, never receipts; approvals are not portable between runs.
+snapshot; the CLI does not schedule its own polls. `transfer replace` acts on
+a candidate (see Guardian transfer). JSON contains only display data, never
+receipts; approvals are not portable between runs.
