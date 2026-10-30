@@ -36,7 +36,7 @@ use crate::{
 
 // Persisted-format changes are governed by GATE-production-compatibility
 // (../../../specs/GATE-production-compatibility.md).
-const STORAGE_SCHEMA_VERSION: u16 = 11;
+const STORAGE_SCHEMA_VERSION: u16 = 12;
 // Keep this fixed when advancing the schema written by current code.
 const RESET_BEFORE_SCHEMA_VERSION: u16 = 11;
 const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
@@ -455,69 +455,13 @@ where
 }
 
 /// Serializable stable projection of the verifier's canonical provenance.
-///
-/// Admissions written before the profile revision was removed stored it
-/// inside the environment variant, for example
-/// `{"production":{"profile_revision":9}}`. They still read as their
-/// environment; the revision is ignored.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StoredVerifierProvenance {
     Development,
     Staging,
     Production,
     ExplicitTestConfiguration,
-}
-
-impl<'de> serde::Deserialize<'de> for StoredVerifierProvenance {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Current {
-            Development,
-            Staging,
-            Production,
-            ExplicitTestConfiguration,
-        }
-
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum WithProfileRevision {
-            Development {
-                #[serde(rename = "profile_revision")]
-                _profile_revision: u32,
-            },
-            Staging {
-                #[serde(rename = "profile_revision")]
-                _profile_revision: u32,
-            },
-            Production {
-                #[serde(rename = "profile_revision")]
-                _profile_revision: u32,
-            },
-        }
-
-        #[derive(serde::Deserialize)]
-        #[serde(untagged)]
-        enum Stored {
-            Current(Current),
-            WithProfileRevision(WithProfileRevision),
-        }
-
-        Ok(match Stored::deserialize(deserializer)? {
-            Stored::Current(Current::Development)
-            | Stored::WithProfileRevision(WithProfileRevision::Development { .. }) => {
-                Self::Development
-            }
-            Stored::Current(Current::Staging)
-            | Stored::WithProfileRevision(WithProfileRevision::Staging { .. }) => Self::Staging,
-            Stored::Current(Current::Production)
-            | Stored::WithProfileRevision(WithProfileRevision::Production { .. }) => {
-                Self::Production
-            }
-            Stored::Current(Current::ExplicitTestConfiguration) => Self::ExplicitTestConfiguration,
-        })
-    }
 }
 
 impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
@@ -1812,6 +1756,80 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
+    /// Convert a schema-11 formation to schema 12 in place.
+    ///
+    /// Schema 11 stored each seat admission's verifier provenance with the
+    /// removed Manifold profile revision, for example
+    /// `{"production":{"profile_revision":9}}`. Schema 12 stores the
+    /// environment alone (`"production"`). Nothing else differs.
+    async fn migrate_schema_11(&self) -> FaResult<()> {
+        let storage = |detail: &str| FaError::Storage(format!("migrating FA schema 11: {detail}"));
+        let mut dbtx = self.database.begin_transaction().await;
+        let formation_key = DatabaseKeyPrefix::to_bytes(&ActiveFormationKey);
+        let Some(bytes) = dbtx
+            .raw_get_bytes(&formation_key)
+            .await
+            .map_err(|_| storage("reading the formation failed"))?
+        else {
+            return Ok(());
+        };
+        // Loading reports a malformed or other-version formation.
+        let Ok(mut formation) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(());
+        };
+        if formation["schema_version"] != 11 {
+            return Ok(());
+        }
+        let formation_id = formation["formation_id"]
+            .as_str()
+            .ok_or_else(|| storage("the formation id is missing"))?
+            .to_owned();
+        let seat_count = formation["seat_count"]
+            .as_u64()
+            .and_then(|count| u16::try_from(count).ok())
+            .ok_or_else(|| storage("the seat count is missing"))?;
+        for index in 0..seat_count {
+            let seat_key = DatabaseKeyPrefix::to_bytes(&SeatKey {
+                formation_id: formation_id.clone(),
+                index,
+            });
+            let Some(bytes) = dbtx
+                .raw_get_bytes(&seat_key)
+                .await
+                .map_err(|_| storage("reading a seat failed"))?
+            else {
+                // Loading reports the missing row.
+                continue;
+            };
+            let mut seat: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| storage("a seat is not JSON"))?;
+            let provenance = &mut seat["admission"]["peer_badge"]["verifier_provenance"];
+            let environment = match provenance.as_object() {
+                Some(object) if object.len() == 1 => object.keys().next().cloned(),
+                _ => None,
+            };
+            if let Some(environment) = environment {
+                *provenance = serde_json::Value::String(environment);
+            }
+            dbtx.raw_insert_bytes(
+                &seat_key,
+                &serde_json::to_vec(&seat).expect("a JSON value serializes"),
+            )
+            .await
+            .map_err(|_| storage("writing a seat failed"))?;
+        }
+        formation["schema_version"] = 12.into();
+        dbtx.raw_insert_bytes(
+            &formation_key,
+            &serde_json::to_vec(&formation).expect("a JSON value serializes"),
+        )
+        .await
+        .map_err(|_| storage("writing the formation failed"))?;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| storage("committing failed"))
+    }
+
     pub(crate) async fn load_status(&self, fa_id: FaId) -> FaResult<FaStatus> {
         Ok(match self.load_recovery(fa_id).await? {
             FaRecovery::Idle => FaStatus::Idle,
@@ -1821,6 +1839,7 @@ impl FaStore {
     }
 
     pub(crate) async fn load_recovery(&self, fa_id: FaId) -> FaResult<FaRecovery> {
+        self.migrate_schema_11().await?;
         let mut dbtx = self.database.begin_transaction().await;
         if let Some(bytes) = dbtx
             .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))
@@ -4640,78 +4659,5 @@ mod formed_record_tests {
         let mut stored = record(Vec::new());
         stored["origin"] = serde_json::json!("this_device");
         assert_eq!(decode(stored).origin, crate::FormedOrigin::ThisDevice);
-    }
-}
-
-#[cfg(test)]
-mod verifier_provenance_tests {
-    use super::{MgAdmission, StoredVerifierProvenance};
-    use crate::{FaError, SelectionReauthorizationReason};
-    use fedi_decentralized_domain::Timestamp;
-    use nostr_sdk::PublicKey;
-
-    fn decode(value: serde_json::Value) -> StoredVerifierProvenance {
-        serde_json::from_value(value).unwrap()
-    }
-
-    #[test]
-    fn a_provenance_stored_with_a_profile_revision_reads_as_its_environment() {
-        for (stored, expected) in [
-            (
-                serde_json::json!({"development": {"profile_revision": 3}}),
-                StoredVerifierProvenance::Development,
-            ),
-            (
-                serde_json::json!({"staging": {"profile_revision": 9}}),
-                StoredVerifierProvenance::Staging,
-            ),
-            (
-                serde_json::json!({"production": {"profile_revision": 10}}),
-                StoredVerifierProvenance::Production,
-            ),
-        ] {
-            assert_eq!(decode(stored), expected);
-        }
-    }
-
-    #[test]
-    fn a_provenance_is_stored_as_its_environment_alone() {
-        for (provenance, stored) in [
-            (StoredVerifierProvenance::Development, "development"),
-            (StoredVerifierProvenance::Staging, "staging"),
-            (StoredVerifierProvenance::Production, "production"),
-            (
-                StoredVerifierProvenance::ExplicitTestConfiguration,
-                "explicit_test_configuration",
-            ),
-        ] {
-            let value = serde_json::to_value(provenance).unwrap();
-            assert_eq!(value, serde_json::json!(stored));
-            assert_eq!(decode(value), provenance);
-        }
-    }
-
-    #[test]
-    fn a_fresh_admission_stored_with_a_profile_revision_stays_valid_in_its_environment() {
-        let admission = MgAdmission::fresh_peer_badge(
-            PublicKey::from_slice(&[2; 32]).unwrap(),
-            PublicKey::from_slice(&[3; 32]).unwrap(),
-            StoredVerifierProvenance::Staging,
-            Timestamp(200),
-        );
-        let mut stored = serde_json::to_value(&admission).unwrap();
-        stored["verifier_provenance"] = serde_json::json!({"staging": {"profile_revision": 9}});
-        let admission: MgAdmission = serde_json::from_value(stored).unwrap();
-
-        admission
-            .validate_if_fresh(StoredVerifierProvenance::Staging, Timestamp(100))
-            .unwrap();
-        assert!(matches!(
-            admission.validate_if_fresh(StoredVerifierProvenance::Production, Timestamp(100)),
-            Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
-                ..
-            })
-        ));
     }
 }

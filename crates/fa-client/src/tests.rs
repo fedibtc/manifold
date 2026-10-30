@@ -6399,7 +6399,7 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
 }
 
 #[tokio::test]
-async fn schema_11_rows_keep_their_tagged_shape_and_pinned_rows_require_reset() {
+async fn schema_12_rows_keep_their_tagged_shape_and_pinned_rows_require_reset() {
     let (payments, _) = TestPayments::new();
     let client = open_client(
         MemDatabase::new().into_database(),
@@ -6424,10 +6424,10 @@ async fn schema_11_rows_keep_their_tagged_shape_and_pinned_rows_require_reset() 
         .await
         .unwrap();
 
-    // Earlier schema 11 releases wrote the payer under the selected creation
+    // Schema 11 releases also wrote the payer under the selected creation
     // mode and the admission under its peer-badge tag.
     let (formation, seat) = store.raw_formation_rows_for_test().await;
-    assert_eq!(formation["schema_version"], 11);
+    assert_eq!(formation["schema_version"], 12);
     assert_eq!(
         formation["creation_mode"],
         serde_json::json!({"selected": {"payment_federation_id": payment_federation_id().0}})
@@ -6450,6 +6450,60 @@ async fn schema_11_rows_keep_their_tagged_shape_and_pinned_rows_require_reset() 
     assert!(
         message.contains("pinned") && message.contains("reset"),
         "{message}"
+    );
+}
+
+#[tokio::test]
+async fn a_schema_11_formation_migrates_to_environment_only_provenance() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+    let store = &client.inner.store;
+    store
+        .initialize(
+            TestIdentity::fa_id(),
+            FormationId("schema-11-provenance".to_owned()),
+            ResolvedFormationIntent {
+                max_total_msats: Some(1_000),
+                ..resolved_intent_with_size(FederationSize(1))
+            },
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            Some(payment_federation_id()),
+            None,
+        )
+        .await
+        .unwrap();
+    // Schema 11 stored the removed profile revision inside the provenance.
+    let (mut formation, mut seat) = store.raw_formation_rows_for_test().await;
+    formation["schema_version"] = 11.into();
+    seat["admission"]["peer_badge"]["verifier_provenance"] =
+        serde_json::json!({"staging": {"profile_revision": 9}});
+    store
+        .replace_raw_formation_rows_for_test(&formation, &seat)
+        .await;
+
+    let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
+    assert_eq!(recovery.seats[0].admission.mg_id(), test_mg_id(0));
+    let (migrated_formation, migrated_seat) = store.raw_formation_rows_for_test().await;
+    assert_eq!(migrated_formation["schema_version"], 12);
+    assert_eq!(
+        migrated_seat["admission"]["peer_badge"]["verifier_provenance"],
+        serde_json::json!("staging")
+    );
+    let mut expected_seat = seat.clone();
+    expected_seat["admission"]["peer_badge"]["verifier_provenance"] = "staging".into();
+    assert_eq!(migrated_seat, expected_seat, "only the provenance changes");
+
+    // A second load finds schema 12 and changes nothing.
+    store.load_recovery(TestIdentity::fa_id()).await.unwrap();
+    assert_eq!(
+        store.raw_formation_rows_for_test().await,
+        (migrated_formation, migrated_seat)
     );
 }
 

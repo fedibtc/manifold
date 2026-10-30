@@ -368,7 +368,7 @@ ids, public guardian-fee accounts, DKG codes, invite code, and an optional
 push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
-them remain sensitive. Schema 11 preserves the callback through every
+them remain sensitive. Storage schema 12 preserves the callback through every
 pre-`DkgComplete` recovery and atomically clears it with that checkpoint,
 after configured MGs have durably assumed retry ownership; an MG without
 callback delivery configured may have proceeded callback-free. Older schemas
