@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a pull request when someone asks for a review in Slack or on GitHub. Sets the output format, ownership, and follow-up. Use the multipart-review skills for what to check.
+description: Review a pull request when someone asks for a review in Slack or on GitHub. Sets what to check, the output format, ownership, and follow-up.
 ---
 
 # PR review
@@ -13,8 +13,17 @@ Use this skill for every PR review request, in Slack or on GitHub.
   :eyes: or a reply), or another agent owns the thread or channel, do not review.
 - React with :eyes: when you take it.
 - Read the linked issue or request first. Review against the intent, then the code.
-- For what to check, use `multipart-review` and its parts. Pick only the parts
-  the change needs.
+
+## What to check
+
+1. Does it do what the request asks, and fix the root cause?
+2. Correctness: edge cases, error paths, races, restarts.
+3. Tests: does a test fail on the old code and pass on the new code?
+4. Compatibility: wire formats, persisted state, mixed versions
+   (`specs/GATE-production-compatibility.md`).
+5. Public repo hygiene: no people, federation, or host names.
+
+Report only real findings. Skip style unless it hides a bug.
 
 ## Output
 
