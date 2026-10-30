@@ -139,7 +139,7 @@ async fn removal_deletes_material_at_once_and_publishes_the_tombstone_afterwards
                         .transfer
                         .as_ref()
                         .and_then(|transfer| transfer.outgoing.as_ref())
-                        .is_some_and(|outgoing| outgoing.removed)
+                        .is_some_and(|outgoing| outgoing.phase == OutgoingTransfer::Removed)
             })
         }),
     )
@@ -517,7 +517,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
                         transfer
                             .outgoing
                             .as_ref()
-                            .is_some_and(|outgoing| outgoing.removed)
+                            .is_some_and(|outgoing| outgoing.phase == OutgoingTransfer::Removed)
                     })
             });
             if published {

@@ -569,7 +569,7 @@ fn a_removal_tombstone_claims_only_its_obsolete_archive_slices() {
     document.transfer = Some(TransferBackup {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
-            removed: true,
+            phase: mg_core::transfer_state::OutgoingTransfer::Removed,
             federation_invite: InviteCode("retained-formed-invite".into()),
         }),
     });
@@ -598,7 +598,7 @@ fn stopped_source_publication(facts: &SeatFacts, archive: &GuardianArchive) -> S
     publication.document.transfer = Some(TransferBackup {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
-            removed: false,
+            phase: mg_core::transfer_state::OutgoingTransfer::Stopped,
             federation_invite: InviteCode("retained-formed-invite".into()),
         }),
     });

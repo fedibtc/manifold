@@ -129,11 +129,12 @@ impl std::fmt::Debug for IncomingTransferBackup {
     }
 }
 
-/// The source's permanent fence. `removed` publishes the archive-less
-/// tombstone that keeps a later restore from re-creating deleted secrets.
+/// The source's permanent fence, in the phase the database stores. `Removed`
+/// publishes the archive-less tombstone that keeps a later restore from
+/// re-creating deleted secrets.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OutgoingTransferBackup {
-    pub removed: bool,
+    pub phase: crate::transfer_state::OutgoingTransfer,
     pub federation_invite: InviteCode,
 }
 
@@ -382,12 +383,7 @@ impl SeatBackupDocument {
 
     /// The transfer fence this document records.
     pub(crate) fn outgoing_transfer(&self) -> Option<crate::transfer_state::OutgoingTransfer> {
-        let outgoing = self.transfer.as_ref()?.outgoing.as_ref()?;
-        Some(if outgoing.removed {
-            crate::transfer_state::OutgoingTransfer::Removed
-        } else {
-            crate::transfer_state::OutgoingTransfer::Stopped
-        })
+        Some(self.transfer.as_ref()?.outgoing.as_ref()?.phase)
     }
 
     /// Validate shape before restore touches files or commits fleet facts.
@@ -401,7 +397,8 @@ impl SeatBackupDocument {
         );
         if let Some(outgoing) = &transfer.outgoing {
             anyhow::ensure!(
-                outgoing.removed == self.guardian.is_none(),
+                (outgoing.phase == crate::transfer_state::OutgoingTransfer::Removed)
+                    == self.guardian.is_none(),
                 "transfer retirement archive mismatch"
             );
             if let Some(guardian) = &self.guardian {
@@ -411,7 +408,8 @@ impl SeatBackupDocument {
                 );
             }
             anyhow::ensure!(
-                !outgoing.removed || transfer.incoming.is_none(),
+                outgoing.phase != crate::transfer_state::OutgoingTransfer::Removed
+                    || transfer.incoming.is_none(),
                 "removed guardian retains imported secrets"
             );
         }
@@ -587,10 +585,10 @@ pub(crate) async fn seat_publication_plan(
         document.transfer = Some(TransferBackup {
             incoming: accepted_backup,
             outgoing: outgoing
-                .map(|_| {
+                .map(|phase| {
                     formed_invite
                         .map(|federation_invite| OutgoingTransferBackup {
-                            removed,
+                            phase,
                             federation_invite,
                         })
                         .ok_or_else(|| anyhow::anyhow!("retired source lacks formed identity"))
