@@ -940,6 +940,8 @@ where
     }
 
     /// An unfinished request names the current seats; moving one would strand it.
+    /// The current lifecycle permits at most one non-rejected operation, so
+    /// checking the first is sufficient. Revisit this if that rule changes.
     pub(crate) async fn replacement_liquidity_blocker(
         &self,
     ) -> FaResult<Option<LiquidityOperationId>> {

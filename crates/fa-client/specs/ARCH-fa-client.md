@@ -681,6 +681,12 @@ transfer row; a failed start is `ReplacementStartError::Transfer` with the
 transfer's error. The started transfer's row authorizes resume, not the
 receipt.
 
+`ReplacementCheck.blocking_liquidity_operation` reports unfinished liquidity
+from saved state. When it names an operation, the consumer resumes that operation
+with `resume_liquidity`, then refreshes eligibility with
+`check_replacement_candidates`. Resume updates provider status and completes
+gateway attachment when possible. Replacement start checks the blocker again.
+
 ## Guardian transfer
 
 `start_guardian_transfer` moves the guardian at one seat index onto a new

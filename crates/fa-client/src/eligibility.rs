@@ -73,7 +73,10 @@ pub struct ReplacementCheck {
     pub checked_at: u64,
     pub candidates: Vec<ReplacementCandidate>,
     /// Unfinished liquidity blocking every candidate as of `checked_at`.
-    /// Refresh before opening replacement; starting it checks again.
+    /// This reflects saved state. Resume the named operation with
+    /// [`FaClient::resume_liquidity`], then refresh replacement eligibility
+    /// with [`FaClient::check_replacement_candidates`]. Starting replacement
+    /// checks the blocker again.
     pub blocking_liquidity_operation: Option<crate::LiquidityOperationId>,
 }
 
