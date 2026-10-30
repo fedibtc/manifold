@@ -186,7 +186,12 @@ signer is the identity. It adds one field:
   an MG. FAs may display them.
 
 Unknown payload fields follow the envelope's rule: readers verify the exact
-bytes and then ignore the unknown fields. The payload is bounded by the shared
+bytes and then ignore the unknown fields. The rule covers the objects this
+section and the legacy section define, including the holder-authorization
+envelope objects. The embedded PeerBadge credential's `info` and `blind_msg`
+keep the PeerBadge SDK's own parsing rules
+([SPEC-exact-payload-signatures](../../../specs/SPEC-exact-payload-signatures.md),
+*Unknown fields*). The payload is bounded by the shared
 64 KiB per-event cap, and the 65,536-byte decoded-payload limit applies as
 well. The FA keeps the v1 bound on examined holder authorizations.
 

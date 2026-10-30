@@ -546,16 +546,31 @@ pub(crate) async fn discover_mg_candidates_with(
     // Each format has its own query and bounds (`SPEC-mg-nostr-events`, *MG
     // advertisement v2*). Every MG publishes the legacy format, so only its
     // enumeration decides completeness. A failed v2 enumeration degrades to
-    // legacy advertisements alone, which lack only the uptime reports.
+    // legacy advertisements alone, which lack only the uptime reports. The
+    // optional v2 query may use at most half the run's budget, so a stalled v2
+    // answer still leaves time to admit the legacy results.
+    let v2_timeout = timeout / 2;
     let (legacy_events, v2_events) = futures::join!(
         registry.fetch_mg_advertisements(MgAdvertisementFormat::Legacy, timeout),
-        registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, timeout),
+        fedimint_core::runtime::timeout(
+            v2_timeout,
+            registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, v2_timeout),
+        ),
     );
     let legacy_events = legacy_events.map_err(|error| FaError::Registry(error.to_string()))?;
-    let v2_events = v2_events.unwrap_or_else(|error| {
-        tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
-        Vec::new()
-    });
+    let v2_events = match v2_events {
+        Ok(Ok(events)) => events,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!(
+                "MG advertisement v2 enumeration timed out; using legacy advertisements"
+            );
+            Vec::new()
+        }
+    };
 
     let mut discovery = MgDiscovery::default();
     // The transport bound belongs to the client; re-applying it here keeps a
@@ -568,36 +583,31 @@ pub(crate) async fn discover_mg_candidates_with(
         &mut discovery.rejected,
         statically_admit_legacy,
     );
+    // Freshness filters v2 events before the newest-per-author reduction, so
+    // an author's newest *fresh* v2 advertisement wins: a newer stale or
+    // future-issued one cannot hide it.
     let v2 = statically_admit_newest_per_author(
         v2_events
             .into_iter()
             .take(usize::from(MG_ADVERTISEMENTS_CANDIDATE_LIMIT)),
         deadline,
         &mut discovery.rejected,
-        statically_admit_v2,
+        |event| {
+            let offer = statically_admit_v2(event)?;
+            fresh(&offer, now)?;
+            Ok(offer)
+        },
     );
 
     let mut chosen = Vec::new();
     for (author, v2) in v2 {
-        let legacy = legacy.remove(&author);
-        match fresh(&v2.offer, now) {
-            Ok(()) => {
-                if legacy.is_some() {
-                    discovery.rejected.push(RejectedAdvertisement {
-                        author,
-                        reason: AdvertisementRejection::Superseded,
-                    });
-                }
-                chosen.push((author, v2.offer));
-                continue;
-            }
-            Err(reason) => discovery
-                .rejected
-                .push(RejectedAdvertisement { author, reason }),
+        if legacy.remove(&author).is_some() {
+            discovery.rejected.push(RejectedAdvertisement {
+                author,
+                reason: AdvertisementRejection::Superseded,
+            });
         }
-        if let Some(legacy) = legacy {
-            chosen.push((author, legacy.offer));
-        }
+        chosen.push((author, v2.offer));
     }
     chosen.extend(
         legacy
@@ -633,14 +643,15 @@ struct AdmittedAdvertisement {
 /// offer per author.
 ///
 /// Static admission covers the event role, the event signature, the
-/// format's own signature, and the signer-author identity rule. Replacement
+/// format's own signature, and the signer-author identity rule, plus
+/// freshness for v2. Replacement
 /// order is newest `created_at` first with the NIP-01 lowest event id
 /// breaking ties; superseded valid events are reported as typed rejections.
 fn statically_admit_newest_per_author(
     events: impl Iterator<Item = Event>,
     deadline: Instant,
     rejected: &mut Vec<RejectedAdvertisement>,
-    statically_admit: fn(&Event) -> Result<AdvertisementV2Payload, AdvertisementRejection>,
+    statically_admit: impl Fn(&Event) -> Result<AdvertisementV2Payload, AdvertisementRejection>,
 ) -> BTreeMap<PublicKey, AdmittedAdvertisement> {
     let mut admitted: BTreeMap<PublicKey, AdmittedAdvertisement> = BTreeMap::new();
     for event in events {

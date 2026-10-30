@@ -28,9 +28,10 @@ pub use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, HolderAutho
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr::mg::HolderAuthorizationEventContent;
 pub use fedi_decentralized_nostr::mg::{
-    AdvertisementDocument, AdvertisementPayload, AdvertisementV2Payload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, MgAdvertisementFormat,
-    sign_advertisement, sign_advertisement_v2, verify_advertisement_self_signature,
+    AdvertisedUptime, AdvertisementDocument, AdvertisementPayload, AdvertisementV2Payload,
+    ApiEndpoint, Availability, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    MgAdvertisementFormat, sign_advertisement, sign_advertisement_v2,
+    verify_advertisement_self_signature,
 };
 use fedi_decentralized_nostr::setup_payment_federations::{
     AdmittedSetupPaymentFederationsEvent, SetupPaymentFederationsEventError,
@@ -534,7 +535,13 @@ fn build_payload(
         },
         plans: snapshot.plans,
         holder_authorizations,
-        uptime_permille: snapshot.uptime.map(Into::into),
+        // `UptimeScores::permille` clamps to 0..=1000; a value outside it is
+        // reported as unreported rather than published.
+        uptime_permille: snapshot.uptime.and_then(|scores| {
+            AdvertisedUptime::try_from(scores)
+                .inspect_err(|error| tracing::warn!(%error, "uptime scores not advertised"))
+                .ok()
+        }),
     }
 }
 

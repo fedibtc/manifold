@@ -362,42 +362,80 @@ fn advertisement_v2_round_trips_and_binds_the_event_author() {
     );
 }
 
+/// Pinned cross-program fixture (`testing.md`): a fully signed kind-37709
+/// content captured as literal JSON (signer secret `0x...03`, advertised
+/// service pubkey from secret `0x...05`). Readers must keep accepting these
+/// exact bytes with this projection; a failure here means the purpose tag or
+/// the v2 payload schema changed in a way that breaks other programs.
 #[test]
-fn advertisement_v2_has_the_spec_payload_shape() {
-    let value = serde_json::to_value(v2_payload()).unwrap();
-    let mut keys = value
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    keys.sort();
+fn pinned_signed_advertisement_v2_fixture_stays_accepted() {
+    const FIXTURE: &str = r#"{"signer":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","payload":"{\"service_pubkey\":\"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4\",\"issued_at\":1730000000,\"expires_at\":1730003600,\"api_endpoints\":[{\"transport\":\"iroh\",\"url\":\"iroh://fixture-endpoint\"}],\"availability\":{\"fedimintd_version\":\"0.8.1+fedi\",\"federation_sizes\":[7,13]},\"plans\":[{\"InfiniteBestEffort\":{\"price_msats\":250000}}],\"holder_authorizations\":[],\"uptime_permille\":{\"1d\":998,\"7d\":991,\"30d\":964}}","signature":"aa35349dbb691a015954a5b3f0fb289f02a76a4b244599cf1a1389c0dc647daf9b6ceac14ce4048e44170886aed45c25ffdcc89c967aac6eb2e3ebda83edb7a2"}"#;
+    let signer =
+        nostr::PublicKey::parse("f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9")
+            .unwrap();
+
+    // The signature covers `SHA256(tag || payload)`, checked here without
+    // the code under test.
+    let envelope = serde_json::from_str::<serde_json::Value>(FIXTURE).unwrap();
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"fedi-signed-json/mg-advertisement/v1\0")
+        .chain_update(envelope["payload"].as_str().unwrap().as_bytes())
+        .finalize()
+        .into();
+    let signature: nostr::secp256k1::schnorr::Signature =
+        envelope["signature"].as_str().unwrap().parse().unwrap();
+    nostr::SECP256K1
+        .verify_schnorr(
+            &signature,
+            &nostr::secp256k1::Message::from_digest(digest),
+            &signer.xonly().unwrap(),
+        )
+        .expect("the fixture signature is over the tagged payload bytes");
+
+    // Literal expectations, not production constants or a re-serialization.
+    let payload = verify_advertisement_v2(FIXTURE, signer).expect("pinned fixture verifies");
     assert_eq!(
-        keys,
-        [
-            "api_endpoints",
-            "availability",
-            "expires_at",
-            "holder_authorizations",
-            "issued_at",
-            "plans",
-            "service_pubkey",
-            "uptime_permille",
-        ],
+        payload.service_pubkey,
+        "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
     );
     assert_eq!(
-        value["uptime_permille"],
-        serde_json::json!({"1d": 998, "7d": 991, "30d": 964})
+        (payload.issued_at, payload.expires_at),
+        (1_730_000_000, 1_730_003_600)
+    );
+    assert_eq!(
+        payload.api_endpoints,
+        [ApiEndpoint {
+            transport: "iroh".to_owned(),
+            url: "iroh://fixture-endpoint".to_owned(),
+        }]
+    );
+    assert_eq!(
+        payload.availability.fedimintd_version.to_string(),
+        "0.8.1+fedi"
+    );
+    assert_eq!(payload.availability.federation_sizes, [7, 13]);
+    assert_eq!(
+        payload.plans,
+        [Plan::InfiniteBestEffort {
+            price_msats: 250_000
+        }]
+    );
+    assert!(payload.holder_authorizations.is_empty());
+    let uptime = payload.uptime_permille.expect("the fixture reports uptime");
+    assert_eq!(
+        (uptime.day.get(), uptime.week.get(), uptime.month.get()),
+        (998, 991, 964),
+        "each window keeps its own value",
     );
 
-    let mut unreported = v2_payload();
+    // An absent report stays absent, not null or zero, on the wire.
+    let mut unreported = payload;
     unreported.uptime_permille = None;
     assert!(
         serde_json::to_value(unreported)
             .unwrap()
             .get("uptime_permille")
-            .is_none(),
-        "an unreported uptime is absent, not null or zero",
+            .is_none()
     );
 }
 

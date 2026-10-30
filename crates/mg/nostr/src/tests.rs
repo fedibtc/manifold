@@ -934,3 +934,18 @@ async fn the_policy_support_key_overrides_the_profile_key() {
     admit_support_policy(&service, Some(rotated));
     assert_eq!(service.inner.support(), Some(rotated));
 }
+
+/// Scores outside 0..=1000 cannot be advertised; the payload reports none
+/// instead of panicking or failing the cycle.
+#[test]
+fn out_of_range_uptime_is_not_advertised() {
+    let mut snapshot = test_snapshot();
+    snapshot.uptime = Some(mg_core::seat_readiness::UptimePermille {
+        day: 1001,
+        week: 0,
+        month: 0,
+    });
+    assert_eq!(build_payload(snapshot, Vec::new()).uptime_permille, None);
+    let reported = build_payload(test_snapshot(), Vec::new()).uptime_permille;
+    assert_eq!(reported.map(|uptime| uptime.day.get()), Some(998));
+}

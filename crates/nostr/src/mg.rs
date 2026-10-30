@@ -237,9 +237,11 @@ pub const MG_ADVERTISEMENT_V2_PURPOSE: PurposeTag =
 /// signer is the MG identity, so the payload carries no `fman_id_pubkey`,
 /// and the purpose tag versions the schema, so it carries no `version`.
 ///
-/// Every field decodes directly: no `#[serde(flatten)]` and no untagged or
-/// internally tagged enum, because those buffer unknown values and break the
-/// envelope's number rule (`SPEC-exact-payload-signatures`).
+/// Every Manifold-owned field decodes directly: no `#[serde(flatten)]` and no
+/// untagged or internally tagged enum, because those buffer unknown values
+/// and break the envelope's number rule (`SPEC-exact-payload-signatures`).
+/// The embedded PeerBadge credential's `info` and `blind_msg` are SDK-owned
+/// `serde_json::Value`s and keep the SDK's own number handling.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AdvertisementV2Payload {
     /// MG commitment-signing public key, as in [`AdvertisementPayload`].

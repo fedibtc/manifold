@@ -3,12 +3,12 @@
 ## Status
 
 The shared primitive is implemented as `SignedJsonEnvelope` and `PurposeTag`
-in `fedi-decentralized-domain`. No writer or reader uses it yet, and no purpose
-tag is allocated in code. Its first user is
-the MG advertisement v2 (kind `37709`) in
-[SPEC-mg-nostr-events](../crates/nostr/specs/SPEC-mg-nostr-events.md), which is
-also not implemented. The migration plan and the other candidate users are
-tracked in fedibtc/manifold#247.
+in `fedi-decentralized-domain`. Its one user is the MG advertisement v2 (kind
+`37709`) in
+[SPEC-mg-nostr-events](../crates/nostr/specs/SPEC-mg-nostr-events.md): the MG
+publisher writes it and fa-client reads it, under the purpose tag
+`MG_ADVERTISEMENT_V2_PURPOSE` in `fedi-decentralized-nostr`. The other
+candidate users in fedibtc/manifold#247 are not migrated.
 
 ## Record justification
 
@@ -148,7 +148,11 @@ step 5 does, under one rule for every implementation.
 ## Unknown fields
 
 After verification, readers ignore payload fields they do not know, at every
-nesting level. This rule gives both forward and backward compatibility.
+nesting level of a schema object the purpose defines. A purpose can embed a
+value whose schema another project owns, such as a PeerBadge credential's
+`info` and `blind_msg`. That value keeps its owner's parsing and validation
+rules, including how it reads numbers, and the number rule above does not
+apply inside it. This rule gives both forward and backward compatibility.
 Writers add fields only when the new field keeps every existing field's meaning
 and its safe default when absent. A field that old readers would have to
 enforce for trust, authorization, endpoint safety or payment terms is not an
