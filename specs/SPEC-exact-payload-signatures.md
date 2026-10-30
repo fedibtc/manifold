@@ -2,7 +2,9 @@
 
 ## Status
 
-Not implemented. No writer or reader uses this envelope yet. Its first user is
+The shared primitive is implemented as `SignedJsonEnvelope` and `PurposeTag`
+in `fedi-decentralized-domain`. No writer or reader uses it yet, and no purpose
+tag is allocated in code. Its first user is
 the MG advertisement v2 (kind `37709`) in
 [SPEC-mg-nostr-events](../crates/nostr/specs/SPEC-mg-nostr-events.md), which is
 also not implemented. The migration plan and the other candidate users are
@@ -93,6 +95,7 @@ A verifier applies these steps in order and stops at the first failure:
    events, this bound is the 64 KiB normalized whole-event cap
    (`ROLE_FETCHED_EVENT_MAX_BYTES`), and it applies before the event signature
    is checked.
+   The envelope document itself is at most 64 KiB (65,536 bytes) as encoded.
 2. Decode the envelope. Reject a non-object, a missing or duplicate known
    member, or a malformed `signer` or `signature`. Reject a `payload` that is
    not a string or that contains an unpaired surrogate escape. Ignore unknown
@@ -102,10 +105,13 @@ A verifier applies these steps in order and stops at the first failure:
    escaped form.
 4. Verify the signature over the purpose tag that the context selects and the
    payload bytes.
-5. Only then parse the payload as JSON with a 128-level nesting bound. Reject
-   duplicate known names. Duplicate unknown names are skipped like any other
-   unknown name. Numbers follow the rule below. Then validate the payload
-   against its schema.
+5. Only then parse the payload as JSON. Structure that the reader decodes is
+   bounded at 127 nested containers, counting the top-level object, the same
+   127-container bound as the legacy advertisement reader. Unknown values
+   are skipped by syntax at any depth within the size bound, like their
+   numbers below. Reject duplicate known names. Duplicate unknown names are
+   skipped like any other unknown name. Then validate the payload against its
+   schema.
 6. Apply purpose checks: bind the signer to the transport identity (for Nostr,
    the event author) and to the payload's identity field when it has one.
    Then apply freshness, authorization and semantic validation.
