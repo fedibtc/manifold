@@ -1,0 +1,75 @@
+.root {
+  @apply uStack6;
+}
+.card {
+  @apply flex flex-col gap-4 rounded-card border border-muted bg-surface p-6;
+}
+.cardHead {
+  @apply flex min-h-8 items-center gap-3;
+}
+.cardTitle {
+  @apply uCardTitle;
+}
+.caption {
+  @apply text-xs text-gray-500;
+}
+.kv {
+  @apply m-0 grid max-w-md gap-3 text-sm;
+}
+.kvRow {
+  @apply flex items-center gap-3;
+}
+.kvLabel {
+  @apply text-gray-500;
+}
+.kvValue {
+  @apply ml-auto text-right font-medium tabular-nums text-ink;
+}
+.actions {
+  @apply uActionsRow flex-wrap;
+}
+.qrBox {
+  @apply flex-none rounded-card border border-muted bg-surface p-3;
+}
+.stepTitle {
+  @apply uLabel;
+}
+.note {
+  @apply m-0 text-sm text-gray-500;
+}
+.empty {
+  @apply flex flex-col items-center gap-3 px-6 py-12 text-center;
+}
+.emptyIcon {
+  @apply size-6 fill-none stroke-gray-500;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+.emptyTitle {
+  @apply text-base font-semibold text-ink;
+}
+.emptyText {
+  @apply max-w-md text-sm text-gray-500;
+}
+.code {
+  @apply break-words font-mono text-xs text-ink;
+}
+.outcome {
+  @apply uActionOutcome;
+}
+.error {
+  @apply text-sm text-error;
+}
+.split {
+  @apply grid grid-cols-[auto_minmax(0,1fr)] items-start gap-8;
+}
+.rows {
+  @apply m-0 flex list-none flex-col p-0;
+}
+.row {
+  @apply uStack1 border-b border-muted py-4 first:pt-0 last:border-b-0;
+}
+.list {
+  @apply m-0 list-disc pl-5 text-sm text-ink uStack1;
+}
