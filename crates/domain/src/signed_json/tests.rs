@@ -359,6 +359,17 @@ fn malformed_envelopes_are_rejected() {
 }
 
 #[test]
+fn positional_sequence_form_is_rejected() {
+    let fixture: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is JSON");
+    let array = serde_json::json!([fixture["signer"], fixture["payload"], fixture["signature"]])
+        .to_string();
+    assert_eq!(
+        SignedJsonEnvelope::decode(&array),
+        Err(SignedJsonError::MalformedEnvelope)
+    );
+}
+
+#[test]
 #[should_panic(expected = "fedi-signed-json/")]
 fn legacy_domain_is_not_a_purpose_tag() {
     let _ = PurposeTag::new(b"fedi-fman-advertisement/v1\0");
