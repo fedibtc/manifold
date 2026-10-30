@@ -135,26 +135,22 @@ The source rejects subject mismatches and invalid issuance offline, before
 network trust queries. It bounds concurrent admissions and rejects excess
 requests without queueing shared RPC handlers.
 
-New destinations supply their credential envelope directly. The badge subject
+Destinations must supply their credential envelope directly. The badge subject
 co-signs both the envelope and the exact service-signed transfer request. The
 source verifies this binding and applies its complete current trust policy
-without advertisement discovery. Missing or null proof selects full legacy
-verification; the source rejects invalid present proof without fallback. A whole
-valid request remains replayable within the existing one-hour freshness window,
+without advertisement discovery. It rejects missing, null, invalid, unsupported
+or oversized proof without a discovery fallback. A complete valid request
+remains replayable within the existing one-hour freshness window,
 but the source repeats admission and fresh revocation checks on each replay.
 This protocol guarantees neither the latest credential nor holder revocation.
 
-Full and closed MGs keep publishing fresh signed identity and credentials with
-empty purchase plans, so the source can still verify a destination after the FA
-buys its last slot. Older destinations that stop publishing when full require an
-upgrade or restored availability; expired identity documents remain inadmissible.
+Admission does not depend on the destination advertising spare capacity.
 The FA retains responsibility for custody-history and holder-diversity checks.
 The source does not pin the first destination. Single-host operation therefore
 still assumes a non-conflicting FA. Removing a retired guardian deletes only
 its local guardian material and then publishes an archive-less tombstone;
-it does not prove erasure of
-historical backups, revoke secrets already held by a past custodian, or justify
-forgetting that custodian in FA policy.
+it does not prove erasure of historical backups, revoke secrets already held by
+a past custodian, or justify forgetting that custodian in FA policy.
 
 ### Manifold Guardian bundled guardian process
 

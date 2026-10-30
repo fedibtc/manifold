@@ -2,9 +2,9 @@ use fedi_decentralized_service_manifold_guardian::{
     CreateSeatOutcome, DkgCompletionCallback, FaId, FederationName, FederationSize, GatewayApiUrl,
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, MgSignedRequest, OfferEpoch, Plan,
-    ProposeFormationMetaRequest, RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId,
-    SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
+    MetaConsensusBase, MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest,
+    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId, SeatTransferGrant,
+    SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
 };
 use tempfile::TempDir;
 
@@ -676,13 +676,9 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         grant: SignedRequest::create(&transfer, &attacker_key).unwrap(),
     };
     assert_eq!(
-        rpc.transfer_seat(
-            MgSignedRequest::create(&pull, &attacker_key)
-                .unwrap()
-                .into()
-        )
-        .await
-        .unwrap_err(),
+        rpc.transfer_seat(crate::test_support::transfer_call(&pull, &attacker_key))
+            .await
+            .unwrap_err(),
         ManifoldGuardianError::UnknownSeat,
     );
 
@@ -937,7 +933,7 @@ async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
         grant: SignedRequest::create(&transfer, &key).unwrap(),
     };
     assert!(matches!(
-        rpc.transfer_seat(MgSignedRequest::create(&pull, &key).unwrap().into())
+        rpc.transfer_seat(crate::test_support::transfer_call(&pull, &key))
             .await,
         Err(ManifoldGuardianError::Unauthorized),
     ));

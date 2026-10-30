@@ -89,12 +89,11 @@ published by `mg-nostr`'s advertisement loop):
 - `api_endpoints` — `{transport, url}` entries for pre-formation FA setup RPC;
 - `availability` — typed scalar `fedimintd_version` and `federation_sizes`;
   the version's SemVer build metadata is the exact DKG vendor identity, and FA
-  admits only `+fedi`. The payload carries neither an availability boolean nor a count;
+  admits only `+fedi`. The event is published only while the
+  MG is accepting seats, so the payload carries neither a boolean nor a count;
 - `plans` — the `service-manifold-guardian` `Plan` enum in its own canonical serde
-  form. The list is empty while the MG is not accepting seats; the MG keeps
-  publishing its signed identity and credentials when full or closed. Consumers
-  must find a supported purchase plan before offering a new seat. Prices are
-  millisatoshis as JSON numbers, the same unit and type
+  form, identical to `GetAvailability`, so advertisement and RPC cannot
+  disagree. Prices are millisatoshis as JSON numbers, the same unit and type
   a quote's `price_msats` uses, so no consumer parses or reconciles a price
   spelling;
 - `holder_authorizations` — embedded verified trust envelopes
@@ -143,13 +142,13 @@ order, but it must never treat an unexamined envelope as trusted. Consumers
 that dial the advertised endpoints must additionally reject an advertisement
 offering no acceptable endpoint or a malformed `service_pubkey`.
 
-Advertisements serve pre-formation FA discovery. They are **not** the
-post-formation trust source: a verifier holding an invite code resolves each
-seat-binding identity's standing from MG-signed trust material fetched from
-that MG directly, because the advertisement names no federation and so cannot
-be bound to the one being evaluated
+Advertisements serve pre-formation FA discovery. For post-formation trust,
+a verifier holding an invite code resolves each seat-binding identity's
+standing from MG-signed trust material fetched from that MG directly. An
+advertisement names no federation, so the verifier cannot bind it to the
+federation under evaluation
 ([SPEC-federation-trust-directory](../../domain/specs/SPEC-federation-trust-directory.md)).
-The embedded envelopes remain a real trust input for discovery, under the same
+The embedded envelopes remain a trust input for discovery, under the same
 verifier checklist above.
 
 ## Holder-published MG authorization (37705)
@@ -165,17 +164,23 @@ against the signed content before use.
 
 The MG verifies before embedding: event author equals `holder_id_pubkey`
 and the statement's holder pubkey; the SDK authorization proof;
-`subject_pubkey` equals its own service pubkey; `issued_at` is no more than one
-hour ahead of its receiver clock; and the credential digest binding. It does
-not judge the badge itself — the badge's PBRSA proof, its
-holder binding, issuer trust, and revocation state are not consumed by the
-current MG onboarding path. MG's Nostr boundary receives the resolved
+`subject_pubkey` equals its own Nostr pubkey; `issued_at` is no more than one
+hour ahead of its receiver clock; and the credential digest binding. Through
+the shared offline issuance check, the MG also requires a trusted issuer,
+valid issuance under that issuer's pinned authority, and holder binding.
+Enrollment does not check revocation or the relying party's minimum trust
+level, so relying consumers must still run complete verification.
+MG's Nostr boundary receives the resolved
 deployment environment profile rather than a `PeerBadgeVerifier`; complete
 advertisement verification belongs to relying consumers
 ([ARCH-manifold-environment](../../manifold-environment/specs/ARCH-manifold-environment.md),
 [SPEC-peer-badge-verifier](../../peer-badge-verifier/specs/SPEC-peer-badge-verifier.md)).
-MGs must never publish standalone MG-authored authorization events —
-embedding in the advertisement is the only MG-authored carriage. Diagnostic
+MGs must never publish standalone MG-authored authorization events on Nostr;
+they carry authorizations in their advertisements instead. Direct
+guardian-transfer proof separately carries the envelope and the subject's
+co-signature, as specified in
+[SPEC-signed-envelopes](../../service-manifold-guardian/specs/SPEC-signed-envelopes.md).
+Diagnostic
 enumerators must preserve the unverified-claim boundary. Every relying
 advertisement flow must authenticate the complete event, verify an envelope
 through the shared verifier within its documented work bound, and bind the

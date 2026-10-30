@@ -1,4 +1,4 @@
-//! Optional destination admission outside the unchanged signed transfer payload.
+//! Required destination admission outside the unchanged signed transfer payload.
 
 #[cfg(test)]
 mod tests;
@@ -31,22 +31,16 @@ impl std::fmt::Debug for DestinationAdmissionProof {
     }
 }
 
-/// Transfer-specific extensible outer envelope, compatible with legacy decoders.
+/// Transfer-specific outer envelope carrying required destination admission.
 ///
-/// Direct fields deliberately preserve CBOR's binary key/signature decoding mode;
-/// Serde flatten would lose it. Missing or null proof selects legacy admission.
-/// The payload and service signature are moved intact, never reserialized.
+/// The nested signed request preserves its exact payload bytes and signature.
+/// Missing or null proof is rejected.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TransferSeatCall {
-    /// Original signed-envelope service key.
-    service_pubkey: XOnlyPublicKey,
-    /// Exact original signed JSON bytes.
-    payload: Vec<u8>,
-    /// Original service-key signature.
-    manager_signature: ManagerSignature,
-    /// Optional subject co-signature; invalid present proofs never fall back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    destination_proof: Option<DestinationAdmissionProof>,
+    /// Original signed request, without parsing or rebuilding its payload.
+    request: MgSignedRequest<TransferSeatRequest>,
+    /// Required request-bound badge-subject co-signature.
+    destination_proof: DestinationAdmissionProof,
 }
 
 /// Proof context obtainable only after authenticating the original request.
@@ -60,7 +54,7 @@ pub struct DestinationAdmission {
 impl std::fmt::Debug for TransferSeatCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransferSeatCall")
-            .field("service_pubkey", &self.service_pubkey)
+            .field("service_pubkey", &self.request.service_pubkey)
             .finish_non_exhaustive()
     }
 }
@@ -96,12 +90,10 @@ impl TransferSeatCall {
     /// Attach a subject proof without changing any service-signed bytes.
     pub fn new(
         request: MgSignedRequest<TransferSeatRequest>,
-        destination_proof: Option<DestinationAdmissionProof>,
+        destination_proof: DestinationAdmissionProof,
     ) -> Self {
         Self {
-            service_pubkey: request.service_pubkey,
-            payload: request.payload,
-            manager_signature: request.manager_signature,
+            request,
             destination_proof,
         }
     }
@@ -110,25 +102,14 @@ impl TransferSeatCall {
     pub fn verify(
         self,
         now: Timestamp,
-    ) -> Result<(TransferSeatRequest, Option<DestinationAdmission>), AuthError> {
-        let request = MgSignedRequest {
-            service_pubkey: self.service_pubkey,
-            payload: self.payload,
-            manager_signature: self.manager_signature,
-            marker: std::marker::PhantomData,
-        };
+    ) -> Result<(TransferSeatRequest, DestinationAdmission), AuthError> {
+        let request = self.request;
         let verified = request.verify(now)?;
-        let admission = self.destination_proof.map(|proof| DestinationAdmission {
+        let admission = DestinationAdmission {
             request_digest: manager_request_signing_digest("transfer_seat", &request.payload),
-            proof,
-        });
+            proof: self.destination_proof,
+        };
         Ok((verified, admission))
-    }
-}
-
-impl From<MgSignedRequest<TransferSeatRequest>> for TransferSeatCall {
-    fn from(request: MgSignedRequest<TransferSeatRequest>) -> Self {
-        Self::new(request, None)
     }
 }
 

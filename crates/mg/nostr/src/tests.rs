@@ -440,11 +440,10 @@ async fn transfer_proofs_follow_live_enrollment_and_reloaded_material() {
             proof.holder_authorization,
             service.holder_authorizations()[0]
         );
-        TransferSeatCall::new(request.clone(), Some(proof.clone()))
+        TransferSeatCall::new(request.clone(), proof.clone())
             .verify(RequestTimestamp(now_secs()))
             .unwrap()
             .1
-            .unwrap()
             .verify_subject()
             .unwrap();
         proofs.push(proof);

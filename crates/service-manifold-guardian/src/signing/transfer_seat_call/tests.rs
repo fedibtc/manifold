@@ -5,14 +5,6 @@ use peerbadge_protocol::{
 };
 use secp256k1::Keypair;
 
-/// Frozen pre-extension envelope: do not replace with the current call type.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct LegacyCall {
-    service_pubkey: XOnlyPublicKey,
-    payload: Vec<u8>,
-    manager_signature: ManagerSignature,
-}
-
 fn key(byte: u8) -> Keypair {
     Keypair::from_seckey_slice(SECP256K1, &[byte; 32]).unwrap()
 }
@@ -108,31 +100,29 @@ fn cbor<T: serde::Serialize>(value: &T) -> Vec<u8> {
 }
 
 #[test]
-fn old_and_new_cbor_preserve_exact_signed_bytes_and_binary_fields() {
+fn cbor_preserves_exact_signed_bytes_and_binary_fields() {
     let signed = request();
-    let legacy = LegacyCall {
-        service_pubkey: signed.service_pubkey,
-        payload: signed.payload.clone(),
-        manager_signature: signed.manager_signature.clone(),
-    };
-    let old_bytes = cbor(&legacy);
-    let call: TransferSeatCall = ciborium::from_reader(&old_bytes[..]).unwrap();
-    assert_eq!(call.payload, signed.payload);
-    assert!(call.verify(Timestamp(1_000)).unwrap().1.is_none());
-    assert_eq!(old_bytes, cbor(&TransferSeatCall::from(signed.clone())));
-    let call = TransferSeatCall::new(signed.clone(), Some(proof(&signed)));
+    let call = TransferSeatCall::new(signed.clone(), proof(&signed));
     let new_bytes = cbor(&call);
-    let old: LegacyCall = ciborium::from_reader(&new_bytes[..]).unwrap();
-    assert_eq!(old.payload, signed.payload);
+    let decoded: TransferSeatCall = ciborium::from_reader(&new_bytes[..]).unwrap();
+    assert_eq!(decoded.request.payload, signed.payload);
     SECP256K1
         .verify_schnorr(
-            &old.manager_signature.0,
-            &manager_request_signing_digest("transfer_seat", &old.payload),
-            &old.service_pubkey,
+            &decoded.request.manager_signature.0,
+            &manager_request_signing_digest("transfer_seat", &decoded.request.payload),
+            &decoded.request.service_pubkey,
         )
         .unwrap();
     let value: ciborium::Value = ciborium::from_reader(&new_bytes[..]).unwrap();
-    let fields = value.as_map().unwrap();
+    let fields = value
+        .as_map()
+        .unwrap()
+        .iter()
+        .find(|(key, _)| key.as_text() == Some("request"))
+        .unwrap()
+        .1
+        .as_map()
+        .unwrap();
     let key = &fields
         .iter()
         .find(|(k, _)| k.as_text() == Some("service_pubkey"))
@@ -143,7 +133,6 @@ fn old_and_new_cbor_preserve_exact_signed_bytes_and_binary_fields() {
     call.verify(Timestamp(1_000))
         .unwrap()
         .1
-        .unwrap()
         .verify_subject()
         .unwrap();
 }
@@ -152,11 +141,10 @@ fn old_and_new_cbor_preserve_exact_signed_bytes_and_binary_fields() {
 fn proof_binds_exact_request_and_envelope_and_never_repairs_service_auth() {
     let signed = request();
     let proof = proof(&signed);
-    TransferSeatCall::new(signed.clone(), Some(proof.clone()))
+    TransferSeatCall::new(signed.clone(), proof.clone())
         .verify(Timestamp(1_000))
         .unwrap()
         .1
-        .unwrap()
         .verify_subject()
         .unwrap();
     let mut changed = signed.clone();
@@ -164,11 +152,10 @@ fn proof_binds_exact_request_and_envelope_and_never_repairs_service_auth() {
     payload.ts = Timestamp(1_001);
     changed = MgSignedRequest::create(&payload, &key(2)).unwrap();
     assert!(
-        TransferSeatCall::new(changed, Some(proof.clone()))
+        TransferSeatCall::new(changed, proof.clone())
             .verify(Timestamp(1_001))
             .unwrap()
             .1
-            .unwrap()
             .verify_subject()
             .is_err()
     );
@@ -180,11 +167,10 @@ fn proof_binds_exact_request_and_envelope_and_never_repairs_service_auth() {
         .subject_pubkey
         .0 = key(9).x_only_public_key().0.to_string().parse().unwrap();
     assert!(
-        TransferSeatCall::new(signed.clone(), Some(modified))
+        TransferSeatCall::new(signed.clone(), modified)
             .verify(Timestamp(1_000))
             .unwrap()
             .1
-            .unwrap()
             .verify_subject()
             .is_err()
     );
@@ -202,50 +188,43 @@ fn proof_binds_exact_request_and_envelope_and_never_repairs_service_auth() {
         ),
     );
     assert!(
-        TransferSeatCall::new(signed.clone(), Some(oversized))
+        TransferSeatCall::new(signed.clone(), oversized)
             .verify(Timestamp(1_000))
             .unwrap()
             .1
-            .unwrap()
             .verify_subject()
             .is_err()
     );
     let mut modified = proof.clone();
     modified.version = 2;
     assert!(
-        TransferSeatCall::new(signed.clone(), Some(modified))
+        TransferSeatCall::new(signed.clone(), modified)
             .verify(Timestamp(1_000))
             .unwrap()
             .1
-            .unwrap()
             .verify_subject()
             .is_err()
     );
     assert!(
-        TransferSeatCall::new(signed.clone(), Some(proof.clone()))
+        TransferSeatCall::new(signed.clone(), proof.clone())
             .verify(Timestamp(4_601))
             .is_err()
     );
     let mut invalid = signed.clone();
     invalid.manager_signature = ManagerSignature(SECP256K1.sign_schnorr(&[0; 32], &key(2)));
     assert!(
-        TransferSeatCall::new(invalid, Some(proof))
+        TransferSeatCall::new(invalid, proof)
             .verify(Timestamp(1_000))
             .is_err()
     );
 }
 
 #[test]
-fn duplicate_fields_reject_and_null_proof_is_legacy() {
+fn duplicate_fields_and_missing_or_null_proof_reject() {
     let signed = request();
-    let call = TransferSeatCall::new(signed.clone(), Some(proof(&signed)));
+    let call = TransferSeatCall::new(signed.clone(), proof(&signed));
     let value: ciborium::Value = ciborium::from_reader(&cbor(&call)[..]).unwrap();
-    for name in [
-        "service_pubkey",
-        "payload",
-        "manager_signature",
-        "destination_proof",
-    ] {
+    for name in ["request", "destination_proof"] {
         let mut fields = value.as_map().unwrap().clone();
         let duplicate = fields
             .iter()
@@ -264,37 +243,17 @@ fn duplicate_fields_reject_and_null_proof_is_legacy() {
         .find(|(k, _)| k.as_text() == Some("destination_proof"))
         .unwrap()
         .1 = ciborium::Value::Null;
-    let call: TransferSeatCall =
-        ciborium::from_reader(&cbor(&ciborium::Value::Map(fields))[..]).unwrap();
-    assert!(call.verify(Timestamp(1_000)).unwrap().1.is_none());
-}
-
-/// Frozen generated legacy method: same name, request and response as deployed.
-#[fedi_iroh_rpc::service]
-trait LegacyTransferService {
-    async fn transfer_seat(
-        &self,
-        request: LegacyCall,
-    ) -> crate::FmResult<crate::TransferSeatResponse>;
-}
-
-#[derive(Clone)]
-struct LegacySource;
-
-impl LegacyTransferService for LegacySource {
-    async fn transfer_seat(
-        &self,
-        request: LegacyCall,
-    ) -> crate::FmResult<crate::TransferSeatResponse> {
-        SECP256K1
-            .verify_schnorr(
-                &request.manager_signature.0,
-                &manager_request_signing_digest("transfer_seat", &request.payload),
-                &request.service_pubkey,
-            )
-            .unwrap();
-        Err(crate::ManifoldGuardianError::AwaitingBackup)
-    }
+    assert!(
+        ciborium::from_reader::<TransferSeatCall, _>(
+            &cbor(&ciborium::Value::Map(fields.clone()))[..]
+        )
+        .is_err()
+    );
+    fields.retain(|(key, _)| key.as_text() != Some("destination_proof"));
+    assert!(
+        ciborium::from_reader::<TransferSeatCall, _>(&cbor(&ciborium::Value::Map(fields))[..])
+            .is_err()
+    );
 }
 
 #[fedi_iroh_rpc::service]
@@ -308,62 +267,69 @@ trait NewTransferService {
 #[derive(Clone)]
 struct NewSource;
 
+/// Send malformed envelopes through the actual generated RPC transport.
+#[fedi_iroh_rpc::service]
+#[allow(dead_code)]
+trait MalformedTransferService {
+    async fn transfer_seat(
+        &self,
+        request: ciborium::Value,
+    ) -> crate::FmResult<crate::TransferSeatResponse>;
+}
+
 impl NewTransferService for NewSource {
     async fn transfer_seat(
         &self,
         request: TransferSeatCall,
     ) -> crate::FmResult<crate::TransferSeatResponse> {
-        if let Some(admission) = request.verify(Timestamp(1_000))?.1 {
-            admission.verify_subject()?;
-        }
+        request.verify(Timestamp(1_000))?.1.verify_subject()?;
         Err(crate::ManifoldGuardianError::AwaitingBackup)
     }
 }
 
 #[tokio::test]
-async fn mixed_version_generated_rpc_uses_same_method_and_response() {
+async fn generated_rpc_authenticates_required_proof() {
     use fedi_iroh_rpc::IrohProtocol;
     use iroh::{Endpoint, endpoint::presets, protocol::Router};
-    const OLD: &[u8] = b"test-old-transfer";
     const NEW: &[u8] = b"test-new-transfer";
     let endpoint = Endpoint::bind(presets::N0DisableRelay).await.unwrap();
     let router = Router::builder(endpoint)
-        .accept(
-            OLD,
-            IrohProtocol::new(LegacyTransferServiceServer::new(LegacySource)),
-        )
         .accept(
             NEW,
             IrohProtocol::new(NewTransferServiceServer::new(NewSource)),
         )
         .spawn();
     let client = Endpoint::bind(presets::N0DisableRelay).await.unwrap();
-    let old_connection = client.connect(router.endpoint().addr(), OLD).await.unwrap();
-    // The real generated new MG client calls the frozen old server.
+    let connection = client.connect(router.endpoint().addr(), NEW).await.unwrap();
+    // Exercise the real generated MG client against the proof-validating server.
     let signed = request();
-    let response = crate::ManifoldGuardianServiceClient::new(old_connection)
+    let response = crate::ManifoldGuardianServiceClient::new(connection)
         .transport()
-        .transfer_seat(TransferSeatCall::new(signed.clone(), Some(proof(&signed))))
+        .transfer_seat(TransferSeatCall::new(signed.clone(), proof(&signed)))
         .await
         .unwrap();
     assert_eq!(
         response.unwrap_err(),
         crate::ManifoldGuardianError::AwaitingBackup
     );
-    let new_connection = client.connect(router.endpoint().addr(), NEW).await.unwrap();
-    let response = LegacyTransferServiceClient::new(new_connection)
-        .transport()
-        .transfer_seat(LegacyCall {
-            service_pubkey: signed.service_pubkey,
-            payload: signed.payload,
-            manager_signature: signed.manager_signature,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        response.unwrap_err(),
-        crate::ManifoldGuardianError::AwaitingBackup
-    );
+    let call = TransferSeatCall::new(signed.clone(), proof(&signed));
+    let value: ciborium::Value = ciborium::from_reader(&cbor(&call)[..]).unwrap();
+    for null in [false, true] {
+        let mut fields = value.as_map().unwrap().clone();
+        fields.retain(|(key, _)| key.as_text() != Some("destination_proof"));
+        if null {
+            fields.push(("destination_proof".into(), ciborium::Value::Null));
+        }
+        let connection = client.connect(router.endpoint().addr(), NEW).await.unwrap();
+        assert!(
+            MalformedTransferServiceClient::new(connection)
+                .transport()
+                .transfer_seat(ciborium::Value::Map(fields))
+                .await
+                .is_err(),
+            "missing and null proof must reject at the RPC decoder"
+        );
+    }
     router.shutdown().await.unwrap();
     client.close().await;
 }

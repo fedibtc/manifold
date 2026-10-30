@@ -12,22 +12,10 @@ impl Fleet {
     /// however it obtained the grant. Without `may_start`, only a seat that
     /// already stopped for a transfer answers. Destination PeerBadge admission
     /// still applies to every request, including retries after retirement.
-    #[cfg(test)]
     pub(crate) async fn transfer_seat(
         &self,
         request: TransferSeatRequest,
-        may_start: bool,
-    ) -> Result<TransferSeatResponse, SeatVerbError> {
-        self.transfer_seat_with_admission(request, None, may_start)
-            .await
-    }
-
-    /// Authenticate destination trust on every stop/release, using direct proof
-    /// when present and complete legacy discovery only when absent.
-    pub(crate) async fn transfer_seat_with_admission(
-        &self,
-        request: TransferSeatRequest,
-        admission: Option<fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
+        admission: fedi_decentralized_service_manifold_guardian::DestinationAdmission,
         may_start: bool,
     ) -> Result<TransferSeatResponse, SeatVerbError> {
         let signed = request.grant;
@@ -53,13 +41,14 @@ impl Fleet {
         // policy. Check before both the irreversible stop and every release.
         // Never queue here: queued handlers would still occupy the transport's
         // shared RPC permits and starve unrelated seat operations.
+        // Hold the permit through the seat reply, including its internal queue.
         let _admission = self
             .replacement_admissions
             .try_acquire()
             .map_err(|_| SeatVerbError::ReplacementGuardianUnverified)?;
         self.config
             .replacement_guardian_verifier
-            .verify(grant.destination_service_pubkey, admission.as_ref())
+            .verify(&admission)
             .await
             .map_err(|_| SeatVerbError::ReplacementGuardianUnverified)?;
         let key = self.identity.derive_service_signing_key();

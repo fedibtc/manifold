@@ -92,18 +92,18 @@ fn call(
     let signature = mg.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest));
     TransferSeatCall::new(
         request,
-        Some(DestinationAdmissionProof {
+        DestinationAdmissionProof {
             version: 1,
             holder_authorization: envelope.clone(),
             signature: ManagerSignature(
                 secp256k1::schnorr::Signature::from_slice(signature.as_ref()).unwrap(),
             ),
-        }),
+        },
     )
 }
 
 fn admission(call: TransferSeatCall, now: u64) -> DestinationAdmission {
-    call.verify(Timestamp(now)).unwrap().1.unwrap()
+    call.verify(Timestamp(now)).unwrap().1
 }
 
 async fn check_direct(relay: &str) {
@@ -116,7 +116,6 @@ async fn check_direct(relay: &str) {
     let holder = HolderContext::generate();
     let mg = Keys::generate();
     let service = Keypair::from_seckey_slice(SECP256K1, &[25; 32]).unwrap();
-    let destination = service.x_only_public_key().0;
     let now = nostr_sdk::Timestamp::now().as_secs();
     let envelope = issue(&issuer, &holder, mg.public_key(), 9);
     let request = signed_request(&service, now);
@@ -124,7 +123,7 @@ async fn check_direct(relay: &str) {
     // No advertisement exists. Full/closed purchase availability cannot matter.
     for _ in 0..2 {
         verifier
-            .verify(destination, Some(&admission(signed_call.clone(), now)))
+            .verify(&admission(signed_call.clone(), now))
             .await
             .unwrap();
     }
@@ -132,52 +131,28 @@ async fn check_direct(relay: &str) {
     let mut value = serde_json::to_value(&signed_call).unwrap();
     let changed =
         serde_json::to_value(call(signed_request(&service, now + 1), &mg, &envelope)).unwrap();
-    value["payload"] = changed["payload"].clone();
-    value["manager_signature"] = changed["manager_signature"].clone();
+    value["request"] = changed["request"].clone();
     let mismatched: TransferSeatCall = serde_json::from_value(value).unwrap();
-    assert!(
-        verifier
-            .verify(destination, Some(&admission(mismatched, now)))
-            .await
-            .is_err()
-    );
+    assert!(verifier.verify(&admission(mismatched, now)).await.is_err());
     let borrowed = call(request.clone(), &Keys::generate(), &envelope);
-    assert!(
-        verifier
-            .verify(destination, Some(&admission(borrowed, now)))
-            .await
-            .is_err()
-    );
+    assert!(verifier.verify(&admission(borrowed, now)).await.is_err());
     let other_envelope = issue(&issuer, &holder, mg.public_key(), 9);
     let mut swapped = serde_json::to_value(&signed_call).unwrap();
     swapped["destination_proof"]["holder_authorization"] =
         serde_json::to_value(other_envelope).unwrap();
     let swapped: TransferSeatCall = serde_json::from_value(swapped).unwrap();
-    assert!(
-        verifier
-            .verify(destination, Some(&admission(swapped, now)))
-            .await
-            .is_err()
-    );
+    assert!(verifier.verify(&admission(swapped, now)).await.is_err());
     let mut unsupported = serde_json::to_value(&signed_call).unwrap();
     unsupported["destination_proof"]["version"] = json!(2);
     let unsupported: TransferSeatCall = serde_json::from_value(unsupported).unwrap();
-    assert!(
-        verifier
-            .verify(destination, Some(&admission(unsupported, now)))
-            .await
-            .is_err()
-    );
+    assert!(verifier.verify(&admission(unsupported, now)).await.is_err());
     let mut oversized = envelope.clone();
     oversized.signed_credential.credential.blind_msg = json!(
         "x".repeat(fedi_decentralized_service_manifold_guardian::DESTINATION_ADMISSION_MAX_BYTES)
     );
     assert!(
         verifier
-            .verify(
-                destination,
-                Some(&admission(call(request.clone(), &mg, &oversized), now))
-            )
+            .verify(&admission(call(request.clone(), &mg, &oversized), now))
             .await
             .is_err()
     );
@@ -185,29 +160,20 @@ async fn check_direct(relay: &str) {
     forged.signed_credential.proof.signature.0[0] ^= 1;
     assert!(
         verifier
-            .verify(
-                destination,
-                Some(&admission(call(request.clone(), &mg, &forged), now))
-            )
+            .verify(&admission(call(request.clone(), &mg, &forged), now))
             .await
             .is_err()
     );
     let low = issue(&issuer, &holder, mg.public_key(), 8);
     assert!(
         verifier
-            .verify(
-                destination,
-                Some(&admission(call(request.clone(), &mg, &low), now))
-            )
+            .verify(&admission(call(request.clone(), &mg, &low), now))
             .await
             .is_err()
     );
     // A later lower-trust authorization is not issuer revocation of this badge.
     verifier
-        .verify(
-            destination,
-            Some(&admission(call(request.clone(), &mg, &envelope), now)),
-        )
+        .verify(&admission(call(request.clone(), &mg, &envelope), now))
         .await
         .unwrap();
     let revocation = issuer
@@ -238,10 +204,5 @@ async fn check_direct(relay: &str) {
         )
         .await
         .unwrap();
-    assert!(
-        verifier
-            .verify(destination, Some(&admission(signed_call, now)))
-            .await
-            .is_err()
-    );
+    assert!(verifier.verify(&admission(signed_call, now)).await.is_err());
 }

@@ -296,8 +296,8 @@ async fn transfer_binding_shares_admission_with_ordinary_metadata_and_bounds_tar
 async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
     use fedi_decentralized_manifold_environment::ManifoldEnvironment;
     use fedi_decentralized_service_manifold_guardian::{
-        ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest, PullSeatRequest,
-        RemoveSeatRequest, ReplaceSeatBindingRequest, SeatTransferGrant, SignedRequest, Timestamp,
+        ManifoldGuardianError, ManifoldGuardianService, PullSeatRequest, RemoveSeatRequest,
+        ReplaceSeatBindingRequest, SeatTransferGrant, SignedRequest, Timestamp,
         TransferSeatRequest,
     };
 
@@ -386,13 +386,9 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
         let results = [
             (
                 "TransferSeat",
-                rpc.transfer_seat(
-                    MgSignedRequest::create(&transfer, &destination)
-                        .unwrap()
-                        .into(),
-                )
-                .await
-                .map(drop),
+                rpc.transfer_seat(crate::test_support::transfer_call(&transfer, &destination))
+                    .await
+                    .map(drop),
             ),
             (
                 "ReplaceSeatBinding",

@@ -50,7 +50,7 @@ impl TransferSource for IrohTransferSource {
                 .ok_or(TransferSourceUnavailable)?
                 .transfer_admission_proof(&request)
                 .map_err(|_| TransferSourceUnavailable)?;
-            let call = TransferSeatCall::new(request, Some(proof));
+            let call = TransferSeatCall::new(request, proof);
             let connection = tokio::time::timeout(
                 Duration::from_secs(30),
                 self.endpoint

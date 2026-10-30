@@ -947,7 +947,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             ManifoldGuardianError::Unauthorized
         })?;
         self.fleet
-            .transfer_seat_with_admission(request, admission, self.may_start_guardian_transfer())
+            .transfer_seat(request, admission, self.may_start_guardian_transfer())
             .await
             .map_err(|err| match err {
                 SeatVerbError::TransferDisabled => ManifoldGuardianError::UnsupportedVerb {

@@ -5,7 +5,7 @@
 #[error("replacement guardian is not verified")]
 pub struct ReplacementGuardianUnverified;
 
-/// Resolve and verify the destination against the source MG's trust profile.
+/// Verify the authenticated destination proof against the source MG's trust profile.
 #[async_trait::async_trait]
 pub trait ReplacementGuardianVerifier: Send + Sync {
     /// Require a fresh, complete PeerBadge verification bound to this service key.
@@ -13,8 +13,7 @@ pub trait ReplacementGuardianVerifier: Send + Sync {
     /// Missing credentials and unavailable verification inputs must fail closed.
     async fn verify(
         &self,
-        destination: secp256k1::XOnlyPublicKey,
-        admission: Option<&fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
+        admission: &fedi_decentralized_service_manifold_guardian::DestinationAdmission,
     ) -> Result<(), ReplacementGuardianUnverified>;
 }
 
@@ -26,8 +25,7 @@ pub(crate) struct UnverifiedReplacementGuardian;
 impl ReplacementGuardianVerifier for UnverifiedReplacementGuardian {
     async fn verify(
         &self,
-        _: secp256k1::XOnlyPublicKey,
-        _: Option<&fedi_decentralized_service_manifold_guardian::DestinationAdmission>,
+        _: &fedi_decentralized_service_manifold_guardian::DestinationAdmission,
     ) -> Result<(), ReplacementGuardianUnverified> {
         Err(ReplacementGuardianUnverified)
     }

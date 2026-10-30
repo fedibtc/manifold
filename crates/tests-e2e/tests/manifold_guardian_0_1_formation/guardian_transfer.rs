@@ -2,12 +2,6 @@
 //! driven by `fa-cli` as a consumer would drive it.
 
 use super::*;
-use fedi_decentralized_nostr::mg::{
-    AdvertisementDocument, MG_ADVERTISEMENT_D_TAG, MG_ADVERTISEMENT_HASHTAG, sign_advertisement,
-};
-use fedi_decentralized_service_manifold_guardian::{
-    MgSignedRequest, SeatTransferGrant, TransferSeatRequest,
-};
 
 const TRANSFER_TEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Offset in an MG's port block for its pinned service endpoint, above its
@@ -262,104 +256,22 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     .await?;
 
     // From here the FA stays offline. The destination keeps its pull across
-    // a restart. Pause it while the test drives the source's real signed RPC
-    // through retirement, then age its advertisement before resuming the pull.
-    let mnemonic = manifold_guardian_admin(bin, &destination_dir, &["show-mnemonic"]).await?;
-    let destination_identity = mg_core::identity::RootMnemonic::parse(
-        mnemonic["mnemonic"]
-            .as_str()
-            .context("destination mnemonic")?,
-    )?;
+    // a restart, and finishes on its own once the source is back.
     shutdown_daemons(vec![destination]).await?;
-    let pool = sqlx::SqlitePool::connect_with(
-        sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(destination_dir.join("fleet-manager.sqlite"))
-            .read_only(true),
+    let mut destination = spawn_destination()?;
+    locators[GUARDIAN_COUNT] = read_locator(&mut destination, GUARDIAN_COUNT).await?;
+    wait_seat(
+        bin,
+        &destination_dir,
+        &destination_seat_id,
+        "AwaitingTransfer",
+        false,
     )
     .await?;
-    let grant_json: String =
-        sqlx::query_scalar("SELECT grant FROM seat_transfer_in WHERE state = 'waiting'")
-            .fetch_one(&pool)
-            .await?;
-    pool.close().await;
-    let grant: SignedRequest<SeatTransferGrant> = serde_json::from_str(&grant_json)?;
     let mut source = spawn_source()?;
     locators[source_index] = read_locator(&mut source, source_index).await?;
     daemons[source_index] = Some(source);
-    wait_seat(bin, &source_dir, &source_seat_id, "running", true).await?;
-    let source_locator: Locator = serde_json::from_str(&locators[source_index])?;
-    let endpoint = Endpoint::bind(presets::N0DisableRelay).await?;
-    let source_rpc = ManifoldGuardianServiceClient::new(
-        endpoint
-            .connect(source_locator.endpoint_addr, MANIFOLD_GUARDIAN_ALPN)
-            .await?,
-    );
-    let pull = || {
-        MgSignedRequest::create(
-            &TransferSeatRequest {
-                ts: Timestamp(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                ),
-                destination_service_pubkey: destination_identity.derive_service_pubkey(),
-                grant: grant.clone(),
-            },
-            &destination_identity.derive_service_signing_key(),
-        )
-    };
-    anyhow::ensure!(
-        matches!(
-            source_rpc.transport().transfer_seat(pull()?.into()).await?,
-            Err(ManifoldGuardianError::AwaitingSessionEnd)
-        ),
-        "the source admits the destination and schedules its session-boundary stop"
-    );
-    wait_seat(bin, &source_dir, &source_seat_id, "Transferred", false).await?;
-    let destination_keys = destination_identity.derive_service_nostr_keys();
-    let observer =
-        NostrRelayClient::connect(&relay.url, destination_keys.clone(), Duration::from_secs(5))
-            .await?;
-    let mut previous = destination_advertisement(&observer, destination_keys.public_key()).await?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    // Age the signed fixture instead of adding a test clock or shortening
-    // production TTLs. Keep its real publisher's identity, badge and service
-    // binding; only the test controls the mnemonic.
-    previous.payload.issued_at = now - 7200;
-    previous.payload.expires_at = now - 3600;
-    let expired = sign_advertisement(previous.payload, &destination_keys)?;
-    observer
-        .publish_event(
-            EventBuilder::new(
-                Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND),
-                serde_json::to_string(&expired)?,
-            )
-            .tags([
-                Tag::identifier(MG_ADVERTISEMENT_D_TAG),
-                Tag::hashtag(MG_ADVERTISEMENT_HASHTAG),
-            ]),
-        )
-        .await?;
-    anyhow::ensure!(
-        matches!(
-            source_rpc.transport().transfer_seat(pull()?.into()).await?,
-            Err(ManifoldGuardianError::Unauthorized)
-        ),
-        "retirement cannot bypass expired destination identity"
-    );
-    // Replaceable events need a strictly later timestamp to avoid an event-id
-    // tie with the deliberately expired fixture.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let mut destination = spawn_destination()?;
-    locators[GUARDIAN_COUNT] = read_locator(&mut destination, GUARDIAN_COUNT).await?;
     wait_seat(bin, &destination_dir, &destination_seat_id, "running", true).await?;
-    let refreshed = destination_advertisement(&observer, destination_keys.public_key()).await?;
-    anyhow::ensure!(
-        refreshed.payload.issued_at > now && refreshed.payload.plans.is_empty(),
-        "the real full-destination publisher refreshes identity without selling another seat"
-    );
-    endpoint.close().await;
     anyhow::ensure!(
         guardian_config(&destination_dir)? == source_material,
         "the destination runs the source's guardian config"
@@ -630,31 +542,6 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     defe.release(bitcoind_lease.handle_id).await?;
     std::fs::remove_dir_all(&temp).context("remove guardian transfer E2E tempdir")?;
     Ok(())
-}
-
-/// Read the real publisher's current identity document from the fixture relay.
-async fn destination_advertisement(
-    observer: &NostrRelayClient,
-    author: nostr_sdk::PublicKey,
-) -> anyhow::Result<AdvertisementDocument> {
-    let events = observer
-        .fetch_events_capped(
-            nostr_sdk::Filter::new()
-                .kind(Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND))
-                .author(author)
-                .identifier(MG_ADVERTISEMENT_D_TAG),
-            Duration::from_secs(5),
-            8,
-        )
-        .await?;
-    let event = events
-        .iter()
-        .max_by_key(|event| event.created_at)
-        .context("destination published its signed identity")?;
-    event.verify()?;
-    let document: AdvertisementDocument = serde_json::from_str(&event.content)?;
-    fedi_decentralized_nostr::mg::verify_advertisement_self_signature(&document)?;
-    Ok(document)
 }
 
 /// `fa-cli transfer` against this test's MGs.

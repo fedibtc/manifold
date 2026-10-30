@@ -214,11 +214,11 @@ impl FleetNostrHost {
 
     /// What a directory runtime reads out of the daemon each cycle.
     ///
-    /// Read-only and whole: a closed MG still publishes its authenticated
-    /// identity and credentials, but advertises no purchasable plans.
-    pub async fn advertisement(&self) -> crate::directory::AdvertisementSnapshot {
+    /// Read-only and whole: `None` suppresses publication while the MG is not
+    /// accepting seats; otherwise the snapshot contains the whole advertisement.
+    pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
-        // Each advertisement cycle reports capacity, including closed hosts.
+        // Each advertisement cycle reports capacity, even without publication.
         tracing::info!(
             safe_to_share = true,
             mg_version = env!("CARGO_PKG_VERSION"),
@@ -229,15 +229,13 @@ impl FleetNostrHost {
             accepting_seats = snapshot.accepting_seats,
             "{SEAT_CAPACITY_EVENT}"
         );
-        crate::directory::AdvertisementSnapshot {
-            iroh_endpoint_id: self.iroh_endpoint_id.clone(),
-            service_pubkey: self.service_pubkey,
-            plans: if snapshot.accepting_seats {
-                snapshot.plans
-            } else {
-                Vec::new()
-            },
-        }
+        snapshot
+            .accepting_seats
+            .then_some(crate::directory::AdvertisementSnapshot {
+                iroh_endpoint_id: self.iroh_endpoint_id.clone(),
+                service_pubkey: self.service_pubkey,
+                plans: snapshot.plans,
+            })
     }
 
     /// Wait until daemon-owned state that contributes to the advertisement may
@@ -352,8 +350,8 @@ pub struct Fleet {
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
     advertisement_changed: Arc<Notify>,
-    /// Fail-fast bound on expensive source admission, shared by every seat.
-    /// Keep well below the transport's shared RPC concurrency limit.
+    /// Fail-fast bound on admitted transfer requests, shared by every seat and
+    /// held through the seat reply, below the transport's shared RPC limit.
     replacement_admissions: Semaphore,
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
@@ -900,7 +898,8 @@ impl Fleet {
     /// checks have not passed. Payment-policy membership and
     /// retained wallet-client readiness are RPC concerns, not advertisement
     /// availability; `GetQuote` remains authoritative.
-    /// A closed MG continues advertising its identity with no purchase plans.
+    /// No advertisement is produced while this is false; an earlier one ages
+    /// out at its signed expiry.
     pub(crate) async fn availability_snapshot(&self) -> AvailabilitySnapshot {
         let snapshot = self
             .db

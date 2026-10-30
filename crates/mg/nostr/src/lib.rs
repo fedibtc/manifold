@@ -341,8 +341,7 @@ impl ManifoldGuardianNostr {
 
     /// Co-sign one transfer attempt with the live enrolled badge subject.
     ///
-    /// Missing or malformed local material is unavailable, never an invitation
-    /// to downgrade a new destination to legacy discovery.
+    /// Missing or malformed local material makes the attempt unavailable.
     pub fn transfer_admission_proof(
         &self,
         request: &fedi_decentralized_service_manifold_guardian::MgSignedRequest<
@@ -552,11 +551,6 @@ async fn run_advertisements(inner: Arc<Inner>, host: Arc<FleetNostrHost>, nostr:
                 }
             }
         }
-        // Addressable-event timestamps have second precision. A rapid
-        // closed -> open (or open -> full) transition must replace the old
-        // snapshot, not lose an equal-timestamp event-id tie at the relay.
-        // Coalesce changes during this delay, then build a fresh snapshot.
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -608,7 +602,9 @@ async fn advertise_once(
     nostr: &NostrRelayClient,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
 ) -> anyhow::Result<()> {
-    let snapshot = host.advertisement().await;
+    let Some(snapshot) = host.advertisement().await else {
+        return Ok(());
+    };
     let mut payload = build_payload(snapshot, &inner.keys);
     payload.holder_authorizations = holder_authorizations;
 
