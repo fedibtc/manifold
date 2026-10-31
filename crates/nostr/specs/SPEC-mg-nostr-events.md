@@ -160,8 +160,8 @@ verifier checklist above.
 ## MG advertisement v2 (37709)
 
 The v2 advertisement carries the same offer as kind `37701`, and adds signed
-fields, under the exact-payload envelope of
-[SPEC-exact-payload-signatures](../../../specs/SPEC-exact-payload-signatures.md).
+fields, under the exact-payload envelope whose wire contract is documented on
+`fedi_decentralized_domain::SignedJsonEnvelope` and `PurposeTag`.
 The event `content` is that envelope. The purpose tag is
 `fedi-signed-json/mg-advertisement/v1\0`. The signer is the MG Nostr service
 key, which must equal the event author. The trust chain, the non-trust status
@@ -189,9 +189,7 @@ Unknown payload fields follow the envelope's rule: readers verify the exact
 bytes and then ignore the unknown fields. The rule covers the objects this
 section and the legacy section define, including the holder-authorization
 envelope objects. The embedded PeerBadge credential's `info` and `blind_msg`
-keep the PeerBadge SDK's own parsing rules
-([SPEC-exact-payload-signatures](../../../specs/SPEC-exact-payload-signatures.md),
-*Unknown fields*). The payload is bounded by the shared
+keep the PeerBadge SDK's own parsing rules. The payload is bounded by the shared
 64 KiB per-event cap, and the 65,536-byte decoded-payload limit applies as
 well. The FA keeps the v1 bound on examined holder authorizations.
 

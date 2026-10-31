@@ -226,7 +226,8 @@ impl MgAdvertisementFormat {
 
 /// Purpose tag of the MG advertisement v2 envelope.
 ///
-/// Cross-program contract (`SPEC-exact-payload-signatures`, tag registry).
+/// Cross-program contract: signers and verifiers outside this repository use
+/// exactly these bytes ([`PurposeTag`]).
 pub const MG_ADVERTISEMENT_V2_PURPOSE: PurposeTag =
     PurposeTag::new(b"fedi-signed-json/mg-advertisement/v1\0");
 
@@ -239,7 +240,7 @@ pub const MG_ADVERTISEMENT_V2_PURPOSE: PurposeTag =
 ///
 /// Every Manifold-owned field decodes directly: no `#[serde(flatten)]` and no
 /// untagged or internally tagged enum, because those buffer unknown values
-/// and break the envelope's number rule (`SPEC-exact-payload-signatures`).
+/// and break the envelope's number rule ([`SignedJsonEnvelope`]).
 /// The embedded PeerBadge credential's `info` and `blind_msg` are SDK-owned
 /// `serde_json::Value`s and keep the SDK's own number handling.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

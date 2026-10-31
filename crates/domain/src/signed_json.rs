@@ -1,10 +1,26 @@
-//! Exact-payload JSON signature envelope (`SPEC-exact-payload-signatures`,
-//! `specs/` at the repository root).
+//! Exact-payload JSON signature envelope: [`SignedJsonEnvelope`] and
+//! [`PurposeTag`].
 //!
 //! The envelope carries a serialized JSON payload as a JSON string and signs
 //! the UTF-8 bytes of its decoded contents under a fixed purpose tag. A
 //! verifier checks the signature before it interprets the payload, and never
-//! reserializes the payload to derive the signed bytes.
+//! reserializes the payload to derive the signed bytes. The wire contract on
+//! those two types is cross-program: other programs sign and verify these
+//! exact bytes, so a change to it is a wire break.
+//!
+//! Alternatives considered (fedibtc/manifold#247):
+//!
+//! - Signing an embedded JSON object as a raw value: a JSON transport may
+//!   legally reserialize objects, so the bytes do not survive. The decoded
+//!   contents of a string do.
+//! - An opaque CBOR byte string: viable and compact, but it needs a text
+//!   encoding for Nostr and is not readable.
+//! - The Nostr event signature alone: the documents travel beyond Nostr (RPC,
+//!   storage, forwarding), and an event signature has no purpose tag.
+//! - A tag or scheme version inside the envelope: a message-chosen tag defeats
+//!   domain separation, and a second version source must stay in sync.
+//! - Legacy tags under the new signing input: that silently reinterprets
+//!   legacy signatures.
 
 #[cfg(test)]
 mod tests;
@@ -27,7 +43,23 @@ const PURPOSE_TAG_PREFIX: &[u8] = b"fedi-signed-json/";
 
 /// Fixed, NUL-terminated purpose tag `fedi-signed-json/<purpose>/v<N>\0`.
 ///
-/// The verifier's context selects the tag; an envelope never names its own.
+/// The verifier's context selects the tag: the Nostr kind and `d` tag, or the
+/// API, verb and direction. An envelope never names its own tag, and a
+/// different envelope shape or algorithm needs a new context, not a new
+/// member.
+///
+/// The `fedi-signed-json/` prefix keeps these tags disjoint from every legacy
+/// domain (`fedi-fman-…`, `fedi-flip-…`), so a legacy JCS or CBOR signature
+/// never verifies as an envelope signature, or the reverse. The NUL makes
+/// tags prefix-free. `<purpose>` names the owner and the message, plus the
+/// verb and direction for an RPC message, so a response cannot be replayed as
+/// a request or as another verb.
+///
+/// `v<N>` is the major version of the purpose's payload schema and its only
+/// home: payloads carry no `version` field. An additive change keeps the tag.
+/// A change that old readers must enforce, or that changes an existing
+/// field's meaning, needs a new `v<N>`, and over Nostr also a new kind or `d`
+/// tag. Each purpose defines its tag as a constant next to its payload type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PurposeTag(&'static [u8]);
 
@@ -101,9 +133,51 @@ impl PurposeTag {
 /// A signed message: a signer, the payload as the exact serialized JSON text,
 /// and a BIP-340 signature over `SHA256(tag || payload)`.
 ///
-/// Decode with [`Self::decode`], which applies the size limits; obtain the
-/// payload only through [`Self::verify`]. Keep or forward the envelope (or
-/// [`Self::to_json`]) verbatim; a typed projection loses unknown fields.
+/// # Wire contract
+///
+/// The envelope is a JSON object
+/// `{"signer": <64 lowercase hex x-only key>, "payload": <JSON text as a
+/// string>, "signature": <128 lowercase hex BIP-340 signature>}`. The signed
+/// bytes are the UTF-8 bytes of the decoded `payload` contents, without
+/// quotes or escapes and without Unicode normalization, so the signature
+/// survives any conforming JSON transport that re-escapes the string. The
+/// signer serializes the payload once and never again; a store or forwarder
+/// keeps the envelope or payload string verbatim, since a typed projection
+/// loses unknown fields. `signer` sits outside the payload so the key is
+/// chosen before any payload is read. A purpose whose payload also names its
+/// signer must require the two to be equal.
+///
+/// A verifier stops at the first failing step:
+///
+/// 1. The transport's ingress bound, then at most
+///    [`SIGNED_JSON_ENVELOPE_MAX_BYTES`] of encoded envelope.
+/// 2. Decode: only an object, no missing or duplicate known member, canonical
+///    hex `signer` and `signature`, a string `payload` without an unpaired
+///    surrogate. Unknown envelope members are unsigned and ignored.
+/// 3. At most [`SIGNED_JSON_PAYLOAD_MAX_BYTES`] of decoded payload bytes.
+/// 4. The signature under the tag the context selects.
+/// 5. Only then the payload parse, bounded at 127 nested containers. Reject
+///    duplicate known names; skip unknown values, including duplicate
+///    unknown names, by syntax.
+/// 6. Purpose checks: the signer bound to the transport identity (for Nostr,
+///    the event author), then freshness, authorization and semantics.
+///
+/// The bounds are independent: escaping can double the payload inside the
+/// envelope and double it again in a Nostr event, so writers check the
+/// encoded size of the outer message too.
+///
+/// Numbers: every known number field is an integer, validated exactly from
+/// its token, never through a rounding representation; a fraction, exponent
+/// or out-of-range token is rejected. A number inside an unknown field only
+/// has to match the RFC 8259 grammar, so `1e400` there is accepted and
+/// ignored.
+///
+/// Unknown fields: after verification, readers ignore payload fields they do
+/// not know at every level of a schema object the purpose defines. A value
+/// whose schema another project owns, such as a PeerBadge credential's `info`
+/// and `blind_msg`, keeps its owner's parsing rules. Writers add a field only
+/// when it keeps every existing meaning and has a safe default when absent;
+/// a field old readers would have to enforce needs a new tag version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignedJsonEnvelope {
     signer: nostr::PublicKey,
