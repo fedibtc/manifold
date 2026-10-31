@@ -156,9 +156,10 @@ impl PurposeTag {
 ///    surrogate. Unknown envelope members are unsigned and ignored.
 /// 3. At most [`SIGNED_JSON_PAYLOAD_MAX_BYTES`] of decoded payload bytes.
 /// 4. The signature under the tag the context selects.
-/// 5. Only then the payload parse, bounded at 127 nested containers. Reject
-///    duplicate known names; skip unknown values, including duplicate
-///    unknown names, by syntax.
+/// 5. Only then the payload parse. Structure the reader decodes is bounded at
+///    127 nested containers, counting the top-level object. Unknown values,
+///    including duplicate unknown names, are skipped by syntax at any depth,
+///    bounded only by the payload size. Reject duplicate known names.
 /// 6. Purpose checks: the signer bound to the transport identity (for Nostr,
 ///    the event author), then freshness, authorization and semantics.
 ///
