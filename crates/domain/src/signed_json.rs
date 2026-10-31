@@ -111,60 +111,17 @@ pub struct SignedJsonEnvelope {
     signature: Signature,
 }
 
-/// Wire form. Decoding accepts only a JSON object (not serde's positional
-/// sequence form), rejects missing or duplicate known members, and skips
-/// unknown members by syntax.
-#[derive(Serialize)]
+/// Wire form. Unknown members are skipped by syntax; missing or duplicate
+/// known members fail. The derive also accepts serde's positional sequence
+/// form, so [`decode_with_limits`] admits only an object before it decodes.
+#[derive(Serialize, Deserialize)]
 struct WireEnvelope<'a> {
+    #[serde(borrow)]
     signer: Cow<'a, str>,
+    #[serde(borrow)]
     payload: Cow<'a, str>,
+    #[serde(borrow)]
     signature: Cow<'a, str>,
-}
-
-impl<'de> Deserialize<'de> for WireEnvelope<'static> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(WireEnvelopeVisitor)
-    }
-}
-
-struct WireEnvelopeVisitor;
-
-impl<'de> serde::de::Visitor<'de> for WireEnvelopeVisitor {
-    type Value = WireEnvelope<'static>;
-
-    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("a signed JSON envelope object")
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        use serde::de::Error as _;
-        fn set<E: serde::de::Error>(
-            slot: &mut Option<String>,
-            value: String,
-            name: &'static str,
-        ) -> Result<(), E> {
-            if slot.replace(value).is_some() {
-                return Err(E::duplicate_field(name));
-            }
-            Ok(())
-        }
-        let (mut signer, mut payload, mut signature) = (None, None, None);
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            match key.as_ref() {
-                "signer" => set(&mut signer, map.next_value()?, "signer")?,
-                "payload" => set(&mut payload, map.next_value()?, "payload")?,
-                "signature" => set(&mut signature, map.next_value()?, "signature")?,
-                _ => {
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(WireEnvelope {
-            signer: Cow::Owned(signer.ok_or_else(|| A::Error::missing_field("signer"))?),
-            payload: Cow::Owned(payload.ok_or_else(|| A::Error::missing_field("payload"))?),
-            signature: Cow::Owned(signature.ok_or_else(|| A::Error::missing_field("signature"))?),
-        })
-    }
 }
 
 impl SignedJsonEnvelope {
@@ -280,7 +237,15 @@ fn decode_with_limits(
     if input.len() > max_envelope_bytes {
         return Err(SignedJsonError::EnvelopeTooLarge);
     }
-    let wire: WireEnvelope<'static> =
+    // Only an object is an envelope: `[signer, payload, signature]` would
+    // otherwise decode through the derive's sequence form.
+    if !input
+        .trim_start_matches([' ', '\t', '\n', '\r'])
+        .starts_with('{')
+    {
+        return Err(SignedJsonError::MalformedEnvelope);
+    }
+    let wire: WireEnvelope<'_> =
         serde_json::from_str(input).map_err(|_| SignedJsonError::MalformedEnvelope)?;
     if wire.payload.len() > max_payload_bytes {
         return Err(SignedJsonError::PayloadTooLarge);
