@@ -5,6 +5,7 @@ mod tests;
 
 use std::time::Duration;
 
+use fedi_decentralized_nostr::mg::MgAdvertisementFormat;
 use fedimint_core::runtime::Instant;
 use nostr_sdk::{Event, Filter, Kind, PublicKey};
 
@@ -18,7 +19,8 @@ pub const SETUP_PAYMENT_FEDERATIONS_RETAINED_MAX_BYTES: usize =
     ROLE_FETCHED_EVENT_MAX_BYTES * SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT as usize;
 
 /// Maximum number of untrusted MG advertisement candidates retained from one
-/// relay query.
+/// relay query. Each advertisement format has its own query, so each has its
+/// own copy of this bound.
 ///
 /// The canonical relays are deployment-pinned trusted infrastructure, but they
 /// cannot gate writes, so the untrusted input is publisher volume: pubkeys are
@@ -101,7 +103,8 @@ pub trait FaNostrClient {
         timeout: Duration,
     ) -> NostrClientResult<Vec<Event>>;
 
-    /// Fetch hard-bounded MG advertisement candidates from every author.
+    /// Fetch hard-bounded MG advertisement candidates of one `format` from
+    /// every author.
     ///
     /// This is the registry enumeration query: unlike
     /// [`Self::fetch_mg_advertisement`] it pins no author, so one relay
@@ -142,7 +145,11 @@ pub trait FaNostrClient {
     ///
     /// Returns an error if relay querying fails or the relay answer is
     /// incomplete.
-    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>>;
+    async fn fetch_mg_advertisements(
+        &self,
+        format: MgAdvertisementFormat,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>>;
 
     /// Fetch a complete-or-locally-bounded set of current FLIP provider ads.
     ///
@@ -203,8 +210,12 @@ impl FaNostrClient for NostrFaClient {
             .await
     }
 
-    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>> {
-        let filter = mg_advertisements_filter();
+    async fn fetch_mg_advertisements(
+        &self,
+        format: MgAdvertisementFormat,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        let filter = mg_advertisements_filter(format);
         // The enumeration is the registry's only completeness signal, so a
         // stalled or truncated relay answer must fail closed instead of
         // looking like a small registry; reaching a local resource bound —
@@ -235,13 +246,11 @@ impl FaNostrClient for NostrFaClient {
     }
 }
 
-fn mg_advertisements_filter() -> Filter {
+fn mg_advertisements_filter(format: MgAdvertisementFormat) -> Filter {
     Filter::new()
-        .kind(Kind::Custom(
-            fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_EVENT_KIND,
-        ))
-        .identifier(fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_D_TAG)
-        .hashtag(fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_HASHTAG)
+        .kind(Kind::Custom(format.kind()))
+        .identifier(format.d_tag())
+        .hashtag(format.hashtag())
         .limit(MG_ADVERTISEMENTS_CANDIDATE_LIMIT.into())
 }
 

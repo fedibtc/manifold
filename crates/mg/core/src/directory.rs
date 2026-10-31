@@ -14,6 +14,8 @@ use fedi_decentralized_domain::MgVersion;
 use fedi_decentralized_service_manifold_guardian::Plan;
 use nostr_sdk::PublicKey;
 
+use crate::seat_readiness::UptimePermille;
+
 /// Dynamic daemon state needed to build an advertisement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdvertisementSnapshot {
@@ -25,6 +27,9 @@ pub struct AdvertisementSnapshot {
     /// the wire; the payload carries its canonical lowercase-hex rendering.
     pub service_pubkey: secp256k1::XOnlyPublicKey,
     pub plans: Vec<Plan>,
+    /// The uptime scores the latest readiness run compared, reported in the
+    /// v2 advertisement. `None` before a run has recorded its slot.
+    pub uptime: Option<UptimePermille>,
 }
 
 /// Current Holder-authorization discovery state.

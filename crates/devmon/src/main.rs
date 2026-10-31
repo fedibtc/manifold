@@ -18,7 +18,9 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use clap::Parser;
-use fedi_decentralized_nostr::mg::{HOLDER_AUTHORIZATION_EVENT_KIND, MG_ADVERTISEMENT_EVENT_KIND};
+use fedi_decentralized_nostr::mg::{
+    HOLDER_AUTHORIZATION_EVENT_KIND, MG_ADVERTISEMENT_EVENT_KIND, MG_ADVERTISEMENT_V2_EVENT_KIND,
+};
 use fedi_decentralized_nostr::setup_payment_federations::SETUP_PAYMENT_FEDERATIONS_EVENT_KIND;
 use futures::stream::{Stream, StreamExt as _};
 use nostr_sdk::{Client, Filter, RelayPoolNotification};
@@ -33,6 +35,7 @@ use tokio_stream::wrappers::BroadcastStream;
 fn kind_name(kind: u16) -> &'static str {
     match kind {
         k if k == MG_ADVERTISEMENT_EVENT_KIND => "MG advertisement",
+        k if k == MG_ADVERTISEMENT_V2_EVENT_KIND => "MG advertisement v2",
         k if k == HOLDER_AUTHORIZATION_EVENT_KIND => "Holder authorization",
         37702 => "FLIP advertisement (provisional)",
         37703 => "Attester issuer mirror (provisional)",

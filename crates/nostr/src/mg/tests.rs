@@ -303,3 +303,262 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
          the shared 64 KiB per-event relay cap",
     );
 }
+
+fn v2_payload() -> AdvertisementV2Payload {
+    let mut payload = AdvertisementV2Payload::from(payload(&Keys::generate()));
+    payload.uptime_permille = Some(AdvertisedUptime {
+        day: Permille::try_from(998).unwrap(),
+        week: Permille::try_from(991).unwrap(),
+        month: Permille::try_from(964).unwrap(),
+    });
+    payload
+}
+
+/// Sign `payload` exactly as written, computing the signature here rather
+/// than through the code under test: `SHA256(tag || payload)`.
+fn hand_signed_v2_content(payload: &str, keys: &Keys, tag: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(tag)
+        .chain_update(payload.as_bytes())
+        .finalize()
+        .into();
+    let signature = keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest));
+    serde_json::json!({
+        "signer": keys.public_key().to_hex(),
+        "payload": payload,
+        "signature": signature.to_string(),
+    })
+    .to_string()
+}
+
+#[test]
+fn advertisement_v2_round_trips_and_binds_the_event_author() {
+    let keys = Keys::generate();
+    let payload = v2_payload();
+    let content = sign_advertisement_v2(&payload, &keys).unwrap().to_json();
+    assert_eq!(
+        verify_advertisement_v2(&content, keys.public_key()).unwrap(),
+        payload
+    );
+
+    // A valid envelope by another key is not this author's advertisement.
+    assert_eq!(
+        verify_advertisement_v2(&content, Keys::generate().public_key()).unwrap_err(),
+        AdvertisementV2Error::AuthorMismatch,
+    );
+
+    // The same bytes under another purpose tag fail the signature.
+    let text = serde_json::to_string(&payload).unwrap();
+    let other_tag = hand_signed_v2_content(&text, &keys, b"fedi-signed-json/other/v1\0");
+    assert_eq!(
+        verify_advertisement_v2(&other_tag, keys.public_key()).unwrap_err(),
+        AdvertisementV2Error::InvalidSignature,
+    );
+    let right_tag = hand_signed_v2_content(&text, &keys, b"fedi-signed-json/mg-advertisement/v1\0");
+    assert_eq!(
+        verify_advertisement_v2(&right_tag, keys.public_key()).unwrap(),
+        payload,
+        "the literal registered tag verifies",
+    );
+}
+
+/// Pinned cross-program fixture (`testing.md`): a fully signed kind-37709
+/// content captured as literal JSON (signer secret `0x...03`, advertised
+/// service pubkey from secret `0x...05`). Readers must keep accepting these
+/// exact bytes with this projection; a failure here means the purpose tag or
+/// the v2 payload schema changed in a way that breaks other programs.
+#[test]
+fn pinned_signed_advertisement_v2_fixture_stays_accepted() {
+    const FIXTURE: &str = r#"{"signer":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","payload":"{\"service_pubkey\":\"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4\",\"issued_at\":1730000000,\"expires_at\":1730003600,\"api_endpoints\":[{\"transport\":\"iroh\",\"url\":\"iroh://fixture-endpoint\"}],\"availability\":{\"fedimintd_version\":\"0.8.1+fedi\",\"federation_sizes\":[7,13]},\"plans\":[{\"InfiniteBestEffort\":{\"price_msats\":250000}}],\"holder_authorizations\":[],\"uptime_permille\":{\"1d\":998,\"7d\":991,\"30d\":964}}","signature":"aa35349dbb691a015954a5b3f0fb289f02a76a4b244599cf1a1389c0dc647daf9b6ceac14ce4048e44170886aed45c25ffdcc89c967aac6eb2e3ebda83edb7a2"}"#;
+    let signer =
+        nostr::PublicKey::parse("f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9")
+            .unwrap();
+
+    // The signature covers `SHA256(tag || payload)`, checked here without
+    // the code under test.
+    let envelope = serde_json::from_str::<serde_json::Value>(FIXTURE).unwrap();
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"fedi-signed-json/mg-advertisement/v1\0")
+        .chain_update(envelope["payload"].as_str().unwrap().as_bytes())
+        .finalize()
+        .into();
+    let signature: nostr::secp256k1::schnorr::Signature =
+        envelope["signature"].as_str().unwrap().parse().unwrap();
+    nostr::SECP256K1
+        .verify_schnorr(
+            &signature,
+            &nostr::secp256k1::Message::from_digest(digest),
+            &signer.xonly().unwrap(),
+        )
+        .expect("the fixture signature is over the tagged payload bytes");
+
+    // Literal expectations, not production constants or a re-serialization.
+    let payload = verify_advertisement_v2(FIXTURE, signer).expect("pinned fixture verifies");
+    assert_eq!(
+        payload.service_pubkey,
+        "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+    );
+    assert_eq!(
+        (payload.issued_at, payload.expires_at),
+        (1_730_000_000, 1_730_003_600)
+    );
+    assert_eq!(
+        payload.api_endpoints,
+        [ApiEndpoint {
+            transport: "iroh".to_owned(),
+            url: "iroh://fixture-endpoint".to_owned(),
+        }]
+    );
+    assert_eq!(
+        payload.availability.fedimintd_version.to_string(),
+        "0.8.1+fedi"
+    );
+    assert_eq!(payload.availability.federation_sizes, [7, 13]);
+    assert_eq!(
+        payload.plans,
+        [Plan::InfiniteBestEffort {
+            price_msats: 250_000
+        }]
+    );
+    assert!(payload.holder_authorizations.is_empty());
+    let uptime = payload.uptime_permille.expect("the fixture reports uptime");
+    assert_eq!(
+        (uptime.day.get(), uptime.week.get(), uptime.month.get()),
+        (998, 991, 964),
+        "each window keeps its own value",
+    );
+
+    // An absent report stays absent, not null or zero, on the wire.
+    let mut unreported = payload;
+    unreported.uptime_permille = None;
+    assert!(
+        serde_json::to_value(unreported)
+            .unwrap()
+            .get("uptime_permille")
+            .is_none()
+    );
+}
+
+/// Unknown members are skipped by syntax wherever they appear, including
+/// numbers no `f64` can hold, so a later payload revision cannot break this
+/// reader. A buffering serde shape would reject these payloads.
+#[test]
+fn advertisement_v2_skips_unknown_numbers_in_nested_objects() {
+    let keys = Keys::generate();
+    let mut value = serde_json::to_value(v2_payload()).unwrap();
+    value["holder_authorizations"] = serde_json::json!([serde_json::to_value(
+        worst_case_envelope(&Keys::generate(), &Keys::generate(), keys.public_key())
+    )
+    .unwrap()]);
+    let base = serde_json::to_string(&value).unwrap();
+    let marker = 0.5;
+    for (place, needle) in [
+        ("top level", r#""issued_at":"#),
+        ("a plan", r#""price_msats":"#),
+        ("a holder authorization", r#""holder_authorization":"#),
+        ("an availability", r#""federation_sizes":"#),
+    ] {
+        assert!(base.contains(needle), "{place}: fixture has {needle}");
+        let text = base.replacen(
+            needle,
+            &format!(r#""future":{{"n":1e400,"m":[{marker}]}},{needle}"#),
+            1,
+        );
+        let content =
+            hand_signed_v2_content(&text, &keys, b"fedi-signed-json/mg-advertisement/v1\0");
+        let parsed = verify_advertisement_v2(&content, keys.public_key())
+            .unwrap_or_else(|error| panic!("{place}: {error}"));
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap(),
+            value,
+            "{place}: the unknown member is ignored",
+        );
+    }
+}
+
+#[test]
+fn advertisement_v2_uptime_is_bounded_to_one_thousand() {
+    let keys = Keys::generate();
+    for (value, accepted) in [(1000, true), (1001, false)] {
+        let mut payload = serde_json::to_value(v2_payload()).unwrap();
+        payload["uptime_permille"]["30d"] = serde_json::json!(value);
+        let content = hand_signed_v2_content(
+            &payload.to_string(),
+            &keys,
+            b"fedi-signed-json/mg-advertisement/v1\0",
+        );
+        let result = verify_advertisement_v2(&content, keys.public_key());
+        if accepted {
+            assert_eq!(result.unwrap().uptime_permille.unwrap().month.get(), 1000);
+        } else {
+            assert_eq!(result.unwrap_err(), AdvertisementV2Error::Unparsable);
+        }
+    }
+}
+
+/// The legacy rendering of a v2 offer is the payload a v1-only MG signs: the
+/// same fields, its own identity, and nothing of the uptime report.
+#[test]
+fn legacy_rendering_of_a_v2_offer_drops_only_the_uptime() {
+    let keys = Keys::generate();
+    let v1 = payload(&keys);
+    let mut v2 = AdvertisementV2Payload::from(v1.clone());
+    assert_eq!(v2.to_legacy(keys.public_key()), v1);
+    v2.uptime_permille = v2_payload().uptime_permille;
+    assert_eq!(v2.to_legacy(keys.public_key()), v1);
+}
+
+/// The v2 counterpart of the worst-case kind-37701 measurement: the same
+/// worst-case offer, plus a full uptime report, in an envelope whose payload
+/// is an escaped JSON string.
+#[test]
+fn worst_case_advertisement_v2_event_fits_the_per_event_cap() {
+    const ROLE_FETCHED_EVENT_MAX_BYTES: usize = 64 * 1024;
+
+    let mg = Keys::generate();
+    let holder = Keys::generate();
+    let issuer = Keys::generate();
+    let mut payload = v2_payload();
+    payload.api_endpoints = (0..8)
+        .map(|index| ApiEndpoint {
+            transport: IROH_API_ENDPOINT_TRANSPORT.to_owned(),
+            url: format!(
+                "{IROH_API_ENDPOINT_URL_SCHEME}{index:064x}?relay=https://use1-1.relay.example.iroh.network/&alpn=fedi-fman-fi-setup/1"
+            ),
+        })
+        .collect();
+    payload.availability = Availability {
+        fedimintd_version: "0.11.1-fedi17+fedi".parse().unwrap(),
+        federation_sizes: (1..=64).collect(),
+    };
+    payload.plans = vec![
+        Plan::InfiniteBestEffort {
+            price_msats: u64::MAX,
+        },
+        Plan::SubscriptionBased {
+            initial_price_msats: u64::MAX,
+            renewal_price_msats: u64::MAX,
+            period: "every-30-days".to_owned(),
+        },
+        Plan::InfiniteBestEffort {
+            price_msats: 21_000_000,
+        },
+    ];
+    payload.holder_authorizations = (0..4)
+        .map(|_| worst_case_envelope(&holder, &issuer, mg.public_key()))
+        .collect();
+    let content = sign_advertisement_v2(&payload, &mg).unwrap().to_json();
+    let event =
+        nostr::EventBuilder::new(nostr::Kind::Custom(MG_ADVERTISEMENT_V2_EVENT_KIND), content)
+            .tag(nostr::Tag::identifier(MG_ADVERTISEMENT_V2_D_TAG))
+            .tag(nostr::Tag::hashtag(MG_ADVERTISEMENT_V2_HASHTAG))
+            .sign_with_keys(&mg)
+            .unwrap();
+
+    let event_bytes = event.as_json().len();
+    println!("worst-case legitimate advertisement v2 event: {event_bytes} bytes");
+    assert!(
+        event_bytes < ROLE_FETCHED_EVENT_MAX_BYTES,
+        "a worst-case legitimate v2 event ({event_bytes} bytes) must fit the 64 KiB cap",
+    );
+}

@@ -7,18 +7,21 @@ use super::*;
 
 #[test]
 fn mg_advertisement_query_pins_kind_identifier_hashtag_and_candidate_bound() {
-    let filter = mg_advertisements_filter();
-
-    assert_eq!(
-        serde_json::to_value(filter).expect("filter serializes"),
-        json!({
-            "kinds": [fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_EVENT_KIND],
-            "#d": [fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_D_TAG],
-            "#t": [fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_HASHTAG],
-            "limit": MG_ADVERTISEMENTS_CANDIDATE_LIMIT,
-        }),
-        "the enumeration filter must pin no author",
-    );
+    for (format, kind, d, t) in [
+        (MgAdvertisementFormat::Legacy, 37701, "fman-ad", "fedi-fman"),
+        (MgAdvertisementFormat::V2, 37709, "mg-ad", "fedi-mg"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(mg_advertisements_filter(format)).expect("filter serializes"),
+            json!({
+                "kinds": [kind],
+                "#d": [d],
+                "#t": [t],
+                "limit": MG_ADVERTISEMENTS_CANDIDATE_LIMIT,
+            }),
+            "the {format:?} enumeration filter pins its own role and no author",
+        );
+    }
 }
 
 #[test]

@@ -196,13 +196,14 @@ authenticated set; canonical selection uses canonical set order.
 
 ## Registry discovery and selection
 
-`discover_mg_candidates` turns one bounded, authorless kind-37701
-enumeration ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
+`discover_mg_candidates` turns two bounded, authorless enumerations, kind
+37701 and kind 37709, ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
 into a statically admitted candidate set without writing durable state,
 taking the driver lease, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's
-own payload proof and the `fman_id_pubkey == event author` identity rule,
-per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break),
+own payload proof and the signer-equals-event-author identity rule,
+per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break) within
+each format, the fresh v2 advertisement in preference to the legacy one,
 the freshness policy, and the caller's eligibility requirements — all
 cheap local checks, and every non-admitted advertisement is reported with
 a typed reason so consumers can render "N seen, M eligible" honestly. The

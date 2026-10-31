@@ -17,6 +17,8 @@ pub use fa::{
     NostrFaClient, SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT,
     SETUP_PAYMENT_FEDERATIONS_RETAINED_MAX_BYTES, setup_payment_federations_filter,
 };
+/// The format argument of [`FaNostrClient::fetch_mg_advertisements`].
+pub use fedi_decentralized_nostr::mg::MgAdvertisementFormat;
 pub use flip::{
     FetchMgTrustMaterialRequest, FlipNostrClient, MG_TRUST_MATERIAL_CANDIDATE_LIMIT_DEFAULT,
     MG_TRUST_MATERIAL_CANDIDATE_LIMIT_MAX, NostrFlipClient,
