@@ -103,6 +103,29 @@ impl std::fmt::Display for SelectionReauthorizationReason {
     }
 }
 
+/// What a Manifold Guardian does in a guardian transfer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardianTransferRole {
+    /// The MG the FA would buy the new seat on.
+    Destination,
+    /// The MG that hosts the moved guardian.
+    Source,
+    /// The MG of a guardian that stays, which votes on the move.
+    Guardian {
+        /// The guardian's seat index.
+        seat_index: u16,
+    },
+}
+
+/// A Manifold Guardian that cannot take part in a guardian transfer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsupportedTransferMg {
+    /// What the MG does in the transfer.
+    pub role: GuardianTransferRole,
+    /// The MG's identity.
+    pub mg_id: nostr_sdk::PublicKey,
+}
+
 /// Stable progress-facing error category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +203,7 @@ pub enum MgOperation {
     WaitForRunning,
     PullSeat,
     RemoveSeat,
+    GetVersion,
 }
 impl MgOperation {
     pub(crate) fn as_str(self) -> &'static str {
@@ -198,6 +222,7 @@ impl MgOperation {
             Self::WaitForRunning => "wait_for_running",
             Self::PullSeat => "pull_seat",
             Self::RemoveSeat => "remove_seat",
+            Self::GetVersion => "get_version",
         }
     }
 }
@@ -421,6 +446,16 @@ pub enum FaError {
     /// transfer on by republishing the policy.
     #[error("the setup-payment policy does not enable guardian transfer")]
     GuardianTransferDisabled,
+    /// Manifold Guardians the transfer needs do not speak the guardian
+    /// transfer protocol this client drives, so the FA does not buy a seat.
+    /// Each one either answered `GetVersion` without that protocol version
+    /// or is from before `GetVersion`. They need an upgrade first.
+    #[error("Manifold Guardians do not support guardian transfer: {unsupported:?}")]
+    GuardianTransferUnsupported {
+        /// Every MG that answered without support, in seat order after the
+        /// destination.
+        unsupported: Vec<UnsupportedTransferMg>,
+    },
     /// A post-formation maintenance verb was attempted in another phase.
     #[error("federation maintenance requires formed state, found {phase:?}")]
     MaintenanceWrongState {
@@ -518,9 +553,9 @@ impl FaError {
             }
             // An existing category, so consumers need no new code; the Rust
             // variant tells the two apart.
-            Self::CapabilityUnavailable(_) | Self::GuardianTransferDisabled => {
-                FaErrorCode::CapabilityUnavailable
-            }
+            Self::CapabilityUnavailable(_)
+            | Self::GuardianTransferDisabled
+            | Self::GuardianTransferUnsupported { .. } => FaErrorCode::CapabilityUnavailable,
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
             Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
             Self::Payment(_) => FaErrorCode::Payment,

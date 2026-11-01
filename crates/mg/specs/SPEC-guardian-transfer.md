@@ -56,6 +56,18 @@ To recover an existing mixed-version transfer, upgrade both endpoints;
 changing flags or the minimum version alone does not recover a previously
 retired source/destination pair.
 
+The policy says whether transfer is on; it cannot say whether the MGs a
+transfer needs speak this shape. Each MG reports that through `GetVersion`
+([SPEC-fa-rpc](./SPEC-fa-rpc.md)) as guardian transfer protocol version 2.
+An MG from before `GetVersion` speaks none, and that includes every release
+with the old shape. The FA therefore buys a destination seat only from an MG
+that lists version 2: the destination preview skips any other, and before it
+pays the FA asks the destination, the source, and every staying guardian's MG
+again. The destination must answer. The source and the staying guardians may
+be unreachable, since a guardian usually needs a new host because its MG is
+down, but any that answers without version 2 stops the start with a typed
+refusal, and the FA buys nothing.
+
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never
 leaves a guardian half moved:

@@ -8,12 +8,13 @@ use crate::{
     GetAvailabilityRequest, GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse,
     GetInviteCodeRequest, GetInviteCodeResponse, GetMgTrustMaterialRequest,
     GetMgTrustMaterialResponse, GetPeerAttestationRequest, GetPeerAttestationResponse,
-    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GetStatusResponse, ManifoldGuardianError,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
-    RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
-    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
-    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
-    StartDkgResponse, TransferSeatCall, TransferSeatResponse,
+    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GetStatusResponse, GetVersionRequest,
+    GetVersionResponse, ManifoldGuardianError, ProposeFormationMetaRequest,
+    ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse, RegisterGatewayRequest,
+    RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest,
+    ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse, SetMetaFieldRequest,
+    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    TransferSeatCall, TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -31,6 +32,11 @@ pub trait ManifoldGuardianService {
         &self,
         request: GetAvailabilityRequest,
     ) -> FmResult<GetAvailabilityResponse>;
+
+    /// Public endpoint for clients checking this MG's release and the
+    /// protocol versions it speaks. An MG from before this verb answers
+    /// `UnsupportedVerb`, so it speaks none of the versioned protocols.
+    async fn get_version(&self, request: GetVersionRequest) -> FmResult<GetVersionResponse>;
 
     /// Return a stateless signed key-locked ecash quote.
     async fn get_quote(

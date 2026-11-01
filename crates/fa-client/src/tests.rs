@@ -904,6 +904,22 @@ struct MgState {
     binding_votes: Mutex<HashMap<usize, fedi_decentralized_domain::MgPeerAttestation>>,
     /// Every accepted `RemoveSeat`, by MG.
     removed_seats: Mutex<Vec<(usize, SeatId)>>,
+    /// Per-MG `GetVersion` answer; absent answers `Current`.
+    versions: Mutex<HashMap<usize, TestMgVersion>>,
+    /// Every `GetVersion` call, by MG.
+    version_calls: Mutex<Vec<usize>>,
+}
+
+/// What a test MG answers to `GetVersion`.
+#[derive(Clone, Copy, Debug, Default)]
+enum TestMgVersion {
+    /// Speaks guardian transfer protocol 2.
+    #[default]
+    Current,
+    /// Answers, but without guardian transfer protocol 2.
+    WithoutTransfer,
+    /// From before `GetVersion`.
+    BeforeGetVersion,
 }
 
 #[derive(Clone)]
@@ -1083,6 +1099,39 @@ impl TestMg {
 }
 
 impl ManifoldGuardianService for TestMg {
+    async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        self.state
+            .version_calls
+            .lock()
+            .expect("test lock")
+            .push(self.index);
+        match self
+            .state
+            .versions
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .copied()
+            .unwrap_or_default()
+        {
+            TestMgVersion::Current => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                protocols: SupportedProtocols {
+                    guardian_transfer: vec![GUARDIAN_TRANSFER_PROTOCOL_V2],
+                },
+            }),
+            TestMgVersion::WithoutTransfer => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                protocols: SupportedProtocols {
+                    guardian_transfer: vec![1],
+                },
+            }),
+            // What the generated client turns an "unknown RPC method" answer
+            // into.
+            TestMgVersion::BeforeGetVersion => unsupported_test_verb("get_version"),
+        }
+    }
+
     async fn get_availability(
         &self,
         _request: GetAvailabilityRequest,

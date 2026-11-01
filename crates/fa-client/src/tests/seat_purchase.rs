@@ -821,6 +821,50 @@ async fn a_guardian_holder_cannot_receive_a_guardian_through_another_mg() {
     assert_eq!(preview.seat().candidate().mg_id(), test_mg_id(other));
 }
 
+/// A destination that cannot take part in a transfer costs its seat in the
+/// preview, so the walk goes on to one that can.
+#[tokio::test]
+async fn the_preview_skips_a_destination_without_guardian_transfer() {
+    let (old, new) = (19, 20);
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    // The old MG is cheaper, so the walk reaches it first.
+    *client
+        .inner
+        .ports
+        .registry
+        .advertisements
+        .lock()
+        .expect("test lock") = vec![
+        mg_ad(old, PAYMENT_AMOUNT_MSATS / 2, FEDIMINTD_VERSION_0_1),
+        mg_ad(new, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+    ];
+    let preview = async || {
+        client
+            .preview_transfer_destination_with_verifier(
+                crate::MgDiscoveryOptions::default(),
+                &HolderVerifier(BTreeMap::new()),
+            )
+            .await
+            .unwrap()
+            .seat()
+            .candidate()
+            .mg_id()
+    };
+    assert_eq!(preview().await, test_mg_id(old));
+
+    for version in [
+        TestMgVersion::BeforeGetVersion,
+        TestMgVersion::WithoutTransfer,
+    ] {
+        mg_state
+            .versions
+            .lock()
+            .expect("test lock")
+            .insert(old, version);
+        assert_eq!(preview().await, test_mg_id(new), "{version:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_rejected_payment_closes_the_transfer_for_another_payer() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;

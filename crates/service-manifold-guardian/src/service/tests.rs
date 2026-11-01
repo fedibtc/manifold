@@ -37,6 +37,15 @@ fn guardian_fee_account() -> GuardianFeeAccount {
 }
 
 impl ManifoldGuardianService for TestManifoldGuardian {
+    async fn get_version(&self, _: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        Ok(GetVersionResponse {
+            mg_version: "0.2.0".parse().unwrap(),
+            protocols: SupportedProtocols {
+                guardian_transfer: vec![GUARDIAN_TRANSFER_PROTOCOL_V2],
+            },
+        })
+    }
+
     async fn get_availability(
         &self,
         _: GetAvailabilityRequest,
@@ -169,6 +178,80 @@ impl ManifoldGuardianService for TestManifoldGuardian {
     ) -> FmResult<GetFedimintStatsResponse> {
         unsupported()
     }
+}
+
+/// The service as released before `get_version`: it has every other verb,
+/// but one is enough to stand for it on the wire.
+#[fedi_iroh_rpc::service]
+trait ReleasedManifoldGuardianService {
+    async fn get_availability(
+        &self,
+        request: GetAvailabilityRequest,
+    ) -> FmResult<GetAvailabilityResponse>;
+}
+
+#[derive(Clone)]
+struct ReleasedManifoldGuardian;
+
+impl ReleasedManifoldGuardianService for ReleasedManifoldGuardian {
+    async fn get_availability(
+        &self,
+        _: GetAvailabilityRequest,
+    ) -> FmResult<GetAvailabilityResponse> {
+        unsupported()
+    }
+}
+
+/// A current client asking a released MG and a current MG for their version
+/// over the wire. The released MG has no such method, and the client reads
+/// that answer as `UnsupportedVerb`, not as a transport failure.
+#[tokio::test]
+async fn a_released_mg_answers_get_version_with_unsupported_verb() {
+    let released = Router::builder(Endpoint::bind(presets::N0DisableRelay).await.unwrap())
+        .accept(
+            ALPN,
+            IrohProtocol::new(ReleasedManifoldGuardianServiceServer::new(
+                ReleasedManifoldGuardian,
+            )),
+        )
+        .spawn();
+    let current = Router::builder(Endpoint::bind(presets::N0DisableRelay).await.unwrap())
+        .accept(
+            ALPN,
+            IrohProtocol::new(ManifoldGuardianServiceServer::new(TestManifoldGuardian)),
+        )
+        .spawn();
+    let client_endpoint = Endpoint::bind(presets::N0DisableRelay).await.unwrap();
+    let connect = async |router: &Router| {
+        ManifoldGuardianServiceClient::new(
+            client_endpoint
+                .connect(router.endpoint().addr(), ALPN)
+                .await
+                .unwrap(),
+        )
+    };
+
+    let released_client = connect(&released).await;
+    assert_eq!(
+        released_client.get_version(GetVersionRequest).await,
+        Err(ManifoldGuardianError::UnsupportedVerb {
+            verb: "get_version".to_owned()
+        })
+    );
+    assert!(matches!(
+        released_client.transport().get_version(GetVersionRequest).await,
+        Err(fedi_iroh_rpc::RpcError::UnknownMethod(method)) if method == "get_version"
+    ));
+    let version = connect(&current)
+        .await
+        .get_version(GetVersionRequest)
+        .await
+        .unwrap();
+    assert!(version.supports_guardian_transfer(GUARDIAN_TRANSFER_PROTOCOL_V2));
+
+    released.shutdown().await.unwrap();
+    current.shutdown().await.unwrap();
+    client_endpoint.close().await;
 }
 
 #[tokio::test]

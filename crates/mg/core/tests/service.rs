@@ -325,6 +325,19 @@ async fn start_dkg_rejects_off_origin_callback_when_gateway_is_configured() {
     rpc.fleet.shutdown().await;
 }
 
+/// `GetVersion` names this build and the guardian transfer protocol whose
+/// `TransferSeat` carries the destination's admission proof, whatever the
+/// policy says about starting transfers.
+#[tokio::test]
+async fn get_version_names_this_release_and_transfer_protocol_2() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc(&temp, 29_140).await;
+    let version = rpc.get_version(GetVersionRequest).await.unwrap();
+    assert_eq!(version.mg_version.to_string(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(version.protocols.guardian_transfer, vec![2]);
+    rpc.fleet.shutdown().await;
+}
+
 #[tokio::test]
 async fn release_size_capabilities_are_advertised_and_enforced() {
     let temp = TempDir::new().unwrap();

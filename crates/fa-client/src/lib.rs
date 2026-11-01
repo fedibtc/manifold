@@ -43,8 +43,8 @@ pub use discovery::{
 };
 pub use eligibility::{ReplacementCandidate, ReplacementCheck, ReplacementReason};
 pub use error::{
-    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
-    MgOperation, SelectionReauthorizationReason,
+    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, GuardianTransferRole,
+    MgCause, MgFailure, MgOperation, SelectionReauthorizationReason, UnsupportedTransferMg,
 };
 pub use federation_reader::ConnectorsConsensusReader;
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};

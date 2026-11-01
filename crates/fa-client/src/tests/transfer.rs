@@ -1341,6 +1341,124 @@ async fn a_policy_without_v2_transfer_buys_no_seat() {
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
+/// Start a transfer against MGs with the given `GetVersion` answers. A
+/// refused start must leave no trace: no quote, no payment, no transfer.
+async fn start_against_versions(
+    versions: &[(usize, TestMgVersion)],
+    offline: &[usize],
+) -> (FaResult<GuardianTransfer>, Arc<MgState>) {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    mg_state
+        .versions
+        .lock()
+        .expect("test lock")
+        .extend(versions.iter().copied());
+    mg_state
+        .offline_indices
+        .lock()
+        .expect("test lock")
+        .extend(offline.iter().copied());
+    let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
+    let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
+
+    let result = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await;
+
+    if result.is_err() {
+        assert_eq!(client.guardian_transfer().await, None);
+        assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
+        assert_eq!(
+            payment_state.create_calls.load(Ordering::SeqCst),
+            funded_before
+        );
+        assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+    }
+    (result, mg_state)
+}
+
+fn unsupported_mgs(error: FaError) -> Vec<UnsupportedTransferMg> {
+    assert_eq!(error.code(), FaErrorCode::CapabilityUnavailable);
+    match error {
+        FaError::GuardianTransferUnsupported { unsupported } => unsupported,
+        error => panic!("expected GuardianTransferUnsupported, got {error:?}"),
+    }
+}
+
+/// QA found an FA paying a destination on MGs that could not transfer. In a
+/// mixed fleet the FA asks every MG it needs first, and pays none of them
+/// while one from before `GetVersion` hosts the source.
+#[tokio::test]
+async fn a_source_from_before_get_version_buys_no_seat() {
+    let (result, mg_state) =
+        start_against_versions(&[(MOVED, TestMgVersion::BeforeGetVersion)], &[]).await;
+
+    assert_eq!(
+        unsupported_mgs(result.unwrap_err()),
+        vec![UnsupportedTransferMg {
+            role: GuardianTransferRole::Source,
+            mg_id: test_mg_id(MOVED),
+        }]
+    );
+    // The destination and every guardian's MG were asked.
+    let mut asked = mg_state.version_calls.lock().expect("test lock").clone();
+    asked.sort_unstable();
+    let mut expected = (0..usize::from(MIN_FEDERATION_SIZE))
+        .chain([DESTINATION])
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(asked, expected);
+}
+
+/// Every MG without the protocol is named, the destination first.
+#[tokio::test]
+async fn every_mg_without_guardian_transfer_is_named() {
+    let staying = 3;
+    let (result, _mg_state) = start_against_versions(
+        &[
+            (staying, TestMgVersion::BeforeGetVersion),
+            (DESTINATION, TestMgVersion::WithoutTransfer),
+        ],
+        &[],
+    )
+    .await;
+
+    assert_eq!(
+        unsupported_mgs(result.unwrap_err()),
+        vec![
+            UnsupportedTransferMg {
+                role: GuardianTransferRole::Destination,
+                mg_id: test_mg_id(DESTINATION),
+            },
+            UnsupportedTransferMg {
+                role: GuardianTransferRole::Guardian {
+                    seat_index: staying as u16,
+                },
+                mg_id: test_mg_id(staying),
+            },
+        ]
+    );
+}
+
+/// A guardian usually needs a new host because its MG is down, so an
+/// unreachable source or staying guardian does not block the start. The
+/// destination is paid, so it must answer.
+#[tokio::test]
+async fn only_the_destination_must_answer_get_version() {
+    let (result, _mg_state) = start_against_versions(&[], &[MOVED, 3]).await;
+    assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+
+    let (result, _mg_state) = start_against_versions(&[], &[DESTINATION]).await;
+    let error = result.unwrap_err();
+    assert!(
+        matches!(&error, FaError::Mg(failure) if failure.mg == manager_key(DESTINATION).x_only_public_key().0),
+        "{error:?}"
+    );
+}
+
 /// The FA admits only the v2 flag and otherwise follows its environment's default,
 /// even when a production policy sets the retired flag to true.
 #[tokio::test]

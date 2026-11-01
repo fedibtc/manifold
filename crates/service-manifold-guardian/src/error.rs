@@ -144,11 +144,17 @@ pub enum ManifoldGuardianError {
 }
 
 impl From<fedi_iroh_rpc::RpcError> for ManifoldGuardianError {
-    fn from(_error: fedi_iroh_rpc::RpcError) -> Self {
-        // The generated trait client requires this compatibility conversion.
-        // Consumers that classify transport failures must instead retain the
-        // low-level outer `RpcResult` in their local connector adapter.
-        Self::Other("local RPC call failed".to_owned())
+    fn from(error: fedi_iroh_rpc::RpcError) -> Self {
+        match error {
+            // An MG from before the verb existed answers that it has no such
+            // method. That is its answer, not a transport failure.
+            fedi_iroh_rpc::RpcError::UnknownMethod(verb) => Self::UnsupportedVerb { verb },
+            // The generated trait client requires this compatibility
+            // conversion. Consumers that classify transport failures must
+            // instead retain the low-level outer `RpcResult` in their local
+            // connector adapter.
+            _ => Self::Other("local RPC call failed".to_owned()),
+        }
     }
 }
 

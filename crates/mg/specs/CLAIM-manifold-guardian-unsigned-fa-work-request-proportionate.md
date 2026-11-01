@@ -1,6 +1,6 @@
 # CLAIM-manifold-guardian-unsigned-fa-work-request-proportionate: Unsigned FA work is request-proportionate
 
-Each unsigned FA verb—`GetAvailability`, `GetQuote`, and
+Each unsigned FA verb—`GetAvailability`, `GetVersion`, `GetQuote`, and
 `GetFmanTrustMaterial`—performs bounded, request-proportionate daemon work.
 A cheap valid request does not fan out into an unbounded database scan, wallet
 operation, child I/O, allocation, or signing work, and a bounded batch of such
@@ -12,7 +12,7 @@ verbs.
 Unverified. `GetFmanTrustMaterial` no longer accepts federation or peer selectors
 and no longer probes seats, so the recorded seat-fanout counterexample does not
 apply. This change repairs that falsification but does not re-verify the complete
-three-verb property.
+property, nor the later addition of `GetVersion`.
 
 ## Assumptions
 

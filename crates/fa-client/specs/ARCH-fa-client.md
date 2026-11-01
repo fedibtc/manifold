@@ -724,7 +724,9 @@ the advertisements of the federation's own MGs: an MG that is full or offline,
 which is when a guardian needs a new host, advertises nothing. The preview
 then selects one MG on that line that does not host, and never
 hosted, a peer of the federation, and with a badge holder that holds none of
-its seats. The FA keeps the verified holder of each formed and each bought
+its seats. Its live probe also calls `GetVersion` and rejects an MG that does
+not speak guardian transfer protocol version 2 with
+`live_no_guardian_transfer`, so the walk moves on to another MG. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.
 `start_guardian_transfer` takes the approved preview with a price cap and an
@@ -739,7 +741,16 @@ the policy omits it, the default of the client's Manifold environment, the
 same resolution the MG uses
 ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
 MGs start no transfer otherwise, so the FA buys no seat for one. A client
-opened without a Manifold profile takes the production default. Then it records the transfer.
+opened without a Manifold profile takes the production default. It then asks
+the destination, the source, and every staying guardian's MG for `GetVersion`
+at once, and refuses with `FaError::GuardianTransferUnsupported` (category
+`capability_unavailable`), naming each MG and its role, when any answers
+without guardian transfer protocol version 2 or is from before `GetVersion`.
+The destination must answer; an unreachable source or staying guardian does
+not block the start, since a guardian usually needs a new host because its MG
+is down
+([Enabling transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+Then it records the transfer.
 The retired `guardian_transfer` field must never be set to `true` in production:
 older consumers read it to enable the incompatible old `TransferSeat` shape.
 Before production activation, upgrade both transfer endpoints and set
