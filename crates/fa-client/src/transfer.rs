@@ -331,11 +331,13 @@ where
     /// Ask every MG a transfer needs whether it speaks the guardian transfer
     /// protocol this client drives, before the FA pays for a seat.
     ///
-    /// The destination must answer, since the FA would pay it. The source and
-    /// the staying guardians' MGs may be unreachable: a guardian usually
-    /// needs a new host because its MG is down, and the move waits for the
-    /// source anyway. Every MG that answers must speak the protocol. An MG
-    /// from before `GetVersion` answers `UnsupportedVerb` and speaks none.
+    /// The destination must answer, since the FA would pay it. For the
+    /// source and the staying guardians' MGs only a negative answer refuses:
+    /// a probe that fails any other way, by transport, timeout, another
+    /// error or a malformed response, does not block, because a guardian
+    /// usually needs a new host when its MG is down, and the move waits for
+    /// the source anyway. An MG from before `GetVersion` answers
+    /// `UnsupportedVerb` and speaks none.
     async fn check_guardian_transfer_support(
         &self,
         destination: &crate::selection::ApprovedMgSeat,

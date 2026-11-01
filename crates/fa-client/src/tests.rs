@@ -920,6 +920,8 @@ enum TestMgVersion {
     WithoutTransfer,
     /// From before `GetVersion`.
     BeforeGetVersion,
+    /// Answers `GetVersion` with another service error.
+    Failing,
 }
 
 #[derive(Clone)]
@@ -1129,6 +1131,7 @@ impl ManifoldGuardianService for TestMg {
             // What the generated client turns an "unknown RPC method" answer
             // into.
             TestMgVersion::BeforeGetVersion => unsupported_test_verb("get_version"),
+            TestMgVersion::Failing => Err(ManifoldGuardianError::SeatUnavailable),
         }
     }
 

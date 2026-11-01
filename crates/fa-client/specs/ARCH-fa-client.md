@@ -746,9 +746,10 @@ the destination, the source, and every staying guardian's MG for `GetVersion`
 at once, and refuses with `FaError::GuardianTransferUnsupported` (category
 `capability_unavailable`), naming each MG and its role, when any answers
 without guardian transfer protocol version 2 or is from before `GetVersion`.
-The destination must answer; an unreachable source or staying guardian does
-not block the start, since a guardian usually needs a new host because its MG
-is down
+The destination must answer. For the source and staying guardians only that
+negative answer refuses: a probe that fails any other way (unreachable, timed
+out, another error, or a malformed response) does not block the start, since
+a guardian usually needs a new host because its MG is down
 ([Enabling transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
 Then it records the transfer.
 The retired `guardian_transfer` field must never be set to `true` in production:

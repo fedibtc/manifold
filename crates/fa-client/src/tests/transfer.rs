@@ -1443,13 +1443,22 @@ async fn every_mg_without_guardian_transfer_is_named() {
     );
 }
 
-/// A guardian usually needs a new host because its MG is down, so an
-/// unreachable source or staying guardian does not block the start. The
-/// destination is paid, so it must answer.
+/// A guardian usually needs a new host because its MG is down, so a source
+/// or staying guardian whose probe fails, unreachable or with another error,
+/// does not block the start. The destination is paid, so it must answer.
 #[tokio::test]
 async fn only_the_destination_must_answer_get_version() {
     let (result, _mg_state) = start_against_versions(&[], &[MOVED, 3]).await;
     assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+    let (result, _mg_state) = start_against_versions(
+        &[(MOVED, TestMgVersion::Failing), (3, TestMgVersion::Failing)],
+        &[],
+    )
+    .await;
+    assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+    let (result, _mg_state) =
+        start_against_versions(&[(DESTINATION, TestMgVersion::Failing)], &[]).await;
+    assert!(matches!(result, Err(FaError::Mg(_))), "{result:?}");
 
     let (result, _mg_state) = start_against_versions(&[], &[DESTINATION]).await;
     let error = result.unwrap_err();

@@ -63,10 +63,12 @@ An MG from before `GetVersion` speaks none, and that includes every release
 with the old shape. The FA therefore buys a destination seat only from an MG
 that lists version 2: the destination preview skips any other, and before it
 pays the FA asks the destination, the source, and every staying guardian's MG
-again. The destination must answer. The source and the staying guardians may
-be unreachable, since a guardian usually needs a new host because its MG is
-down, but any that answers without version 2 stops the start with a typed
-refusal, and the FA buys nothing.
+again. The destination must answer with version 2. For the source and the
+staying guardians, only an answer without version 2 stops the start, with a
+typed refusal, and the FA buys nothing. A probe of one of them that fails
+any other way, unreachable, timed out, or answered with another error or a
+malformed response, does not block it, since a guardian usually needs a new
+host because its MG is down.
 
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never
