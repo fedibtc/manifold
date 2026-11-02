@@ -4,8 +4,9 @@ use crate::MgVersion;
 
 /// The version of the MG API, counted like Fedimint's API minor version: it
 /// goes up by one each time the API changes, and a client checks a feature
-/// with `FEATURE_ADDED_IN <= api_version`. An MG from before `GetVersion`
-/// has no API version and is below every feature that names one.
+/// with `FEATURE_ADDED_IN <= api_version`. Each RPC method records the
+/// version that added it ([`crate::ManifoldGuardianService`]). An MG from
+/// before `GetVersion` answers no version and serves only version 0.
 #[derive(
     serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
 )]
@@ -18,8 +19,21 @@ pub struct MgApiVersion(pub u32);
 /// transfer and had no `GetVersion`.
 pub const GUARDIAN_TRANSFER_V2_API_VERSION: MgApiVersion = MgApiVersion(1);
 
-/// The API version this build serves.
-pub const MG_API_VERSION: MgApiVersion = GUARDIAN_TRANSFER_V2_API_VERSION;
+/// The API version this build serves: the latest version a method names.
+pub const MG_API_VERSION: MgApiVersion =
+    latest(crate::ManifoldGuardianServiceClient::METHOD_API_VERSIONS);
+
+const fn latest(methods: &[(&str, MgApiVersion)]) -> MgApiVersion {
+    let mut latest = MgApiVersion(0);
+    let mut index = 0;
+    while index < methods.len() {
+        if methods[index].1.0 > latest.0 {
+            latest = methods[index].1;
+        }
+        index += 1;
+    }
+    latest
+}
 
 /// Request for this MG's release and API version.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, Eq, PartialEq)]

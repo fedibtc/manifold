@@ -450,7 +450,7 @@ pub enum FaError {
     /// not buy a seat. Either the destination or the source is below the MG
     /// API version with the guardian transfer this client drives, or fewer
     /// staying guardians reach it than the move's binding vote needs. An MG
-    /// from before `GetVersion` is below every API version. An old MG needs
+    /// from before `GetVersion` serves only API version 0. An old MG needs
     /// an upgrade first.
     #[error(
         "guardian transfer unsupported: Manifold Guardians below the API version: {unsupported:?}; \

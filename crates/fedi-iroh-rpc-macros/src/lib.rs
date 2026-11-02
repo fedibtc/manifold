@@ -6,17 +6,86 @@ use syn::{
     parse_macro_input, parse_quote,
 };
 
+/// Generate a client and a server for an RPC service trait.
+///
+/// `#[service(api_version = Type)]` versions the service's API: every method
+/// then names the API version that added it in its current shape with
+/// `#[added_in(expr)]`, where `expr` is a constant of `Type`, and the client
+/// gets `METHOD_API_VERSIONS`, each method's wire name with that version.
 #[proc_macro_attribute]
-pub fn service(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut api_version = None;
+    let attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("api_version") {
+            api_version = Some(meta.value()?.parse::<Type>()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported #[service] argument; expected `api_version = Type`"))
+        }
+    });
+    parse_macro_input!(attr with attr_parser);
     let trait_item = parse_macro_input!(item as ItemTrait);
-    match expand_service(trait_item) {
+    match expand_service(trait_item, api_version) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
 }
 
-fn expand_service(trait_item: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
+/// Each method's `#[added_in(expr)]`, in method order. Every method of a
+/// versioned service has exactly one, and an unversioned service has none.
+fn added_in_versions(
+    trait_item: &ItemTrait,
+    api_version: Option<&Type>,
+) -> syn::Result<Vec<syn::Expr>> {
+    let mut error = None;
+    let mut versions = Vec::new();
+    for item in &trait_item.items {
+        let TraitItem::Fn(method) = item else {
+            continue;
+        };
+        let attrs = method
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("added_in"))
+            .collect::<Vec<_>>();
+        match (api_version, attrs.as_slice()) {
+            (Some(_), [attr]) => match attr.parse_args::<syn::Expr>() {
+                Ok(version) => versions.push(version),
+                Err(parse_error) => push_error(&mut error, parse_error),
+            },
+            (Some(_), []) => push_error(
+                &mut error,
+                syn::Error::new_spanned(
+                    &method.sig.ident,
+                    "methods of a #[service(api_version = ...)] trait need #[added_in(version)]",
+                ),
+            ),
+            (Some(_), [_, extra, ..]) => push_error(
+                &mut error,
+                syn::Error::new_spanned(extra, "a method has one #[added_in(version)]"),
+            ),
+            (None, []) => {}
+            (None, [attr, ..]) => push_error(
+                &mut error,
+                syn::Error::new_spanned(
+                    attr,
+                    "#[added_in] needs #[service(api_version = Type)] on the trait",
+                ),
+            ),
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(versions),
+    }
+}
+
+fn expand_service(
+    trait_item: ItemTrait,
+    api_version: Option<Type>,
+) -> syn::Result<proc_macro2::TokenStream> {
     validate_trait(&trait_item)?;
+    let added_in = added_in_versions(&trait_item, api_version.as_ref())?;
     let mut generated_trait = trait_item.clone();
     let trait_ident = &trait_item.ident;
     let client_ident = format_ident!("{}Client", trait_ident);
@@ -34,6 +103,9 @@ fn expand_service(trait_item: ItemTrait) -> syn::Result<proc_macro2::TokenStream
 
     for item in &mut generated_trait.items {
         if let TraitItem::Fn(method) = item {
+            method
+                .attrs
+                .retain(|attr| !attr.path().is_ident("added_in"));
             let return_ty = match &method.sig.output {
                 ReturnType::Type(_, ty) => *ty.clone(),
                 ReturnType::Default => parse_quote!(()),
@@ -91,8 +163,25 @@ fn expand_service(trait_item: ItemTrait) -> syn::Result<proc_macro2::TokenStream
         }
     });
 
+    let method_api_versions = api_version.map(|api_version| {
+        let entries = methods.iter().zip(&added_in).map(|(method, version)| {
+            let method_name = method.ident.to_string();
+            quote! { (#method_name, #version) }
+        });
+        quote! {
+            impl #client_ident {
+                /// Each method's wire name and the API version that added it
+                /// in its current shape, in declaration order.
+                pub const METHOD_API_VERSIONS: &'static [(&'static str, #api_version)] =
+                    &[#(#entries),*];
+            }
+        }
+    });
+
     Ok(quote! {
         #generated_trait
+
+        #method_api_versions
 
         #[derive(Debug, Clone)]
         pub struct #client_ident {
