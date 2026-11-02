@@ -63,12 +63,22 @@ An MG from before `GetVersion` speaks none, and that includes every release
 with the old shape. The FA therefore buys a destination seat only from an MG
 that lists version 2: the destination preview skips any other, and before it
 pays the FA asks the destination, the source, and every staying guardian's MG
-again. The destination must answer with version 2. For the source and the
-staying guardians, only an answer without version 2 stops the start, with a
-typed refusal, and the FA buys nothing. A probe of one of them that fails
-any other way, unreachable, timed out, or answered with another error or a
-malformed response, does not block it, since a guardian usually needs a new
-host because its MG is down.
+again, each probe capped at the selection probe timeout:
+
+- The destination must answer with version 2.
+- The source must not answer without version 2. A source probe that fails
+  any other way (unreachable, timed out, another error, or a malformed
+  response) does not block, since a guardian usually needs a new host
+  because its MG is down.
+- Staying guardians only vote `ReplaceSeatBinding`, which takes effect at the
+  federation's consensus threshold. The voters are the destination, in the
+  source's place, and the staying guardians. The FA counts the destination
+  and each staying guardian that answers with version 2; an old or
+  unanswering staying guardian counts as no. The start needs at least the
+  threshold.
+
+Otherwise the FA refuses with a typed error that names the old MGs and the
+voter count, and buys nothing.
 
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never

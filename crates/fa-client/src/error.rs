@@ -446,15 +446,26 @@ pub enum FaError {
     /// transfer on by republishing the policy.
     #[error("the setup-payment policy does not enable guardian transfer")]
     GuardianTransferDisabled,
-    /// Manifold Guardians the transfer needs do not speak the guardian
-    /// transfer protocol this client drives, so the FA does not buy a seat.
-    /// Each one either answered `GetVersion` without that protocol version
-    /// or is from before `GetVersion`. They need an upgrade first.
-    #[error("Manifold Guardians do not support guardian transfer: {unsupported:?}")]
+    /// The transfer cannot run on these Manifold Guardians, so the FA does
+    /// not buy a seat. Either the destination or the source does not speak
+    /// the guardian transfer protocol this client drives, or fewer staying
+    /// guardians speak it than the move's binding vote needs. An MG that
+    /// answers `GetVersion` without that version, or is from before
+    /// `GetVersion`, does not speak it and needs an upgrade first.
+    #[error(
+        "guardian transfer unsupported: Manifold Guardians without protocol 2: {unsupported:?}; \
+         {voters} guardians that can vote the move, {threshold} needed"
+    )]
     GuardianTransferUnsupported {
-        /// Every MG that answered without support, in seat order after the
-        /// destination.
+        /// Every MG that answered without support, the destination first,
+        /// then in seat order.
         unsupported: Vec<UnsupportedTransferMg>,
+        /// Guardians that would vote the move's binding and speak the
+        /// protocol: the destination, in the source's place, and each
+        /// staying guardian that answered with support.
+        voters: u16,
+        /// The federation's consensus threshold, which the vote needs.
+        threshold: u16,
     },
     /// A post-formation maintenance verb was attempted in another phase.
     #[error("federation maintenance requires formed state, found {phase:?}")]
