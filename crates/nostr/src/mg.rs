@@ -235,7 +235,8 @@ pub const MG_ADVERTISEMENT_V2_PURPOSE: PurposeTag =
 /// advertisement v2*).
 ///
 /// The legacy fields keep their meanings and serde shapes. The envelope
-/// signer is the MG identity, so the payload carries no `fman_id_pubkey`,
+/// signer, which is the event author, is the MG identity, so the payload
+/// carries no `fman_id_pubkey`,
 /// and the purpose tag versions the schema, so it carries no `version`.
 ///
 /// Every Manifold-owned field decodes directly: no `#[serde(flatten)]` and no
@@ -392,11 +393,10 @@ pub enum AdvertisementV2Error {
     /// not parse.
     Unparsable,
 
-    /// The envelope signature does not verify under the advertisement tag.
+    /// The envelope signature is not the event author's under the
+    /// advertisement tag. This includes another MG's valid envelope
+    /// republished under this author.
     InvalidSignature,
-
-    /// The verified signer is not the event author.
-    AuthorMismatch,
 }
 
 impl core::fmt::Display for AdvertisementV2Error {
@@ -404,18 +404,18 @@ impl core::fmt::Display for AdvertisementV2Error {
         formatter.write_str(match self {
             Self::Unparsable => "unparsable MG advertisement v2",
             Self::InvalidSignature => "invalid MG advertisement v2 signature",
-            Self::AuthorMismatch => "MG advertisement v2 signer is not the event author",
         })
     }
 }
 
 impl std::error::Error for AdvertisementV2Error {}
 
-/// Verify a kind-37709 event `content` and bind its signer to `author`.
+/// Verify that the event `author` signed a kind-37709 event `content`, and
+/// parse its payload.
 ///
-/// This checks the envelope signature, parses the payload, and requires the
-/// verified signer to equal the event author. It does not verify the outer
-/// event signature, freshness, or the embedded holder authorizations.
+/// The author is the only key accepted, so no separate author check exists.
+/// This does not verify the outer event signature, freshness, or the
+/// embedded holder authorizations.
 ///
 /// # Errors
 ///
@@ -426,16 +426,12 @@ pub fn verify_advertisement_v2(
 ) -> Result<AdvertisementV2Payload, AdvertisementV2Error> {
     let envelope =
         SignedJsonEnvelope::decode(content).map_err(|_| AdvertisementV2Error::Unparsable)?;
-    let verified = envelope
-        .verify::<AdvertisementV2Payload>(MG_ADVERTISEMENT_V2_PURPOSE)
+    envelope
+        .verify::<AdvertisementV2Payload>(author, MG_ADVERTISEMENT_V2_PURPOSE)
         .map_err(|error| match error {
             SignedJsonError::InvalidSignature => AdvertisementV2Error::InvalidSignature,
             _ => AdvertisementV2Error::Unparsable,
-        })?;
-    if verified.signer() != author {
-        return Err(AdvertisementV2Error::AuthorMismatch);
-    }
-    Ok(verified.into_payload())
+        })
 }
 
 /// Error signing or verifying a portable MG advertisement document.

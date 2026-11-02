@@ -324,7 +324,6 @@ fn hand_signed_v2_content(payload: &str, keys: &Keys, tag: &[u8]) -> String {
         .into();
     let signature = keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest));
     serde_json::json!({
-        "signer": keys.public_key().to_hex(),
         "payload": payload,
         "signature": signature.to_string(),
     })
@@ -332,7 +331,7 @@ fn hand_signed_v2_content(payload: &str, keys: &Keys, tag: &[u8]) -> String {
 }
 
 #[test]
-fn advertisement_v2_round_trips_and_binds_the_event_author() {
+fn advertisement_v2_round_trips_and_verifies_only_for_its_author() {
     let keys = Keys::generate();
     let payload = v2_payload();
     let content = sign_advertisement_v2(&payload, &keys).unwrap().to_json();
@@ -344,7 +343,7 @@ fn advertisement_v2_round_trips_and_binds_the_event_author() {
     // A valid envelope by another key is not this author's advertisement.
     assert_eq!(
         verify_advertisement_v2(&content, Keys::generate().public_key()).unwrap_err(),
-        AdvertisementV2Error::AuthorMismatch,
+        AdvertisementV2Error::InvalidSignature,
     );
 
     // The same bytes under another purpose tag fail the signature.
@@ -363,13 +362,14 @@ fn advertisement_v2_round_trips_and_binds_the_event_author() {
 }
 
 /// Pinned cross-program fixture (`testing.md`): a fully signed kind-37709
-/// content captured as literal JSON (signer secret `0x...03`, advertised
+/// content captured as literal JSON (signed by the event author's key, secret
+/// `0x...03`; advertised
 /// service pubkey from secret `0x...05`). Readers must keep accepting these
 /// exact bytes with this projection; a failure here means the purpose tag or
 /// the v2 payload schema changed in a way that breaks other programs.
 #[test]
 fn pinned_signed_advertisement_v2_fixture_stays_accepted() {
-    const FIXTURE: &str = r#"{"signer":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","payload":"{\"service_pubkey\":\"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4\",\"issued_at\":1730000000,\"expires_at\":1730003600,\"api_endpoints\":[{\"transport\":\"iroh\",\"url\":\"iroh://fixture-endpoint\"}],\"availability\":{\"fedimintd_version\":\"0.8.1+fedi\",\"federation_sizes\":[7,13]},\"plans\":[{\"InfiniteBestEffort\":{\"price_msats\":250000}}],\"holder_authorizations\":[],\"uptime_permille\":{\"1d\":998,\"7d\":991,\"30d\":964}}","signature":"aa35349dbb691a015954a5b3f0fb289f02a76a4b244599cf1a1389c0dc647daf9b6ceac14ce4048e44170886aed45c25ffdcc89c967aac6eb2e3ebda83edb7a2"}"#;
+    const FIXTURE: &str = r#"{"payload":"{\"service_pubkey\":\"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4\",\"issued_at\":1730000000,\"expires_at\":1730003600,\"api_endpoints\":[{\"transport\":\"iroh\",\"url\":\"iroh://fixture-endpoint\"}],\"availability\":{\"fedimintd_version\":\"0.8.1+fedi\",\"federation_sizes\":[7,13]},\"plans\":[{\"InfiniteBestEffort\":{\"price_msats\":250000}}],\"holder_authorizations\":[],\"uptime_permille\":{\"1d\":998,\"7d\":991,\"30d\":964}}","signature":"aa35349dbb691a015954a5b3f0fb289f02a76a4b244599cf1a1389c0dc647daf9b6ceac14ce4048e44170886aed45c25ffdcc89c967aac6eb2e3ebda83edb7a2"}"#;
     let signer =
         nostr::PublicKey::parse("f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9")
             .unwrap();

@@ -54,8 +54,8 @@ discovery hint rather than a capacity reservation. The payload contains:
 - the MG identity's bounded set of durably enrolled Holder authorizations and
   backing signed credentials, deduplicated by credential digest.
 
-The v2 payload carries the same offer without the Nostr public key, which
-the envelope signer states, and adds the uptime scores of the latest
+The v2 payload carries the same offer without the Nostr public key, because
+the envelope verifies only under the event author's key, and adds the uptime scores of the latest
 readiness run (*Readiness gate*) once a run has recorded uptime.
 
 The inner kind-37701 document is Schnorr-signed by the Nostr identity over

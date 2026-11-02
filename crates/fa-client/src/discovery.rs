@@ -299,12 +299,12 @@ pub enum AdvertisementRejection {
     /// The event content is not a parsable advertisement document.
     UnparsableDocument,
 
-    /// The document's own payload proof, or the v2 envelope signature, failed
-    /// verification.
+    /// The document's own payload proof failed verification, or the v2
+    /// envelope is not signed by the event author.
     InvalidAdvertisementProof,
 
-    /// The signed payload `fman_id_pubkey`, or the v2 envelope signer, does
-    /// not equal the event author.
+    /// The signed legacy payload `fman_id_pubkey` does not equal the event
+    /// author.
     AuthorMismatch,
 
     /// A newer valid advertisement from the same author replaced this event,
@@ -643,7 +643,7 @@ struct AdmittedAdvertisement {
 /// offer per author.
 ///
 /// Static admission covers the event role, the event signature, the
-/// format's own signature, and the signer-author identity rule, plus
+/// format's own signature by the event author, plus
 /// freshness for v2. Replacement
 /// order is newest `created_at` first with the NIP-01 lowest event id
 /// breaking ties; superseded valid events are reported as typed rejections.
@@ -722,7 +722,6 @@ fn statically_admit_v2(event: &Event) -> Result<AdvertisementV2Payload, Advertis
     verify_advertisement_v2(&event.content, event.pubkey).map_err(|error| match error {
         AdvertisementV2Error::Unparsable => AdvertisementRejection::UnparsableDocument,
         AdvertisementV2Error::InvalidSignature => AdvertisementRejection::InvalidAdvertisementProof,
-        AdvertisementV2Error::AuthorMismatch => AdvertisementRejection::AuthorMismatch,
     })
 }
 
