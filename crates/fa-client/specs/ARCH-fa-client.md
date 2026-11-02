@@ -658,7 +658,24 @@ session. Historical absence decisions need f+1 other reporters. If neither
 last-seen nor session history is sufficient, f+1 other peers explicitly reporting
 current disconnection also qualify; this fallback does not establish duration.
 Sufficient recent history prevents that fallback. Missing responses alone never
-qualify. Peer scores use Fedimint's coverage-aware merge. Reports name
+qualify. Peer scores use Fedimint's coverage-aware merge. A guardian transfer
+keeps the peer id, so a peer's scores also cover its earlier hosts. Before the
+merge, the FA replaces each reporter's score of a peer with an upper bound on
+its current host's uptime, which counts the time before the host change as
+down: `s*c / (c - (w - wf))`. Here `s` and `c` are the reported score and
+coverage, and `w` and `wf` are `exp(-age/window)` at the `issued_at` of the
+peer's binding in the consensus seat directory and at the earliest such
+`issued_at`, which bounds when observation began. A binding later than now
+counts as now. The bound follows from fedimintd's moving averages of observed
+and up time: coverage at the change was at most what continuous observation
+since the earliest binding would give, which has decayed to `w - wf`. An
+original seat
+keeps its raw score, and the bound approaches the raw score as the change ages.
+While less than 5% of a reporter's coverage falls after the change, that score
+is dropped, so a new host is not judged by its first hours; absence still
+qualifies. Assuming the old host was down makes a weak new host qualify later:
+one up 85% of the time after a host that was always up fails the weekly floor
+of 90% after about 21 days instead of about 8. Reports name
 Fedimint peers, which the FA maps to seats through the verified consensus seat
 bindings, matching each seat's MG; a seat's index is not its peer id. Without
 verified bindings naming every seat's MG once, reports are not used and only
@@ -794,7 +811,9 @@ after 1 s. Each step holds the run only for that step. With no transfer open,
 the loop sleeps until a start wakes it.
 
 When the destination is `Running`, the FA reads the
-destination's attestation, saves it in the transfer, and votes it through
+destination's attestation, refuses one whose `issued_at` is more than an hour
+from its own clock (replacement eligibility starts the destination's tenure
+there), saves it in the transfer, and votes it through
 every guardian except the source, like a metadata update. The destination
 signs a new attestation on each request, so a resume votes the saved one. It
 confirms by readback that consensus holds exactly the values from

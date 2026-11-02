@@ -73,6 +73,10 @@ const TRANSFER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const TRANSFER_RETRY_MIN: Duration = Duration::from_secs(1);
 /// The longest retry delay of a failed transfer step.
 const TRANSFER_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+/// How far the destination's binding `issued_at` may be from this device's
+/// clock. Replacement checks take it as the start of the destination's
+/// tenure, and a later one would flatter the destination's scores.
+const BINDING_MAX_CLOCK_SKEW: Duration = Duration::from_secs(60 * 60);
 
 /// One guardian moving from its MG onto a new seat.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -702,6 +706,7 @@ where
             client.failure(MgOperation::GetPeerAttestation, MgCause::InvalidResponse)
         })?;
         if statement.mg_pubkey.0 != destination.mg_id.to_string()
+            || statement.issued_at.0.abs_diff(now_secs()?) > BINDING_MAX_CLOCK_SKEW.as_secs()
             || destination
                 .guardian_fee_account
                 .as_ref()

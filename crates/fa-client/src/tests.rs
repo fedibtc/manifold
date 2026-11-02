@@ -889,7 +889,10 @@ struct MgState {
     /// Seat 0 signs an account different from its earlier signed acceptance.
     attest_wrong_fee_account: AtomicBool,
     /// Sign every attestation with a new `issued_at`, as real MGs do.
+    /// Transfer destinations always sign at the current time.
     attest_with_fresh_timestamps: AtomicBool,
+    /// How far ahead of the current time transfer destinations sign.
+    destination_clock_ahead_secs: AtomicU64,
     /// The federation stops answering once a transfer binding has votes.
     consensus_down_after_binding_votes: AtomicBool,
     /// One entry per public trust-material request, preserving the MG queried.
@@ -1572,13 +1575,25 @@ impl ManifoldGuardianService for TestMg {
             .state
             .attest_with_fresh_timestamps
             .load(Ordering::SeqCst);
-        if fresh_timestamp {
-            attestation.attestation.issued_at = Timestamp(1_700_000_000 + call);
+        // A transfer destination signs at the time of the request, which
+        // the FA checks.
+        let destination = self.index >= usize::from(MIN_FEDERATION_SIZE);
+        if fresh_timestamp || destination {
+            let now = crate::formation::now_secs().expect("test clock");
+            let ahead = if destination {
+                self.state
+                    .destination_clock_ahead_secs
+                    .load(Ordering::SeqCst)
+            } else {
+                0
+            };
+            attestation.attestation.issued_at =
+                Timestamp(now + ahead + if fresh_timestamp { call } else { 0 });
         }
         if wrong_fee_account {
             attestation.attestation.guardian_fee_account = guardian_fee_account(60);
         }
-        if wrong_fee_account || fresh_timestamp {
+        if wrong_fee_account || fresh_timestamp || destination {
             let message = nostr_sdk::secp256k1::Message::from_digest(
                 attestation
                     .attestation

@@ -109,10 +109,11 @@ async fn a_guardian_moves_onto_its_new_seat() {
         fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY,
     ))
     .unwrap();
-    assert_eq!(
-        directory.seat_bindings()[MOVED].attestation,
-        test_attestation_for_peer(DESTINATION, MOVED).attestation
-    );
+    let adopted = &directory.seat_bindings()[MOVED].attestation;
+    let mut expected = test_attestation_for_peer(DESTINATION, MOVED).attestation;
+    // The destination signed it during the move.
+    expected.issued_at = adopted.issued_at;
+    assert_eq!(*adopted, expected);
     let recipients = consensus_field(&client, &mg_state, GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY);
     assert!(!recipients.contains(&serde_json::to_string(&source_account).unwrap()));
     assert!(recipients.contains(&serde_json::to_string(&destination_account).unwrap()));
@@ -701,6 +702,123 @@ async fn a_destination_that_attests_another_guardian_is_refused() {
         "{error:?}"
     );
     assert!(mg_state.binding_votes.lock().expect("test lock").is_empty());
+}
+
+#[tokio::test]
+async fn a_destination_binding_must_be_issued_now() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    start_transfer(&client, &mg_state).await;
+    guardian_arrives(&mg_state);
+    // Replacement checks start the destination's tenure at `issued_at`;
+    // a later one would flatter its scores.
+    mg_state
+        .destination_clock_ahead_secs
+        .store(3_601, Ordering::SeqCst);
+
+    let error = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, FaError::Mg(failure) if failure.cause == MgCause::InvalidResponse),
+        "{error:?}"
+    );
+    assert!(mg_state.binding_votes.lock().expect("test lock").is_empty());
+    mg_state
+        .destination_clock_ahead_secs
+        .store(3_500, Ordering::SeqCst);
+    let finished = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+}
+
+#[tokio::test]
+async fn a_moved_guardian_is_judged_by_its_new_host() {
+    use fedimint_core::peer_availability::{
+        PEER_AVAILABILITY_WINDOWS_SECS, PeerAvailability, WindowAvailability,
+    };
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    start_transfer(&client, &mg_state).await;
+    guardian_arrives(&mg_state);
+    let moved_at = test_now_secs();
+    client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    let authority = client
+        .post_formed_authority(client.fa_id().unwrap())
+        .await
+        .unwrap();
+    // A day later, both the moved peer and an original one were up 25% of
+    // the time until the move and all the time since, in a federation
+    // whose bindings were signed long ago. The original peer did not
+    // change host, so its record counts against it.
+    let day_later = moved_at + 86_400;
+    let (moved, original) = (PeerId::from(MOVED as u16), PeerId::from(0));
+    let peers = (0..MIN_FEDERATION_SIZE)
+        .map(PeerId::from)
+        .collect::<BTreeSet<_>>();
+    let windows = PEER_AVAILABILITY_WINDOWS_SECS
+        .into_iter()
+        .map(|window_secs| {
+            let old = (-86_400.0 / window_secs as f64).exp();
+            let score = ((0.25 * old + (1.0 - old)) * 10_000.0).round() as u16;
+            WindowAvailability {
+                window_secs,
+                coverage_bps: 10_000,
+                peers: BTreeMap::from([(moved, score), (original, score)]),
+            }
+        })
+        .collect::<Vec<_>>();
+    *client
+        .inner
+        .ports
+        .consensus_reader
+        .guardian_reports
+        .lock()
+        .unwrap() = Some(fedi_decentralized_domain::GuardianReports {
+        federation_id: FederationId(
+            formation::invite_federation_id(&authority.invite_code)
+                .unwrap()
+                .to_string(),
+        ),
+        availability: peers
+            .iter()
+            .map(|peer| {
+                (
+                    *peer,
+                    PeerAvailability {
+                        last_seen_secs: BTreeMap::from([(moved, day_later), (original, day_later)]),
+                        windows: windows.clone(),
+                    },
+                )
+            })
+            .collect(),
+        peers,
+        sessions: BTreeMap::new(),
+    });
+
+    let check = crate::formation::TEST_NOW_SECS
+        .scope(
+            Arc::new(AtomicU64::new(day_later)),
+            client.check_replacement_candidates(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        check
+            .candidates
+            .iter()
+            .map(|candidate| candidate.mg_id)
+            .collect::<Vec<_>>(),
+        vec![test_mg_id(0)]
+    );
 }
 
 #[tokio::test]

@@ -29,6 +29,14 @@ use crate::{
 // https://github.com/fedibtc/fedimint/blob/v0.12.0-fedi15/fedimint-server/src/config/mod.rs#L66
 const SESSION_SECONDS: u64 = 180;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// The least share of a reporter's coverage that must belong to a peer's
+/// current host before the reporter's score of it counts. Below it, report
+/// rounding and up to 10 minutes of activity that fedimintd has not folded
+/// yet could move the bound by more than about 2 points. For a guardian moved
+/// in a long-running federation this takes about 8.4 hours of the 7-day
+/// window and 36 hours of the 30-day window. Until then the window gives no
+/// evidence about the peer; absence still qualifies by last-seen time.
+const MIN_TENURE_SHARE: f64 = 0.05;
 
 /// Evidence supporting replacement. Missing reports never become a reason.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -80,6 +88,59 @@ pub struct ReplacementCheck {
     pub blocking_liquidity_operation: Option<crate::LiquidityOperationId>,
 }
 
+/// When each peer's current host took its seat, from the `issued_at` of the
+/// MG-signed binding in the consensus seat directory. A transfer replaces the
+/// moved peer's binding, so this works after a restore too.
+#[derive(Clone, Debug, Default)]
+struct Tenures {
+    /// The earliest binding, signed once the federation formed. Peers start
+    /// their availability averages with consensus, a few minutes earlier;
+    /// the bound below ignores that gap.
+    formed_at: u64,
+    bound_at: BTreeMap<PeerId, u64>,
+}
+
+impl Tenures {
+    /// An upper bound on the uptime of `peer`'s current host, as a reporter
+    /// that reports `score_bps` with `coverage_bps` for a window sees it.
+    /// `None` while too little of the reporter's coverage belongs to the
+    /// current host.
+    ///
+    /// fedimintd keeps per window an exponential moving average `C` of the
+    /// time it observed and `A` of the time it observed the peer up, both
+    /// decaying by `w = exp(-elapsed/window_secs)`, and reports `s = A/C` and
+    /// `c = C`. With `t0` the host change and `tf` = `formed_at`, observation
+    /// started no earlier than `tf`, so the coverage at `t0` was at most
+    /// `1 - exp(-(t0 - tf)/window_secs)`, which has decayed to `w - wf` with
+    /// `w` and `wf` the decay since `t0` and `tf`. Counting all of the old
+    /// host's time as down gives `U <= s*c / (c - (w - wf))`. An original
+    /// seat has `t0 = tf`, which leaves the raw score.
+    fn uptime_bound(
+        &self,
+        peer: PeerId,
+        window_secs: u64,
+        score_bps: u16,
+        coverage_bps: u16,
+        now: u64,
+    ) -> Option<u16> {
+        let Some(bound_at) = self.bound_at.get(&peer) else {
+            return Some(score_bps);
+        };
+        // The new MG signs its own `issued_at`, and a later one flatters it.
+        let bound_at = (*bound_at).min(now);
+        let formed_at = self.formed_at.min(bound_at);
+        let weight = |since: u64| (-((now - since) as f64) / window_secs as f64).exp();
+        let old_coverage = (weight(bound_at) - weight(formed_at)) * 10_000.0;
+        let coverage = f64::from(coverage_bps);
+        let tenure_coverage = coverage - old_coverage;
+        if tenure_coverage <= 0.0 || tenure_coverage < MIN_TENURE_SHARE * coverage {
+            return None;
+        }
+        let bound = f64::from(score_bps) * coverage / tenure_coverage;
+        Some(bound.round().min(10_000.0) as u16)
+    }
+}
+
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
 where
     I: FaIdentity,
@@ -107,7 +168,7 @@ where
         let authority = self.maintenance_authority(self.fa_id()?).await?;
         let federation_id = FederationId(invite_federation_id(&authority.invite_code)?.to_string());
         // Without the seats' peer ids, peer reports say nothing about a seat.
-        let seat_peers = self.seat_peers(&authority).await.unwrap_or_default();
+        let (seat_peers, tenures) = self.seat_peers(&authority).await.unwrap_or_default();
         let peers = seat_peers.values().copied().collect::<BTreeSet<_>>();
         let reports = async {
             if peers.is_empty() {
@@ -125,7 +186,7 @@ where
             availability: BTreeMap::new(),
         });
         let now = now_secs()?;
-        let reasons = replacement_reasons(&reports, &policy, now);
+        let reasons = replacement_reasons(&reports, &tenures, &policy, now);
         let candidates = authority
             .seats
             .iter()
@@ -158,10 +219,14 @@ where
     }
 
     /// Each seat's Fedimint peer id, from the verified consensus seat
-    /// binding that names the seat's MG. The seat index is the FA's order of
-    /// the seats, not the peer id. `None` when the bindings cannot be read
-    /// or verified, or do not name every seat's MG exactly once.
-    async fn seat_peers(&self, authority: &PostFormedAuthority) -> Option<BTreeMap<u16, PeerId>> {
+    /// binding that names the seat's MG, and when each peer's binding was
+    /// signed. The seat index is the FA's order of the seats, not the peer
+    /// id. `None` when the bindings cannot be read or verified, or do not
+    /// name every seat's MG exactly once.
+    async fn seat_peers(
+        &self,
+        authority: &PostFormedAuthority,
+    ) -> Option<(BTreeMap<u16, PeerId>, Tenures)> {
         let invite = &authority.invite_code;
         let consensus = timeout(
             REQUEST_TIMEOUT,
@@ -175,7 +240,7 @@ where
         let bindings = MgSeatBindings::parse_canonical(&directory)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
             .ok()?;
-        authority
+        let seat_peers = authority
             .seats
             .iter()
             .map(|seat| {
@@ -188,7 +253,21 @@ where
                 }
                 Some((seat.index, parse_protocol_peer_id(&binding.peer_id)?))
             })
-            .collect()
+            .collect::<Option<_>>()?;
+        let bound_at = bindings
+            .iter()
+            .map(|binding| {
+                Some((
+                    parse_protocol_peer_id(&binding.peer_id)?,
+                    binding.attestation.attestation.issued_at.0,
+                ))
+            })
+            .collect::<Option<BTreeMap<_, _>>>()?;
+        let tenures = Tenures {
+            formed_at: bound_at.values().copied().min()?,
+            bound_at,
+        };
+        Some((seat_peers, tenures))
     }
 
     async fn guardian_reports(
@@ -267,6 +346,7 @@ where
 
 fn replacement_reasons(
     reports: &GuardianReports,
+    tenures: &Tenures,
     policy: &AdmittedSetupPaymentFederations,
     now: u64,
 ) -> BTreeMap<PeerId, Vec<ReplacementReason>> {
@@ -284,6 +364,17 @@ fn replacement_reasons(
             window
                 .peers
                 .retain(|peer, score| reports.peers.contains(peer) && *score <= 10_000);
+            // A peer that changed host is judged by its current host.
+            let (window_secs, coverage_bps) = (window.window_secs, window.coverage_bps);
+            window.peers.retain(|peer, score| {
+                match tenures.uptime_bound(*peer, window_secs, *score, coverage_bps, now) {
+                    Some(bound) => {
+                        *score = bound;
+                        true
+                    }
+                    None => false,
+                }
+            });
         }
     }
     let merged = merge_peer_availability(&availability, num_peers);

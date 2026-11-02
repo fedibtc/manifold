@@ -141,7 +141,10 @@ online once. The FA does not have to be online at the same time.
    import does not count. It then invokes the `PullSeat` completion callback. `Running` ends the
    destination's part of the transfer.
 5. The FA sends `ReplaceSeatBinding` with the destination's attestation to
-   every seat except the stopped source. Each MG derives its vote from
+   every seat except the stopped source. The destination signs the
+   attestation's `issued_at` when asked, and the FA refuses one more than an
+   hour from its clock: the FA's replacement checks take it as the moment the
+   destination took over the peer. Each MG derives its vote from
    the consensus values in `expected_base` with `rebind_transferred_seat`:
    the moved peer's directory entry becomes the new attestation, and the
    peer's fee recipient share moves to the new account. Nothing else
