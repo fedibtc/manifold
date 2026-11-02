@@ -46,17 +46,17 @@ advisory reads that allocate nothing.
 that goes up by one each time the MG API changes, like Fedimint's API minor
 version. A client checks a feature with `FEATURE_ADDED_IN <= api_version`.
 Each verb records the API version that added it in its current shape, and
-the MG serves the newest one. Version 0 is the verbs of the first public
-release, which every MG serves. Version 1 adds `GetVersion`,
-`GetFmanTrustMaterial`, `DecommissionSeat`, and the four guardian transfer
-verbs with the `TransferSeat` that carries the destination's admission
-proof; MGs from before `GetVersion` may lack them or serve an older shape.
-A change to a verb's wire shape or a new verb takes the next version. The answer is a
+the MG serves the newest one. Version 1, with `GetVersion`, is the first and
+covers every current verb, including the guardian transfer whose
+`TransferSeat` carries the destination's admission proof. Releases before
+it changed verb shapes without a version, so an MG from before `GetVersion`
+promises no current shape. A change to a verb's wire shape or a new verb
+takes the next version. The answer is a
 constant of the build and reads no state; it describes the build, not
 whether the policy lets the MG start a transfer. A reader ignores fields it
 does not know. An MG from before `GetVersion` answers with the RPC layer's
 unknown-method error, which the generated client reads as `UnsupportedVerb`:
-such an MG serves only version 0.
+such an MG is below every API version.
 `GetAvailability` reports whether the MG is accepting
 seats, the release-pinned fedimintd version and federation sizes, and current plans using the same projection whose boolean result gates advertising.
 It is a boolean and not a count because the verb is unsigned and

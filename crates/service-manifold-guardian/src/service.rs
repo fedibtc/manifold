@@ -23,9 +23,10 @@ pub type FmResult<T> = Result<T, ManifoldGuardianError>;
 /// Fedi App ↔ Manifold Guardian protocol.
 ///
 /// Each method names the [`MgApiVersion`] that added it in its current
-/// shape. Methods of the first public release are at version 0, which every
-/// MG serves, also one from before `get_version`. A new or changed method
-/// names the next version, and [`crate::MG_API_VERSION`] follows.
+/// shape. Version 1 is the first, with `get_version`: releases before it
+/// changed several shapes without a version, so an MG from before
+/// `get_version` promises no current shape. A new or changed method names
+/// the next version, and [`crate::MG_API_VERSION`] follows.
 ///
 /// FA-authenticated requests travel as [`SignedRequest`] envelopes and MG
 /// commitment responses as [`SignedResponse`] envelopes (see
@@ -33,7 +34,7 @@ pub type FmResult<T> = Result<T, ManifoldGuardianError>;
 #[service(api_version = MgApiVersion)]
 pub trait ManifoldGuardianService {
     /// Public endpoint for clients checking if this FM has capacity.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_availability(
         &self,
         request: GetAvailabilityRequest,
@@ -41,54 +42,54 @@ pub trait ManifoldGuardianService {
 
     /// Public endpoint for clients checking this MG's release and the
     /// protocol versions it speaks. An MG from before this verb answers
-    /// `UnsupportedVerb`, so it serves only API version 0.
+    /// `UnsupportedVerb`, so it promises no versioned shape.
     #[added_in(MgApiVersion(1))]
     async fn get_version(&self, request: GetVersionRequest) -> FmResult<GetVersionResponse>;
 
     /// Return a stateless signed key-locked ecash quote.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_quote(
         &self,
         request: GetQuoteRequest,
     ) -> FmResult<SignedResponse<GetQuoteResponse>>;
 
     /// Verify a quote payment offline and accept or refund it.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn create_seat(
         &self,
         request: SignedRequest<CreateSeatRequest>,
     ) -> FmResult<SignedResponse<CreateSeatResponse>>;
 
     /// Get this guardian's DKG code.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_dkg_code(
         &self,
         request: SignedRequest<GetDkgCodeRequest>,
     ) -> FmResult<GetDkgCodeResponse>;
 
     /// Start DKG after all guardian codes are available.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn start_dkg(
         &self,
         request: SignedRequest<StartDkgRequest>,
     ) -> FmResult<StartDkgResponse>;
 
     /// Replace the current child and start DKG on its fresh session.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn restart_dkg(
         &self,
         request: SignedRequest<RestartDkgRequest>,
     ) -> FmResult<RestartDkgResponse>;
 
     /// Get current DKG or running-federation status.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_status(
         &self,
         request: SignedRequest<GetStatusRequest>,
     ) -> FmResult<GetStatusResponse>;
 
     /// Get the federation invite code for a running seat.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_invite_code(
         &self,
         request: SignedRequest<GetInviteCodeRequest>,
@@ -98,7 +99,7 @@ pub trait ManifoldGuardianService {
     ///
     /// This FA/seat-scoped read remains useful for diagnostics and FA
     /// backups. It is not the FLIP trust-material discovery path.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_peer_attestation(
         &self,
         request: SignedRequest<GetPeerAttestationRequest>,
@@ -118,28 +119,28 @@ pub trait ManifoldGuardianService {
     ) -> FmResult<GetMgTrustMaterialResponse>;
 
     /// Set a metadata field on the running federation.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn set_meta_field(
         &self,
         request: SignedRequest<SetMetaFieldRequest>,
     ) -> FmResult<SetMetaFieldResponse>;
 
     /// Propose the directory and fee policy as one formation-only metadata vote.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn propose_formation_meta(
         &self,
         request: SignedRequest<ProposeFormationMetaRequest>,
     ) -> FmResult<ProposeFormationMetaResponse>;
 
     /// Store a client-reachable gateway URL in this guardian's LNv2 module.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn register_gateway(
         &self,
         request: SignedRequest<RegisterGatewayRequest>,
     ) -> FmResult<RegisterGatewayResponse>;
 
     /// Get this seat's `fedimintd` stats.
-    #[added_in(MgApiVersion(0))]
+    #[added_in(MgApiVersion(1))]
     async fn get_fedimint_stats(
         &self,
         request: SignedRequest<GetFedimintStatsRequest>,

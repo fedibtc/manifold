@@ -6,7 +6,7 @@ use crate::MgVersion;
 /// goes up by one each time the API changes, and a client checks a feature
 /// with `FEATURE_ADDED_IN <= api_version`. Each RPC method records the
 /// version that added it ([`crate::ManifoldGuardianService`]). An MG from
-/// before `GetVersion` answers no version and serves only version 0.
+/// before `GetVersion` answers no version and promises no current shape.
 #[derive(
     serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
 )]

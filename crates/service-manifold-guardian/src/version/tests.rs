@@ -41,9 +41,8 @@ fn a_reader_ignores_fields_it_does_not_know() {
     assert!(response.supports(GUARDIAN_TRANSFER_V2_API_VERSION));
 }
 
-/// The served version is the newest one a method names, and the methods
-/// this build added since the first public release name version 1. A new
-/// method without a version does not compile.
+/// The served version is the newest one a method names, and every method
+/// starts at version 1. A new method without a version does not compile.
 #[test]
 fn methods_record_the_api_version_that_added_them() {
     let versions = crate::ManifoldGuardianServiceClient::METHOD_API_VERSIONS;
@@ -54,7 +53,7 @@ fn methods_record_the_api_version_that_added_them() {
             .map(|(_, version)| *version)
     };
     assert_eq!(MG_API_VERSION, MgApiVersion(1));
-    assert_eq!(added_in("get_availability"), Some(MgApiVersion(0)));
+    assert_eq!(added_in("get_availability"), Some(MgApiVersion(1)));
     assert_eq!(added_in("get_version"), Some(MgApiVersion(1)));
     assert_eq!(
         added_in("transfer_seat"),
