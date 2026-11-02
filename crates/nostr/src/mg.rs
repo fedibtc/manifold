@@ -13,7 +13,7 @@ mod tests;
 use fedi_decentralized_domain::{
     HolderAuthorizationEnvelope, ProtocolV1, PurposeTag, SignedJsonEnvelope, SignedJsonError,
 };
-use fedi_decentralized_service_manifold_guardian::{FedimintdVersion, Plan};
+use fedi_decentralized_service_manifold_guardian::{FedimintdVersion, GetVersionResponse, Plan};
 use peerbadge_protocol::SchnorrSignatureProof;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -272,11 +272,17 @@ pub struct AdvertisementV2Payload {
     /// not admit, reject, rank or select on them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uptime_permille: Option<AdvertisedUptime>,
+
+    /// The MG's release and API version, as its `GetVersion` answers; absent
+    /// from MGs that predate the field. Self-asserted: discovery may skip an
+    /// MG on it, but a capability that costs money is checked live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<GetVersionResponse>,
 }
 
 impl AdvertisementV2Payload {
     /// The kind-37701 payload a v1-only MG would publish for the same offer:
-    /// every shared field, without the uptime report.
+    /// every shared field, without the uptime report and the version.
     #[must_use]
     pub fn to_legacy(&self, mg_id_pubkey: nostr::PublicKey) -> AdvertisementPayload {
         AdvertisementPayload {
@@ -294,7 +300,7 @@ impl AdvertisementV2Payload {
 }
 
 impl From<AdvertisementPayload> for AdvertisementV2Payload {
-    /// The offer of a legacy payload, with no uptime report.
+    /// The offer of a legacy payload, with no uptime report and no version.
     fn from(legacy: AdvertisementPayload) -> Self {
         Self {
             service_pubkey: legacy.service_pubkey,
@@ -305,6 +311,7 @@ impl From<AdvertisementPayload> for AdvertisementV2Payload {
             plans: legacy.plans,
             holder_authorizations: legacy.holder_authorizations,
             uptime_permille: None,
+            version: None,
         }
     }
 }

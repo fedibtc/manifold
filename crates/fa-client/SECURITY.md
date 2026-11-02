@@ -110,7 +110,8 @@ the shared scalar-version, FA-range, selected major/minor/vendor, size,
 accepting-seats, and plan predicate into typed rejections; its
 offered plans and prices confer nothing — the signed quote remains the only
 commercial term. A guardian transfer preview's `GetVersionResponse` is
-equally untrusted and decides only whether the walk skips the candidate.
+equally untrusted and decides only whether the walk skips the candidate, as
+does the API version a v2 advertisement reports.
 Probe failure text carries only the sanitized-by-contract
 local connector error descriptions or a fixed marker for a Fleet
 Manager-returned error; remote error text is never embedded. Each probe runs

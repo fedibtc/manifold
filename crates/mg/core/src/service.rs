@@ -358,6 +358,15 @@ pub(crate) fn sign_peer_attestation(
     })
 }
 
+/// This build's release and API version: the `GetVersion` answer, also
+/// published in the v2 advertisement.
+pub fn this_build_version() -> GetVersionResponse {
+    GetVersionResponse {
+        mg_version: crate::seat_readiness::this_mg_version(),
+        api_version: fedi_decentralized_service_manifold_guardian::MG_API_VERSION,
+    }
+}
+
 fn supported_fedimintd_version() -> FedimintdVersion {
     FEDIMINTD_VERSION_0_1
         .parse()
@@ -368,10 +377,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
     async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
         // Constant for the build: no state is read, so the public verb costs
         // the same whoever asks.
-        Ok(GetVersionResponse {
-            mg_version: crate::seat_readiness::this_mg_version(),
-            api_version: fedi_decentralized_service_manifold_guardian::MG_API_VERSION,
-        })
+        Ok(this_build_version())
     }
 
     async fn get_availability(

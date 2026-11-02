@@ -29,7 +29,7 @@ use fedi_decentralized_nostr::mg::{
 use fedi_decentralized_nostr_clients::{FaNostrClient, MG_ADVERTISEMENTS_CANDIDATE_LIMIT};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationSize, FedimintdDkgVersion, Locator, MgName, Plan, Timestamp,
+    FederationSize, FedimintdDkgVersion, Locator, MgApiVersion, MgName, Plan, Timestamp,
 };
 use fedi_iroh_rpc::iroh::{EndpointAddr, EndpointId};
 use fedimint_core::runtime::Instant;
@@ -198,6 +198,10 @@ pub struct EligibleMgCandidate {
 
     /// Uptime scores the MG reports about itself in a v2 advertisement.
     pub(crate) self_reported_uptime: Option<AdvertisedUptime>,
+
+    /// The API version the MG reports about itself in a v2 advertisement;
+    /// `None` for a legacy one or an MG that predates the field.
+    pub(crate) advertised_api_version: Option<MgApiVersion>,
 }
 
 impl EligibleMgCandidate {
@@ -368,6 +372,10 @@ pub enum AdvertisementRejection {
     /// it, or it is from before `GetVersion`.
     LiveNoGuardianTransfer,
 
+    /// A guardian transfer destination's v2 advertisement reports an API
+    /// version below the one with the guardian transfer this client drives.
+    NoAdvertisedGuardianTransfer,
+
     /// `expires_at` has passed.
     Expired,
 
@@ -424,6 +432,7 @@ impl AdvertisementRejection {
             Self::LiveUnsupportedFedimintdVersion => "live_unsupported_fedimintd_version",
             Self::LiveNoRequestedPlan => "live_no_requested_plan",
             Self::LiveNoGuardianTransfer => "live_no_guardian_transfer",
+            Self::NoAdvertisedGuardianTransfer => "no_advertised_guardian_transfer",
             Self::Expired => "expired",
             Self::IssuedInFuture => "issued_in_future",
             Self::Stale => "stale",
@@ -758,6 +767,7 @@ fn admit_eligible_advertisement(
         claimed_issuer,
         holder_authorizations: offer.holder_authorizations,
         self_reported_uptime: offer.uptime_permille,
+        advertised_api_version: offer.version.map(|version| version.api_version),
     })
 }
 

@@ -1,5 +1,5 @@
 use fedi_decentralized_service_manifold_guardian::{
-    FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, Plan,
+    FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, MgApiVersion, Plan,
 };
 use nostr::{JsonUtil as _, Keys};
 use peerbadge_protocol::{
@@ -311,6 +311,10 @@ fn v2_payload() -> AdvertisementV2Payload {
         week: Permille::try_from(991).unwrap(),
         month: Permille::try_from(964).unwrap(),
     });
+    payload.version = Some(GetVersionResponse {
+        mg_version: "0.2.0".parse().unwrap(),
+        api_version: MgApiVersion(1),
+    });
     payload
 }
 
@@ -421,6 +425,7 @@ fn pinned_signed_advertisement_v2_fixture_stays_accepted() {
         }]
     );
     assert!(payload.holder_authorizations.is_empty());
+    assert_eq!(payload.version, None);
     let uptime = payload.uptime_permille.expect("the fixture reports uptime");
     assert_eq!(
         (uptime.day.get(), uptime.week.get(), uptime.month.get()),
@@ -497,15 +502,42 @@ fn advertisement_v2_uptime_is_bounded_to_one_thousand() {
 }
 
 /// The legacy rendering of a v2 offer is the payload a v1-only MG signs: the
-/// same fields, its own identity, and nothing of the uptime report.
+/// same fields, its own identity, and nothing of the uptime report or the
+/// build version.
 #[test]
-fn legacy_rendering_of_a_v2_offer_drops_only_the_uptime() {
+fn legacy_rendering_of_a_v2_offer_drops_the_uptime_and_version() {
     let keys = Keys::generate();
     let v1 = payload(&keys);
     let mut v2 = AdvertisementV2Payload::from(v1.clone());
     assert_eq!(v2.to_legacy(keys.public_key()), v1);
     v2.uptime_permille = v2_payload().uptime_permille;
+    v2.version = v2_payload().version;
     assert_eq!(v2.to_legacy(keys.public_key()), v1);
+}
+
+/// The version travels as the `GetVersion` answer's own shape; a fixture
+/// without it, like the pinned one, reads as unreported.
+#[test]
+fn advertisement_v2_version_wire_shape() {
+    let value = serde_json::to_value(v2_payload()).unwrap();
+    assert_eq!(
+        value["version"],
+        serde_json::json!({"mg_version": "0.2.0", "api_version": 1})
+    );
+    let keys = Keys::generate();
+    let mut payload = value;
+    payload.as_object_mut().unwrap().remove("version");
+    let content = hand_signed_v2_content(
+        &payload.to_string(),
+        &keys,
+        b"fedi-signed-json/mg-advertisement/v1\0",
+    );
+    assert_eq!(
+        verify_advertisement_v2(&content, keys.public_key())
+            .unwrap()
+            .version,
+        None
+    );
 }
 
 /// The v2 counterpart of the worst-case kind-37701 measurement: the same

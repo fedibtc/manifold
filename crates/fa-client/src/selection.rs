@@ -1322,6 +1322,25 @@ pub(crate) async fn preview_transfer_destination_with(
         !excluded.contains(&candidate.mg_id)
             && candidate.fedimintd_dkg_version == fedimintd_dkg_version
     });
+    // Skip, before any dial, an MG whose advertisement reports an API version
+    // without the guardian transfer. One that reports none, a legacy
+    // advertisement or an MG from before the field, is left to the live
+    // probe, which admits a transfer-capable one as before. The probe and the
+    // payment preflight also check the MGs that report it, since the
+    // advertisement is self-asserted.
+    let rejected = &mut discovery.rejected;
+    discovery.candidates.retain(|candidate| {
+        let advertised = candidate
+            .advertised_api_version
+            .is_none_or(|version| GUARDIAN_TRANSFER_V2_API_VERSION <= version);
+        if !advertised {
+            rejected.push(RejectedAdvertisement {
+                author: candidate.mg_id,
+                reason: AdvertisementRejection::NoAdvertisedGuardianTransfer,
+            });
+        }
+        advertised
+    });
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let seat = select_mg_seats(
