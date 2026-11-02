@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`816687149632f31363f0267e30369f1c9b49314b` (tag `v0.12.0-fedi18`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi18.tsv`](./fedimint-metrics-v0.12.0-fedi18.tsv)
+`342169ec88c2f03e290e9b55204f3004393a99fc` (tag `v0.12.0-fedi22`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi22.tsv`](./fedimint-metrics-v0.12.0-fedi22.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -19,7 +19,10 @@ fix. fedi16 bounds Iroh API handlers by the shared endpoint deadline, wakes
 transaction submissions from watch channels, and caches the latest session
 outcomes and count. fedi17 adds the `shutdown_after_current_session` admin
 endpoint and a session-boundary exit code. fedi18 bounds each P2P send, so a
-stalled peer link redials. None of these changes affects metric
+stalled peer link redials. fedi20 keeps stored meta when the meta module
+is unreachable, quotes mintv2 fees without creating change notes, and checks
+LNv2 invoice expiry with the wasm clock. fedi22 adds the
+`reset_peer_availability` admin endpoint. None of these changes affects metric
 registrations or their labels. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
@@ -33,7 +36,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi18`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi22`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from

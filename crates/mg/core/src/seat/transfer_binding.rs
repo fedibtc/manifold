@@ -3,10 +3,13 @@
 
 use std::collections::BTreeMap;
 
-use fedi_decentralized_domain::{MG_SEAT_BINDINGS_META_FIELD_KEY, MgSeatBindings};
+use fedi_decentralized_domain::{
+    MG_SEAT_BINDINGS_META_FIELD_KEY, MgSeatBindings, VerifiedSeatBinding, parse_protocol_peer_id,
+};
 use fedi_decentralized_service_manifold_guardian::{
     FormationSeatBinding, MetaConsensusBase, rebind_transferred_seat,
 };
+use fedimint_core::peer_availability::ResetPeerAvailabilityRequest;
 use fedimint_meta_common::DEFAULT_META_KEY;
 
 use super::{
@@ -65,7 +68,7 @@ impl SeatLoop {
             .and_then(serde_json::Value::as_str)
             .ok_or(SeatVerbError::MetaValueInvalid)?;
         let federation = derive_federation_seats(&config)?;
-        MgSeatBindings::parse_canonical(directory)
+        let previous = MgSeatBindings::parse_canonical(directory)
             .and_then(|directory| directory.verify_for_federation(&federation))
             .map_err(|_| SeatVerbError::MetaValueInvalid)?;
 
@@ -95,6 +98,24 @@ impl SeatLoop {
         );
         let encoded = serde_json_canonicalizer::to_vec(&fields).map_err(SeatVerbError::internal)?;
         self.ensure_meta_object_size(&encoded, "replace_seat_binding")?;
+        // The moved peer keeps its id, so this guardian's history for it still
+        // holds the old host's downtime. Only a host change resets it, so a
+        // no-op rebind cannot wipe a peer's history. A retried vote resets
+        // again, which only drops the few observations made since the first.
+        let moved = &binding.attestation.attestation.peer_id;
+        let host = |directory: &[VerifiedSeatBinding]| {
+            directory
+                .iter()
+                .find(|entry| &entry.peer_id == moved)
+                .map(|entry| entry.mg_pubkey.clone())
+        };
+        if host(&previous) != host(&verified) {
+            let peer_id = parse_protocol_peer_id(moved).ok_or(SeatVerbError::MetaValueInvalid)?;
+            client
+                .reset_peer_availability(ResetPeerAvailabilityRequest { peer_id })
+                .await
+                .map_err(SeatVerbError::child_needed)?;
+        }
         // Pin before the fallible RPC, exactly like ordinary metadata writes.
         // A successful call is one submitted vote, never consensus confirmation.
         self.submit_admitted_meta_target(

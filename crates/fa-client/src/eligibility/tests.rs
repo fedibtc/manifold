@@ -50,6 +50,7 @@ fn availability(reports: &mut GuardianReports, reporter: u16, seen: u64, week: u
                     window_secs,
                     coverage_bps: 10_000,
                     peers: BTreeMap::from([(PeerId::from(0), score)]),
+                    ..Default::default()
                 })
                 .collect(),
         },

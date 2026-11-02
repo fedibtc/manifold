@@ -174,6 +174,127 @@ async fn transfer_binding_destination_can_vote_for_its_own_moved_peer() {
         .await
         .unwrap();
     assert_eq!(f.fake.state().meta_submissions.len(), 1);
+    let resets = f.fake.state().availability_resets;
+    assert_eq!((resets[0].0, resets.len()), (0, 1));
+    f.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn transfer_vote_resets_the_moved_peer_on_every_attempt() {
+    let f = binding_fixture(32_241, 1).await;
+    f.fake.modify_state(|state| state.meta_revision = 6);
+    f.seat
+        .submit_meta_field(
+            MetaConsensusBase::from_consensus(Some((6, &f.original))),
+            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.into()),
+            MetaFieldValue("renamed".into()),
+            NO_FEE_FLOOR,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.fake.state().availability_resets.is_empty(),
+        "an ordinary metadata vote resets nobody"
+    );
+    let renamed = f.fake.state().meta_submissions[0].clone();
+    let revision = f.fake.set_meta_consensus(Some(renamed.clone()));
+    let base = MetaConsensusBase::from_consensus(Some((revision, &renamed)));
+
+    f.seat
+        .replace_seat_binding(base, f.binding.clone())
+        .await
+        .unwrap();
+    let state = f.fake.state();
+    assert_eq!(state.meta_submissions.len(), 2);
+    assert_eq!(
+        state.availability_resets,
+        vec![(1, state.meta_submission_auth[1].clone())]
+    );
+    assert!(state.availability_resets[0].1.is_some());
+
+    // A retry on the same base resets again.
+    f.seat
+        .replace_seat_binding(base, f.binding.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.fake.state().availability_resets,
+        vec![state.availability_resets[0].clone(); 2]
+    );
+    f.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn rebind_that_keeps_the_host_votes_without_resetting() {
+    let f = binding_fixture(32_245, 1).await;
+    let config = fixture_client_config();
+    // The directory's current binding for the peer, byte for byte.
+    let original: serde_json::Value = serde_json::from_slice(&f.original).unwrap();
+    let directory = fedi_decentralized_domain::MgSeatBindings::parse_canonical(
+        original[MG_SEAT_BINDINGS_META_FIELD_KEY].as_str().unwrap(),
+    )
+    .unwrap();
+    let current = endpoint_binding(
+        directory
+            .seat_bindings()
+            .iter()
+            .find(|entry| entry.attestation.peer_id.0 == "1")
+            .unwrap()
+            .clone(),
+    );
+    f.seat
+        .replace_seat_binding(f.base(), current)
+        .await
+        .unwrap();
+    let target = f.fake.state().meta_submissions[0].clone();
+    let field = |value: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(value).unwrap()[MG_SEAT_BINDINGS_META_FIELD_KEY]
+            .clone()
+    };
+    assert!(
+        field(&target) == field(&f.original),
+        "the no-op rebind votes the same directory"
+    );
+
+    // A fresh attestation from the same MG changes the fee account only.
+    let revision = f.fake.set_meta_consensus(Some(target.clone()));
+    let same_host = endpoint_binding(peer_binding(&config, 1, fee_account(0x55)));
+    f.seat
+        .replace_seat_binding(
+            MetaConsensusBase::from_consensus(Some((revision, &target))),
+            same_host,
+        )
+        .await
+        .unwrap();
+    let state = f.fake.state();
+    assert_eq!(state.meta_submissions.len(), 2);
+    assert!(field(&state.meta_submissions[1]) != field(&target));
+    assert!(
+        state.availability_resets.is_empty(),
+        "a rebind without a host change must not reset"
+    );
+    f.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn transfer_vote_fails_without_voting_when_the_reset_fails() {
+    let f = binding_fixture(32_243, 1).await;
+    f.fake
+        .modify_state(|state| state.fail_reset_after_record_once = true);
+    assert!(matches!(
+        f.seat
+            .replace_seat_binding(f.base(), f.binding.clone())
+            .await,
+        Err(SeatVerbError::Internal(_))
+    ));
+    assert_eq!(f.fake.state().availability_resets.len(), 1);
+    assert!(f.fake.state().meta_submissions.is_empty());
+    // The FA retries; the reset precedes the pin, so the retry votes once.
+    f.seat
+        .replace_seat_binding(f.base(), f.binding.clone())
+        .await
+        .unwrap();
+    assert_eq!(f.fake.state().meta_submissions.len(), 1);
     f.fleet.shutdown().await;
 }
 

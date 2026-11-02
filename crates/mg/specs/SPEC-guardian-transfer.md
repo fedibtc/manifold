@@ -173,6 +173,18 @@ online once. The FA does not have to be online at the same time.
    peer's fee recipient share moves to the new account. Nothing else
    changes. The FA confirms by readback that consensus holds exactly those
    values.
+   Before it submits its vote, each MG resets the moved peer's availability
+   observations in its own guardian. It resets only when the moved peer's
+   `mg_pubkey` differs from the one in the current directory, so a rebind
+   that keeps the host votes without wiping history. A retried vote resets
+   again; that only drops observations of the new host made since the
+   previous attempt, which is harmless. A failed reset fails the vote, and
+   the FA retries it. The reset happens at vote time, not when consensus
+   adopts the new directory: a transfer that then fails still leaves the
+   moved peer's history cleared, which is accepted. An MG that misses the
+   vote keeps the old host's history; the FA's availability merge takes the
+   `f + 1`-th lowest report, so up to `f` such guardians do not affect the
+   merged score.
 6. The FA sends `RemoveSeat` to the source. The source deletes the seat's
    guardian data at once and reports `Removed`; its next backup publication
    drops the archive and keeps the tombstone. A failed removal leaves the
