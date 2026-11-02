@@ -64,12 +64,9 @@ records that falsification.
 
 The 16 MiB bound is deliberately lower than the candidate ceiling multiplied by
 the per-event cap. The measured worst-case legitimate advertisement event is
-7,299 bytes, so 2,048 such events fit within it. **TODO:** tighten the
-advertisement-specific per-event cap from that measurement with margin; the
-follow-up is beside `MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` in
-`crates/nostr-clients/src/fa.rs`. A relay response that ends, closes, or times
-out before EOSE without reaching a local bound is instead a typed incomplete
-query error.
+7,299 bytes, so 2,048 such events fit within it. A relay response that ends,
+closes, or times out before EOSE without reaching a local bound is instead a
+typed incomplete query error.
 
 Candidates are shuffled on every discovery run. Advertisements have no capacity
 signal, and a stable ordering would concentrate consumers on the same MG.
