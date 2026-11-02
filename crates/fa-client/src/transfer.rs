@@ -283,12 +283,8 @@ where
         }
         let purchase = self.seat_purchase(approval, &federation, payment_federation_id)?;
         let authority = self.maintenance_authority(fa_id).await?;
-        // A liquidity request commits to the current seats. Moving one now
-        // would strand a request that the provider may already have accepted.
-        if let Some(operation) = self.find_live_liquidity_operation(|_| true).await? {
-            return Err(FaError::LiquidityOperationExists {
-                operation_id: operation.operation_id,
-            });
+        if let Some(operation_id) = self.replacement_liquidity_blocker().await? {
+            return Err(FaError::LiquidityOperationExists { operation_id });
         }
         let source = authority
             .seats

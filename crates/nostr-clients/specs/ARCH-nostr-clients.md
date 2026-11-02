@@ -12,8 +12,9 @@ The public boundary provides hardened relay connection, publishing, and
 hard-capped fetch primitives plus shared role clients. `HolderNostrClient`
 publishes holder authorization events, while `FaNostrClient` fetches MG
 advertisements for pre-formation selection — one pinned author's latest
-event, or the authorless kind-37701 enumeration bounded by
-`MG_ADVERTISEMENTS_CANDIDATE_LIMIT` and the explicit
+event, or the authorless enumeration of one advertisement format (kind 37701
+or kind 37709), each bounded by its own
+`MG_ADVERTISEMENTS_CANDIDATE_LIMIT` and explicit
 `MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` aggregate byte cap —
 and a bounded common setup-payment candidate set. MG-specific relay
 operations live in the deep `mg-nostr` component rather than

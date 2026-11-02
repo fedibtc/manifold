@@ -47,10 +47,10 @@ function job_cargo() {
   selfci step start "nix cargo checks"
   case "$system" in
     *-darwin)
-      # Darwin has no Nix network namespaces and service-heavy E2E runners
+      # Darwin has no Nix network namespaces, so the service-heavy E2E tests
       # share the host's CPU and loopback. Finish compilation/static checks
-      # before starting the already-serialized test graph so protocol deadlines
-      # measure the services rather than contention with concurrent rustc jobs.
+      # before starting the test run so protocol deadlines measure the
+      # services rather than contention with concurrent rustc jobs.
       if ! nix build --accept-flake-config -L --no-link --max-jobs 16 "${targets[@]}" ; then
         selfci step fail
       fi

@@ -2,12 +2,17 @@
 
 ## Status
 
-The additive-field compatibility required by
-[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md) is
-not yet implemented. Current typed consumers discard unknown payload fields
-during deserialization and reconstruct the payload for signature verification,
-so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients.
+The kind-`37701` advertisement does not meet the additive-field compatibility
+required by
+[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md).
+Its typed consumers discard unknown payload fields during deserialization and
+reconstruct the payload for signature verification, so an otherwise valid
+advertisement with a newly added signed field fails its proof in those
+clients. The MG advertisement v2 (kind `37709`) meets it: readers verify the
+exact signed bytes and then ignore unknown fields.
+
+The MG publishes both advertisements, and the in-repo FA reads both, as the
+v2 section below describes.
 
 ## Record justification
 
@@ -40,6 +45,7 @@ event content, and a tag is never trusted unless it matches the signed payload.
 
 ```text
 37701 MG advertisement                (d = "fman-ad", t = "fedi-fman")
+37709 MG advertisement v2             (d = "mg-ad", t = "fedi-mg")
 37703 Attester issuer-authority mirror  (d = "issuer-authority", t = "fedi-attester-issuer")
 37704 Attester credential revocation    (d = "credential-revocation:<digest>", t = "fedi-credential-revocation")
 37708 MG encrypted backup             (d = "mg-backup-seat:<seat_id>")
@@ -150,6 +156,69 @@ federation under evaluation
 ([SPEC-federation-trust-directory](../../domain/specs/SPEC-federation-trust-directory.md)).
 The embedded envelopes remain a trust input for discovery, under the same
 verifier checklist above.
+
+## MG advertisement v2 (37709)
+
+The v2 advertisement carries the same offer as kind `37701`, and adds signed
+fields, under the exact-payload envelope whose wire contract is documented on
+`fedi_decentralized_domain::SignedJsonEnvelope` and `PurposeTag`.
+The event `content` is that envelope. The purpose tag is
+`fedi-signed-json/mg-advertisement/v1\0`. The signer is the MG Nostr service
+key, which must equal the event author. The trust chain, the non-trust status
+of availability, plans and endpoints, and every relying-flow check of the
+legacy section apply unchanged. They read the signer wherever the legacy
+section reads `fman_id_pubkey`.
+
+The payload has the legacy fields with the same meanings and serde shapes:
+`service_pubkey`, `issued_at`, `expires_at`, `api_endpoints`, `availability`,
+`plans` and `holder_authorizations`. It drops `version`, because the purpose
+tag versions the schema, and it drops `fman_id_pubkey`, because the envelope
+signer is the identity. It adds one field:
+
+- `uptime_permille`: an optional object `{"1d", "7d", "30d"}` of integers in
+  `0..=1000`. The values are the scores that the MG's latest readiness run
+  compared against the uptime minimums, not the minimums themselves, rounded to
+  per-mille ([SPEC-advertisement](../../mg/specs/SPEC-advertisement.md),
+  *Readiness gate*). The field is absent until a readiness run has recorded
+  uptime, and absent means unreported, not zero. The MG computes the values
+  from its own clock. Signing makes them attributable to the MG, but it does
+  not make them true, so FAs must not use them to admit, reject, rank or select
+  an MG. FAs may display them.
+
+Unknown payload fields follow the envelope's rule: readers verify the exact
+bytes and then ignore the unknown fields. The rule covers the objects this
+section and the legacy section define, including the holder-authorization
+envelope objects. The embedded PeerBadge credential's `info` and `blind_msg`
+keep the PeerBadge SDK's own parsing rules. The payload is bounded by the shared
+64 KiB per-event cap, and the 65,536-byte decoded-payload limit applies as
+well. The FA keeps the v1 bound on examined holder authorizations.
+
+**Publication.** While deployed FAs that read only kind `37701` remain
+supported, the MG publishes both advertisements in every cycle. Both come from
+the same snapshot, with the same `issued_at` and `expires_at`, and each is
+attempted even when the other fails. The kind-`37701` document stays
+byte-for-byte what a v1-only MG would publish. The two events have distinct
+addressable coordinates, so neither replaces the other. When the MG stops
+accepting seats, it stops publishing both, and both lapse at their signed
+expiry. Retiring `37701` publication is a separate, approved change.
+
+**Reading.** An FA queries the two kinds separately, and each query has its
+own copy of the legacy candidate and retained-byte bounds. While every MG
+publishes kind `37701`, the legacy query alone decides whether the enumeration
+is complete. A failed v2 query leaves every author on its legacy
+advertisement. For each author, it
+statically admits each format. The legacy format is admitted as today. A v2
+event must pass the event signature, the envelope verification, the payload
+parse and the author binding. The FA then applies the existing freshness rule
+to the signed `issued_at` and `expires_at`. It uses the newest fresh admitted
+v2 advertisement, by the existing newest-per-author order, when one exists. Otherwise it uses the newest fresh admitted
+legacy advertisement, and that candidate has no uptime report. The FA never
+merges fields across the two formats. A fresh legacy advertisement never
+displaces a fresh v2 advertisement, so uptime does not appear and disappear
+between runs. If an author's v2 advertisement is invalid or stale, the FA falls
+back to its legacy one. This covers an MG downgraded to a v1-only release,
+whose last v2 advertisement lapses within its expiry. Eligibility and
+selection then run on the chosen document exactly as in v1.
 
 ## Holder-published MG authorization (37705)
 

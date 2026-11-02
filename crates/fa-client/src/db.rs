@@ -36,7 +36,7 @@ use crate::{
 
 // Persisted-format changes are governed by GATE-production-compatibility
 // (../../../specs/GATE-production-compatibility.md).
-const STORAGE_SCHEMA_VERSION: u16 = 11;
+const STORAGE_SCHEMA_VERSION: u16 = 12;
 // Keep this fixed when advancing the schema written by current code.
 const RESET_BEFORE_SCHEMA_VERSION: u16 = 11;
 const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
@@ -458,27 +458,20 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StoredVerifierProvenance {
-    Development { profile_revision: u32 },
-    Staging { profile_revision: u32 },
-    Production { profile_revision: u32 },
+    Development,
+    Staging,
+    Production,
     ExplicitTestConfiguration,
 }
 
 impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
     fn from(value: PeerBadgeVerifierProvenance) -> Self {
         match value {
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Development,
-                profile_revision,
-            } => Self::Development { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Staging,
-                profile_revision,
-            } => Self::Staging { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Production,
-                profile_revision,
-            } => Self::Production { profile_revision },
+            PeerBadgeVerifierProvenance::ManifoldProfile { environment } => match environment {
+                ManifoldEnvironment::Development => Self::Development,
+                ManifoldEnvironment::Staging => Self::Staging,
+                ManifoldEnvironment::Production => Self::Production,
+            },
             PeerBadgeVerifierProvenance::ExplicitTestConfiguration => {
                 Self::ExplicitTestConfiguration
             }
@@ -1763,6 +1756,80 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
+    /// Convert a schema-11 formation to schema 12 in place.
+    ///
+    /// Schema 11 stored each seat admission's verifier provenance with the
+    /// removed Manifold profile revision, for example
+    /// `{"production":{"profile_revision":9}}`. Schema 12 stores the
+    /// environment alone (`"production"`). Nothing else differs.
+    async fn migrate_schema_11(&self) -> FaResult<()> {
+        let storage = |detail: &str| FaError::Storage(format!("migrating FA schema 11: {detail}"));
+        let mut dbtx = self.database.begin_transaction().await;
+        let formation_key = DatabaseKeyPrefix::to_bytes(&ActiveFormationKey);
+        let Some(bytes) = dbtx
+            .raw_get_bytes(&formation_key)
+            .await
+            .map_err(|_| storage("reading the formation failed"))?
+        else {
+            return Ok(());
+        };
+        // Loading reports a malformed or other-version formation.
+        let Ok(mut formation) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(());
+        };
+        if formation["schema_version"] != 11 {
+            return Ok(());
+        }
+        let formation_id = formation["formation_id"]
+            .as_str()
+            .ok_or_else(|| storage("the formation id is missing"))?
+            .to_owned();
+        let seat_count = formation["seat_count"]
+            .as_u64()
+            .and_then(|count| u16::try_from(count).ok())
+            .ok_or_else(|| storage("the seat count is missing"))?;
+        for index in 0..seat_count {
+            let seat_key = DatabaseKeyPrefix::to_bytes(&SeatKey {
+                formation_id: formation_id.clone(),
+                index,
+            });
+            let Some(bytes) = dbtx
+                .raw_get_bytes(&seat_key)
+                .await
+                .map_err(|_| storage("reading a seat failed"))?
+            else {
+                // Loading reports the missing row.
+                continue;
+            };
+            let mut seat: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| storage("a seat is not JSON"))?;
+            let provenance = &mut seat["admission"]["peer_badge"]["verifier_provenance"];
+            let environment = match provenance.as_object() {
+                Some(object) if object.len() == 1 => object.keys().next().cloned(),
+                _ => None,
+            };
+            if let Some(environment) = environment {
+                *provenance = serde_json::Value::String(environment);
+            }
+            dbtx.raw_insert_bytes(
+                &seat_key,
+                &serde_json::to_vec(&seat).expect("a JSON value serializes"),
+            )
+            .await
+            .map_err(|_| storage("writing a seat failed"))?;
+        }
+        formation["schema_version"] = 12.into();
+        dbtx.raw_insert_bytes(
+            &formation_key,
+            &serde_json::to_vec(&formation).expect("a JSON value serializes"),
+        )
+        .await
+        .map_err(|_| storage("writing the formation failed"))?;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| storage("committing failed"))
+    }
+
     pub(crate) async fn load_status(&self, fa_id: FaId) -> FaResult<FaStatus> {
         Ok(match self.load_recovery(fa_id).await? {
             FaRecovery::Idle => FaStatus::Idle,
@@ -1772,6 +1839,7 @@ impl FaStore {
     }
 
     pub(crate) async fn load_recovery(&self, fa_id: FaId) -> FaResult<FaRecovery> {
+        self.migrate_schema_11().await?;
         let mut dbtx = self.database.begin_transaction().await;
         if let Some(bytes) = dbtx
             .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))

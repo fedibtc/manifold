@@ -45,11 +45,14 @@ and cap invariants are rejected rather than producing an invalid intent.
 The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FA storage is a separate fail-closed schema:
-schema 11 also persists the selected major/minor/vendor DKG identity beside
-the optional explicit payer, durable verifier provenance, selected preview
+schema 12 persists the selected major/minor/vendor DKG identity beside
+the optional explicit payer, durable verifier provenance (the verifier's
+environment alone), selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. A schema 11 formation from the removed pinned
-mode cannot be loaded, because its MGs have no authenticated identity; opening
+and wallet-output tombstone. Schema 11 differs only in that its verifier
+provenance also carried the removed Manifold profile revision; opening a
+schema 11 formation migrates it to schema 12 in one transaction. A formation
+from the removed pinned mode cannot be loaded, because its MGs have no authenticated identity; opening
 it fails with reset guidance. Every older record must be
 reset rather than migrated because it predates the production compatibility
 baseline. Subsequent schema changes are governed by
@@ -92,7 +95,7 @@ for a replacement aggregate after its one-shot authorization. Before any
 output generation it never publishes or accepts an exact-quote authorization
 action. It instead returns typed
 `SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 11 preserves the payer and approval
+If a process dies before cleanup, the schema preserves the payer and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement MG always
@@ -153,7 +156,7 @@ only source of lifecycle progress after the app resumes.
 Cross-component durability verification is recorded in
 [`crates/mg/testing.md`](../../mg/testing.md).
 
-Formation storage schema 11 owns this callback lifecycle and the selected
+Formation storage schema 12 owns this callback lifecycle and the selected
 Fedimint DKG identity. Older records from before the production compatibility
 baseline fail closed and require reset.
 FA retains the bearer across every pre-`DkgComplete` crash, then clears it in
@@ -193,13 +196,14 @@ authenticated set; canonical selection uses canonical set order.
 
 ## Registry discovery and selection
 
-`discover_mg_candidates` turns one bounded, authorless kind-37701
-enumeration ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
+`discover_mg_candidates` turns two bounded, authorless enumerations, kind
+37701 and kind 37709, ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
 into a statically admitted candidate set without writing durable state,
 taking the driver lease, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's
-own payload proof and the `fman_id_pubkey == event author` identity rule,
-per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break),
+own payload proof and the signer-equals-event-author identity rule,
+per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break) within
+each format, the fresh v2 advertisement in preference to the legacy one,
 the freshness policy, and the caller's eligibility requirements — all
 cheap local checks, and every non-admitted advertisement is reported with
 a typed reason so consumers can render "N seen, M eligible" honestly. The
@@ -680,6 +684,12 @@ receipt is `ReplacementStartError::InvalidReceipt`, before any purchase or
 transfer row; a failed start is `ReplacementStartError::Transfer` with the
 transfer's error. The started transfer's row authorizes resume, not the
 receipt.
+
+`ReplacementCheck.blocking_liquidity_operation` reports unfinished liquidity
+from saved state. When it names an operation, the consumer resumes that operation
+with `resume_liquidity`, then refreshes eligibility with
+`check_replacement_candidates`. Resume updates provider status and completes
+gateway attachment when possible. Replacement start checks the blocker again.
 
 ## Guardian transfer
 

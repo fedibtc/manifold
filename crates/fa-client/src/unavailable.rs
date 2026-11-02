@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use fedi_decentralized_nostr_clients::{FaNostrClient, NostrClientError, NostrClientResult};
+use fedi_decentralized_nostr_clients::{
+    FaNostrClient, MgAdvertisementFormat, NostrClientError, NostrClientResult,
+};
 use fedi_decentralized_service_manifold_guardian::*;
 use nostr_sdk::{Event, PublicKey};
 
@@ -136,7 +138,11 @@ impl FaNostrClient for UnavailableRegistry {
         })
     }
 
-    async fn fetch_mg_advertisements(&self, _timeout: Duration) -> NostrClientResult<Vec<Event>> {
+    async fn fetch_mg_advertisements(
+        &self,
+        _format: MgAdvertisementFormat,
+        _timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
         Err(NostrClientError::MissingEvent {
             context: "FA registry capability unavailable",
         })

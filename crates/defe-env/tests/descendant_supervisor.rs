@@ -76,28 +76,68 @@ fn foreground_interrupt_returns_to_shell_and_preserves_status() {
     }
     let mut helper = command.spawn().expect("start PTY helper");
     drop(command);
-    std::thread::sleep(Duration::from_millis(300));
+    let (output_tx, output_rx) = std::sync::mpsc::channel();
+    let mut reader = master.try_clone().expect("clone PTY master");
+    let reader = std::thread::spawn(move || {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => return,
+                Ok(read) => {
+                    if output_tx.send(chunk[..read].to_vec()).is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => return,
+                Err(error) => panic!("read PTY output: {error}"),
+            }
+        }
+    });
+    let mut output = Vec::new();
+    // The terminal echoes each command line, so every marker is computed by
+    // the shell and appears only once the shell has run the command. An
+    // interrupt sent before the shell owns the terminal would reach the
+    // helper itself instead.
     master
-        .write_all(b"sleep 30\n")
+        .write_all(b"echo DEFE_$((1+1))_SHELL_READY\n")
+        .expect("probe the shell");
+    wait_for_pty_output(&output_rx, &mut output, "DEFE_2_SHELL_READY");
+    master
+        .write_all(b"sh -c 'echo DEFE_$((2+2))_JOB_STARTED; exec sleep 30'\n")
         .expect("start foreground job");
-    std::thread::sleep(Duration::from_millis(300));
+    wait_for_pty_output(&output_rx, &mut output, "DEFE_4_JOB_STARTED");
     master.write_all(b"\x03").expect("interrupt foreground job");
-    std::thread::sleep(Duration::from_millis(300));
     master
         .write_all(b"echo DEFE_SHELL_SURVIVED\nexit 7\n")
         .expect("exit shell");
     let status = helper.wait().expect("wait for PTY helper");
-    let mut output = String::new();
-    match master.read_to_string(&mut output) {
-        Ok(_) => {}
-        Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
-        Err(error) => panic!("read PTY output: {error}"),
-    }
+    reader.join().expect("PTY reader");
+    output.extend(output_rx.try_iter().flatten());
+    let output = String::from_utf8_lossy(&output);
     assert_eq!(status.code(), Some(7), "helper output:\n{output}");
     assert!(
         output.contains("DEFE_SHELL_SURVIVED"),
         "helper output:\n{output}"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_pty_output(
+    output_rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+    marker: &str,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !String::from_utf8_lossy(output).contains(marker) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match output_rx.recv_timeout(remaining) {
+            Ok(chunk) => output.extend(chunk),
+            Err(error) => panic!(
+                "waiting for {marker}: {error}; helper output:\n{}",
+                String::from_utf8_lossy(output)
+            ),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

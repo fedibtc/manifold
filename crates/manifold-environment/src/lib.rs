@@ -26,13 +26,6 @@ const PRODUCTION_NOSTR_RELAYS: &[&str] = &[
 ];
 const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 
-/// Revision of the built-in environment-to-profile mappings.
-///
-/// Bump this after profiles are released whenever a public deployment mapping
-/// changes so independently released components can expose and compare what
-/// they use.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 10;
-
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!
 //
@@ -386,12 +379,6 @@ pub struct ManifoldEnvironmentProfile {
 }
 
 impl ManifoldEnvironmentProfile {
-    /// Return the revision of the built-in profile mappings.
-    #[must_use]
-    pub fn profile_revision(&self) -> u32 {
-        MANIFOLD_ENVIRONMENT_PROFILE_REVISION
-    }
-
     /// Return the environment identity that produced this profile.
     #[must_use]
     pub fn environment(&self) -> ManifoldEnvironment {

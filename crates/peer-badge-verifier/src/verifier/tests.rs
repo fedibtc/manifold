@@ -574,10 +574,7 @@ fn environment_construction_accepts_every_environment() {
             .expect("every environment has configured issuer identities");
         assert_eq!(
             verifier.provenance(),
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment,
-                profile_revision: profile.profile_revision(),
-            }
+            PeerBadgeVerifierProvenance::ManifoldProfile { environment }
         );
     }
 }
@@ -649,7 +646,6 @@ fn an_issuerless_profile_leaves_the_verifier_unavailable() {
     let profile = ManifoldEnvironment::Production.profile().unwrap();
     let error = match PeerBadgeVerifier::try_from_profile_parts(
         profile.environment(),
-        profile.profile_revision(),
         [],
         profile.nostr_relays().as_urls().iter().cloned(),
         profile.minimum_peer_badge_trust_level(),
@@ -705,7 +701,6 @@ fn pinned_verifier(fixture: &Fixture, source: Arc<FakeSource>) -> PeerBadgeVerif
         source,
         PeerBadgeVerifierProvenance::ManifoldProfile {
             environment: profile.environment(),
-            profile_revision: profile.profile_revision(),
         },
     )
 }
@@ -877,7 +872,6 @@ async fn development_reads_revocation_from_its_profile_relays() {
     let construct = |environment| {
         PeerBadgeVerifier::try_from_profile_parts(
             environment,
-            1,
             [root],
             [profile_relay.clone()],
             1,

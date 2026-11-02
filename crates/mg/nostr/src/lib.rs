@@ -3,7 +3,7 @@
 //! Decoupled from the fleet's verb machinery: each cycle takes a read-only
 //! snapshot of the fleet (availability and plans), combines it with durably
 //! enrolled Holder authorizations, and publishes the portable signed
-//! advertisement document. Enrollment is the Holder publishing a kind-37705
+//! advertisement in both formats: kind 37701 and the kind-37709 v2. Enrollment is the Holder publishing a kind-37705
 //! authorization for this MG's pubkey followed by the operator UI requesting
 //! one bounded, verified relay reconciliation.
 //!
@@ -23,13 +23,14 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use fedi_decentralized_domain::MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS;
 pub use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, HolderAuthorizationEnvelope};
-use fedi_decentralized_domain::{MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS, ProtocolV1};
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr::mg::HolderAuthorizationEventContent;
 pub use fedi_decentralized_nostr::mg::{
-    AdvertisementDocument, AdvertisementPayload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, sign_advertisement,
+    AdvertisedUptime, AdvertisementDocument, AdvertisementPayload, AdvertisementV2Payload,
+    ApiEndpoint, Availability, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    MgAdvertisementFormat, sign_advertisement, sign_advertisement_v2,
     verify_advertisement_self_signature,
 };
 use fedi_decentralized_nostr::setup_payment_federations::{
@@ -508,12 +509,14 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Render one daemon snapshot as an unsigned payload.
-fn build_payload(snapshot: AdvertisementSnapshot, keys: &Keys) -> AdvertisementPayload {
+/// Render one daemon snapshot as the unsigned v2 offer. The kind-37701
+/// payload derives from it, so both formats publish the same snapshot.
+fn build_payload(
+    snapshot: AdvertisementSnapshot,
+    holder_authorizations: Vec<HolderAuthorizationEnvelope>,
+) -> AdvertisementV2Payload {
     let now = now_secs();
-    AdvertisementPayload {
-        version: ProtocolV1,
-        mg_id_pubkey: keys.public_key().to_string(),
+    AdvertisementV2Payload {
         service_pubkey: snapshot.service_pubkey.to_string(),
         issued_at: now,
         expires_at: now + 2 * REPUBLISH_INTERVAL.as_secs(),
@@ -531,8 +534,38 @@ fn build_payload(snapshot: AdvertisementSnapshot, keys: &Keys) -> AdvertisementP
             federation_sizes: FEDERATION_SIZES_0_1.to_vec(),
         },
         plans: snapshot.plans,
-        holder_authorizations: Vec::new(),
+        holder_authorizations,
+        // `UptimeScores::permille` clamps to 0..=1000; a value outside it is
+        // reported as unreported rather than published.
+        uptime_permille: snapshot.uptime.and_then(|scores| {
+            AdvertisedUptime::try_from(scores)
+                .inspect_err(|error| tracing::warn!(%error, "uptime scores not advertised"))
+                .ok()
+        }),
     }
+}
+
+/// Sign `payload` as one advertisement event of `format`.
+fn advertisement_event(
+    format: MgAdvertisementFormat,
+    payload: &AdvertisementV2Payload,
+    keys: &Keys,
+) -> anyhow::Result<EventBuilder> {
+    let content = match format {
+        MgAdvertisementFormat::Legacy => {
+            let document = sign_advertisement(payload.to_legacy(keys.public_key()), keys)?;
+            serde_json::to_string(&document).context("serialize advertisement")?
+        }
+        MgAdvertisementFormat::V2 => sign_advertisement_v2(payload, keys)
+            .map_err(|err| anyhow::anyhow!("sign advertisement v2: {err}"))?
+            .to_json(),
+    };
+    Ok(
+        EventBuilder::new(Kind::Custom(format.kind()), content).tags([
+            Tag::parse(["d", format.d_tag()]).expect("valid MG advertisement d tag"),
+            Tag::parse(["t", format.hashtag()]).expect("valid MG advertisement hashtag"),
+        ]),
+    )
 }
 
 async fn run_advertisements(inner: Arc<Inner>, host: Arc<FleetNostrHost>, nostr: NostrRelayClient) {
@@ -596,6 +629,9 @@ async fn run_setup_payment_refreshes(
     }
 }
 
+/// Publish both advertisement formats from one snapshot. Each format is
+/// attempted even when the other fails; with no snapshot, neither is
+/// published and both lapse at their signed expiry.
 async fn advertise_once(
     inner: &Inner,
     host: &FleetNostrHost,
@@ -605,32 +641,31 @@ async fn advertise_once(
     let Some(snapshot) = host.advertisement().await else {
         return Ok(());
     };
-    let mut payload = build_payload(snapshot, &inner.keys);
-    payload.holder_authorizations = holder_authorizations;
-
-    let document = sign_advertisement(payload, &inner.keys)?;
-    let content = serde_json::to_string(&document).context("serialize advertisement")?;
-    nostr
-        .publish_event(
-            EventBuilder::new(
-                Kind::Custom(fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_EVENT_KIND),
-                content,
-            )
-            .tags([
-                Tag::parse(["d", fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_D_TAG])
-                    .expect("valid MG advertisement d tag"),
-                Tag::parse(["t", fedi_decentralized_nostr::mg::MG_ADVERTISEMENT_HASHTAG])
-                    .expect("valid MG advertisement hashtag"),
-            ]),
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("publish advertisement: {err}"))?;
-    tracing::info!(
-        safe_to_share = true,
-        holder_authorizations = document.payload.holder_authorizations.len(),
-        "published MG advertisement"
-    );
-    Ok(())
+    let payload = build_payload(snapshot, holder_authorizations);
+    let mut failed = Vec::new();
+    for format in MgAdvertisementFormat::ALL {
+        let published = async {
+            nostr
+                .publish_event(advertisement_event(format, &payload, &inner.keys)?)
+                .await
+                .map_err(|err| anyhow::anyhow!("publish advertisement: {err}"))
+        }
+        .await;
+        match published {
+            Ok(_) => tracing::info!(
+                safe_to_share = true,
+                kind = format.kind(),
+                holder_authorizations = payload.holder_authorizations.len(),
+                "published MG advertisement"
+            ),
+            Err(err) => failed.push(format!("kind {}: {err:#}", format.kind())),
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("{}", failed.join("; ")))
+    }
 }
 
 struct VerifiedHolderAuthorizationEvent {

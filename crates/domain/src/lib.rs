@@ -11,6 +11,7 @@ mod mg_federation_directory;
 mod mg_peer_attestation;
 mod mg_seat_bindings;
 mod setup_payment_federations;
+mod signed_json;
 pub mod test_support;
 mod trust_score;
 
@@ -52,6 +53,10 @@ pub use setup_payment_federations::{
     SETUP_PAYMENT_FEDERATIONS_MAX_COUNT, SETUP_PAYMENT_MAX_MIN_FEE_PPM,
     SETUP_PAYMENT_MAX_SEATS_PER_MG, SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE,
     SetupPaymentFederationsContent, SetupPaymentFederationsContentError,
+};
+pub use signed_json::{
+    PurposeTag, SIGNED_JSON_ENVELOPE_MAX_BYTES, SIGNED_JSON_PAYLOAD_MAX_BYTES, SignedJsonEnvelope,
+    SignedJsonError, Verified,
 };
 pub use trust_score::{
     HolderAuthorizationEnvelope, HolderTrustEnvelopeError, PeerBadgeTrustPolicy,

@@ -1,0 +1,18 @@
+--- a/fedimint-server/src/consensus/engine.rs
++++ b/fedimint-server/src/consensus/engine.rs
+@@ -244,7 +244,14 @@
+             if let Some(request) = due {
+                 info!(target: LOG_CONSENSUS, "Initiating shutdown, waiting for peers to complete the session...");
+ 
+-                sleep(Duration::from_mins(1)).await;
++                // Test sessions last seconds, so peers complete theirs well
++                // within this shorter wait.
++                sleep(if fedimint_core::envs::is_running_in_test_env() {
++                    Duration::from_secs(5)
++                } else {
++                    Duration::from_mins(1)
++                })
++                .await;
+ 
+                 return Ok(ConsensusStop::ScheduledShutdown(request));
+             }

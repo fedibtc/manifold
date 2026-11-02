@@ -1083,8 +1083,16 @@ async fn a_transfer_stopped_after_any_write_finishes_on_resume() {
 }
 
 #[tokio::test]
-async fn a_live_liquidity_request_blocks_a_transfer() {
+async fn liquidity_blocks_a_transfer_until_funding_and_attachment_complete() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    assert!(
+        client
+            .check_replacement_candidates()
+            .await
+            .unwrap()
+            .blocking_liquidity_operation
+            .is_none()
+    );
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     let operation = stored_liquidity_operation(1);
     client
@@ -1093,6 +1101,15 @@ async fn a_live_liquidity_request_blocks_a_transfer() {
         .insert_liquidity_operation(operation.clone())
         .await
         .unwrap();
+
+    assert_eq!(
+        client
+            .check_replacement_candidates()
+            .await
+            .unwrap()
+            .blocking_liquidity_operation,
+        Some(operation.operation_id.clone())
+    );
 
     let error = start_transfer_with(
         &client,
@@ -1110,6 +1127,64 @@ async fn a_live_liquidity_request_blocks_a_transfer() {
     assert_eq!(client.guardian_transfer().await, None);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+
+    let gateway = GatewayApiUrl::try_from("https://gateway.example.com").unwrap();
+    let mut allocation = liquidity_api::AllocationStatus {
+        details_payload_hash: operation.details_payload_hash,
+        provider_pubkey: operation.commitment.provider_pubkey.clone(),
+        item_statuses: allocation_items(&operation.commitment.amounts),
+    };
+    complete_gateway_allocation(&mut allocation, gateway.clone());
+    let status = sign_liquidity_payload(
+        liquidity_api::PublicRpcPayloadDomain::GetAllocationStatusResponse,
+        liquidity_api::GetAllocationStatusResponse {
+            version: liquidity_api::PUBLIC_LIQUIDITY_PROTOCOL_VERSION,
+            provider_pubkey: operation.commitment.provider_pubkey.clone(),
+            issued_at: liquidity_api::Timestamp(test_now_secs()),
+            status: allocation,
+        },
+        &liquidity_provider_keys(),
+    );
+    client
+        .inner
+        .store
+        .store_liquidity_status(&operation.operation_id, status)
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .check_replacement_candidates()
+            .await
+            .unwrap()
+            .blocking_liquidity_operation,
+        Some(operation.operation_id.clone())
+    );
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .expect_err("funding alone does not finish gateway attachment");
+    assert!(matches!(error, FaError::LiquidityOperationExists { .. }));
+    assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
+
+    client
+        .inner
+        .store
+        .mark_liquidity_gateway_view_verified(&operation.operation_id, &gateway)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .check_replacement_candidates()
+            .await
+            .unwrap()
+            .blocking_liquidity_operation
+            .is_none()
+    );
+    let transfer = start_transfer(&client, &mg_state).await;
+    assert_eq!(transfer.phase, GuardianTransferPhase::AwaitingSource);
 }
 
 #[tokio::test]

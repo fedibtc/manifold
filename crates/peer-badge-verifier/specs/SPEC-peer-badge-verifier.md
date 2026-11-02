@@ -84,7 +84,7 @@ supersedes an older authority, and a visible matching valid revocation rejects
 the credential. The verifier refetches revocation state on every call and
 refetches authority state for unpinned issuers. It has no local authority or
 revocation cache, high-water mark, or stale fallback. Canonical authorities
-change only through a coordinated profile revision. Consumers that need
+change only through a coordinated component release. Consumers that need
 stronger synchronization need a separate mechanism.
 
 ## Shared construction boundary
@@ -94,7 +94,7 @@ relying production components cannot inject alternate issuer roots, relay
 routing, or a minimum trust level. Construction validates roots, relay bounds,
 and the schema range of the minimum once. The opaque verifier retains explicit
 `PeerBadgeVerifierProvenance`, so composition roots can require the expected
-source environment and profile revision.
+source environment.
 
 The `test-support` feature exposes `PeerBadgeVerifier::new_for_test` solely for
 defe-backed component tests that need ephemeral roots, relays, and an explicit
@@ -207,7 +207,7 @@ retain and return the issuer's revocations visible to the relevant fresh read;
 EOSE proves completion of the response, not operator honesty. A compromised or
 mistakenly chosen delegated relay can conceal a revocation until the issuer
 replaces it. For a canonical pinned issuer, replacing the authority or its
-revocation locations requires a coordinated profile revision.
+revocation locations requires a coordinated component release.
 
 ## Intentional omissions and change constraints
 

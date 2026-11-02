@@ -235,6 +235,11 @@ impl FleetNostrHost {
                 iroh_endpoint_id: self.iroh_endpoint_id.clone(),
                 service_pubkey: self.service_pubkey,
                 plans: snapshot.plans,
+                uptime: self
+                    .fleet
+                    .seat_readiness()
+                    .and_then(|report| report.uptime_comparison)
+                    .map(|comparison| comparison.scores),
             })
     }
 

@@ -146,8 +146,6 @@ pub enum PeerBadgeVerifierProvenance {
     ManifoldProfile {
         /// Selected deployment environment.
         environment: ManifoldEnvironment,
-        /// Revision of the canonical profile.
-        profile_revision: u32,
     },
 
     /// Explicit roots, relays, and minimum trust level supplied by the
@@ -311,7 +309,6 @@ impl PeerBadgeVerifier {
     ) -> Result<Self, PeerBadgeVerifierConfigError> {
         Self::try_from_profile_parts(
             profile.environment(),
-            profile.profile_revision(),
             profile.peer_badge_issuer_identities().iter().copied(),
             profile.nostr_relays().as_urls().iter().cloned(),
             profile.minimum_peer_badge_trust_level(),
@@ -327,7 +324,6 @@ impl PeerBadgeVerifier {
 
     fn try_from_profile_parts<'a>(
         environment: ManifoldEnvironment,
-        profile_revision: u32,
         issuer_roots: impl IntoIterator<Item = PublicKey>,
         authority_relays: impl IntoIterator<Item = RelayUrl>,
         minimum_trust_level: u64,
@@ -358,10 +354,7 @@ impl PeerBadgeVerifier {
             authority_relays,
             trust_policy,
             pinned_authorities,
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment,
-                profile_revision,
-            },
+            PeerBadgeVerifierProvenance::ManifoldProfile { environment },
         );
         Arc::get_mut(&mut verifier.inner)
             .expect("a new verifier is not shared")
@@ -404,7 +397,6 @@ impl PeerBadgeVerifier {
             source,
             PeerBadgeVerifierProvenance::ManifoldProfile {
                 environment: profile.environment(),
-                profile_revision: profile.profile_revision(),
             },
         )
     }
