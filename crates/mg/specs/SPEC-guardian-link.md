@@ -62,7 +62,9 @@ app created, exactly as it invokes an FI's DKG completion hook.
   revoked, policy rejected) parks the link as `terminal` with the reason and
   clears the hook; the dashboard shows that the phone must be linked again,
   and the daemon sends nothing until it is. Max-uses and rate limiting are
-  transient: the next tick after the window sends again.
+  transient: the next tick after the window sends again. An outcome for a
+  replaced phone's hook never touches the new link: every update is guarded
+  on the link's `linked_at_ms`.
 - **Expiry.** Nothing renews the hook. When it expires, or the app is
   reinstalled, the gateway rejects the next invocation for good and the link
   parks as `terminal`; the dashboard then shows a fresh code to link the phone

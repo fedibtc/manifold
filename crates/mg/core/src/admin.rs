@@ -146,8 +146,8 @@ pub enum AdminRequest {
     CreateGuardianLinkOffer,
     /// Forget the linked phone and close any open offer.
     RevokeGuardianLink,
-    /// Send the linked phone a `test` notification now. Spends one of the
-    /// gateway's hourly invocations.
+    /// Send the linked phone a notification now. Spends one of the gateway's
+    /// hourly invocations.
     TestGuardianLinkNotification,
     /// Identity material the operator needs for onboarding (registry
     /// listing, holder authorization).

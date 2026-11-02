@@ -551,6 +551,42 @@ async fn relinking_replaces_the_phone_and_test_notifies_it() {
     h.fleet.shutdown().await;
 }
 
+#[tokio::test]
+async fn an_outcome_for_the_replaced_phone_leaves_the_new_link_alone() {
+    let h = harness(Some(ORIGIN)).await;
+    let rpc = link(&h).await;
+    let old = h.fleet.db().guardian_link().await.unwrap().unwrap();
+    // The phone relinks while a notification to its old hook is in flight. A
+    // link is known by its `linked_at_ms`, so let the clock move first.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let invite = h.fleet.create_guardian_link_offer().unwrap();
+    rpc.link_device(LinkDeviceRequest {
+        version: ProtocolV1,
+        secret: invite.secret,
+        device_label: "iPhone".to_owned(),
+        callback: hook("h3/s3"),
+        callback_expires_at: a_year_from_now(),
+    })
+    .await
+    .unwrap();
+    let told = BTreeSet::from([AttentionReason::SupportMessage]);
+    for outcome in [
+        CallbackAttemptOutcome::Delivered,
+        CallbackAttemptOutcome::Terminal(CompletionCallbackReason::HookExpiredOrRevoked),
+    ] {
+        h.fleet
+            .record_guardian_link_outcome(&old, outcome, &told)
+            .await
+            .unwrap();
+    }
+    let new = h.fleet.db().guardian_link().await.unwrap().unwrap();
+    assert_eq!(new.device_label, "iPhone");
+    assert_eq!(new.delivery, GuardianLinkDelivery::Active);
+    assert_eq!(new.notification_seq, 0);
+    assert!(new.notified_reasons.is_empty());
+    h.fleet.shutdown().await;
+}
+
 #[test]
 fn device_labels_are_short_and_printable() {
     assert!(validate_device_label("Pixel 8").is_ok());

@@ -39,8 +39,8 @@ pub enum AdminVerb {
         #[command(subcommand)]
         verb: GuardianFeesVerb,
     },
-    /// The operator's linked Fedi app, which gets a push notification when
-    /// the fleet needs attention.
+    /// The phone linked to this host, which gets a push notification when
+    /// its guardians need attention.
     GuardianLink {
         #[command(subcommand)]
         verb: GuardianLinkVerb,

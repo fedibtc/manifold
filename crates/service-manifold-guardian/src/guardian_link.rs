@@ -1,6 +1,6 @@
 //! Guardian link: the operator's Fedi app linked to this MG so the daemon
 //! can notify it through the push gateway when something needs attention
-//! ([`SPEC-guardian-link`](../../fman/specs/SPEC-guardian-link.md)).
+//! ([`SPEC-guardian-link`](../../mg/specs/SPEC-guardian-link.md)).
 //!
 //! This is its own Iroh ALPN beside the FI-facing service and the telemetry
 //! service: the caller is the operator's phone, not an FI, and nothing here
@@ -72,7 +72,8 @@ impl<'de> Deserialize<'de> for LinkSecret {
 
 /// The dashboard's link invite: everything the app needs to find, trust, and
 /// link to one MG. Carried as a `manifold:guardian-link` URI in a QR code.
-#[derive(Clone, Eq, PartialEq)]
+/// `Debug` shows the secret redacted.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuardianLinkInvite {
     /// The MG's public Nostr identity, which names it in the registry.
     pub fman_nostr_pubkey: nostr::PublicKey,
@@ -81,18 +82,6 @@ pub struct GuardianLinkInvite {
     /// Manifold environment of the MG, so an app refuses a cross-environment link.
     pub environment: String,
     pub secret: LinkSecret,
-}
-
-impl core::fmt::Debug for GuardianLinkInvite {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("GuardianLinkInvite")
-            .field("fman_nostr_pubkey", &self.fman_nostr_pubkey)
-            .field("iroh_endpoint_id", &self.iroh_endpoint_id)
-            .field("environment", &self.environment)
-            .field("secret", &self.secret)
-            .finish()
-    }
 }
 
 /// A link invite URI did not parse.

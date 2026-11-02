@@ -591,8 +591,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .accept(
             GUARDIAN_LINK_ALPN,
-            // One phone talks to this; a signed verb with a hook URL fits in
-            // a few kilobytes.
+            // One phone makes one `link_device` call; with its hook URL it
+            // fits in a few kilobytes.
             IrohProtocol::with_limits_and_request_read_timeout(
                 GuardianLinkServiceServer::new(GuardianLinkRpc::new(fleet.clone())),
                 8 * 1024,

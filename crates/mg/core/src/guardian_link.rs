@@ -373,11 +373,13 @@ impl Fleet {
             CallbackAttemptOutcome::Delivered => {
                 let told: Vec<_> = told.iter().copied().collect();
                 self.db()
-                    .record_guardian_link_notified(link.notification_seq, &told)
+                    .record_guardian_link_notified(link.linked_at_ms, link.notification_seq, &told)
                     .await?;
             }
             CallbackAttemptOutcome::Terminal(reason) => {
-                self.db().record_guardian_link_terminal(reason).await?;
+                self.db()
+                    .record_guardian_link_terminal(link.linked_at_ms, reason)
+                    .await?;
                 tracing::warn!(
                     reason = reason.as_str(),
                     "guardian link hook rejected for good; the phone must relink"
@@ -474,7 +476,7 @@ async fn tick(
         let narrowed: Vec<_> = still_told.iter().copied().collect();
         fleet
             .db()
-            .set_guardian_link_notified_reasons(&narrowed)
+            .set_guardian_link_notified_reasons(link.linked_at_ms, &narrowed)
             .await?;
     }
     if current.difference(&still_told).next().is_none() {

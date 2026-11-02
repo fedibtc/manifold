@@ -23,7 +23,7 @@ use anyhow::{Context as _, anyhow};
 use fedi_decentralized_domain::Pubkey;
 use fedi_decentralized_service_manifold_guardian::{
     CreateSeatResponse, FaId, FederationId, GuardianTelemetrySeat, Plan, QuoteId, QuoteTerms,
-    RefundTransaction, RefusalReason, SEAT_CAPACITY_EVENT, SafeEventJournal, SeatHealth, SeatId,
+    RefundTransaction, RefusalReason, SEAT_CAPACITY_EVENT, SafeEventJournal, SeatId,
     SeatScopedFaRequest, SignedResponse, TelemetryCapability, VerifiedFaRequest,
 };
 use tokio::sync::{Notify, Semaphore};
@@ -729,18 +729,15 @@ impl Fleet {
     }
 
     /// Every seat's cached report, without touching a child. A seat whose
-    /// data directory cannot be probed is reported as unavailable.
+    /// data directory cannot be probed is left out until it can be.
     pub(crate) fn seat_report_snapshot(&self) -> Vec<(SeatId, SeatReport)> {
         self.seats
             .read()
             .expect("seat registry lock is never poisoned")
             .values()
-            .map(|seat| {
-                let report = seat.cached_report().unwrap_or(SeatReport::Active {
-                    phase: crate::seat::SeatPhase::Created,
-                    health: SeatHealth::Unavailable,
-                });
-                (seat.facts().seat_id.clone(), report)
+            .filter_map(|seat| {
+                let report = seat.cached_report().ok()?;
+                Some((seat.facts().seat_id.clone(), report))
             })
             .collect()
     }

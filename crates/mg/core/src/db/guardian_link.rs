@@ -173,20 +173,24 @@ impl Db {
 
     /// Record a delivered notification: the sequence the idempotency key was
     /// minted from advances, and these reasons count as told. Guarded on the
-    /// expected sequence so a stale worker result cannot double-advance.
+    /// link (`linked_at_ms`) and the expected sequence, so a result for a
+    /// replaced phone or a stale worker cannot touch the current link.
     pub async fn record_guardian_link_notified(
         &self,
+        linked_at_ms: i64,
         expected_seq: u64,
         reasons: &[AttentionReason],
     ) -> Result<bool, DbError> {
         let result = sqlx::query(
             "UPDATE guardian_link SET notification_seq = notification_seq + 1, \
              notified_reasons = ?, last_notified_at_ms = ? \
-             WHERE id = ? AND notification_seq = ? AND delivery = 'active'",
+             WHERE id = ? AND linked_at_ms = ? AND notification_seq = ? \
+             AND delivery = 'active'",
         )
         .bind(reasons_json(reasons))
         .bind(now_ms())
         .bind(LINK_ID)
+        .bind(linked_at_ms)
         .bind(i64::try_from(expected_seq).unwrap_or(i64::MAX))
         .execute(self.pool())
         .await?;
@@ -197,28 +201,35 @@ impl Db {
     /// returns later is told again.
     pub async fn set_guardian_link_notified_reasons(
         &self,
+        linked_at_ms: i64,
         reasons: &[AttentionReason],
     ) -> Result<(), DbError> {
-        sqlx::query("UPDATE guardian_link SET notified_reasons = ? WHERE id = ?")
-            .bind(reasons_json(reasons))
-            .bind(LINK_ID)
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE guardian_link SET notified_reasons = ? WHERE id = ? AND linked_at_ms = ?",
+        )
+        .bind(reasons_json(reasons))
+        .bind(LINK_ID)
+        .bind(linked_at_ms)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
-    /// The gateway rejected the hook for good: clear the bearer and keep the
-    /// reason for the operator and the device.
+    /// The gateway rejected the link's hook for good: clear the bearer and
+    /// keep the reason for the operator. Guarded on the link, so a rejection
+    /// of a replaced phone's hook leaves the new link alone.
     pub async fn record_guardian_link_terminal(
         &self,
+        linked_at_ms: i64,
         reason: CompletionCallbackReason,
     ) -> Result<bool, DbError> {
         let result = sqlx::query(
             "UPDATE guardian_link SET callback = NULL, delivery = 'terminal', \
-             delivery_reason = ? WHERE id = ? AND delivery = 'active'",
+             delivery_reason = ? WHERE id = ? AND linked_at_ms = ? AND delivery = 'active'",
         )
         .bind(reason.as_str())
         .bind(LINK_ID)
+        .bind(linked_at_ms)
         .execute(self.pool())
         .await?;
         Ok(result.rows_affected() == 1)
