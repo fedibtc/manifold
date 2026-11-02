@@ -1,13 +1,14 @@
 # Current counterexample
 
 The endorsement authenticates only the federation id. An attacker can retain
-that id in a syntactically valid invite, replace its API URL, and make FLIP dial
-the chosen endpoint before FLIP authenticates the federation configuration
-returned by it.
+that id in a syntactically valid invite and replace its guardian endpoint with
+the canonical Iroh locator of a node it owns. Before FLIP authenticates the
+returned federation configuration, the pinned Iroh transport sends discovery,
+QUIC, or relay handshake and framing traffic to whatever destinations that
+node publishes.
 
-`GlobalOnly` closes loopback, link-local, transition-address, redirect, and DNS
-re-resolution variants, and requester-visible preview errors are sanitized.
-Those controls limit the reachable endpoint set and returned information; they
-do not authenticate the invite URL before the initial dial.
-
-See [the current argument](proof.md) for the preserved premises, residuals, and detailed derivation.
+Under the production `GlobalOnly` endpoint policy, every location-bearing
+`ws`/`wss` invite URL is rejected before any connector runs, so the requester
+can no longer choose an arbitrary request stream or read the destination's
+response. [CLAIM-liquidity-manager-production-ready](../CLAIM-liquidity-manager-production-ready.md)
+accepts the remaining Iroh traffic as a residual.
