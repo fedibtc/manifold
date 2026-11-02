@@ -543,34 +543,16 @@ pub(crate) async fn discover_mg_candidates_with(
     now: u64,
 ) -> FaResult<MgDiscovery> {
     let timeout = deadline.saturating_duration_since(Instant::now());
-    // Each format has its own query and bounds (`SPEC-mg-nostr-events`, *MG
-    // advertisement v2*). Every MG publishes the legacy format, so only its
-    // enumeration decides completeness. A failed v2 enumeration degrades to
-    // legacy advertisements alone, which lack only the uptime reports. The
-    // optional v2 query may use at most half the run's budget, so a stalled v2
-    // answer still leaves time to admit the legacy results.
-    let v2_timeout = timeout / 2;
-    let (legacy_events, v2_events) = futures::join!(
-        registry.fetch_mg_advertisements(MgAdvertisementFormat::Legacy, timeout),
-        fedimint_core::runtime::timeout(
-            v2_timeout,
-            registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, v2_timeout),
-        ),
-    );
-    let legacy_events = legacy_events.map_err(|error| FaError::Registry(error.to_string()))?;
-    let v2_events = match v2_events {
-        Ok(Ok(events)) => events,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
-            Vec::new()
-        }
-        Err(_) => {
-            tracing::warn!(
-                "MG advertisement v2 enumeration timed out; using legacy advertisements"
-            );
-            Vec::new()
-        }
-    };
+    // The registry runs one query per format, each with its own bounds, and
+    // lets only the legacy query decide completeness
+    // (`FaNostrClient::fetch_mg_advertisements`). A failed v2 query leaves
+    // legacy advertisements alone, which lack only the uptime reports.
+    let (v2_events, legacy_events): (Vec<_>, Vec<_>) = registry
+        .fetch_mg_advertisements(timeout)
+        .await
+        .map_err(|error| FaError::Registry(error.to_string()))?
+        .into_iter()
+        .partition(|event| event.kind == Kind::Custom(MgAdvertisementFormat::V2.kind()));
 
     let mut discovery = MgDiscovery::default();
     // The transport bound belongs to the client; re-applying it here keeps a

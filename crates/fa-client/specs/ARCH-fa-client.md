@@ -196,8 +196,8 @@ authenticated set; canonical selection uses canonical set order.
 
 ## Registry discovery and selection
 
-`discover_mg_candidates` turns two bounded, authorless enumerations, kind
-37701 and kind 37709, ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
+`discover_mg_candidates` turns the bounded, authorless enumeration of kind
+37701 and kind 37709 ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
 into a statically admitted candidate set without writing durable state,
 taking the driver lease, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's

@@ -18,8 +18,8 @@ use fa_client::{
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::{
-    FaNostrClient, MgAdvertisementFormat, NostrClientError, NostrClientResult, NostrFaClient,
-    NostrRelayClient, ROLE_FETCHED_EVENT_MAX_BYTES,
+    FaNostrClient, NostrClientError, NostrClientResult, NostrFaClient, NostrRelayClient,
+    ROLE_FETCHED_EVENT_MAX_BYTES,
 };
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_liquidity_manager::{
@@ -899,7 +899,6 @@ impl FaNostrClient for CliRegistry {
 
     async fn fetch_mg_advertisements(
         &self,
-        format: MgAdvertisementFormat,
         timeout: Duration,
     ) -> NostrClientResult<Vec<NostrEvent>> {
         self.live
@@ -907,7 +906,7 @@ impl FaNostrClient for CliRegistry {
             .ok_or(NostrClientError::MissingEvent {
                 context: "fa-cli live registry capability unavailable",
             })?
-            .fetch_mg_advertisements(format, timeout)
+            .fetch_mg_advertisements(timeout)
             .await
     }
 
