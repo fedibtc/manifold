@@ -88,9 +88,9 @@ with these boundaries:
 
 The admission gate locally authenticates the federation id encoded by the invite,
 then charges its per-federation verification allowance before its first outbound
-revocation lookup. The allowance never uses
-the requester-declared `federation_id`, which remains a hint until the preview
-joins it to the invite-derived identity.
+revocation lookup, so an endorsement-less caller cannot probe that allowance. The
+allowance never uses the requester-declared `federation_id`, which remains a hint
+until the preview joins it to the invite-derived identity.
 
 ## Idempotency
 
@@ -110,20 +110,16 @@ a freshly signed statement about current state:
   allocation fast path, whatever `details_payload_hash` it supplies. Its request
   falls through to validation and verification. An endorsement-less caller gets
   an allocation-independent signed semantic response; timing is not part of this
-  contract. Admission now authenticates the invite-derived federation id before the
-  per-federation verification budget is charged, so an endorsement-less caller
-  cannot probe that budget. A caller that then passes
+  contract. A caller that passes
   verification for that federation holds a valid unrevoked MG endorsement for
   it, and may therefore learn that the federation has an allocation;
 - rejections are stateless — nothing is persisted, and a retried rejected
   request is re-evaluated from scratch;
 - concurrent duplicates create at most one allocation.
 
-The supported live-restore path preserves accepted allocation identity: it refuses an
-archive that omits or replaces an allocation accepted by the running generation.
-An exact replay after that refusal is answered from the unchanged allocation
-rather than accepted as new work. Fresh-host disaster recovery has no live newer
-generation against which to establish this cross-generation property.
+Live restore preserves accepted allocation identities
+([SPEC-flip-admin-api](./SPEC-flip-admin-api.md)), so an exact replay after a
+refused restore is answered from the unchanged allocation.
 
 ## Endorsement authorization and allocation ownership
 

@@ -1,9 +1,7 @@
 # Proof: Cloud MG telemetry output bounds and fidelity
 
-> **Falsified proof:** Persisted-row revalidation, bounded producer-owned peer
-> dimensions, and the collector-target formatting boundary constrain those
-> disclosure paths. The wall-clock discontinuity below still retimes an old
-> observation as fresh.
+> **Falsified proof:** the wall-clock discontinuity in
+> [Counterexample](#counterexample) retimes an old observation as fresh.
 
 ## Scope and model
 
