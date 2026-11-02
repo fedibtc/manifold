@@ -574,6 +574,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             // capacity or consume another verb's bounded writer slots.
             IrohProtocol::new(server).with_method_response_write_limits([
                 ("get_availability", 128),
+                ("get_version", 128),
                 ("get_quote", 128),
                 ("get_fman_trust_material", 128),
             ]),

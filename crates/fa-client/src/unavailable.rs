@@ -191,6 +191,10 @@ impl ManifoldGuardianConnector for UnavailableManifoldGuardianConnector {
 pub struct UnavailableManifoldGuardianClient;
 
 impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
+    async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        Err(unavailable())
+    }
+
     async fn get_availability(
         &self,
         _request: GetAvailabilityRequest,

@@ -109,7 +109,9 @@ dials beyond the verifier round trips it already costs. The live
 the shared scalar-version, FA-range, selected major/minor/vendor, size,
 accepting-seats, and plan predicate into typed rejections; its
 offered plans and prices confer nothing — the signed quote remains the only
-commercial term. Probe failure text carries only the sanitized-by-contract
+commercial term. A guardian transfer preview's `GetVersionResponse` is
+equally untrusted and decides only whether the walk skips the candidate.
+Probe failure text carries only the sanitized-by-contract
 local connector error descriptions or a fixed marker for a Fleet
 Manager-returned error; remote error text is never embedded. Each probe runs
 under the per-candidate `MG_SELECTION_PROBE_TIMEOUT` (10 s) capped by the

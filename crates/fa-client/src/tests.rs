@@ -904,6 +904,24 @@ struct MgState {
     binding_votes: Mutex<HashMap<usize, fedi_decentralized_domain::MgPeerAttestation>>,
     /// Every accepted `RemoveSeat`, by MG.
     removed_seats: Mutex<Vec<(usize, SeatId)>>,
+    /// Per-MG `GetVersion` answer; absent answers `Current`.
+    versions: Mutex<HashMap<usize, TestMgVersion>>,
+    /// Every `GetVersion` call, by MG.
+    version_calls: Mutex<Vec<usize>>,
+}
+
+/// What a test MG answers to `GetVersion`.
+#[derive(Clone, Copy, Debug, Default)]
+enum TestMgVersion {
+    /// At the API version with guardian transfer v2.
+    #[default]
+    Current,
+    /// Answers, but below that API version.
+    WithoutTransfer,
+    /// From before `GetVersion`.
+    BeforeGetVersion,
+    /// Answers `GetVersion` with another service error.
+    Failing,
 }
 
 #[derive(Clone)]
@@ -1083,6 +1101,36 @@ impl TestMg {
 }
 
 impl ManifoldGuardianService for TestMg {
+    async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        self.state
+            .version_calls
+            .lock()
+            .expect("test lock")
+            .push(self.index);
+        match self
+            .state
+            .versions
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .copied()
+            .unwrap_or_default()
+        {
+            TestMgVersion::Current => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version: GUARDIAN_TRANSFER_V2_API_VERSION,
+            }),
+            TestMgVersion::WithoutTransfer => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version: MgApiVersion(0),
+            }),
+            // What the generated client turns an "unknown RPC method" answer
+            // into.
+            TestMgVersion::BeforeGetVersion => unsupported_test_verb("get_version"),
+            TestMgVersion::Failing => Err(ManifoldGuardianError::SeatUnavailable),
+        }
+    }
+
     async fn get_availability(
         &self,
         _request: GetAvailabilityRequest,

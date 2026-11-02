@@ -26,13 +26,13 @@ use fedi_decentralized_service_manifold_guardian::{
     GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest,
     GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
     GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
-    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
-    QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
-    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
-    RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest,
-    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp, TransferSeatCall,
-    TransferSeatResponse, VerifiedFaRequest,
+    GetVersionRequest, GetVersionResponse, GuardianFeeAccount, ManifoldGuardianError,
+    ManifoldGuardianService, Plan, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
+    PullSeatRequest, PullSeatResponse, QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse,
+    RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse,
+    RestartDkgRequest, RestartDkgResponse, ServiceStatus, SetMetaFieldRequest,
+    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    StatusDetail, Timestamp, TransferSeatCall, TransferSeatResponse, VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -365,6 +365,15 @@ fn supported_fedimintd_version() -> FedimintdVersion {
 }
 
 impl ManifoldGuardianService for ManifoldGuardianRpc {
+    async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        // Constant for the build: no state is read, so the public verb costs
+        // the same whoever asks.
+        Ok(GetVersionResponse {
+            mg_version: crate::seat_readiness::this_mg_version(),
+            api_version: fedi_decentralized_service_manifold_guardian::MG_API_VERSION,
+        })
+    }
+
     async fn get_availability(
         &self,
         _request: GetAvailabilityRequest,

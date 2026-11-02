@@ -31,7 +31,9 @@ use fedi_decentralized_peer_badge_verifier::{
 };
 use fedi_decentralized_service_manifold_guardian::{
     FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
-    GetAvailabilityRequest, GetAvailabilityResponse, Locator, MgName, Plan, Timestamp,
+    GUARDIAN_TRANSFER_V2_API_VERSION, GetAvailabilityRequest, GetAvailabilityResponse,
+    GetVersionRequest, Locator, ManifoldGuardianError, ManifoldGuardianService as _, MgName, Plan,
+    Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
 use futures::future::{Either, select};
@@ -710,6 +712,10 @@ pub(crate) enum LiveProbeOutcome {
     /// marker for a Manifold Guardian-returned error; the MG's own error text
     /// is never embedded.
     Unreachable(String),
+
+    /// The MG is below the API version with the guardian transfer a transfer
+    /// destination needs.
+    NoGuardianTransfer,
 }
 
 /// Selection-facing live availability port.
@@ -742,18 +748,56 @@ impl<F: ManifoldGuardianConnector> SelectionAvailabilityProber for LiveAvailabil
             Ok(client) => client,
             Err(error) => return LiveProbeOutcome::Unreachable(error.to_string()),
         };
-        match connector
-            .get_availability(&client, GetAvailabilityRequest)
-            .await
-        {
-            Ok(Ok(availability)) => LiveProbeOutcome::Available(availability),
-            // The inner error is MG-authored wire content. A fixed marker
-            // keeps remote free text out of the consumer-visible rejection;
-            // the typed refusal itself adds nothing a probe caller may act on.
-            Ok(Err(_)) => LiveProbeOutcome::Unreachable(
-                "Manifold Guardian returned an error to the availability probe".to_owned(),
+        probe_availability(connector, &client).await
+    }
+}
+
+async fn probe_availability<F: ManifoldGuardianConnector>(
+    connector: &F,
+    client: &F::Client,
+) -> LiveProbeOutcome {
+    match connector
+        .get_availability(client, GetAvailabilityRequest)
+        .await
+    {
+        Ok(Ok(availability)) => LiveProbeOutcome::Available(availability),
+        // The inner error is MG-authored wire content. A fixed marker
+        // keeps remote free text out of the consumer-visible rejection;
+        // the typed refusal itself adds nothing a probe caller may act on.
+        Ok(Err(_)) => LiveProbeOutcome::Unreachable(
+            "Manifold Guardian returned an error to the availability probe".to_owned(),
+        ),
+        Err(error) => LiveProbeOutcome::Unreachable(error.to_string()),
+    }
+}
+
+/// Live probe of a guardian transfer destination: its availability, and
+/// then whether its API version has the guardian transfer this client drives.
+pub(crate) struct TransferDestinationProber<'a, F> {
+    pub(crate) connector: &'a F,
+}
+
+impl<F: ManifoldGuardianConnector> SelectionAvailabilityProber
+    for TransferDestinationProber<'_, F>
+{
+    async fn probe(&self, locator: &Locator) -> LiveProbeOutcome {
+        let client = match self.connector.connect(locator).await {
+            Ok(client) => client,
+            Err(error) => return LiveProbeOutcome::Unreachable(error.to_string()),
+        };
+        let outcome = probe_availability(self.connector, &client).await;
+        if !matches!(outcome, LiveProbeOutcome::Available(_)) {
+            return outcome;
+        }
+        match client.get_version(GetVersionRequest).await {
+            Ok(version) if version.supports(GUARDIAN_TRANSFER_V2_API_VERSION) => outcome,
+            // An MG from before `GetVersion` answers `UnsupportedVerb`.
+            Ok(_) | Err(ManifoldGuardianError::UnsupportedVerb { .. }) => {
+                LiveProbeOutcome::NoGuardianTransfer
+            }
+            Err(_) => LiveProbeOutcome::Unreachable(
+                "Manifold Guardian returned an error to the version probe".to_owned(),
             ),
-            Err(error) => LiveProbeOutcome::Unreachable(error.to_string()),
         }
     }
 }
@@ -1551,6 +1595,7 @@ async fn probe_reached_candidate(
         LiveProbeOutcome::Unreachable(message) => {
             Err(AdvertisementRejection::ProbeFailed { message })
         }
+        LiveProbeOutcome::NoGuardianTransfer => Err(AdvertisementRejection::LiveNoGuardianTransfer),
         LiveProbeOutcome::Available(availability) => match_requested_availability(
             &availability,
             request.federation_size,

@@ -363,6 +363,11 @@ pub enum AdvertisementRejection {
     /// plan preference.
     LiveNoRequestedPlan,
 
+    /// A guardian transfer destination does not speak the guardian transfer
+    /// protocol this client drives: its `GetVersion` answer does not list
+    /// it, or it is from before `GetVersion`.
+    LiveNoGuardianTransfer,
+
     /// `expires_at` has passed.
     Expired,
 
@@ -418,6 +423,7 @@ impl AdvertisementRejection {
             Self::LiveUnsupportedFederationSize => "live_unsupported_federation_size",
             Self::LiveUnsupportedFedimintdVersion => "live_unsupported_fedimintd_version",
             Self::LiveNoRequestedPlan => "live_no_requested_plan",
+            Self::LiveNoGuardianTransfer => "live_no_guardian_transfer",
             Self::Expired => "expired",
             Self::IssuedInFuture => "issued_in_future",
             Self::Stale => "stale",

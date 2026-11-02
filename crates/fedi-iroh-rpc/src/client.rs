@@ -74,8 +74,20 @@ impl RpcClient {
             .map_err(map_response_read_error)?;
         match decode(&response_bytes)? {
             ResponseFrame::Service(body) => decode(&body),
-            ResponseFrame::Transport(message) => Err(RpcError::Remote(message)),
+            ResponseFrame::Transport(message) => Err(remote_error(method, message)),
         }
+    }
+}
+
+/// Type a remote transport answer. A server that has no handler for `method`
+/// answers with the text of [`RpcError::UnknownMethod`], which is the only
+/// signal a peer from before a method existed can give, so it keeps its type.
+fn remote_error(method: &str, message: String) -> RpcError {
+    let unknown = RpcError::UnknownMethod(method.to_owned());
+    if message == unknown.to_string() {
+        unknown
+    } else {
+        RpcError::Remote(message)
     }
 }
 
@@ -118,9 +130,29 @@ fn map_response_read_error(error: ReadToEndError) -> RpcError {
 mod tests {
     use serde::{Deserialize, Serialize};
 
+    use crate::RpcError;
     use crate::frame::{RequestFrame, ResponseFrame};
 
-    use super::{decode, encode};
+    use super::{decode, encode, remote_error};
+
+    /// Released servers answer a method they do not have with this exact
+    /// text. The client must recognize it for the called method only.
+    #[test]
+    fn a_released_servers_unknown_method_answer_keeps_its_type() {
+        let answer = "unknown RPC method: get_version".to_owned();
+        assert!(matches!(
+            remote_error("get_version", answer.clone()),
+            RpcError::UnknownMethod(method) if method == "get_version"
+        ));
+        assert!(matches!(
+            remote_error("get_status", answer.clone()),
+            RpcError::Remote(message) if message == answer
+        ));
+        assert!(matches!(
+            remote_error("get_version", "request did not finish".to_owned()),
+            RpcError::Remote(_)
+        ));
+    }
 
     #[test]
     fn raw_bodies_are_cbor_byte_strings_without_per_byte_amplification() {

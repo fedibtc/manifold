@@ -410,9 +410,9 @@ Six kinds of state, six owners:
 
 - FA requests arrive over iroh from anyone. Signed seat-scoped requests are
   authenticated by their envelope and the seat's creation-time `fi_id` binding.
-  `GetAvailability`, `GetQuote`, and `GetFmanTrustMaterial` are
-  intentionally unauthenticated reads; the latter returns signed public trust
-  material. Quotes bind their `fi_id` and payment binds the quote, so
+  `GetAvailability`, `GetVersion`, `GetQuote`, and `GetFmanTrustMaterial`
+  are intentionally unauthenticated reads; the last returns signed public
+  trust material. Quotes bind their `fi_id` and payment binds the quote, so
   unsolicited payment is unrepresentable
   ([SPEC-locked-payment](./SPEC-locked-payment.md)).
 - Telemetry requests arrive on a distinct Iroh ALPN and use one stable,

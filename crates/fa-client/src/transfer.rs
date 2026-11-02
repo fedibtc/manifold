@@ -40,10 +40,11 @@ use fedi_decentralized_domain::{
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FederationId, FormationSeatBinding,
-    GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY, GetPeerAttestationRequest, GetStatusRequest, Locator,
-    ManifoldGuardianError, ManifoldGuardianService, MetaConsensusBase, PullSeatRequest,
-    RemoveSeatRequest, ReplaceSeatBindingRequest, SeatId, SeatTransferGrant, ServiceStatus,
-    SignedRequest, Timestamp, rebind_transferred_seat,
+    GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY, GUARDIAN_TRANSFER_V2_API_VERSION,
+    GetPeerAttestationRequest, GetStatusRequest, GetVersionRequest, Locator, ManifoldGuardianError,
+    ManifoldGuardianService, MetaConsensusBase, PullSeatRequest, RemoveSeatRequest,
+    ReplaceSeatBindingRequest, SeatId, SeatTransferGrant, ServiceStatus, SignedRequest, Timestamp,
+    rebind_transferred_seat,
 };
 use fedimint_core::runtime::Instant;
 use futures::stream::{FuturesUnordered, StreamExt as _};
@@ -61,8 +62,9 @@ use crate::mg::MgClient;
 use crate::seat_purchase::{StoredDestinationSeat, StoredSeatPurchase};
 use crate::{
     FaClient, FaError, FaId, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
-    FormationFreshness, FormationId, MaintenanceRunOptions, ManifoldGuardianConnector, MgCause,
-    MgOperation, TransferDestinationApproval,
+    FormationFreshness, FormationId, GuardianTransferRole, MaintenanceRunOptions,
+    ManifoldGuardianConnector, MgCause, MgOperation, TransferDestinationApproval,
+    UnsupportedTransferMg,
 };
 
 /// How often `FaClient::run_guardian_transfer` checks a transfer that
@@ -281,6 +283,7 @@ where
                 "the destination MG or holder hosts or hosted a peer of this federation".to_owned(),
             ));
         }
+        let destination = approval.seat.clone();
         let purchase = self.seat_purchase(approval, &federation, payment_federation_id)?;
         let authority = self.maintenance_authority(fa_id).await?;
         if let Some(operation_id) = self.replacement_liquidity_blocker().await? {
@@ -313,6 +316,9 @@ where
             if !self.guardian_transfer_enabled(run).await? {
                 return Err(FaError::GuardianTransferDisabled);
             }
+            // Nor for a transfer that an MG it needs cannot take part in.
+            self.check_guardian_transfer_support(&destination, &authority, seat_index, run)
+                .await?;
             lease
                 .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer.clone()))
                 .await?;
@@ -320,6 +326,109 @@ where
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// Ask the MGs a transfer needs whether their API version has the
+    /// guardian transfer this client drives, before the FA pays for a seat.
+    ///
+    /// The destination must answer with support, since the FA would pay it.
+    /// The source must not answer without support, but a source probe that
+    /// fails any other way does not block: a guardian usually needs a new
+    /// host because its MG is down, and the move waits for the source anyway.
+    /// The staying guardians only vote the move's binding, which needs the
+    /// federation's consensus threshold, so with the destination in the
+    /// source's place at least that many voters must answer with support. A
+    /// staying guardian that does not answer counts against it. An MG from
+    /// before `GetVersion` answers `UnsupportedVerb` and is below it. Each
+    /// probe is capped like a selection probe, so an MG that is down does
+    /// not hold the start until the run's deadline.
+    async fn check_guardian_transfer_support(
+        &self,
+        destination: &crate::selection::ApprovedMgSeat,
+        authority: &PostFormedAuthority,
+        seat_index: u16,
+        run: DriverRun<'_>,
+    ) -> FaResult<()> {
+        let mut mgs = vec![(
+            GuardianTransferRole::Destination,
+            destination.mg_id,
+            &destination.locator,
+        )];
+        mgs.extend(authority.seats.iter().map(|seat| {
+            let role = if seat.index == seat_index {
+                GuardianTransferRole::Source
+            } else {
+                GuardianTransferRole::Guardian {
+                    seat_index: seat.index,
+                }
+            };
+            (role, seat.mg_id, &seat.locator)
+        }));
+        let answers = futures::future::join_all(
+            mgs.iter()
+                .map(|(_, _, locator)| self.speaks_guardian_transfer(locator, run)),
+        )
+        .await;
+        // The binding vote of `publish_moved_binding`: every current seat,
+        // with the destination in place of the source.
+        let threshold = fedi_decentralized_domain::consensus_threshold(authority.seats.len())
+            .and_then(|threshold| u16::try_from(threshold).ok())
+            .ok_or_else(|| FaError::Storage("the federation size has no threshold".to_owned()))?;
+        let mut unsupported = Vec::new();
+        let mut voters = 0u16;
+        let mut endpoint_unsupported = false;
+        for ((role, mg_id, _), answer) in mgs.into_iter().zip(answers) {
+            match (role, answer) {
+                (GuardianTransferRole::Source, Ok(true)) => {}
+                (_, Ok(true)) => voters += 1,
+                (_, Ok(false)) => {
+                    endpoint_unsupported |= !matches!(role, GuardianTransferRole::Guardian { .. });
+                    unsupported.push(UnsupportedTransferMg { role, mg_id });
+                }
+                (GuardianTransferRole::Destination, Err(error)) => return Err(error),
+                (_, Err(FaError::Mg(_))) => {}
+                (_, Err(error)) => return Err(error),
+            }
+        }
+        if endpoint_unsupported || voters < threshold {
+            Err(FaError::GuardianTransferUnsupported {
+                unsupported,
+                voters,
+                threshold,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn speaks_guardian_transfer(
+        &self,
+        locator: &Locator,
+        run: DriverRun<'_>,
+    ) -> FaResult<bool> {
+        let probe = async {
+            let client = MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
+            match client
+                .call(run, MgOperation::GetVersion, |client| {
+                    client.get_version(GetVersionRequest)
+                })
+                .await
+            {
+                Ok(version) => Ok(version.supports(GUARDIAN_TRANSFER_V2_API_VERSION)),
+                Err(FaError::Mg(failure)) if failure.cause == MgCause::UnsupportedVerb => Ok(false),
+                Err(error) => Err(error),
+            }
+        };
+        fedimint_core::runtime::timeout(crate::MG_SELECTION_PROBE_TIMEOUT, probe)
+            .await
+            .unwrap_or_else(|_| {
+                Err(crate::MgFailure {
+                    mg: locator.service_pubkey,
+                    operation: MgOperation::GetVersion,
+                    cause: MgCause::Timeout,
+                }
+                .into())
+            })
     }
 
     /// Advance the open transfer as far as it goes within `options`.
