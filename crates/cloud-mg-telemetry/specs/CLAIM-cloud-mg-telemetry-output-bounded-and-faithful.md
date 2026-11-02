@@ -11,9 +11,9 @@ private listener's federation export returns a canonical invite for each
 federation of an active, unexpired target's current seats that stored one. The
 private listener's seat report exports return only fields decoded from an
 active, unexpired target's latest valid `seat capacity` and `seat readiness
-check completed` MG-journal safe events, as `ARCH-cloud-mg-telemetry` defines
-them, observed no later than their reception. The collector does
-not inject that held material into archive bytes; those bytes are the exact
+check completed` MG-journal safe events, as
+[ARCH-cloud-mg-telemetry](../../../specs/ARCH-cloud-mg-telemetry.md) defines
+them, observed no later than their reception. The collector does not inject that held material into archive bytes; those bytes are the exact
 upstream-approved safe-event payload and may contain fields approved at the
 source. These surfaces neither merge distinct MG identities, accept unbounded
 source cardinality, nor retime an old metric observation as fresh. Authorized
@@ -22,11 +22,8 @@ surfaces.
 
 ## Status
 
-Falsified. Persisted metric snapshots are revalidated under the current policy,
-peer and self IDs are bounded producer-owned dimensions, and the stderr
-formatter rejects targets outside the collector namespace before applying
-`RUST_LOG`. A supported forward wall-clock step during one complete poll can
-nevertheless persist future-era completion and observation times. After clock
+Falsified: a supported forward wall-clock step during one complete poll can
+persist future-era completion and observation times. After clock
 correction and ordinary lease renewal, the future `next_due_at` delays a
 correcting poll, target freshness remains true beyond the real freshness
 interval, and the old snapshot is eventually emitted with zero age and
