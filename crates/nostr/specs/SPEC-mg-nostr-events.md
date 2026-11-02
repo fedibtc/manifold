@@ -208,7 +208,8 @@ accepting seats, it stops publishing both, and both lapse at their signed
 expiry. Retiring `37701` publication is a separate, approved change.
 
 **Reading.** An FA queries the two kinds separately, and each query has its
-own copy of the legacy candidate and retained-byte bounds. While every MG
+own copy of the legacy candidate and retained-byte bounds. The v2 query may
+use at most half of the time budget. While every MG
 publishes kind `37701`, the legacy query alone decides whether the enumeration
 is complete. A failed v2 query leaves every author on its legacy
 advertisement. For each author, it
