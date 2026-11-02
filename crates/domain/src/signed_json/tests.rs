@@ -8,11 +8,11 @@ const OTHER_TAG: PurposeTag = PurposeTag::new(b"fedi-signed-json/test-fixture/v2
 /// Envelope signed outside this crate: a reference BIP-340 implementation
 /// with secret key 3 and zero auxiliary randomness, over
 /// `SHA256(TAG || payload)`.
-const FIXTURE: &str = r#"{"payload":"{\"issued_at\":9007199254740993,\"note\":\"café \\\"quoted\\\" \\\\ slash/\",\"unknown\":{\"big\":1e400,\"deep\":[[1]]}}","signature":"a72d2069525edc02872a2a92c43d06ef8bdd74b6dcbdeb880f4760c61f36bbd5419a4f9b8f105d265d738538bbfb5e5837458ab9e83080a32988c2623823c910"}"#;
+const FIXTURE: &str = r#"{"signer":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","payload":"{\"issued_at\":9007199254740993,\"note\":\"café \\\"quoted\\\" \\\\ slash/\",\"unknown\":{\"big\":1e400,\"deep\":[[1]]}}","signature":"a72d2069525edc02872a2a92c43d06ef8bdd74b6dcbdeb880f4760c61f36bbd5419a4f9b8f105d265d738538bbfb5e5837458ab9e83080a32988c2623823c910"}"#;
 
 /// The same envelope with the members reordered and the payload string
 /// re-escaped (`é`, `\/`), as a reserializing transport may emit it.
-const FIXTURE_REESCAPED: &str = r#"{"signature": "a72d2069525edc02872a2a92c43d06ef8bdd74b6dcbdeb880f4760c61f36bbd5419a4f9b8f105d265d738538bbfb5e5837458ab9e83080a32988c2623823c910", "payload": "{\"issued_at\":9007199254740993,\"note\":\"caf\u00e9 \\\"quoted\\\" \\\\ slash\/\",\"unknown\":{\"big\":1e400,\"deep\":[[1]]}}"}"#;
+const FIXTURE_REESCAPED: &str = r#"{"signature": "a72d2069525edc02872a2a92c43d06ef8bdd74b6dcbdeb880f4760c61f36bbd5419a4f9b8f105d265d738538bbfb5e5837458ab9e83080a32988c2623823c910", "payload": "{\"issued_at\":9007199254740993,\"note\":\"caf\u00e9 \\\"quoted\\\" \\\\ slash\/\",\"unknown\":{\"big\":1e400,\"deep\":[[1]]}}", "signer": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"}"#;
 
 /// `SHA256(TAG || payload)`, computed outside this crate.
 const FIXTURE_DIGEST_HEX: &str = "c9ba59a12c822f7ac95f56dd2762dfce195e7648c98a16270276c04597eda340";
@@ -33,33 +33,36 @@ struct Counter {
     n: u64,
 }
 
-fn envelope_text(payload: &str, signature_hex: &str) -> String {
-    serde_json::json!({"payload": payload, "signature": signature_hex}).to_string()
+fn envelope_text(signer_hex: &str, payload: &str, signature_hex: &str) -> String {
+    serde_json::json!({"signer": signer_hex, "payload": payload, "signature": signature_hex})
+        .to_string()
 }
 
-fn fixture_signer() -> nostr::PublicKey {
-    nostr::PublicKey::parse(FIXTURE_SIGNER_HEX).expect("fixture signer parses")
-}
-
-/// The fixed key of secret 2 that signs [`signed`] envelopes.
-fn test_keys() -> nostr::Keys {
-    nostr::Keys::parse(&format!("{:064x}", 2)).expect("test key parses")
-}
-
-/// An envelope for `payload` signed by [`test_keys`] under [`TAG`].
+/// An envelope for `payload` signed by a fresh key under [`TAG`].
 fn signed(payload: &str) -> SignedJsonEnvelope {
+    let keys = nostr::Keys::generate();
     SignedJsonEnvelope {
+        signer: keys.public_key(),
         payload: payload.to_owned(),
-        signature: test_keys().sign_schnorr(&TAG.digest(payload)),
+        signature: keys.sign_schnorr(&TAG.digest(payload)),
     }
 }
 
 fn verify_counter(payload: &str) -> Result<Counter, SignedJsonError> {
-    signed(payload).verify::<Counter>(test_keys().public_key(), TAG)
+    let envelope = signed(payload);
+    envelope.verify::<Counter>(envelope.signer, TAG)
 }
 
 fn fixture() -> SignedJsonEnvelope {
     SignedJsonEnvelope::decode(FIXTURE).expect("fixture decodes")
+}
+
+fn fixture_signer() -> nostr::PublicKey {
+    nostr::PublicKey::from_hex(FIXTURE_SIGNER_HEX).expect("fixture signer parses")
+}
+
+fn other_signer() -> nostr::PublicKey {
+    nostr::PublicKey::from_hex(OTHER_SIGNER_HEX).expect("other signer parses")
 }
 
 fn fixture_signature_hex() -> String {
@@ -106,10 +109,18 @@ fn tampering_fails_the_signature_before_the_payload_is_parsed() {
     let mut flipped_signature = fixture.signature.serialize();
     flipped_signature[63] ^= 1;
     for tampered in [
-        envelope_text(&changed_number, &signature_hex),
-        envelope_text(&broken_json, &signature_hex),
-        envelope_text(&format!("{} ", fixture.payload), &signature_hex),
-        envelope_text(&fixture.payload, &hex::encode(flipped_signature)),
+        envelope_text(FIXTURE_SIGNER_HEX, &changed_number, &signature_hex),
+        envelope_text(FIXTURE_SIGNER_HEX, &broken_json, &signature_hex),
+        envelope_text(
+            FIXTURE_SIGNER_HEX,
+            &format!("{} ", fixture.payload),
+            &signature_hex,
+        ),
+        envelope_text(
+            FIXTURE_SIGNER_HEX,
+            &fixture.payload,
+            &hex::encode(flipped_signature),
+        ),
     ] {
         let envelope = SignedJsonEnvelope::decode(&tampered).expect("tampered envelope decodes");
         assert_eq!(
@@ -118,34 +129,6 @@ fn tampering_fails_the_signature_before_the_payload_is_parsed() {
             "{tampered}"
         );
     }
-}
-
-/// The caller names the key it accepts. The intact fixture fails for any
-/// other key, and a `signer` member in the document is an ignored unknown
-/// member, so it cannot name another key.
-#[test]
-fn only_the_expected_signer_verifies() {
-    let other = nostr::PublicKey::parse(OTHER_SIGNER_HEX).expect("other key parses");
-    assert_eq!(
-        fixture().verify::<FixturePayload>(other, TAG),
-        Err(SignedJsonError::InvalidSignature)
-    );
-    let claims_other = FIXTURE.replacen('{', &format!(r#"{{"signer":"{OTHER_SIGNER_HEX}","#), 1);
-    let envelope = SignedJsonEnvelope::decode(&claims_other).expect("unknown member is skipped");
-    assert_eq!(envelope, fixture());
-    assert_eq!(
-        envelope.verify::<FixturePayload>(other, TAG),
-        Err(SignedJsonError::InvalidSignature)
-    );
-    envelope
-        .verify::<FixturePayload>(fixture_signer(), TAG)
-        .expect("the key that signed still verifies");
-    // A key that is not a curve point verifies nothing.
-    let off_curve = nostr::PublicKey::from_slice(&[0xff; 32]).expect("any 32 bytes parse");
-    assert_eq!(
-        fixture().verify::<FixturePayload>(off_curve, TAG),
-        Err(SignedJsonError::InvalidSignature)
-    );
 }
 
 #[test]
@@ -174,15 +157,33 @@ fn sign_round_trips_through_the_encoded_envelope() {
         decoded.verify::<Counter>(keys.public_key(), TAG),
         Ok(Counter { n: u64::MAX })
     );
+}
+
+/// The envelope verifies only for the key the caller expects. A signer
+/// member naming another key fails before the signature check, whether the
+/// signature is the original one or not.
+#[test]
+fn only_the_expected_signer_verifies() {
+    let fixture = fixture();
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&envelope.to_json())
-            .expect("envelope is JSON")
-            .as_object()
-            .expect("envelope is an object")
-            .keys()
-            .collect::<Vec<_>>(),
-        ["payload", "signature"],
-        "the envelope names no signer",
+        fixture.verify::<FixturePayload>(other_signer(), TAG),
+        Err(SignedJsonError::UnexpectedSigner)
+    );
+
+    // Swapping the named signer cannot redirect verification to that key.
+    let relabeled = SignedJsonEnvelope::decode(&envelope_text(
+        OTHER_SIGNER_HEX,
+        &fixture.payload,
+        &fixture_signature_hex(),
+    ))
+    .expect("relabeled envelope decodes");
+    assert_eq!(
+        relabeled.verify::<FixturePayload>(fixture_signer(), TAG),
+        Err(SignedJsonError::UnexpectedSigner)
+    );
+    assert_eq!(
+        relabeled.verify::<FixturePayload>(other_signer(), TAG),
+        Err(SignedJsonError::InvalidSignature)
     );
 }
 
@@ -212,7 +213,7 @@ fn envelope_bound_counts_escaped_bytes() {
     assert!(at_limit.payload.len() < SIGNED_JSON_ENVELOPE_MAX_BYTES * 3 / 4);
     let decoded = SignedJsonEnvelope::decode(&at_limit.to_json()).expect("at the limit decodes");
     assert_eq!(
-        decoded.verify::<Counter>(test_keys().public_key(), TAG),
+        decoded.verify::<Counter>(decoded.signer, TAG),
         Ok(Counter { n: 1 })
     );
     assert_eq!(
@@ -257,14 +258,18 @@ fn payload_bound_counts_decoded_bytes_independently() {
 fn unpaired_surrogate_payload_is_malformed() {
     let signature_hex = fixture_signature_hex();
     for escape in [r"\ud800", r"\udc00", r"\ud83d x"] {
-        let text = format!(r#"{{"payload":"{escape}","signature":"{signature_hex}"}}"#);
+        let text = format!(
+            r#"{{"signer":"{FIXTURE_SIGNER_HEX}","payload":"{escape}","signature":"{signature_hex}"}}"#
+        );
         assert_eq!(
             SignedJsonEnvelope::decode(&text),
             Err(SignedJsonError::MalformedEnvelope),
             "{escape}"
         );
     }
-    let paired = format!(r#"{{"payload":"😀","signature":"{signature_hex}"}}"#);
+    let paired = format!(
+        r#"{{"signer":"{FIXTURE_SIGNER_HEX}","payload":"😀","signature":"{signature_hex}"}}"#
+    );
     let decoded = SignedJsonEnvelope::decode(&paired).expect("paired surrogates decode");
     assert_eq!(decoded.payload, "\u{1f600}");
 }
@@ -334,8 +339,9 @@ fn duplicate_known_names_fail_and_duplicate_unknown_names_are_skipped() {
     );
 
     let signature_hex = fixture_signature_hex();
-    let duplicate_payload =
-        format!(r#"{{"payload":"{{}}","payload":"{{}}","signature":"{signature_hex}"}}"#);
+    let duplicate_payload = format!(
+        r#"{{"signer":"{FIXTURE_SIGNER_HEX}","payload":"{{}}","payload":"{{}}","signature":"{signature_hex}"}}"#
+    );
     assert_eq!(
         SignedJsonEnvelope::decode(&duplicate_payload),
         Err(SignedJsonError::MalformedEnvelope)
@@ -356,8 +362,9 @@ fn nesting_is_bounded_where_the_payload_is_decoded() {
     // Decoded structure has at most 127 containers, counting the top-level
     // object.
     let decode_all = |depth: usize| {
-        signed(&nested(depth))
-            .verify::<serde_json::Value>(test_keys().public_key(), TAG)
+        let envelope = signed(&nested(depth));
+        envelope
+            .verify::<serde_json::Value>(envelope.signer, TAG)
             .map(|_| ())
     };
     assert_eq!(decode_all(126), Ok(()));
@@ -370,10 +377,14 @@ fn malformed_envelopes_are_rejected() {
     for text in [
         "[]".to_owned(),
         "null".to_owned(),
-        FIXTURE.replace(&signature_hex, &signature_hex.to_uppercase()),
+        FIXTURE.replace(FIXTURE_SIGNER_HEX, &FIXTURE_SIGNER_HEX.to_uppercase()),
         FIXTURE.replace(&signature_hex, &signature_hex[2..]),
-        format!(r#"{{"payload":{{"n":1}},"signature":"{signature_hex}"}}"#),
-        format!(r#"{{"signature":"{signature_hex}"}}"#),
+        format!(
+            r#"{{"signer":"{FIXTURE_SIGNER_HEX}","payload":{{"n":1}},"signature":"{signature_hex}"}}"#
+        ),
+        format!(r#"{{"signer":"{FIXTURE_SIGNER_HEX}","signature":"{signature_hex}"}}"#),
+        // Not the x coordinate of a curve point.
+        FIXTURE.replace(FIXTURE_SIGNER_HEX, &"f".repeat(64)),
     ] {
         assert_eq!(
             SignedJsonEnvelope::decode(&text),
@@ -386,7 +397,8 @@ fn malformed_envelopes_are_rejected() {
 #[test]
 fn positional_sequence_form_is_rejected() {
     let fixture: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is JSON");
-    let array = serde_json::json!([fixture["payload"], fixture["signature"]]).to_string();
+    let array = serde_json::json!([fixture["signer"], fixture["payload"], fixture["signature"]])
+        .to_string();
     assert_eq!(
         SignedJsonEnvelope::decode(&array),
         Err(SignedJsonError::MalformedEnvelope)

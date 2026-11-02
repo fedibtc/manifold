@@ -20,9 +20,8 @@ use at most half of the run's remaining budget, so a stalled answer still leaves
 time to admit the legacy results. A v2 event must be fresh before the
 newest-per-author reduction, so an author's newest fresh v2 advertisement wins. For
 each event it checks the event role and signature, the payload proof (for v2,
-the exact-payload envelope signature under the event author's key and the
-payload parse), the legacy `fman_id_pubkey` equal to the event author, and the
-newest event per author and format (with the NIP-01
+the exact-payload envelope signature and payload parse), the signer equal to the
+event author, and the newest event per author and format (with the NIP-01
 lowest-id tie break). Per author it uses the fresh v2 advertisement when one
 exists and otherwise the legacy one, which has no uptime report, and never
 merges fields across formats. It then checks freshness and caller eligibility.

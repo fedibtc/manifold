@@ -163,18 +163,19 @@ The v2 advertisement carries the same offer as kind `37701`, and adds signed
 fields, under the exact-payload envelope whose wire contract is documented on
 `fedi_decentralized_domain::SignedJsonEnvelope` and `PurposeTag`.
 The event `content` is that envelope. The purpose tag is
-`fedi-signed-json/mg-advertisement/v1\0`. The envelope names no signer: a
-reader verifies it with the event author's key, the MG Nostr service key, and
-accepts no other. The trust chain, the non-trust status of availability, plans
-and endpoints, and every relying-flow check of the legacy section apply
-unchanged. They read the event author wherever the legacy section reads
-`fman_id_pubkey`.
+`fedi-signed-json/mg-advertisement/v1\0`. The signer is the MG Nostr service
+key, which must equal the event author. The trust chain, the non-trust status
+of availability, plans and endpoints, and every relying-flow check of the
+legacy section apply unchanged. They read the signer wherever the legacy
+section reads `fman_id_pubkey`.
 
 The payload has the legacy fields with the same meanings and serde shapes:
 `service_pubkey`, `issued_at`, `expires_at`, `api_endpoints`, `availability`,
 `plans` and `holder_authorizations`. It drops `version`, because the purpose
-tag versions the schema, and it drops `fman_id_pubkey`, because the event
-author, whose key the envelope verifies under, is the identity. It adds one field:
+tag versions the schema, and it drops `fman_id_pubkey`, because the envelope
+signer is the identity. No payload field repeats the signer key, as the
+envelope contract requires. `service_pubkey` is a different key: the MG's
+commitment-signing key, not its Nostr service key. It adds one field:
 
 - `uptime_permille`: an optional object `{"1d", "7d", "30d"}` of integers in
   `0..=1000`. The values are the scores that the MG's latest readiness run
@@ -209,8 +210,8 @@ publishes kind `37701`, the legacy query alone decides whether the enumeration
 is complete. A failed v2 query leaves every author on its legacy
 advertisement. For each author, it
 statically admits each format. The legacy format is admitted as today. A v2
-event must pass the event signature, the envelope verification under the
-event author's key, and the payload parse. The FA then applies the existing freshness rule
+event must pass the event signature, the envelope verification, the payload
+parse and the author binding. The FA then applies the existing freshness rule
 to the signed `issued_at` and `expires_at`. It uses the newest fresh admitted
 v2 advertisement, by the existing newest-per-author order, when one exists. Otherwise it uses the newest fresh admitted
 legacy advertisement, and that candidate has no uptime report. The FA never

@@ -919,10 +919,7 @@ async fn stale_or_invalid_v2_advertisement_falls_back_to_legacy() {
     ])
     .await;
 
-    assert_eq!(
-        reasons(&discovery),
-        ["invalid_advertisement_proof", "stale"]
-    );
+    assert_eq!(reasons(&discovery), ["author_mismatch", "stale"]);
     assert_eq!(discovery.candidates.len(), 2);
     for candidate in &discovery.candidates {
         assert_eq!(candidate.advertised_price_msats(), AD_PRICE_MSATS);

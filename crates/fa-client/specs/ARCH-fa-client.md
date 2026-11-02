@@ -201,9 +201,7 @@ authenticated set; canonical selection uses canonical set order.
 into a statically admitted candidate set without writing durable state,
 taking the driver lease, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's
-own payload proof by the event author (for kind 37701, the
-`fman_id_pubkey == event author` rule; for kind 37709, verification under the
-author's key),
+own payload proof and the signer-equals-event-author identity rule,
 per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break) within
 each format, the fresh v2 advertisement in preference to the legacy one,
 the freshness policy, and the caller's eligibility requirements — all
