@@ -502,9 +502,10 @@ fn advertisement_v2_uptime_is_bounded_to_one_thousand() {
 }
 
 /// The legacy rendering of a v2 offer is the payload a v1-only MG signs: the
-/// same fields, its own identity, and nothing of the uptime report.
+/// same fields, its own identity, and nothing of the uptime report or the
+/// build version.
 #[test]
-fn legacy_rendering_of_a_v2_offer_drops_only_the_uptime() {
+fn legacy_rendering_of_a_v2_offer_drops_the_uptime_and_version() {
     let keys = Keys::generate();
     let v1 = payload(&keys);
     let mut v2 = AdvertisementV2Payload::from(v1.clone());

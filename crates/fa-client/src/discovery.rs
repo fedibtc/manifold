@@ -372,9 +372,8 @@ pub enum AdvertisementRejection {
     /// it, or it is from before `GetVersion`.
     LiveNoGuardianTransfer,
 
-    /// A guardian transfer destination's advertisement reports no API
-    /// version with the guardian transfer this client drives: a legacy
-    /// advertisement, one without a version, or an older version.
+    /// A guardian transfer destination's v2 advertisement reports an API
+    /// version below the one with the guardian transfer this client drives.
     NoAdvertisedGuardianTransfer,
 
     /// `expires_at` has passed.

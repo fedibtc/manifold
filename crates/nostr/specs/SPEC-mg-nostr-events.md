@@ -171,8 +171,9 @@ section reads `fman_id_pubkey`.
 
 The payload has the legacy fields with the same meanings and serde shapes:
 `service_pubkey`, `issued_at`, `expires_at`, `api_endpoints`, `availability`,
-`plans` and `holder_authorizations`. It drops `version`, because the purpose
-tag versions the schema, and it drops `fman_id_pubkey`, because the envelope
+`plans` and `holder_authorizations`. It drops the legacy schema-version
+integer `version`, because the purpose tag versions the schema (the new
+`version` object below reports the MG build instead), and it drops `fman_id_pubkey`, because the envelope
 signer is the identity. No second payload field identifies the envelope
 signer, as the envelope contract requires. `service_pubkey` is a different
 key: the MG's commitment-signing key, not its Nostr service key. An embedded
@@ -192,11 +193,12 @@ own trust binding. It adds two fields:
 - `version`: an optional object `{"mg_version", "api_version"}`, the MG's
   own `GetVersion` answer: its release as a SemVer string and its MG API
   version as an integer ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
-  Absent means unreported, as from an MG that predates the field. It is
-  self-asserted like the uptime report, but an MG that lies about it only
-  loses or wastes offers, so an FA may skip an MG on it: a guardian transfer
-  preview offers only MGs reporting an API version with the guardian
-  transfer. An FA still asks the MG itself before it pays.
+  Absent means unknown, as from an MG that predates the field, not
+  unsupported. It is self-asserted like the uptime report, but an MG that
+  lies about it only loses or wastes offers, so an FA may skip an MG on it:
+  a guardian transfer preview skips, without dialing, an MG whose reported
+  API version lacks the guardian transfer, and asks an MG that reports none
+  live. An FA still asks the MG itself before it pays.
 
 Unknown payload fields follow the envelope's rule: readers verify the exact
 bytes and then ignore the unknown fields. The rule covers the objects this

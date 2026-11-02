@@ -62,8 +62,8 @@ transfer needs speak this shape. Each MG reports its API version through
 advertisement ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md));
 this shape is in API version 1 and later. An MG from before `GetVersion` is below it, and that includes
 every release with the old shape. The FA therefore buys a destination seat only from an MG
-at that API version or later: the destination preview offers only MGs whose
-advertisement reports it, confirms it live, and before it
+at that API version or later: the destination preview skips MGs whose
+advertisement reports an older version, asks the rest live, and before it
 pays the FA asks the destination, the source, and every staying guardian's MG
 again, each probe capped at the selection probe timeout:
 
