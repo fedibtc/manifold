@@ -2,6 +2,8 @@
 
 ## Argument
 
+**L1 (`code`) — readiness is rechecked at three points.**
+
 1. **Before persistence, under the writer.** `begin_write` is `BEGIN IMMEDIATE`,
    so no other writer can commit between the recheck's reads and the insert.
    This fences every database-backed readiness input.
@@ -19,17 +21,16 @@ bump it, and `daemon_state` has four writers plus the auth-provider swap.
 
 **L2 (`enum`) — readiness dependencies can change concurrently.**
 Regenerating the callers of `reconcile_after_config_change` in
-[`admin.rs`](../src/admin.rs) gives six admin verbs that commit
+[`admin.rs`](../../src/admin.rs) gives six admin verbs that commit
 and then trigger publication: `apply_setup_config`, `update_provider_config`,
 `install_provider_identity`, `attestation_install`, `attestation_remove`, and
 `refresh_holder_authorizations`. `public_readiness` reads mutable setup state
 and the enrolled Holder authorizations
-([`setup_store.rs`](../src/setup_store.rs),
-[`holder_authorization.rs`](../src/holder_authorization.rs),
-[`advertisement.rs`](../src/advertisement.rs)).
+([`setup_store.rs`](../../src/setup_store.rs),
+[`holder_authorization.rs`](../../src/holder_authorization.rs),
+[`advertisement.rs`](../../src/advertisement.rs)).
 
-Only some of those six can move readiness from true to false, which is what L3
-needs. `apply_setup_config` and `update_provider_config` can, by disabling ready
+Only some of those six can move readiness from true to false. `apply_setup_config` and `update_provider_config` can, by disabling ready
 advertisement publication or invalidating the endpoint or relay configuration.
 `install_provider_identity` is install-only and refuses a disagreeing key, so it
 cannot. `refresh_holder_authorizations` only inserts, or replaces a row for one
@@ -57,8 +58,8 @@ third checks cover them.
 
 ## Weakest links
 
-1. **L3 (`code`)** — publisher/Admin race.
-2. **L2 (`enum`)** — the writer set is regenerated per check, not enforced; a
+1. **L2 (`enum`)** — the writer set is regenerated per check, not enforced; a
    new admin verb that can falsify readiness would land silently.
-3. **L1 (`code`)** — absent readiness revision fence.
-4. **A1–A2 (`axiom`)** — public meaning and scheduling.
+2. **L1 (`code`)** — the three recheck points and the by-value comparison of
+   in-memory inputs.
+3. **A1–A2 (`axiom`)** — public meaning and scheduling.

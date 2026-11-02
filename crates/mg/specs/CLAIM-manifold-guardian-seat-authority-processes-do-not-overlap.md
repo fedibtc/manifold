@@ -17,10 +17,7 @@ unreaped process, opening its database, or briefly overlapping a replacement
 which fails before opening an authority endpoint is not the bad thing.
 
 The claim does not require the old PID to be reaped before the successor daemon
-acquires the flock. That ordering does not exist. The implementation attempts
-to close the admitted process-liveness overlap with an early metrics bind and
-a child-held database lock. The argument below
-exhibits a reachable trace which bypasses both.
+acquires the flock.
 
 ## Status
 
