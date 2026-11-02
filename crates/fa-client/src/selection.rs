@@ -1322,6 +1322,22 @@ pub(crate) async fn preview_transfer_destination_with(
         !excluded.contains(&candidate.mg_id)
             && candidate.fedimintd_dkg_version == fedimintd_dkg_version
     });
+    // Skip, before any dial, an MG whose advertisement does not report the
+    // guardian transfer. The live probe and the payment preflight still ask
+    // the MG itself, since the advertisement is self-asserted.
+    let rejected = &mut discovery.rejected;
+    discovery.candidates.retain(|candidate| {
+        let advertised = candidate
+            .advertised_api_version
+            .is_some_and(|version| GUARDIAN_TRANSFER_V2_API_VERSION <= version);
+        if !advertised {
+            rejected.push(RejectedAdvertisement {
+                author: candidate.mg_id,
+                reason: AdvertisementRejection::NoAdvertisedGuardianTransfer,
+            });
+        }
+        advertised
+    });
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let seat = select_mg_seats(

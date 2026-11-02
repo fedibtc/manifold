@@ -542,6 +542,7 @@ fn build_payload(
                 .inspect_err(|error| tracing::warn!(%error, "uptime scores not advertised"))
                 .ok()
         }),
+        version: Some(mg_core::service::this_build_version()),
     }
 }
 

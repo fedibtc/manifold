@@ -724,7 +724,10 @@ the advertisements of the federation's own MGs: an MG that is full or offline,
 which is when a guardian needs a new host, advertises nothing. The preview
 then selects one MG on that line that does not host, and never
 hosted, a peer of the federation, and with a badge holder that holds none of
-its seats. Its live probe also calls `GetVersion` and rejects an MG whose API
+its seats, and whose v2 advertisement reports an API version at or above
+`GUARDIAN_TRANSFER_V2_API_VERSION`; a legacy advertisement, or one without a
+version, is rejected as `no_advertised_guardian_transfer` before any dial.
+Its live probe also calls `GetVersion` and rejects an MG whose API
 version is below `GUARDIAN_TRANSFER_V2_API_VERSION` with
 `live_no_guardian_transfer`, so the walk moves on to another MG. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats

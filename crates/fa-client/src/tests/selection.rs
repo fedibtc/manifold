@@ -699,6 +699,27 @@ pub(super) fn issuer_ad_for_version_and_service_key_at(
     service_pubkey: secp256k1::XOnlyPublicKey,
     now: u64,
 ) -> Event {
+    ad_event(
+        mg,
+        issuer_payload_for_version_and_service_key_at(
+            mg,
+            issuer,
+            price_msats,
+            version,
+            service_pubkey,
+            now,
+        ),
+    )
+}
+
+pub(super) fn issuer_payload_for_version_and_service_key_at(
+    mg: &Keys,
+    issuer: &Keys,
+    price_msats: u64,
+    version: &str,
+    service_pubkey: secp256k1::XOnlyPublicKey,
+    now: u64,
+) -> fedi_decentralized_nostr::mg::AdvertisementPayload {
     let mut payload = priced_payload(
         mg,
         vec![envelope_with_issuer(mg, mg.public_key(), issuer)],
@@ -709,7 +730,7 @@ pub(super) fn issuer_ad_for_version_and_service_key_at(
     payload.expires_at = now + 3_600;
     payload.availability.fedimintd_version = version.parse().expect("test version parses");
     payload.service_pubkey = service_pubkey.to_string();
-    ad_event(mg, payload)
+    payload
 }
 
 fn issuer_ad_with_service_pubkey(

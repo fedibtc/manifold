@@ -822,7 +822,7 @@ fn v2_offer(payload: AdvertisementPayload) -> AdvertisementV2Payload {
 }
 
 /// A kind-37709 event authored by `author`, its envelope signed by `signer`.
-fn v2_event_signed_by(
+pub(crate) fn v2_event_signed_by(
     author: &Keys,
     signer: &Keys,
     offer: &AdvertisementV2Payload,

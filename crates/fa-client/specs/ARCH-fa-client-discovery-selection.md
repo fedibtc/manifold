@@ -133,7 +133,10 @@ and applies the same size, allowed range, selected major/minor/vendor identity,
 accepting-seats, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
 price-blind: a live price change is resolved only by the signed quote. A
-guardian transfer preview then also calls `GetVersion` and rejects an MG
+guardian transfer preview first drops, before any dial, each candidate whose
+v2 advertisement does not report an API version at or above
+`GUARDIAN_TRANSFER_V2_API_VERSION` (`NoAdvertisedGuardianTransfer`), and then
+also calls `GetVersion` and rejects an MG
 below `GUARDIAN_TRANSFER_V2_API_VERSION` as `LiveNoGuardianTransfer`. The
 transport-less `MgSelectionQuery` intentionally uses advertised claims alone;
 the full `FaClient` and replacement preview always probe.

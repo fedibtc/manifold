@@ -342,6 +342,11 @@ async fn both_advertisement_formats_publish_one_snapshot() {
         serde_json::to_value(verified.uptime_permille).unwrap(),
         serde_json::json!({"1d": 998, "7d": 991, "30d": 964}),
     );
+    // v2 reports what `GetVersion` answers.
+    assert_eq!(
+        verified.version,
+        Some(mg_core::service::this_build_version())
+    );
     assert_eq!(
         (document.payload.issued_at, document.payload.expires_at),
         (verified.issued_at, verified.expires_at),
@@ -349,6 +354,7 @@ async fn both_advertisement_formats_publish_one_snapshot() {
     assert_eq!(AdvertisementV2Payload::from(document.payload), {
         let mut offer = payload.clone();
         offer.uptime_permille = None;
+        offer.version = None;
         offer
     });
 }

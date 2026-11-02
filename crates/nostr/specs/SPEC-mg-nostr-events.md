@@ -178,7 +178,7 @@ signer, as the envelope contract requires. `service_pubkey` is a different
 key: the MG's commitment-signing key, not its Nostr service key. An embedded
 holder authorization may carry the same key as `statement.subject_pubkey`.
 That field has its own role, the subject the Holder authorized, and keeps its
-own trust binding. It adds one field:
+own trust binding. It adds two fields:
 
 - `uptime_permille`: an optional object `{"1d", "7d", "30d"}` of integers in
   `0..=1000`. The values are the scores that the MG's latest readiness run
@@ -189,6 +189,14 @@ own trust binding. It adds one field:
   from its own clock. Signing makes them attributable to the MG, but it does
   not make them true, so FAs must not use them to admit, reject, rank or select
   an MG. FAs may display them.
+- `version`: an optional object `{"mg_version", "api_version"}`, the MG's
+  own `GetVersion` answer: its release as a SemVer string and its MG API
+  version as an integer ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
+  Absent means unreported, as from an MG that predates the field. It is
+  self-asserted like the uptime report, but an MG that lies about it only
+  loses or wastes offers, so an FA may skip an MG on it: a guardian transfer
+  preview offers only MGs reporting an API version with the guardian
+  transfer. An FA still asks the MG itself before it pays.
 
 Unknown payload fields follow the envelope's rule: readers verify the exact
 bytes and then ignore the unknown fields. The rule covers the objects this
