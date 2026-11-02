@@ -124,5 +124,6 @@ pub use types::{
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
 };
 pub use version::{
-    GUARDIAN_TRANSFER_PROTOCOL_V2, GetVersionRequest, GetVersionResponse, SupportedProtocols,
+    GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest, GetVersionResponse, MG_API_VERSION,
+    MgApiVersion,
 };

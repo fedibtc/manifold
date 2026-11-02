@@ -42,14 +42,17 @@ floor. That local crash-recovery journal is the payer reservation described in
 
 `GetAvailability`, `GetVersion`, and `GetQuote` are unsigned; all are
 advisory reads that allocate nothing.
-`GetVersion` reports the MG release and, for each versioned protocol, the
-versions the build speaks. Guardian transfer version 2 is the `TransferSeat`
-that carries the destination's admission proof. The answer is a constant of
-the build and reads no state; it describes the build, not whether the policy
-lets the MG start a transfer. A reader ignores protocols it does not know, so
-a release adds a protocol as a new field. An MG from before `GetVersion`
-answers with the RPC layer's unknown-method error, which the generated client
-reads as `UnsupportedVerb`: such an MG speaks no versioned protocol. `GetAvailability` reports whether the MG is accepting
+`GetVersion` reports the MG release and the MG API version, an integer
+that goes up by one each time the MG API changes, like Fedimint's API minor
+version. A client checks a feature with `FEATURE_ADDED_IN <= api_version`.
+API version 1, the first, adds `GetVersion` and the guardian transfer whose
+`TransferSeat` carries the destination's admission proof. The answer is a
+constant of the build and reads no state; it describes the build, not
+whether the policy lets the MG start a transfer. A reader ignores fields it
+does not know. An MG from before `GetVersion` answers with the RPC layer's
+unknown-method error, which the generated client reads as `UnsupportedVerb`:
+such an MG is below every API version.
+`GetAvailability` reports whether the MG is accepting
 seats, the release-pinned fedimintd version and federation sizes, and current plans using the same projection whose boolean result gates advertising.
 It is a boolean and not a count because the verb is unsigned and
 unauthenticated, so any dialer could otherwise poll an operator's occupancy.

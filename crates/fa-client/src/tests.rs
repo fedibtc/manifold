@@ -913,10 +913,10 @@ struct MgState {
 /// What a test MG answers to `GetVersion`.
 #[derive(Clone, Copy, Debug, Default)]
 enum TestMgVersion {
-    /// Speaks guardian transfer protocol 2.
+    /// At the API version with guardian transfer v2.
     #[default]
     Current,
-    /// Answers, but without guardian transfer protocol 2.
+    /// Answers, but below that API version.
     WithoutTransfer,
     /// From before `GetVersion`.
     BeforeGetVersion,
@@ -1118,15 +1118,11 @@ impl ManifoldGuardianService for TestMg {
         {
             TestMgVersion::Current => Ok(GetVersionResponse {
                 mg_version: "0.2.0".parse().expect("test version parses"),
-                protocols: SupportedProtocols {
-                    guardian_transfer: vec![GUARDIAN_TRANSFER_PROTOCOL_V2],
-                },
+                api_version: GUARDIAN_TRANSFER_V2_API_VERSION,
             }),
             TestMgVersion::WithoutTransfer => Ok(GetVersionResponse {
                 mg_version: "0.2.0".parse().expect("test version parses"),
-                protocols: SupportedProtocols {
-                    guardian_transfer: vec![1],
-                },
+                api_version: MgApiVersion(0),
             }),
             // What the generated client turns an "unknown RPC method" answer
             // into.

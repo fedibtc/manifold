@@ -40,9 +40,7 @@ impl ManifoldGuardianService for TestManifoldGuardian {
     async fn get_version(&self, _: GetVersionRequest) -> FmResult<GetVersionResponse> {
         Ok(GetVersionResponse {
             mg_version: "0.2.0".parse().unwrap(),
-            protocols: SupportedProtocols {
-                guardian_transfer: vec![GUARDIAN_TRANSFER_PROTOCOL_V2],
-            },
+            api_version: MG_API_VERSION,
         })
     }
 
@@ -247,7 +245,7 @@ async fn a_released_mg_answers_get_version_with_unsupported_verb() {
         .get_version(GetVersionRequest)
         .await
         .unwrap();
-    assert!(version.supports_guardian_transfer(GUARDIAN_TRANSFER_PROTOCOL_V2));
+    assert!(version.supports(GUARDIAN_TRANSFER_V2_API_VERSION));
 
     released.shutdown().await.unwrap();
     current.shutdown().await.unwrap();

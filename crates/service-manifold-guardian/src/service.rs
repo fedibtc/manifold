@@ -35,7 +35,7 @@ pub trait ManifoldGuardianService {
 
     /// Public endpoint for clients checking this MG's release and the
     /// protocol versions it speaks. An MG from before this verb answers
-    /// `UnsupportedVerb`, so it speaks none of the versioned protocols.
+    /// `UnsupportedVerb`, so it is below every API version.
     async fn get_version(&self, request: GetVersionRequest) -> FmResult<GetVersionResponse>;
 
     /// Return a stateless signed key-locked ecash quote.

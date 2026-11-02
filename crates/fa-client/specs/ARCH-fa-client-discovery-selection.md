@@ -131,7 +131,7 @@ accepting-seats, and plan-family predicate as quoting. Incompatible responses ge
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
 price-blind: a live price change is resolved only by the signed quote. A
 guardian transfer preview then also calls `GetVersion` and rejects an MG
-without guardian transfer protocol version 2 as `LiveNoGuardianTransfer`. The
+below `GUARDIAN_TRANSFER_V2_API_VERSION` as `LiveNoGuardianTransfer`. The
 transport-less `MgSelectionQuery` intentionally uses advertised claims alone;
 the full `FaClient` and replacement preview always probe.
 

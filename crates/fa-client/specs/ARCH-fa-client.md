@@ -724,8 +724,8 @@ the advertisements of the federation's own MGs: an MG that is full or offline,
 which is when a guardian needs a new host, advertises nothing. The preview
 then selects one MG on that line that does not host, and never
 hosted, a peer of the federation, and with a badge holder that holds none of
-its seats. Its live probe also calls `GetVersion` and rejects an MG that does
-not speak guardian transfer protocol version 2 with
+its seats. Its live probe also calls `GetVersion` and rejects an MG whose API
+version is below `GUARDIAN_TRANSFER_V2_API_VERSION` with
 `live_no_guardian_transfer`, so the walk moves on to another MG. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.
@@ -745,10 +745,10 @@ opened without a Manifold profile takes the production default. It then asks
 the destination, the source, and every staying guardian's MG for `GetVersion`
 at once, each probe capped at `MG_SELECTION_PROBE_TIMEOUT`. It refuses with
 `FaError::GuardianTransferUnsupported` (category `capability_unavailable`),
-naming each MG without guardian transfer protocol version 2 and its role, when
-the destination or the source answers without it (or is from before
+naming each MG below `GUARDIAN_TRANSFER_V2_API_VERSION` and its role, when
+the destination or the source answers below it (or is from before
 `GetVersion`), or when fewer than the federation's consensus threshold of the
-binding voters speak it. The voters are the destination, in the source's
+binding voters reach it. The voters are the destination, in the source's
 place, and the staying guardians; an old or unanswering staying guardian
 counts as no. The destination must answer. A source probe that fails any
 other way (unreachable, timed out, another error, or a malformed response)

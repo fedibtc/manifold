@@ -40,7 +40,7 @@ use fedi_decentralized_domain::{
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FederationId, FormationSeatBinding,
-    GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY, GUARDIAN_TRANSFER_PROTOCOL_V2,
+    GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY, GUARDIAN_TRANSFER_V2_API_VERSION,
     GetPeerAttestationRequest, GetStatusRequest, GetVersionRequest, Locator, ManifoldGuardianError,
     ManifoldGuardianService, MetaConsensusBase, PullSeatRequest, RemoveSeatRequest,
     ReplaceSeatBindingRequest, SeatId, SeatTransferGrant, ServiceStatus, SignedRequest, Timestamp,
@@ -328,8 +328,8 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Ask the MGs a transfer needs whether they speak the guardian transfer
-    /// protocol this client drives, before the FA pays for a seat.
+    /// Ask the MGs a transfer needs whether their API version has the
+    /// guardian transfer this client drives, before the FA pays for a seat.
     ///
     /// The destination must answer with support, since the FA would pay it.
     /// The source must not answer without support, but a source probe that
@@ -339,7 +339,7 @@ where
     /// federation's consensus threshold, so with the destination in the
     /// source's place at least that many voters must answer with support. A
     /// staying guardian that does not answer counts against it. An MG from
-    /// before `GetVersion` answers `UnsupportedVerb` and speaks none. Each
+    /// before `GetVersion` answers `UnsupportedVerb` and is below it. Each
     /// probe is capped like a selection probe, so an MG that is down does
     /// not hold the start until the run's deadline.
     async fn check_guardian_transfer_support(
@@ -414,9 +414,7 @@ where
                 })
                 .await
             {
-                Ok(version) => {
-                    Ok(version.supports_guardian_transfer(GUARDIAN_TRANSFER_PROTOCOL_V2))
-                }
+                Ok(version) => Ok(version.supports(GUARDIAN_TRANSFER_V2_API_VERSION)),
                 Err(FaError::Mg(failure)) if failure.cause == MgCause::UnsupportedVerb => Ok(false),
                 Err(error) => Err(error),
             }

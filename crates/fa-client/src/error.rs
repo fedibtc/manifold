@@ -447,21 +447,21 @@ pub enum FaError {
     #[error("the setup-payment policy does not enable guardian transfer")]
     GuardianTransferDisabled,
     /// The transfer cannot run on these Manifold Guardians, so the FA does
-    /// not buy a seat. Either the destination or the source does not speak
-    /// the guardian transfer protocol this client drives, or fewer staying
-    /// guardians speak it than the move's binding vote needs. An MG that
-    /// answers `GetVersion` without that version, or is from before
-    /// `GetVersion`, does not speak it and needs an upgrade first.
+    /// not buy a seat. Either the destination or the source is below the MG
+    /// API version with the guardian transfer this client drives, or fewer
+    /// staying guardians reach it than the move's binding vote needs. An MG
+    /// from before `GetVersion` is below every API version. An old MG needs
+    /// an upgrade first.
     #[error(
-        "guardian transfer unsupported: Manifold Guardians without protocol 2: {unsupported:?}; \
+        "guardian transfer unsupported: Manifold Guardians below the API version: {unsupported:?}; \
          {voters} guardians that can vote the move, {threshold} needed"
     )]
     GuardianTransferUnsupported {
         /// Every MG that answered without support, the destination first,
         /// then in seat order.
         unsupported: Vec<UnsupportedTransferMg>,
-        /// Guardians that would vote the move's binding and speak the
-        /// protocol: the destination, in the source's place, and each
+        /// Guardians that would vote the move's binding and reach the API
+        /// version: the destination, in the source's place, and each
         /// staying guardian that answered with support.
         voters: u16,
         /// The federation's consensus threshold, which the vote needs.

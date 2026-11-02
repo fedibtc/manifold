@@ -31,7 +31,7 @@ use fedi_decentralized_peer_badge_verifier::{
 };
 use fedi_decentralized_service_manifold_guardian::{
     FederationId, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
-    GUARDIAN_TRANSFER_PROTOCOL_V2, GetAvailabilityRequest, GetAvailabilityResponse,
+    GUARDIAN_TRANSFER_V2_API_VERSION, GetAvailabilityRequest, GetAvailabilityResponse,
     GetVersionRequest, Locator, ManifoldGuardianError, ManifoldGuardianService as _, MgName, Plan,
     Timestamp,
 };
@@ -713,7 +713,7 @@ pub(crate) enum LiveProbeOutcome {
     /// is never embedded.
     Unreachable(String),
 
-    /// The MG does not speak the guardian transfer protocol a transfer
+    /// The MG is below the API version with the guardian transfer a transfer
     /// destination needs.
     NoGuardianTransfer,
 }
@@ -772,7 +772,7 @@ async fn probe_availability<F: ManifoldGuardianConnector>(
 }
 
 /// Live probe of a guardian transfer destination: its availability, and
-/// then whether it speaks the guardian transfer protocol this client drives.
+/// then whether its API version has the guardian transfer this client drives.
 pub(crate) struct TransferDestinationProber<'a, F> {
     pub(crate) connector: &'a F,
 }
@@ -790,9 +790,7 @@ impl<F: ManifoldGuardianConnector> SelectionAvailabilityProber
             return outcome;
         }
         match client.get_version(GetVersionRequest).await {
-            Ok(version) if version.supports_guardian_transfer(GUARDIAN_TRANSFER_PROTOCOL_V2) => {
-                outcome
-            }
+            Ok(version) if version.supports(GUARDIAN_TRANSFER_V2_API_VERSION) => outcome,
             // An MG from before `GetVersion` answers `UnsupportedVerb`.
             Ok(_) | Err(ManifoldGuardianError::UnsupportedVerb { .. }) => {
                 LiveProbeOutcome::NoGuardianTransfer

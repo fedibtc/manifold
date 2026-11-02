@@ -57,23 +57,23 @@ changing flags or the minimum version alone does not recover a previously
 retired source/destination pair.
 
 The policy says whether transfer is on; it cannot say whether the MGs a
-transfer needs speak this shape. Each MG reports that through `GetVersion`
-([SPEC-fa-rpc](./SPEC-fa-rpc.md)) as guardian transfer protocol version 2.
-An MG from before `GetVersion` speaks none, and that includes every release
-with the old shape. The FA therefore buys a destination seat only from an MG
-that lists version 2: the destination preview skips any other, and before it
+transfer needs speak this shape. Each MG reports its API version through
+`GetVersion` ([SPEC-fa-rpc](./SPEC-fa-rpc.md)); this shape is in API version
+1 and later. An MG from before `GetVersion` is below it, and that includes
+every release with the old shape. The FA therefore buys a destination seat only from an MG
+at that API version or later: the destination preview skips any other, and before it
 pays the FA asks the destination, the source, and every staying guardian's MG
 again, each probe capped at the selection probe timeout:
 
-- The destination must answer with version 2.
-- The source must not answer without version 2. A source probe that fails
+- The destination must answer at that API version.
+- The source must not answer below it. A source probe that fails
   any other way (unreachable, timed out, another error, or a malformed
   response) does not block, since a guardian usually needs a new host
   because its MG is down.
 - Staying guardians only vote `ReplaceSeatBinding`, which takes effect at the
   federation's consensus threshold. The voters are the destination, in the
   source's place, and the staying guardians. The FA counts the destination
-  and each staying guardian that answers with version 2; an old or
+  and each staying guardian that answers at that API version; an old or
   unanswering staying guardian counts as no. The start needs at least the
   threshold.
 
