@@ -155,9 +155,9 @@ impl PurposeTag {
 /// key's only home. A second copy is a second value that some reader may use
 /// in place of the checked one, so it only creates room for key confusion.
 /// The signed bytes are `SHA256(tag || payload)` and do not contain
-/// `signer`, but the key is still bound: the BIP-340 challenge
-/// `SHA256(R || P || m)` commits to the public key `P`, so a signature
-/// verifies under the key that made it and no other. Hashing the key into the
+/// `signer`, but the key is still bound: the BIP-340 tagged challenge hash
+/// (tag `BIP0340/challenge`, over `R || P || m`) commits to the public key
+/// `P`, so a signature verifies under the key that made it and no other. Hashing the key into the
 /// payload or the tag adds nothing. A payload key with another role, such as
 /// the MG advertisement's commitment-signing `service_pubkey`, is not a copy.
 ///

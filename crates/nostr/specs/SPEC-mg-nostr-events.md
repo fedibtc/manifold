@@ -173,9 +173,12 @@ The payload has the legacy fields with the same meanings and serde shapes:
 `service_pubkey`, `issued_at`, `expires_at`, `api_endpoints`, `availability`,
 `plans` and `holder_authorizations`. It drops `version`, because the purpose
 tag versions the schema, and it drops `fman_id_pubkey`, because the envelope
-signer is the identity. No payload field repeats the signer key, as the
-envelope contract requires. `service_pubkey` is a different key: the MG's
-commitment-signing key, not its Nostr service key. It adds one field:
+signer is the identity. No second payload field identifies the envelope
+signer, as the envelope contract requires. `service_pubkey` is a different
+key: the MG's commitment-signing key, not its Nostr service key. An embedded
+holder authorization may carry the same key as `statement.subject_pubkey`.
+That field has its own role, the subject the Holder authorized, and keeps its
+own trust binding. It adds one field:
 
 - `uptime_permille`: an optional object `{"1d", "7d", "30d"}` of integers in
   `0..=1000`. The values are the scores that the MG's latest readiness run
