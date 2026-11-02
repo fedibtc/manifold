@@ -16,4 +16,5 @@ Unverified.
 
 ## Assumptions
 
-The effective trusted base is the union of the imported records' A1–A3.
+- [CLAIM-unendorsed-federation-allocation](CLAIM-unendorsed-federation-allocation.md)
+- [CLAIM-duplicate-federation-allocation](CLAIM-duplicate-federation-allocation.md)
