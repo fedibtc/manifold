@@ -428,8 +428,25 @@ async fn tick(
         return Ok(false);
     }
     let current = fleet.attention_reasons(policy).await?;
+    // A source not read yet since start (no readiness report, no policy) is
+    // unknown, not cleared: its told reasons stay told, so a restart does not
+    // tell them again.
+    let readiness_known = fleet.seat_readiness().is_some();
+    let unread = |reason: &AttentionReason| match reason {
+        AttentionReason::RelayCheckFailed
+        | AttentionReason::DiscoveryCheckFailed
+        | AttentionReason::BitcoinCheckFailed
+        | AttentionReason::VersionCheckFailed
+        | AttentionReason::UptimeCheckFailed => !readiness_known,
+        AttentionReason::UpdateRecommended => policy.is_none(),
+        AttentionReason::SupportMessage => false,
+    };
     let told: BTreeSet<_> = link.notified_reasons.iter().copied().collect();
-    let still_told: BTreeSet<_> = told.intersection(&current).copied().collect();
+    let still_told: BTreeSet<_> = told
+        .iter()
+        .copied()
+        .filter(|reason| current.contains(reason) || unread(reason))
+        .collect();
     if still_told != told {
         let narrowed: Vec<_> = still_told.iter().copied().collect();
         fleet
@@ -447,8 +464,9 @@ async fn tick(
         return Ok(false);
     }
     let outcome = fleet.send_guardian_link_notification(&link).await;
+    let now_told: BTreeSet<_> = current.union(&still_told).copied().collect();
     fleet
-        .record_guardian_link_outcome(&link, outcome, &current)
+        .record_guardian_link_outcome(&link, outcome, &now_told)
         .await?;
     *backoff = match outcome {
         CallbackAttemptOutcome::Retryable(_) => {

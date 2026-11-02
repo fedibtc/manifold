@@ -58,6 +58,9 @@ app created, exactly as it invokes an FI's DKG completion hook.
   reasons. It remembers the reasons it told; a reason that clears is
   forgotten so its return is notified again. A reason that stays set is not
   repeated, so a recommended update is told once until this MG reaches it.
+  A source not read yet since the daemon started (no readiness report or no
+  policy yet) is unknown, not cleared, so a restart does not tell its reasons
+  again.
   Each invocation's idempotency key is
   `guardian-link:<linked_at_ms>:<sequence>`, so a retry after a transient
   failure deduplicates at the gateway.

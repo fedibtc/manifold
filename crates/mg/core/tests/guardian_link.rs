@@ -528,6 +528,60 @@ async fn an_outcome_for_the_replaced_phone_leaves_the_new_link_alone() {
     h.fleet.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_restart_does_not_retell_a_reason_whose_source_is_not_read_yet() {
+    // A restarted daemon has the told reasons on disk but no readiness report
+    // and maybe no policy yet: unknown is not cleared.
+    let h = harness(Some(ORIGIN)).await;
+    link(&h).await;
+    let linked_at_ms = h
+        .fleet
+        .db()
+        .guardian_link()
+        .await
+        .unwrap()
+        .unwrap()
+        .linked_at_ms;
+    h.fleet
+        .db()
+        .set_guardian_link_notified_reasons(
+            linked_at_ms,
+            &[
+                AttentionReason::BitcoinCheckFailed,
+                AttentionReason::UpdateRecommended,
+            ],
+        )
+        .await
+        .unwrap();
+    let mut backoff = None;
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
+    h.fleet
+        .set_seat_readiness(readiness(&["bitcoin"]))
+        .await
+        .unwrap();
+    let recommending = policy(Some("99.0.0"));
+    assert!(
+        !tick(&h.fleet, Some(&recommending), &mut backoff)
+            .await
+            .unwrap()
+    );
+    assert!(h.invoker.calls().is_empty());
+    // Once read, a source that no longer holds does clear its reason.
+    h.fleet.set_seat_readiness(readiness(&[])).await.unwrap();
+    assert!(
+        !tick(&h.fleet, Some(&policy(None)), &mut backoff)
+            .await
+            .unwrap()
+    );
+    let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
+    assert!(
+        link.notified_reasons.is_empty(),
+        "{:?}",
+        link.notified_reasons
+    );
+    h.fleet.shutdown().await;
+}
+
 #[test]
 fn device_labels_are_short_and_printable() {
     assert!(validate_device_label("Pixel 8").is_ok());
