@@ -3032,6 +3032,7 @@ fn stored_liquidity_operation(marker: u64) -> crate::liquidity::StoredLiquidityO
         response: None,
         status: None,
         verified_gateway_api: None,
+        expired_without_acceptance: false,
     }
 }
 
@@ -13762,6 +13763,169 @@ async fn completed_gateway_recovery_uses_durable_evidence_before_provider_connec
     );
 }
 
+/// A prepared operation whose request never reached the provider, with its
+/// expiry moved `expired_for_secs` into the past.
+async fn expired_prepared_liquidity(
+    expired_for_secs: u64,
+) -> (
+    TestClient,
+    FormationId,
+    Arc<MgState>,
+    TestLiquidityConnector,
+    LiquidityOperationId,
+) {
+    let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+    connector
+        .0
+        .fail_first_before_allocation
+        .store(true, Ordering::SeqCst);
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(100_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect_err("the request fails before the provider accepts it");
+    let prepared = client
+        .current_liquidity_operation()
+        .await
+        .expect("current operation")
+        .expect("one prepared operation");
+    let operation_id = client
+        .inner
+        .store
+        .backdate_liquidity_operation_for_test(
+            &prepared.operation_id,
+            test_now_secs() - expired_for_secs,
+        )
+        .await;
+    connector.0.calls.lock().expect("test lock").clear();
+    mg_state
+        .trust_material_requests
+        .lock()
+        .expect("test lock")
+        .clear();
+    (client, formation_id, mg_state, connector, operation_id)
+}
+
+#[tokio::test]
+async fn liquidity_recovery_ends_an_expired_request_the_provider_never_saw() {
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() + 60;
+    let (client, formation_id, mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+
+    let ended = client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect("NotFound past expiry is final");
+    assert_eq!(ended.phase, LiquidityOperationPhase::Rejected);
+    assert_eq!(ended.rejection_code.as_deref(), Some("request_expired"));
+    // No replay, and so no MG proof is needed to end it.
+    assert_eq!(
+        *connector.0.calls.lock().expect("test lock"),
+        vec!["status"]
+    );
+    assert!(
+        mg_state
+            .trust_material_requests
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+    // Durable: a later status read and resume agree, and the federation is
+    // free for a new explicit start.
+    assert_eq!(
+        client
+            .liquidity_status(&operation_id)
+            .await
+            .expect("status")
+            .phase,
+        LiquidityOperationPhase::Rejected
+    );
+    assert!(
+        client
+            .current_liquidity_operation()
+            .await
+            .expect("current operation")
+            .is_none()
+    );
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    let started = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(100_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("an expired operation does not block a new start");
+    assert_eq!(started.phase, LiquidityOperationPhase::Accepted);
+    assert_ne!(started.operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn liquidity_recovery_keeps_an_expired_request_live_within_the_grace() {
+    // Expired by the local clock, but a provider clock running behind could
+    // still accept it, so it must stay live and replay.
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() - 60;
+    let (client, _formation_id, mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+    mg_state
+        .corrupt_trust_material_signature
+        .store(true, Ordering::SeqCst);
+
+    client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect_err("the replay still needs every MG proof");
+    assert_eq!(
+        *connector.0.calls.lock().expect("test lock"),
+        vec!["status"]
+    );
+    assert!(
+        !mg_state
+            .trust_material_requests
+            .lock()
+            .expect("test lock")
+            .is_empty(),
+        "the replay was attempted",
+    );
+    let operation = client
+        .liquidity_status(&operation_id)
+        .await
+        .expect("status");
+    assert_eq!(operation.phase, LiquidityOperationPhase::Prepared);
+    assert_eq!(operation.rejection_code, None);
+}
+
+#[tokio::test]
+async fn liquidity_recovery_keeps_an_expired_request_live_without_not_found() {
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() + 60;
+    let (client, _formation_id, _mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+    // An unanswered status query does not rule out an acceptance.
+    *connector.0.status_error.lock().expect("test lock") =
+        Some(liquidity_api::ServiceErrorCode::Unavailable);
+
+    client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect_err("only NotFound may end the request");
+    assert_eq!(
+        client
+            .liquidity_status(&operation_id)
+            .await
+            .expect("status")
+            .phase,
+        LiquidityOperationPhase::Prepared
+    );
+}
+
 #[tokio::test]
 async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() {
     let (client, formation_id, _mg_state, connector) = formed_client_for_liquidity().await;
@@ -13890,15 +14054,31 @@ async fn liquidity_rejects_invalid_mg_and_provider_proofs_without_accepting() {
         .await
         .expect_err("invalid MG trust signature fails closed");
     assert!(connector.0.requests.lock().expect("test lock").is_empty());
+    // Nothing reached the provider, so nothing is persisted that could block
+    // the next start.
     let operations = client
         .list_liquidity_operations(None, 10)
         .await
-        .expect("the refused acknowledgement remains recoverable");
-    assert_eq!(operations.operations.len(), 1);
-    assert_eq!(
-        operations.operations[0].phase,
-        LiquidityOperationPhase::Prepared
+        .expect("operations list");
+    assert!(operations.operations.is_empty());
+    assert!(
+        client
+            .current_liquidity_operation()
+            .await
+            .expect("current operation")
+            .is_none()
     );
+    let started = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(130_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("a start after the MG proof recovers is not blocked");
+    assert_eq!(started.phase, LiquidityOperationPhase::Accepted);
 
     for (index, fault) in [
         LiquidityResponseFault::InvalidSignature,

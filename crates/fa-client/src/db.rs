@@ -1241,6 +1241,7 @@ impl FaStore {
                         response: None,
                         status: None,
                         verified_gateway_api: None,
+                        expired_without_acceptance: false,
                     },
                 )
                 .await;
@@ -1473,6 +1474,68 @@ impl FaStore {
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("persisting gateway-view verification failed".to_owned()))
+    }
+
+    /// Record that the provider can never accept this exact request.
+    ///
+    /// Refused once acceptance evidence is journaled: a provider `NotFound`
+    /// against that evidence is a consistency failure, never an expiry.
+    pub(crate) async fn mark_liquidity_expired_without_acceptance(
+        &self,
+        operation_id: &crate::LiquidityOperationId,
+    ) -> FaResult<()> {
+        let key = LiquidityOperationKey {
+            operation_id: operation_id.0.clone(),
+        };
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut operation = dbtx
+            .get_value(&key)
+            .await
+            .ok_or_else(|| FaError::Storage("FA liquidity operation disappeared".to_owned()))?;
+        if operation.response.is_some() || operation.status.is_some() {
+            return Err(FaError::Liquidity(
+                "liquidity operation holds provider evidence; refusing to expire it".to_owned(),
+            ));
+        }
+        operation.expired_without_acceptance = true;
+        dbtx.insert_entry(&key, &operation).await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("persisting liquidity expiry failed".to_owned()))
+    }
+
+    /// Re-key one stored operation under a different expiry, as if it had
+    /// been created that long ago, and return its new id.
+    #[cfg(test)]
+    pub(crate) async fn backdate_liquidity_operation_for_test(
+        &self,
+        operation_id: &crate::LiquidityOperationId,
+        expires_at: u64,
+    ) -> crate::LiquidityOperationId {
+        let old_key = LiquidityOperationKey {
+            operation_id: operation_id.0.clone(),
+        };
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut operation = dbtx.get_value(&old_key).await.expect("stored operation");
+        operation.commitment.expires_at =
+            fedi_decentralized_service_liquidity_manager::Timestamp(expires_at);
+        operation.details_payload_hash =
+            fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(
+                &operation.commitment,
+            )
+            .expect("hash commitment");
+        operation.operation_id =
+            crate::LiquidityOperationId(hex::encode(operation.details_payload_hash.0));
+        dbtx.remove_entry(&old_key).await;
+        dbtx.insert_entry(
+            &LiquidityOperationKey {
+                operation_id: operation.operation_id.0.clone(),
+            },
+            &operation,
+        )
+        .await;
+        dbtx.commit_tx_result().await.expect("commit");
+        operation.operation_id
     }
 
     #[cfg(test)]
