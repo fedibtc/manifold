@@ -395,7 +395,7 @@ pub enum AdvertisementV2Error {
     /// The envelope signature does not verify under the advertisement tag.
     InvalidSignature,
 
-    /// The verified signer is not the event author.
+    /// The envelope signer is not the event author.
     AuthorMismatch,
 }
 
@@ -413,8 +413,8 @@ impl std::error::Error for AdvertisementV2Error {}
 
 /// Verify a kind-37709 event `content` and bind its signer to `author`.
 ///
-/// This checks the envelope signature, parses the payload, and requires the
-/// verified signer to equal the event author. It does not verify the outer
+/// This requires the envelope signer to equal the event author, checks the
+/// envelope signature, and parses the payload. It does not verify the outer
 /// event signature, freshness, or the embedded holder authorizations.
 ///
 /// # Errors
@@ -426,16 +426,13 @@ pub fn verify_advertisement_v2(
 ) -> Result<AdvertisementV2Payload, AdvertisementV2Error> {
     let envelope =
         SignedJsonEnvelope::decode(content).map_err(|_| AdvertisementV2Error::Unparsable)?;
-    let verified = envelope
-        .verify::<AdvertisementV2Payload>(MG_ADVERTISEMENT_V2_PURPOSE)
+    envelope
+        .verify::<AdvertisementV2Payload>(author, MG_ADVERTISEMENT_V2_PURPOSE)
         .map_err(|error| match error {
+            SignedJsonError::UnexpectedSigner => AdvertisementV2Error::AuthorMismatch,
             SignedJsonError::InvalidSignature => AdvertisementV2Error::InvalidSignature,
             _ => AdvertisementV2Error::Unparsable,
-        })?;
-    if verified.signer() != author {
-        return Err(AdvertisementV2Error::AuthorMismatch);
-    }
-    Ok(verified.into_payload())
+        })
 }
 
 /// Error signing or verifying a portable MG advertisement document.
