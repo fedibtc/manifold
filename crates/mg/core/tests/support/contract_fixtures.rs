@@ -767,7 +767,10 @@ pub fn guardian_link_fixture() -> Value {
             callback_expires_at: 1_702_592_000,
             linked_at_ms: 1_700_000_000_000,
             notification_seq: 3,
-            notified_reasons: vec![AttentionReason::SeatFailed, AttentionReason::SupportMessage],
+            notified_reasons: vec![
+                AttentionReason::UptimeCheckFailed,
+                AttentionReason::SupportMessage,
+            ],
             last_notified_at_ms: Some(1_700_003_600_000),
             delivery: GuardianLinkDelivery::Terminal(
                 CompletionCallbackReason::HookExpiredOrRevoked,

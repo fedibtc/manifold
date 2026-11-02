@@ -67,8 +67,8 @@ it('should show the linked device and never claim a notification was sent when n
   expect(screen.getByRole('button', { name: 'Send test notification' })).toBeInTheDocument();
   // The host sees what reaches the phone, and that money news never does.
   const notified = within(screen.getByRole('list', { name: 'What you are notified about' }));
-  expect(notified.getAllByRole('listitem')).toHaveLength(6);
-  expect(notified.getByText('A guardian is offline for 10 minutes or more')).toBeInTheDocument();
+  expect(notified.getAllByRole('listitem')).toHaveLength(3);
+  expect(notified.getByText('A check on the Health page fails')).toBeInTheDocument();
   expect(screen.getByText(/Never about earnings or seats sold/)).toBeInTheDocument();
 });
 

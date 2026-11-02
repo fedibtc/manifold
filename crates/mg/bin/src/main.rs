@@ -604,8 +604,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());
     let guardian_link_notifier = mg_core::guardian_link::spawn_notifier(
         fleet.clone(),
-        nostr.presence(),
-        mg_core::guardian_link::DEFAULT_NOTIFY_SCAN_INTERVAL,
+        nostr.subscribe_setup_payment_federations(),
     );
 
     let mut seat_readiness =

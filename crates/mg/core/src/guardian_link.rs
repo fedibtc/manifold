@@ -11,35 +11,37 @@
 //!   the link. That is the phone's only call: the hook lives a year and is
 //!   not renewed, so when it expires the host links the phone again.
 //! - **Attention.** [`Fleet::attention_reasons`] derives the coarse set of
-//!   reasons the operator should look, from what the daemon already knows:
-//!   seat health, readiness, payment-federation receivability, directory
-//!   presence, and unread support messages.
-//! - **Notifying.** [`spawn_notifier`] runs the edge detector: when a reason
+//!   reasons the operator should look from what the daemon already holds:
+//!   the latest readiness report (the Health page's checks), the
+//!   setup-payment policy's recommended release, and unread support
+//!   messages.
+//! - **Notifying.** [`spawn_notifier`] wakes when one of those sources
+//!   changes, or the link does, and runs the edge detector: when a reason
 //!   appears that the device has not been told about, it invokes the hook
 //!   once, through the same origin-pinned capability the FI completion
-//!   callbacks use. The invocation carries no data: title and body are fixed
-//!   by the app when it creates the hook, and the dashboard shows why.
+//!   callbacks use. Nothing runs on a timer except the retry of a failed
+//!   send. The invocation carries no data: title and body are fixed by the
+//!   app when it creates the hook, and the dashboard shows why.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use fedi_decentralized_domain::ProtocolV1;
+use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, ProtocolV1};
 use fedi_decentralized_service_manifold_guardian::{
     DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, GuardianLinkError,
     GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, LinkDeviceRequest,
-    LinkDeviceResponse, LinkSecret, SeatHealth,
+    LinkDeviceResponse, LinkSecret,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::db::{GuardianLinkDelivery, GuardianLinkRecord};
-use crate::directory::{DirectoryPresence, OnboardingStatus};
 use crate::facts::CompletionCallbackReason;
 use crate::fleet::Fleet;
 use crate::push_callback::{CallbackAttemptOutcome, retry_delay};
-use crate::seat::{SeatPhase, SeatReport};
+use crate::seat_readiness::{ReadinessOutcome, this_mg_version};
 
 /// Why the MG wants the host to look. Coarse on purpose; the dashboard has the
 /// detail. Persisted (as snake_case codes) so a restart does not repeat a
@@ -47,16 +49,19 @@ use crate::seat::{SeatPhase, SeatReport};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionReason {
-    /// A seat's child gave up; the host must act.
-    SeatFailed,
-    /// A seat has been unavailable for longer than a restart should take.
-    SeatUnavailable,
-    /// The daemon stopped advertising and quoting new seats.
-    NotReadyForNewSeats,
-    /// An accepted payment federation cannot receive while seats are priced.
-    PaymentFederationNotReceivable,
-    /// The host has no Holder authorization, so it is not advertised.
-    NotApproved,
+    /// The Health page's relay check fails.
+    RelayCheckFailed,
+    /// The Health page's discovery check fails.
+    DiscoveryCheckFailed,
+    /// The Health page's bitcoin check fails.
+    BitcoinCheckFailed,
+    /// The Health page's version check fails: this release is below the
+    /// policy's minimum, so the host sells no new seats.
+    VersionCheckFailed,
+    /// The Health page's uptime check fails.
+    UptimeCheckFailed,
+    /// This release is below the one the setup-payment policy recommends.
+    UpdateRecommended,
     /// Support wrote to the host.
     SupportMessage,
 }
@@ -64,45 +69,19 @@ pub enum AttentionReason {
 /// How long a link offer stays scannable.
 pub const LINK_OFFER_VALIDITY: Duration = Duration::from_secs(10 * 60);
 
-/// How long a seat may be `Unavailable` before that counts as attention: a
-/// crash-and-respawn is routine, a seat that stays down is not.
-pub const SEAT_UNAVAILABLE_GRACE: Duration = Duration::from_secs(10 * 60);
-
-/// Production cadence of the notifier's scan.
-pub const DEFAULT_NOTIFY_SCAN_INTERVAL: Duration = Duration::from_secs(30);
-
 /// A link offer the dashboard handed out and nobody has used yet.
 pub(crate) struct LinkOffer {
     secret: LinkSecret,
     expires_at_ms: i64,
 }
 
-/// Per-fleet guardian-link runtime state: the open offer and the evaluator's
-/// memory of when each seat became unavailable.
+/// Per-fleet guardian-link runtime state: the open offer and the notifier's
+/// wake.
 #[derive(Default)]
 pub(crate) struct GuardianLinkState {
     offer: Mutex<Option<LinkOffer>>,
-    unavailable_since:
-        Mutex<HashMap<fedi_decentralized_service_manifold_guardian::SeatId, Instant>>,
-    /// Edge trigger for the notifier after a link or revoke.
+    /// Wakes the notifier after a link, a revoke, or a new readiness report.
     pub(crate) changed: tokio::sync::Notify,
-}
-
-#[cfg(test)]
-impl GuardianLinkState {
-    /// Pretend every currently unavailable seat has been so for `age`.
-    pub(crate) fn backdate_unavailable_for_test(&self, age: Duration) {
-        for first in self
-            .unavailable_since
-            .lock()
-            .expect("unavailable lock")
-            .values_mut()
-        {
-            *first = Instant::now()
-                .checked_sub(age)
-                .expect("age fits in Instant");
-        }
-    }
 }
 
 /// The operator-facing projection of the link (admin `GuardianLink`).
@@ -222,79 +201,33 @@ impl Fleet {
     }
 
     /// What the operator should look at right now, derived from what the
-    /// daemon already knows. Coarse by design: see [`AttentionReason`].
+    /// daemon already holds. Coarse by design: see [`AttentionReason`].
     pub async fn attention_reasons(
         &self,
-        presence: &DirectoryPresence,
-    ) -> anyhow::Result<BTreeSet<AttentionReason>> {
-        self.attention_reasons_with(self.seat_report_snapshot(), presence)
-            .await
-    }
-
-    async fn attention_reasons_with(
-        &self,
-        seats: Vec<(
-            fedi_decentralized_service_manifold_guardian::SeatId,
-            SeatReport,
-        )>,
-        presence: &DirectoryPresence,
+        policy: Option<&AdmittedSetupPaymentFederations>,
     ) -> anyhow::Result<BTreeSet<AttentionReason>> {
         let mut reasons = BTreeSet::new();
+        // Before the first readiness run nothing is known, so nothing fails.
+        if let Some(report) = self.seat_readiness() {
+            let checks: [(ReadinessOutcome, AttentionReason); 5] = [
+                (report.relay, AttentionReason::RelayCheckFailed),
+                (report.discovery, AttentionReason::DiscoveryCheckFailed),
+                (report.bitcoin, AttentionReason::BitcoinCheckFailed),
+                (report.version, AttentionReason::VersionCheckFailed),
+                (report.uptime, AttentionReason::UptimeCheckFailed),
+            ];
+            reasons.extend(
+                checks
+                    .into_iter()
+                    .filter(|(outcome, _)| !outcome.passed())
+                    .map(|(_, reason)| reason),
+            );
+        }
+        if policy
+            .and_then(AdmittedSetupPaymentFederations::recommended_min_mg_version)
+            .is_some_and(|recommended| this_mg_version().is_older_than(recommended))
         {
-            let now = Instant::now();
-            let mut since = self
-                .guardian_link
-                .unavailable_since
-                .lock()
-                .expect("unavailable lock");
-            let mut live = HashMap::new();
-            for (seat_id, report) in seats {
-                // Only a formed seat is the operator's to keep up: one still
-                // waiting on its FI's DKG is idle by design.
-                let health = match report {
-                    SeatReport::Active {
-                        phase: SeatPhase::DataLoss { .. },
-                        ..
-                    } => SeatHealth::Failed,
-                    SeatReport::Active {
-                        phase: SeatPhase::Running { .. },
-                        health,
-                    } => health,
-                    SeatReport::Active { .. } | SeatReport::Decommissioned { .. } => continue,
-                };
-                match health {
-                    SeatHealth::Failed => {
-                        reasons.insert(AttentionReason::SeatFailed);
-                    }
-                    SeatHealth::Unavailable => {
-                        let first = since.remove(&seat_id).unwrap_or(now);
-                        if SEAT_UNAVAILABLE_GRACE <= now.duration_since(first) {
-                            reasons.insert(AttentionReason::SeatUnavailable);
-                        }
-                        live.insert(seat_id, first);
-                    }
-                    SeatHealth::Healthy => {}
-                }
-            }
-            *since = live;
-        }
-        if self.seat_readiness().is_some() && !self.ready_for_new_seats().await {
-            reasons.insert(AttentionReason::NotReadyForNewSeats);
-        }
-        // Nothing an MG advertises is free (`Plan` docs), so an offered plan
-        // means the operator expects to be paid through these federations.
-        let priced = !self.offered_plans().await.is_empty();
-        if priced
-            && self
-                .payment_federation_statuses()
-                .await
-                .iter()
-                .any(|federation| federation.accepted && !federation.receivable)
-        {
-            reasons.insert(AttentionReason::PaymentFederationNotReceivable);
-        }
-        if matches!(presence.onboarding, OnboardingStatus::NotObserved { .. }) {
-            reasons.insert(AttentionReason::NotApproved);
+            reasons.insert(AttentionReason::UpdateRecommended);
         }
         if 0 < self.db().support_unread().await? {
             reasons.insert(AttentionReason::SupportMessage);
@@ -418,19 +351,33 @@ impl Drop for GuardianLinkNotifier {
     }
 }
 
-/// Start the notifier for this fleet. `presence` is the directory runtime's
-/// latest observation, which is what the admin socket reads too.
+/// When the notifier tries again after a send or a tick failed: its attempt
+/// count and the earliest time.
+type Backoff = Option<(u32, tokio::time::Instant)>;
+
+/// Start the notifier for this fleet. It wakes on a link change or a new
+/// readiness report (`changed`), a new setup-payment `policy`, or a support
+/// thread write, and on its own only to retry a failed send.
 pub fn spawn_notifier(
     fleet: Arc<Fleet>,
-    presence: watch::Receiver<DirectoryPresence>,
-    scan_interval: Duration,
+    mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
 ) -> GuardianLinkNotifier {
     let (shutdown, mut shutdown_rx) = watch::channel(false);
+    let mut support = fleet.db().subscribe_support();
     let handle = tokio::spawn(async move {
-        let mut scan = tokio::time::interval(scan_interval);
-        scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut backoff: Option<(u32, Instant)> = None;
+        let mut backoff: Backoff = None;
+        let mut policy_open = true;
         loop {
+            let snapshot = policy.borrow_and_update().clone();
+            support.borrow_and_update();
+            if let Err(error) = tick(&fleet, snapshot.as_ref(), &mut backoff).await {
+                tracing::warn!(
+                    error = format_args!("{error:#}"),
+                    "guardian link tick failed"
+                );
+                backoff = next_backoff(&fleet, backoff, b"guardian-link-tick");
+            }
+            let retry_at = backoff.map(|(_, at)| at);
             tokio::select! {
                 biased;
                 changed = shutdown_rx.changed() => {
@@ -438,15 +385,12 @@ pub fn spawn_notifier(
                         break;
                     }
                 }
-                _ = scan.tick() => {}
                 () = fleet.guardian_link.changed.notified() => {}
-            }
-            let snapshot = presence.borrow().clone();
-            if let Err(error) = tick(&fleet, &snapshot, &mut backoff).await {
-                tracing::warn!(
-                    error = format_args!("{error:#}"),
-                    "guardian link tick failed"
-                );
+                changed = policy.changed(), if policy_open => policy_open = changed.is_ok(),
+                // The database holds the sender for as long as the fleet.
+                Ok(()) = support.changed() => {}
+                () = tokio::time::sleep_until(retry_at.unwrap_or_else(tokio::time::Instant::now)),
+                    if retry_at.is_some() => {}
             }
         }
     });
@@ -456,20 +400,34 @@ pub fn spawn_notifier(
     }
 }
 
+fn next_backoff(fleet: &Fleet, backoff: Backoff, entropy: &[u8]) -> Backoff {
+    let attempt = backoff.map_or(1, |(attempt, _)| attempt.saturating_add(1));
+    Some((
+        attempt,
+        tokio::time::Instant::now()
+            + retry_delay(
+                fleet.config().push_callback_retry_interval,
+                attempt,
+                entropy,
+            ),
+    ))
+}
+
 /// One edge-detecting pass. Returns whether a notification was sent.
 async fn tick(
     fleet: &Fleet,
-    presence: &DirectoryPresence,
-    backoff: &mut Option<(u32, Instant)>,
+    policy: Option<&AdmittedSetupPaymentFederations>,
+    backoff: &mut Backoff,
 ) -> anyhow::Result<bool> {
     let Some(link) = fleet.db().guardian_link().await? else {
         *backoff = None;
         return Ok(false);
     };
     if link.delivery != GuardianLinkDelivery::Active {
+        *backoff = None;
         return Ok(false);
     }
-    let current = fleet.attention_reasons(presence).await?;
+    let current = fleet.attention_reasons(policy).await?;
     let told: BTreeSet<_> = link.notified_reasons.iter().copied().collect();
     let still_told: BTreeSet<_> = told.intersection(&current).copied().collect();
     if still_told != told {
@@ -480,10 +438,11 @@ async fn tick(
             .await?;
     }
     if current.difference(&still_told).next().is_none() {
+        *backoff = None;
         return Ok(false);
     }
     if let Some((_, not_before)) = backoff
-        && Instant::now() < *not_before
+        && tokio::time::Instant::now() < *not_before
     {
         return Ok(false);
     }
@@ -493,16 +452,7 @@ async fn tick(
         .await?;
     *backoff = match outcome {
         CallbackAttemptOutcome::Retryable(_) => {
-            let attempt = backoff.map_or(1, |(attempt, _)| attempt.saturating_add(1));
-            Some((
-                attempt,
-                Instant::now()
-                    + retry_delay(
-                        fleet.config().push_callback_retry_interval,
-                        attempt,
-                        &link.linked_at_ms.to_be_bytes(),
-                    ),
-            ))
+            next_backoff(fleet, *backoff, &link.linked_at_ms.to_be_bytes())
         }
         _ => None,
     };

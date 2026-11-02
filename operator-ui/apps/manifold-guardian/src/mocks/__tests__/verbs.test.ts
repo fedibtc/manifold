@@ -246,7 +246,7 @@ describe('guardian link', () => {
     });
     // The test notification carries no reason, so the told reasons stay.
     expect(getState().guardianLink.link?.notified_reasons).toEqual([
-      'seat_failed',
+      'uptime_check_failed',
       'support_message'
     ]);
   });

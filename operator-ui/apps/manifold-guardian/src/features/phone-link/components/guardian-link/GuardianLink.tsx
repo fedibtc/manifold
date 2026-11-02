@@ -31,11 +31,8 @@ const LINK_STEPS: { title: string; detail: string }[] = [
 
 // What the daemon notifies about (`AttentionReason` in mg-core), in words.
 const NOTIFIED_ABOUT = [
-  'A guardian is offline for 10 minutes or more',
-  'A guardian lost its data',
-  'This host is not ready to take new seats',
-  'Your payment federation cannot receive payments',
-  'This host is not approved',
+  'A check on the Health page fails',
+  'An update for this host is recommended',
   'Support sent you a message'
 ];
 

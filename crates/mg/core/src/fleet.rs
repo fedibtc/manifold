@@ -728,20 +728,6 @@ impl Fleet {
         self.iroh_endpoint_id.get().cloned()
     }
 
-    /// Every seat's cached report, without touching a child. A seat whose
-    /// data directory cannot be probed is left out until it can be.
-    pub(crate) fn seat_report_snapshot(&self) -> Vec<(SeatId, SeatReport)> {
-        self.seats
-            .read()
-            .expect("seat registry lock is never poisoned")
-            .values()
-            .filter_map(|seat| {
-                let report = seat.cached_report().ok()?;
-                Some((seat.facts().seat_id.clone(), report))
-            })
-            .collect()
-    }
-
     /// Stop every supervised child. Used by the daemon before process exit and
     /// by embedders before dropping the runtime; `Drop` remains best-effort.
     pub async fn shutdown(&self) {
@@ -863,6 +849,8 @@ impl Fleet {
             .seat_readiness
             .lock()
             .expect("readiness lock is never poisoned") = Some(report);
+        // A failing check is something to tell the linked phone.
+        self.guardian_link.changed.notify_one();
         let ready = report.ready();
         let update = SeatsConfigUpdate {
             ready_for_new_seats: Some(ready),

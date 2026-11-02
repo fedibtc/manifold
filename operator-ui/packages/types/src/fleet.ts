@@ -401,11 +401,12 @@ export interface GuardianLinkResponse {
     callback_expires_at: number;
     last_notified_at: number | null;
     notified_reasons: (
-      | 'seat_failed'
-      | 'seat_unavailable'
-      | 'not_ready_for_new_seats'
-      | 'payment_federation_not_receivable'
-      | 'not_approved'
+      | 'relay_check_failed'
+      | 'discovery_check_failed'
+      | 'bitcoin_check_failed'
+      | 'version_check_failed'
+      | 'uptime_check_failed'
+      | 'update_recommended'
       | 'support_message'
     )[];
     delivery: { state: 'active' | 'terminal'; reason: string | null };

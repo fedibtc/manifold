@@ -42,21 +42,29 @@ app created, exactly as it invokes an FI's DKG completion hook.
   accepts: every notification is one generic "look at your dashboard". The
   app shows no guardian status of its own; the dashboard is where the host
   sees why.
-- **Reasons.** `seat_failed` (a formed seat lost its data), `seat_unavailable`
-  (a formed seat's child has been down for ten minutes),
-  `not_ready_for_new_seats` (the latest readiness report fails),
-  `payment_federation_not_receivable` (a plan is offered and an accepted
-  payment federation cannot receive), `not_approved` (the directory shows no
-  Holder authorization), and `support_message` (unread Fedi support message).
-  The operator's test notification carries no reason. A seat still waiting on
-  its FI's DKG is idle, not a reason.
+- **Reasons.** One per failing check of the latest readiness report, the
+  checks the dashboard's Health page shows: `relay_check_failed`,
+  `discovery_check_failed`, `bitcoin_check_failed`, `version_check_failed`
+  (below the policy's `min_mg_version`), and `uptime_check_failed`. Then
+  `update_recommended`, when this release is below the setup-payment
+  policy's `recommended_min_mg_version`
+  ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
+  and `support_message`, an unread Fedi support message. Before the first
+  readiness run no check counts as failing. The operator's test notification
+  carries no reason.
+
 - **Edge triggering.** The daemon notifies when a reason is present that the
-  device has not been told about, sending every current reason in one
-  invocation. It remembers the reasons it told; a reason that clears is
+  device has not been told about, sending one invocation for all current
+  reasons. It remembers the reasons it told; a reason that clears is
   forgotten so its return is notified again. A reason that stays set is not
-  repeated. Each invocation's idempotency key is
+  repeated, so a recommended update is told once until this MG reaches it.
+  Each invocation's idempotency key is
   `guardian-link:<linked_at_ms>:<sequence>`, so a retry after a transient
   failure deduplicates at the gateway.
+- **Wakes.** The notifier runs when a source of a reason changes: a new
+  readiness report, a new setup-payment policy, or a write to the support
+  thread; and when the link is made or revoked. It has no scan timer; the
+  only timed wake is the retry of a failed send.
 - **Delivery states.** A transient failure is retried with the completion
   callback backoff. A definitive rejection (hook not found, expired or
   revoked, policy rejected) parks the link as `terminal` with the reason and

@@ -769,7 +769,7 @@ const guardianLinkMirror = {
     device_label: 'Pixel 8',
     last_notified_at: 1700003600,
     linked_at: 1700000000,
-    notified_reasons: ['seat_failed', 'support_message']
+    notified_reasons: ['uptime_check_failed', 'support_message']
   },
   offer: {
     // Keep the one-time QR secret out of test output, including failed equality assertions.

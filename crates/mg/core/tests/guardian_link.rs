@@ -1,8 +1,6 @@
 use std::sync::Mutex;
 
-use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallbackInput, InviteCode, SeatId, Timestamp,
-};
+use fedi_decentralized_service_manifold_guardian::{DkgCompletionCallbackInput, Timestamp};
 use tempfile::TempDir;
 
 use super::*;
@@ -17,6 +15,7 @@ use crate::seat_process::fake::{block_forever, write_fake_fedimintd};
 use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
 use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
+use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 
 const ORIGIN: &str = "https://push.example.com";
 
@@ -118,23 +117,52 @@ async fn harness(origin: Option<&str>) -> Harness {
     }
 }
 
-fn presence(fleet: &Fleet, onboarding: OnboardingStatus) -> DirectoryPresence {
-    DirectoryPresence {
-        service_nostr_pubkey: fleet.identity().derive_service_nostr_keys().public_key(),
-        onboarding,
-        latest_mg_version: None,
+/// A readiness report whose checks pass except those named.
+fn readiness(failing: &[&str]) -> ReadinessReport {
+    let outcome = |check: &str, failed: ReadinessOutcome| {
+        if failing.contains(&check) {
+            failed
+        } else {
+            ReadinessOutcome::Pass
+        }
+    };
+    ReadinessReport {
+        checked_at_ms: 1,
+        relay: outcome("relay", ReadinessOutcome::RelayDisconnected),
+        discovery: outcome("discovery", ReadinessOutcome::DiscoveryRecordMissing),
+        bitcoin: outcome("bitcoin", ReadinessOutcome::BitcoinSyncing),
+        version: outcome("version", ReadinessOutcome::MgVersionTooOld),
+        uptime: outcome("uptime", ReadinessOutcome::DayUptimeLow),
+        uptime_comparison: None,
     }
 }
 
-fn authorized(fleet: &Fleet) -> DirectoryPresence {
-    presence(
-        fleet,
-        OnboardingStatus::AuthorizationObserved {
-            authorizations: 1,
-            holders: Vec::new(),
-            checked_at: Some(1),
-        },
+/// A setup-payment policy that recommends `recommended`, if any.
+fn policy(recommended: Option<&str>) -> AdmittedSetupPaymentFederations {
+    let field = recommended
+        .map(|version| format!(r#","recommended_min_mg_version":"{version}""#))
+        .unwrap_or_default();
+    AdmittedSetupPaymentFederations::parse(
+        format!(
+            r#"{{"version":1,"fman_version":"99.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+        .as_bytes(),
     )
+    .unwrap()
+}
+
+async fn support_message(fleet: &Fleet, id: char) {
+    fleet
+        .db()
+        .record_support_message(&crate::db::SupportRow {
+            rumor_id: id.to_string().repeat(64),
+            from_fedi: true,
+            body: "hello".to_owned(),
+            created_at: 1,
+            unread: true,
+        })
+        .await
+        .unwrap();
 }
 
 fn hook(path: &str) -> DkgCompletionCallback {
@@ -169,130 +197,29 @@ async fn link(harness: &Harness) -> GuardianLinkRpc {
     rpc
 }
 
-fn seat(n: u8) -> SeatId {
-    SeatId::from(fedi_decentralized_service_manifold_guardian::QuoteId(
-        [n; 32],
-    ))
-}
-
-fn running(health: SeatHealth) -> SeatReport {
-    SeatReport::Active {
-        phase: SeatPhase::Running {
-            invite_code: InviteCode("fed1invite".to_owned()),
-        },
-        health,
-    }
-}
-
 #[tokio::test]
-async fn evaluator_reads_only_formed_seats_and_waits_out_a_short_outage() {
+async fn reasons_are_failing_health_checks_a_recommended_update_and_unread_support() {
     let h = harness(Some(ORIGIN)).await;
-    let presence = authorized(&h.fleet);
-    // An unformed seat is idle, not broken; a running one that just went
-    // away gets the grace period.
-    let seats = vec![
-        (
-            seat(1),
-            SeatReport::Active {
-                phase: SeatPhase::Created,
-                health: SeatHealth::Unavailable,
-            },
-        ),
-        (seat(2), running(SeatHealth::Unavailable)),
-    ];
-    let reasons = h
-        .fleet
-        .attention_reasons_with(seats.clone(), &presence)
-        .await
-        .unwrap();
+    // Before the first readiness run nothing is known, so nothing fails.
+    let reasons = h.fleet.attention_reasons(None).await.unwrap();
     assert!(reasons.is_empty(), "{reasons:?}");
     h.fleet
-        .guardian_link
-        .backdate_unavailable_for_test(SEAT_UNAVAILABLE_GRACE);
+        .set_seat_readiness(readiness(&["discovery", "uptime"]))
+        .await
+        .unwrap();
+    support_message(&h.fleet, '1').await;
+    // This release (the workspace's) is below 99.0.0 and above 0.0.1.
     let reasons = h
         .fleet
-        .attention_reasons_with(seats, &presence)
-        .await
-        .unwrap();
-    assert_eq!(reasons, BTreeSet::from([AttentionReason::SeatUnavailable]));
-    // Recovery clears the memory: a later outage starts its own grace.
-    let reasons = h
-        .fleet
-        .attention_reasons_with(vec![(seat(2), running(SeatHealth::Healthy))], &presence)
-        .await
-        .unwrap();
-    assert!(reasons.is_empty());
-    let reasons = h
-        .fleet
-        .attention_reasons_with(vec![(seat(2), running(SeatHealth::Unavailable))], &presence)
-        .await
-        .unwrap();
-    assert!(reasons.is_empty());
-    // Lost data is a failure from the first look.
-    let reasons = h
-        .fleet
-        .attention_reasons_with(
-            vec![(
-                seat(3),
-                SeatReport::Active {
-                    phase: SeatPhase::DataLoss {
-                        invite_code: InviteCode("fed1invite".to_owned()),
-                    },
-                    health: SeatHealth::Unavailable,
-                },
-            )],
-            &presence,
-        )
-        .await
-        .unwrap();
-    assert_eq!(reasons, BTreeSet::from([AttentionReason::SeatFailed]));
-    h.fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn evaluator_reads_presence_support_and_readiness() {
-    let h = harness(Some(ORIGIN)).await;
-    // Before the first readiness run nothing is known, so nothing is wrong.
-    let reasons = h
-        .fleet
-        .attention_reasons_with(Vec::new(), &presence(&h.fleet, OnboardingStatus::Checking))
-        .await
-        .unwrap();
-    assert!(reasons.is_empty(), "{reasons:?}");
-    let not_observed = presence(&h.fleet, OnboardingStatus::NotObserved { checked_at: 1 });
-    h.fleet
-        .set_seat_readiness(ReadinessReport {
-            checked_at_ms: 1,
-            relay: ReadinessOutcome::Pass,
-            discovery: ReadinessOutcome::DiscoveryRecordMissing,
-            bitcoin: ReadinessOutcome::Pass,
-            version: ReadinessOutcome::Pass,
-            uptime: ReadinessOutcome::Pass,
-            uptime_comparison: None,
-        })
-        .await
-        .unwrap();
-    h.fleet
-        .db()
-        .record_support_message(&crate::db::SupportRow {
-            rumor_id: "1".repeat(64),
-            from_fedi: true,
-            body: "hello".to_owned(),
-            created_at: 1,
-            unread: true,
-        })
-        .await
-        .unwrap();
-    let reasons = h
-        .fleet
-        .attention_reasons_with(Vec::new(), &not_observed)
+        .attention_reasons(Some(&policy(Some("99.0.0"))))
         .await
         .unwrap();
     assert_eq!(
         reasons,
         BTreeSet::from([
-            AttentionReason::NotReadyForNewSeats,
-            AttentionReason::NotApproved,
+            AttentionReason::DiscoveryCheckFailed,
+            AttentionReason::UptimeCheckFailed,
+            AttentionReason::UpdateRecommended,
             AttentionReason::SupportMessage,
         ])
     );
@@ -301,24 +228,11 @@ async fn evaluator_reads_presence_support_and_readiness() {
         .mark_support_read(&["1".repeat(64)])
         .await
         .unwrap();
-    h.fleet
-        .set_seat_readiness(ReadinessReport {
-            checked_at_ms: 2,
-            relay: ReadinessOutcome::Pass,
-            discovery: ReadinessOutcome::Pass,
-            bitcoin: ReadinessOutcome::Pass,
-            version: ReadinessOutcome::Pass,
-            uptime: ReadinessOutcome::Pass,
-            uptime_comparison: None,
-        })
-        .await
-        .unwrap();
-    let reasons = h
-        .fleet
-        .attention_reasons_with(Vec::new(), &authorized(&h.fleet))
-        .await
-        .unwrap();
-    assert!(reasons.is_empty(), "{reasons:?}");
+    h.fleet.set_seat_readiness(readiness(&[])).await.unwrap();
+    for current in [policy(Some("0.0.1")), policy(None)] {
+        let reasons = h.fleet.attention_reasons(Some(&current)).await.unwrap();
+        assert!(reasons.is_empty(), "{reasons:?}");
+    }
     h.fleet.shutdown().await;
 }
 
@@ -327,28 +241,25 @@ async fn notifier_sends_once_per_new_reason_and_again_after_it_clears() {
     let h = harness(Some(ORIGIN)).await;
     link(&h).await;
     let mut backoff = None;
-    let not_observed = presence(&h.fleet, OnboardingStatus::NotObserved { checked_at: 1 });
-    assert!(tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
-    // Same reasons again: silence.
-    assert!(!tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
-    // A second reason joins: one more send carries both.
     h.fleet
-        .db()
-        .record_support_message(&crate::db::SupportRow {
-            rumor_id: "1".repeat(64),
-            from_fedi: true,
-            body: "hello".to_owned(),
-            created_at: 1,
-            unread: true,
-        })
+        .set_seat_readiness(readiness(&["relay"]))
         .await
         .unwrap();
-    assert!(tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
-    // Approval clears one reason; nothing new, so nothing is sent, but the
-    // memory narrows so a relapse is told again.
-    let approved = authorized(&h.fleet);
-    assert!(!tick(&h.fleet, &approved, &mut backoff).await.unwrap());
-    assert!(tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    assert!(tick(&h.fleet, None, &mut backoff).await.unwrap());
+    // Same reasons again: silence.
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
+    // A second reason joins: one more send carries both.
+    support_message(&h.fleet, '1').await;
+    assert!(tick(&h.fleet, None, &mut backoff).await.unwrap());
+    // The relay recovers; nothing new, so nothing is sent, but the memory
+    // narrows so a relapse is told again.
+    h.fleet.set_seat_readiness(readiness(&[])).await.unwrap();
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
+    h.fleet
+        .set_seat_readiness(readiness(&["relay"]))
+        .await
+        .unwrap();
+    assert!(tick(&h.fleet, None, &mut backoff).await.unwrap());
     let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
     let calls = h.invoker.calls();
     let linked = link.linked_at_ms;
@@ -363,7 +274,7 @@ async fn notifier_sends_once_per_new_reason_and_again_after_it_clears() {
     assert_eq!(
         link.notified_reasons,
         vec![
-            AttentionReason::NotApproved,
+            AttentionReason::RelayCheckFailed,
             AttentionReason::SupportMessage
         ]
     );
@@ -372,23 +283,63 @@ async fn notifier_sends_once_per_new_reason_and_again_after_it_clears() {
     h.fleet.shutdown().await;
 }
 
+/// Waits until the invoker has seen `count` calls, or fails after a few
+/// seconds.
+async fn calls_reach(h: &Harness, count: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.invoker.calls().len() < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{count} calls, saw {:?}", h.invoker.calls()));
+}
+
+#[tokio::test]
+async fn the_running_notifier_wakes_on_each_source_and_not_on_a_timer() {
+    let h = harness(Some(ORIGIN)).await;
+    let (publish, policies) = watch::channel(None);
+    let notifier = spawn_notifier(h.fleet.clone(), policies);
+    link(&h).await;
+    // Linked with nothing wrong: the notifier stays quiet.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.invoker.calls().is_empty());
+    support_message(&h.fleet, '1').await;
+    calls_reach(&h, 1).await;
+    h.fleet
+        .set_seat_readiness(readiness(&["bitcoin"]))
+        .await
+        .unwrap();
+    calls_reach(&h, 2).await;
+    publish.send_replace(Some(policy(Some("99.0.0"))));
+    calls_reach(&h, 3).await;
+    // With every reason told and no source changing, nothing more is sent.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.invoker.calls().len(), 3);
+    notifier.shutdown().await;
+    h.fleet.shutdown().await;
+}
+
 #[tokio::test]
 async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
     let h = harness(Some(ORIGIN)).await;
     link(&h).await;
-    let not_observed = presence(&h.fleet, OnboardingStatus::NotObserved { checked_at: 1 });
+    h.fleet
+        .set_seat_readiness(readiness(&["relay"]))
+        .await
+        .unwrap();
     let mut backoff = None;
     h.invoker.answer(CallbackAttemptOutcome::Retryable(
         CompletionCallbackReason::Network,
     ));
-    assert!(!tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
     // Inside the backoff window the hook is left alone.
-    backoff.as_mut().unwrap().1 = Instant::now() + Duration::from_secs(60);
-    assert!(!tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    backoff.as_mut().unwrap().1 = tokio::time::Instant::now() + Duration::from_secs(60);
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
     assert_eq!(h.invoker.calls().len(), 1);
-    backoff.as_mut().unwrap().1 = Instant::now();
+    backoff.as_mut().unwrap().1 = tokio::time::Instant::now();
     h.invoker.answer(CallbackAttemptOutcome::Delivered);
-    assert!(tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    assert!(tick(&h.fleet, None, &mut backoff).await.unwrap());
     // The retry reuses the sequence number, so the gateway deduplicates.
     let calls = h.invoker.calls();
     assert_eq!(calls.len(), 2);
@@ -396,21 +347,11 @@ async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
     assert!(backoff.is_none());
 
     // A terminal rejection parks the link until the phone relinks.
-    h.fleet
-        .db()
-        .record_support_message(&crate::db::SupportRow {
-            rumor_id: "1".repeat(64),
-            from_fedi: true,
-            body: "hello".to_owned(),
-            created_at: 1,
-            unread: true,
-        })
-        .await
-        .unwrap();
+    support_message(&h.fleet, '1').await;
     h.invoker.answer(CallbackAttemptOutcome::Terminal(
         CompletionCallbackReason::HookExpiredOrRevoked,
     ));
-    assert!(!tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
     let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
     assert_eq!(
         link.delivery,
@@ -418,7 +359,7 @@ async fn notifier_retries_transient_failures_and_parks_terminal_ones() {
     );
     assert!(link.callback.is_none());
     h.invoker.answer(CallbackAttemptOutcome::Delivered);
-    assert!(!tick(&h.fleet, &not_observed, &mut backoff).await.unwrap());
+    assert!(!tick(&h.fleet, None, &mut backoff).await.unwrap());
     assert_eq!(h.invoker.calls().len(), 3);
     assert!(h.fleet.test_guardian_link_notification().await.is_err());
     h.fleet.shutdown().await;
