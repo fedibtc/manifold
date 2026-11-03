@@ -50,9 +50,99 @@ fn availability(reports: &mut GuardianReports, reporter: u16, seen: u64, week: u
                     window_secs,
                     coverage_bps: 10_000,
                     peers: BTreeMap::from([(PeerId::from(0), score)]),
+                    ..Default::default()
                 })
                 .collect(),
         },
+    );
+}
+
+#[test]
+fn eligibility_healthy_replacement_overcomes_old_host_scores_without_changing_other_peers() {
+    let mut reports = reports();
+    let policy = policy(3600, 90, 93);
+    let moved = PeerId::from(0);
+    let other = PeerId::from(3);
+    for reporter in [1, 2, 3] {
+        availability(&mut reports, reporter, 9999, 2500, 2500);
+        for window in &mut reports
+            .availability
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .windows
+        {
+            window.peers.insert(other, 8000);
+        }
+    }
+    let before = replacement_reasons(&reports, &policy, 10_000);
+    assert_eq!(
+        before[&moved],
+        vec![
+            ReplacementReason::LowWeekScore { basis_points: 2500 },
+            ReplacementReason::LowMonthScore { basis_points: 2500 },
+        ]
+    );
+    assert_eq!(
+        before[&other],
+        vec![
+            ReplacementReason::LowWeekScore { basis_points: 8000 },
+            ReplacementReason::LowMonthScore { basis_points: 8000 },
+        ]
+    );
+
+    // Two observers have reset and seen a healthy successor. The third still
+    // carries the old host's score; the other peer has not been reset.
+    for reporter in [1, 2] {
+        for window in &mut reports
+            .availability
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .windows
+        {
+            window.peer_coverage_bps.insert(moved, 10);
+            window.peers.insert(moved, 10_000);
+        }
+    }
+    let after = replacement_reasons(&reports, &policy, 10_000);
+    assert!(after[&moved].is_empty());
+    assert_eq!(after[&other], before[&other]);
+}
+
+#[test]
+fn eligibility_poor_uptime_after_reset_uses_fresh_coverage() {
+    let mut reports = reports();
+    let policy = policy(3600, 90, 93);
+    let moved = PeerId::from(0);
+    availability(&mut reports, 1, 9999, 8500, 9100);
+    availability(&mut reports, 2, 9999, 8500, 9100);
+    availability(&mut reports, 3, 9999, 10_000, 10_000);
+    for window in &mut reports
+        .availability
+        .get_mut(&PeerId::from(2))
+        .unwrap()
+        .windows
+    {
+        window.coverage_bps = 100;
+    }
+    // Shared history differs: without the reset coverage, observer 2 is
+    // excluded and the old host's healthy score masks the new host's failures.
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&moved].is_empty());
+    for reporter in [1, 2] {
+        for window in &mut reports
+            .availability
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .windows
+        {
+            window.peer_coverage_bps.insert(moved, 10);
+        }
+    }
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&moved],
+        vec![
+            ReplacementReason::LowWeekScore { basis_points: 8500 },
+            ReplacementReason::LowMonthScore { basis_points: 9100 },
+        ]
     );
 }
 

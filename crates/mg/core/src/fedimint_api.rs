@@ -15,6 +15,7 @@ use fedimint_core::endpoint_constants::{
     CLIENT_CONFIG_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
+use fedimint_core::peer_availability::ResetPeerAvailabilityRequest;
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::ADD_GATEWAY_ENDPOINT;
 use fedimint_meta_client::api::MetaFederationApi as _;
@@ -120,6 +121,19 @@ impl FedimintApi {
         self.request(
             "get_consensus",
             self.api.clone().with_module(meta_id).get_consensus(key),
+        )
+        .await
+    }
+
+    pub async fn reset_peer_availability(
+        &self,
+        reset: ResetPeerAvailabilityRequest,
+    ) -> Result<(), FedimintApiError> {
+        self.request(
+            "reset_peer_availability",
+            self.api
+                .clone()
+                .reset_peer_availability(reset, self.auth.clone()),
         )
         .await
     }

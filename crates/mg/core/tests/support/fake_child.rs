@@ -52,6 +52,10 @@ pub(crate) struct FakeApiState {
     pub meta_submissions: Vec<Vec<u8>>,
     /// The `auth` each meta submission carried.
     pub meta_submission_auth: Vec<Option<String>>,
+    /// Each availability reset as `(peer_id, auth)`, in order.
+    pub availability_resets: Vec<(u16, Option<String>)>,
+    /// Record the next availability reset, then fail its reply.
+    pub fail_reset_after_record_once: bool,
     /// LNv2 gateway URLs accepted by the fake guardian.
     pub lnv2_gateways: std::collections::BTreeSet<String>,
     /// Admin auth carried by each LNv2 gateway insertion.
@@ -221,6 +225,26 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
                 .meta_consensus
                 .as_ref()
                 .map(|value| json!({ "revision": revision, "value": hex::encode(value) })))
+        })
+        .unwrap();
+    module
+        .register_method("reset_peer_availability", |params, state, _ext| {
+            let auth = request_auth(params.clone())?;
+            let request = request_params(params)?;
+            let reset: fedimint_core::peer_availability::ResetPeerAvailabilityRequest =
+                serde_json::from_value(request).map_err(|_| method_not_found())?;
+            let mut state = state.lock().unwrap();
+            state
+                .availability_resets
+                .push((u16::from(reset.peer_id), auth));
+            if std::mem::take(&mut state.fail_reset_after_record_once) {
+                return Err(ErrorObjectOwned::owned(
+                    -32000,
+                    "reset reply lost",
+                    None::<()>,
+                ));
+            }
+            Ok::<_, ErrorObjectOwned>(())
         })
         .unwrap();
     module
