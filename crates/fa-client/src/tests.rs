@@ -3636,7 +3636,7 @@ async fn shutdown_returns_once_the_backup_workers_have_stopped() {
         metrics.num_alive_tasks() > 0,
         "the staging profile starts backup workers"
     );
-    client.shutdown().await;
+    client.shutdown().await.unwrap();
     assert_eq!(metrics.num_alive_tasks(), 0);
 }
 
