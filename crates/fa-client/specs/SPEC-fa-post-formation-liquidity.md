@@ -115,7 +115,9 @@ out to every formed seat through signed `RegisterGateway` requests. It requires
 the federation consensus threshold of successful acknowledgements (both a new
 insert and an idempotent existing insert count), then requires a fresh upstream
 LNv2 aggregate view to contain the exact URL. An unavailable or decommissioned
-minority therefore does not block attachment.
+minority therefore does not block attachment. FA does not retry that
+minority: each guardian's `fedimintd` adopts gateways a threshold of its peers
+list (SPEC-fa-rpc), so a straggler converges without FA.
 
 The provider status is persisted before guardian registration. A separate
 durable marker stores the exact canonical gateway URL only after threshold
@@ -209,6 +211,15 @@ operations a backup would project, and the Nostr backup design
 - **Make liquidity part of `federation_created`.** Rejected: provider work is
   independently long-running and recoverable, and the product explicitly makes
   it post-formation.
+- **FA retries `RegisterGateway` to stragglers.** Rejected: FA would keep
+  durable per-seat retry state after reporting done, and a guardian can return
+  long after the FA app stops running.
+- **An MG worker copies gateways from peers.** Rejected: MG would dial every
+  peer's public API itself, duplicating the peer connections and module API
+  `fedimintd` already has.
+- **Publish gateways through a meta consensus vote.** Rejected: clients read
+  gateways from the LNv2 per-guardian lists, so this needs a client change
+  and still leaves those lists stale.
 - **Expose provider removal in MVP.** Rejected by product scope; successful
   Fedi-provider attachment is one-way in the app even though operators may add
   other gateways out of band.

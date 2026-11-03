@@ -64,6 +64,8 @@ const MG_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
 const PAYOUT_CRASH_SEAM_ENABLE: &str = "enable-payout-crash-seam";
 const PAYOUT_CRASH_SEAM_REACHED: &str = "payout-crash-seam-reached";
 const GUARDIAN_COUNT: usize = 7;
+/// Fedimint's consensus threshold for [`GUARDIAN_COUNT`] guardians.
+const GUARDIAN_THRESHOLD: usize = GUARDIAN_COUNT - (GUARDIAN_COUNT - 1) / 3;
 /// Ports between consecutive MGs of one test's port grid: room for an MG's
 /// seat blocks and, in the transfer tests, its pinned endpoint.
 const MG_PORT_STRIDE: u16 = 100;
@@ -1802,7 +1804,8 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     // Retain the pre-existing signed MG gateway-registration coverage only
     // after the real payout has finished: its deliberately unreachable
     // fixture URL is itself the consensus LNv2 gateway setting.
-    register_gateway_with_every_guardian(state_dir, &restarted_locators).await?;
+    register_gateway_with_every_guardian(state_dir, &restarted_locators, temp, iroh_overrides)
+        .await?;
     defe.release(gateway_lease.handle_id).await?;
     Ok(())
 }
@@ -1882,7 +1885,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"342169ec88c2f03e290e9b55204f3004393a99fc\"")
+                && line.contains("version_hash=\"e4e709880efac77db871d3de34e2d676bb3f5e0a\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
@@ -2179,9 +2182,14 @@ async fn assert_guardian_fee_policy(
     Ok(())
 }
 
+/// Register a gateway the way the FA does: it stops once a consensus
+/// threshold of guardians accepted it. Every remaining guardian must then
+/// adopt it from its peers without any further FA request.
 async fn register_gateway_with_every_guardian(
     state_dir: &Path,
     mg_locators: &[String],
+    temp: &Path,
+    iroh_overrides: &str,
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
     let seats = status["formed"]["seats"]
@@ -2212,6 +2220,7 @@ async fn register_gateway_with_every_guardian(
         .iter()
         .map(|locator| serde_json::from_str::<Locator>(locator))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut stragglers = Vec::new();
     for (index, seat) in seats.iter().enumerate() {
         // Seats record the advertised endpoint id only; dial the transport
         // address its MG printed, which changes when the MG restarts.
@@ -2237,6 +2246,10 @@ async fn register_gateway_with_every_guardian(
             seat_id,
             gateway_api: gateway_api.clone(),
         };
+        if index >= GUARDIAN_THRESHOLD {
+            stragglers.push((index, client, request));
+            continue;
+        }
         let first = register_gateway_when_seat_available(
             &client,
             &request,
@@ -2255,6 +2268,71 @@ async fn register_gateway_with_every_guardian(
         anyhow::ensure!(
             !replay.was_added,
             "guardian {index} must report an idempotent gateway replay"
+        );
+    }
+
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let fedimint_cli = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("guardian-payout-admin"),
+        iroh_overrides,
+    };
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let mut missing = Vec::new();
+            for peer in 0..GUARDIAN_COUNT {
+                let listed = fedimint_cli
+                    .run_json(
+                        &[
+                            "module",
+                            "lnv2",
+                            "gateways",
+                            "list",
+                            "--peer",
+                            &peer.to_string(),
+                        ],
+                        FEDIMINT_CLI_JOIN_TIMEOUT,
+                    )
+                    .await?;
+                if !listed
+                    .as_array()
+                    .context("gateway list is an array")?
+                    .iter()
+                    .any(|gateway| gateway.as_str() == Some(gateway_api.as_str()))
+                {
+                    missing.push(peer);
+                }
+            }
+            if missing.is_empty() {
+                return Ok::<_, anyhow::Error>(());
+            }
+            eprintln!("peers still lack the gateway: {missing:?}");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("guardians outside the FA's quorum never adopted the gateway")
+    })??;
+    eprintln!(
+        "every guardian lists the gateway after {} ms",
+        started.elapsed().as_millis()
+    );
+
+    // The FA's own path still works on a guardian that adopted the gateway,
+    // and reports it as already present.
+    for (index, client, request) in stragglers {
+        let replay = register_gateway_when_seat_available(
+            &client,
+            &request,
+            &keypair,
+            &format!("guardian {index} accepts a late gateway registration"),
+        )
+        .await?;
+        anyhow::ensure!(
+            !replay.was_added,
+            "guardian {index} must already list the gateway it adopted from its peers"
         );
     }
     endpoint.close().await;

@@ -265,6 +265,17 @@ LNv2 `add_gateway` endpoint. It stores the URL; it does not probe it or claim
 independent reachability/trust validation. The boolean response distinguishes a
 new insertion from an idempotent replay.
 
+FA stops the fan-out at the consensus threshold, so a guardian that was down
+or degraded at that moment would keep an incomplete gateway list: the list is
+local guardian state, not consensus. MG therefore starts every seat's
+`fedimintd` with `FM_LNV2_GATEWAY_SYNC=1` (Fedi's Fedimint fork). The LNv2
+server module then reads its peers' public `gateways` lists over the peer
+connections `fedimintd` already holds and adds each URL that a threshold of the
+other guardians list. Threshold listings include at least one honest guardian
+whose admin added the URL, so a faulty minority cannot inject a gateway. The
+same flag makes the LNv2 `remove_gateway` admin endpoint return an error,
+because sync would re-add a URL its peers still list.
+
 The unsigned `GetFmanTrustMaterial` serves this MG's signed current trust
 material: the Holder authorizations durably enrolled through the operator flow
 and its current `iroh://` endpoint, signed by the service Nostr key that also

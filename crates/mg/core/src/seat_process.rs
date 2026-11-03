@@ -562,7 +562,11 @@ async fn spawn_child(
         })?;
     command
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(child)))
-        .env("FM_DKG_CTRL", "1");
+        .env("FM_DKG_CTRL", "1")
+        // Each guardian adopts the LNv2 gateways a threshold of its peers
+        // list, so one that missed the FA's `RegisterGateway` fan-out heals
+        // on its own (SPEC-fa-rpc).
+        .env("FM_LNV2_GATEWAY_SYNC", "1");
     if local_e2e {
         // The bundled child deliberately starts from an empty environment.
         // Forward only the explicit harness marker so its module registry can

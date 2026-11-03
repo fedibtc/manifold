@@ -543,6 +543,11 @@ URL. Recovery consumes already-signed durable completion evidence before FLIP
 rediscovery, so provider disappearance cannot strand federation attachment.
 The aggregate reader ignores unrelated entries outside `GatewayApiUrl` policy
 individually; such an entry cannot hide a valid exact target.
+MG enables `FM_LNV2_GATEWAY_SYNC` on every seat, so a guardian adds any
+gateway URL that a threshold of its other guardians list, using peer
+connections `fedimintd` already holds. A faulty minority below threshold cannot
+inject a URL, and sync never removes one; the flag disables the LNv2
+`remove_gateway` admin endpoint.
 
 Production-capable FA, MG, FLIP, push-gateway telemetry, and cloud MG
 telemetry collector processes must
