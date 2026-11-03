@@ -70,6 +70,9 @@ serialization or domain separators.
 Before the first mutating RPC, persist the provider pubkey, signed Iroh endpoint,
 exact request commitment fields, and `details_payload_hash`. MG endorsements
 and trust material are refreshable proof and are not part of the commitment.
+`start` gathers every MG proof before it persists the operation, so a request
+that fails a local precondition leaves no operation behind to block the next
+start.
 At most one operation per federation may be non-terminal: `start` refuses with
 a typed error naming the resumable operation while one exists, so a lost
 response is resumed rather than shadowed by a second commitment.
@@ -101,11 +104,15 @@ against fresh federation consensus, recovery order is:
    endpoint, then query `GetAllocationStatus` by FA pubkey plus the persisted
    hash;
 4. if found, adopt the provider-authoritative item states;
-5. if not found and no durable acceptance evidence exists, refresh every MG
-   proof and replay `RequestLiquidity` with the exact persisted
+5. if not found and no durable acceptance evidence exists, and the commitment
+   expired more than `FA_LIQUIDITY_EXPIRY_GRACE` ago by the local clock,
+   durably mark the operation terminal with `request_expired`, without a
+   replay;
+6. otherwise, if not found and no durable acceptance evidence exists, refresh
+   every MG proof and replay `RequestLiquidity` with the exact persisted
    commitment/hash — `not_found` against a durably persisted acceptance is a
-   retained provider-consistency failure, never a replay; and
-6. persist the signed accepted/rejected response before projecting it.
+   retained provider-consistency failure, never a replay or an expiry; and
+7. persist the signed accepted/rejected response before projecting it.
 
 After a signed gateway item becomes `completed`, FA validates that the evidence
 variant, gateway id, fulfilled amount, and target amount agree. The evidence
@@ -133,8 +140,13 @@ completed rows.
 The federation id is FLIP's allocation identity and the hash is its semantic
 retry identity. A lost response therefore never justifies inventing a new
 hash. An exact request whose expiry passed can still recover an already accepted
-allocation; if no allocation exists and the provider rejects it as expired, a
-new intent requires a new explicit API invocation.
+allocation. FLIP refuses an expired request by its own clock, both before
+verification and inside the transaction that would commit an allocation, so
+`not_found` past expiry proves no allocation can ever exist for that hash. The
+grace equals the provider-response freshness window and covers FLIP clock
+skew. The terminal mark needs no MG proof, so an unreachable MG cannot keep an
+expired operation live. As after a provider rejection, a new intent requires a
+new explicit API invocation.
 
 There is no FA-owned background task. The Fedi bridge owns durable task
 scheduling and calls the library's bounded start/resume/status operations after
