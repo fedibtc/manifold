@@ -1177,7 +1177,6 @@ async fn run_inner(
             } else {
                 println!("initialized FA {}", hex::encode(fa_pubkey.0.serialize()));
             }
-            client.shutdown().await;
         }
         Command::Create(create) => {
             let CreatePreflight {
@@ -1272,7 +1271,6 @@ async fn run_inner(
                 observer.borrow_and_update();
             }
             output.snapshot(&observer.borrow(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1280,14 +1278,12 @@ async fn run_inner(
             let (client, endpoint) = open_existing(&resume, wallet_secret, clients).await?;
             let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
         Command::RestartDkg(restart) => {
             let (client, endpoint) = open_existing(&restart, wallet_secret, clients).await?;
             let results = client.restart_dkg(FormationRunOptions::default()).await;
-            client.shutdown().await;
             endpoint.close().await;
             let results = results?;
             let output: Vec<_> = results
@@ -1339,7 +1335,6 @@ async fn run_inner(
                 )
                 .await;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1359,7 +1354,6 @@ async fn run_inner(
             )
             .await?;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
         }
         Command::Discover(discover) => {
             let requirements = MgCandidateRequirements {
@@ -1433,7 +1427,6 @@ async fn run_inner(
                 let check = client.check_replacement_candidates().await?;
                 output.replacement_candidates(&check, format)?;
             }
-            client.shutdown().await;
         }
         Command::Maintenance(_) => {
             let operation = maintenance_preflight
@@ -1478,7 +1471,6 @@ async fn run_inner(
                     .and_then(|()| output.guardian_fee_consensus(send_ppm.value(), format))
                 }
             };
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1486,11 +1478,11 @@ async fn run_inner(
             let run_timeout = Duration::from_secs(transfer.run_timeout_secs);
             match transfer.command {
                 TransferCommand::Preview => {
-                    let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
+                    let (client, endpoint) =
+                        open_existing(&ResumeArgs::none(), None, clients).await?;
                     let result = client
                         .preview_transfer_destination(MgDiscoveryOptions::default())
                         .await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.transfer_preview(&result?, format)?;
                 }
@@ -1512,7 +1504,8 @@ async fn run_inner(
                         .payment_federation_id
                         .clone()
                         .map(fa_client::FederationId);
-                    let (client, endpoint) = open_existing(&start.payment, wallet_secret).await?;
+                    let (client, endpoint) =
+                        open_existing(&start.payment, wallet_secret, clients).await?;
                     // Reconcile first: the approval below is short-lived.
                     let result = async {
                         client.resume().await?;
@@ -1537,20 +1530,19 @@ async fn run_inner(
                         )
                     }
                     .await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(Some(&result?), format)?;
                 }
                 TransferCommand::Run(run) => {
-                    let (client, endpoint) = open_existing(&run, wallet_secret).await?;
+                    let (client, endpoint) = open_existing(&run, wallet_secret, clients).await?;
                     let transfer = drive_guardian_transfer(&client, run_timeout).await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(transfer.as_ref(), format)?;
                 }
                 TransferCommand::Status => {
                     let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                     let client = open_client(
+                        clients,
                         &args.state_dir,
                         identity,
                         CliPayments::unavailable(),
@@ -1566,7 +1558,6 @@ async fn run_inner(
                         client.observe_guardian_transfer().borrow().as_ref(),
                         format,
                     )?;
-                    client.shutdown().await;
                 }
             }
         }
@@ -1588,7 +1579,6 @@ async fn run_inner(
             )
             .await?;
             let result = client.decommission_seats().await;
-            client.shutdown().await;
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
         }
@@ -1726,7 +1716,6 @@ async fn run_inner(
                     )
                     .await?;
                 output.liquidity_discovery(&discovery, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Request(request) => {
@@ -1777,7 +1766,6 @@ async fn run_inner(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Resume(resume) => {
@@ -1807,7 +1795,6 @@ async fn run_inner(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Status(status) => {
@@ -1830,7 +1817,6 @@ async fn run_inner(
                     .liquidity_status(&LiquidityOperationId(status.operation_id))
                     .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
             }
             LiquidityCommand::List(list) => {
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -1851,7 +1837,6 @@ async fn run_inner(
                     .list_liquidity_operations(after.as_ref(), list.limit)
                     .await?;
                 output.liquidity_page(&page, format)?;
-                client.shutdown().await;
             }
         },
     }
