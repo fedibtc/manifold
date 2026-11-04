@@ -346,7 +346,8 @@ impl<'a> DriverRun<'a> {
             .await
     }
 
-    async fn call_with_timeout<T, Fut>(
+    /// Fence a bounded capability call while renewing ownership for the run.
+    pub(crate) async fn call_with_timeout<T, Fut>(
         &self,
         operation: &'static str,
         call_timeout: Duration,

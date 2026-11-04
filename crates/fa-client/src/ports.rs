@@ -528,6 +528,20 @@ pub trait ManifoldGuardianConnector: Send + Sync + 'static {
         locator: &Locator,
     ) -> impl Future<Output = Result<Self::Client, ManifoldGuardianConnectorError>> + MaybeSend;
 
+    /// Fetch read-only trust evidence, keeping local transport failures separate
+    /// from remote refusals. Adapters must preserve transport provenance rather
+    /// than flatten local failures into a service error.
+    fn get_mg_trust_material(
+        &self,
+        client: &Self::Client,
+        request: fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialRequest,
+    ) -> impl Future<
+        Output = Result<
+            FmResult<fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse>,
+            ManifoldGuardianCallError,
+        >,
+    > + MaybeSend;
+
     /// Call the value-free availability verb while retaining local transport
     /// failure outside the serialized service result.
     async fn get_availability(

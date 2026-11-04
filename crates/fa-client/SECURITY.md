@@ -16,6 +16,17 @@ trigger acquisition. The idle worker sleeps until eight hours before the
 evidence's seven-day reader-policy deadline, then refreshes only the due MG.
 After a failed refresh, it retains still-valid evidence for foreground use.
 
+For read-only acquisition, the FA uses bounded per-call retries followed by a
+separate capped operation backoff. It retries only transport failures and
+timeouts. Without valid evidence, foreground acquisition has a five-minute
+deadline. When valid evidence is due for refresh or requires it, the FA makes one
+connect/read attempt of at most 60 seconds, then revalidates the retained
+fallback. Background acquisition retries transient failures until success or
+cancellation. After success, the worker waits until the document's refresh
+deadline. The FA does not retry invalid evidence or service refusals, and these
+retries never enclose liquidity
+submission or credential admission.
+
 For each cache hit, the FA must verify the exact MG identity, signature, and time
 bounds under the seven-day issuance-age policy, ignoring the deprecated expiry
 hint. One entry per exact MG identity suffices; there are no lifetime slots or
