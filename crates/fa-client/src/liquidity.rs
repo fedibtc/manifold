@@ -81,8 +81,9 @@ pub const FA_LIQUIDITY_EXPIRY_GRACE: Duration = FA_LIQUIDITY_REQUEST_VALIDITY;
 /// Largest single durable-operation page accepted by the public recovery API.
 pub const FA_LIQUIDITY_OPERATION_PAGE_MAX: usize = 100;
 
-/// Maximum accepted MG trust-material response lifetime.
-pub const FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY: Duration = Duration::from_secs(4 * 60 * 60);
+/// Maximum accepted age of MG trust material from its signed issuance time.
+pub const FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY: Duration =
+    Duration::from_secs(fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS);
 
 /// Stable semantic identifier of one exact liquidity request.
 ///
@@ -1292,7 +1293,7 @@ where
                         FaError::Liquidity(format!("fetching MG trust material: {error}"))
                     })?;
                 let material = response
-                    .verify_for_mg(
+                    .verify_for_mg_age(
                         &mg_pubkey,
                         MgTimestamp(now_secs()?),
                         FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),

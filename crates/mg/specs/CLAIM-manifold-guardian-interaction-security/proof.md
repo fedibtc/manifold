@@ -591,8 +591,9 @@ Under the fault model of `wip-mg-has-no-bugs`, an honest-path
 final federation config and peer identity. An honest-path
 `GetFmanTrustMaterial` response makes no federation or seat claim: it binds the
 current public endpoint and admitted holder-authorization set to this MG's
-service Nostr key (H4), with a bounded freshness interval. Consensus
-`fedi:fman_seat_bindings` separately determines where that identity operates.
+service Nostr key (H4), with a signed issuance time. Readers limit the age they
+accept. Consensus `fedi:fman_seat_bindings` separately determines where that
+identity operates.
 
 Holder-authorization *authenticity and admission* are imported from
 [CLAIM-manifold-guardian-holder-authorization-bound](../CLAIM-manifold-guardian-holder-authorization-bound.md); this claim adds only the
@@ -626,11 +627,16 @@ request ownership.
 membership.** `GetMgTrustMaterialRequest` contains only `ProtocolV1` and
 rejects unknown fields. The response contains no federation id, config hash,
 peer id, or peer attestation. Its canonical digest covers the MG pubkey,
-current public URLs, freshness interval, and authorization envelopes. The
-shared `verify_for_mg` entry point requires an expected pubkey, then verifies
+current public URLs, issuance time, optional deprecated expiry hint, and authorization envelopes. The
+shared verification entry points require an expected pubkey, then verify
 that exact identity, the signature, bounds, URL canonicality, freshness, and
 authorization subjects. Callers obtain the expected identity from the verified
 consensus directory rather than from this response.
+
+Liquidity readers use `verify_for_mg_age` with a seven-day maximum age and the
+existing future-clock-skew allowance. They ignore the deprecated expiry hint.
+MGs retain the legacy one-hour hint for old readers. `verify_for_mg` preserves
+the narrower legacy expiry checks used outside liquidity.
 
 **L3 (claim + code) — official holder-authorization carriage cannot create a
 seat or federation binding.** The official trust source clones the runtime's

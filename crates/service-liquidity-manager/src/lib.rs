@@ -19,13 +19,14 @@ pub use fedi_decentralized_services::domain::{
     GetMgTrustMaterialResponse, GuardianIdentity, HashBytes, HolderAuthorizationEnvelope,
     HolderTrustEnvelopeError, InviteCode, MG_API_URLS_META_FIELD_KEY,
     MG_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, MG_SEAT_BINDINGS_META_FIELD_KEY,
-    MG_TRUST_MATERIAL_MAX_RESPONSE_BYTES, MG_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
-    MgApiUrlsMetadata, MgPeerAttestation, MgPeerAttestationStatement, MgSeatBindings,
-    MgSeatBindingsError, MgTrustMaterial, MgTrustMaterialVerificationError, PayloadProof,
-    PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError, PeerBadgeTrustPolicyError, PeerId,
-    ProtocolVersion, Pubkey, Sats, SecretString, Signature, Signed, TRUST_SCORE_SCHEMA_V1,
-    Timestamp, TrustScoreBadgeV1, TrustScoreSchemaError, Url, VerifiedSeatBinding,
-    federation_seats, parse_trust_score_badge_v1, verify_holder_trust_envelope,
+    MG_TRUST_MATERIAL_MAX_AGE_SECS, MG_TRUST_MATERIAL_MAX_RESPONSE_BYTES,
+    MG_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR, MgApiUrlsMetadata, MgPeerAttestation,
+    MgPeerAttestationStatement, MgSeatBindings, MgSeatBindingsError, MgTrustMaterial,
+    MgTrustMaterialVerificationError, PayloadProof, PeerBadgeTrustPolicy,
+    PeerBadgeTrustPolicyConfigError, PeerBadgeTrustPolicyError, PeerId, ProtocolVersion, Pubkey,
+    Sats, SecretString, Signature, Signed, TRUST_SCORE_SCHEMA_V1, Timestamp, TrustScoreBadgeV1,
+    TrustScoreSchemaError, Url, VerifiedSeatBinding, federation_seats, parse_trust_score_badge_v1,
+    verify_holder_trust_envelope,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use peerbadge_protocol::{

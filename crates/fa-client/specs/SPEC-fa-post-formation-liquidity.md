@@ -8,6 +8,11 @@ its RPC projection.
 
 ## Product boundary
 
+FA and FLIP liquidity readers enforce a seven-day maximum age from each MG's
+signed issuance time. They ignore the deprecated optional expiry hint and do
+not negotiate lifetime through the request shape or an API capability.
+Existing transfer and replacement policies remain separate.
+
 Liquidity is post-formation work. `federation_created` remains the terminal
 formation success state and is never delayed or rewritten by gateway or
 stability-pool provisioning.
@@ -52,7 +57,7 @@ current PeerBadge, then carries:
   the consensus directory.
 
 Consensus metadata, never requester-carried material, decides the identity and
-seat set. Missing, duplicate, expired, contradictory, or unverifiable material
+seat set. Missing, duplicate, stale, contradictory, or unverifiable material
 fails closed. There is no Nostr fallback. The carried `fleet_seat_hints` pair
 each consensus seat binding with the persisted formation seat of the same MG
 identity — never by list position — and a directory identity without a
@@ -197,8 +202,8 @@ operations a backup would project, and the Nostr backup design
 - Bound relay candidates, advertisement bytes, embedded authorizations, MG
   fan-out, RPC request/response sizes, and every network deadline.
 - Enforce freshness against the local clock: provider responses within ±1 hour
-  of receipt, MG trust material within 4 hours, and advertisements no older
-  than 4 hours regardless of their expiry. A skewed local clock rejects valid
+  of receipt, MG trust material no older than seven days, and advertisements no
+  older than 4 hours regardless of their expiry. A skewed local clock rejects valid
   responses rather than accepting stale ones.
 - Never log invite codes, trust documents, endpoint capabilities, or raw signed
   requests.

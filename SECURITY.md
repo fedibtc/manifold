@@ -734,12 +734,23 @@ a 10-second initial-frame read. The version-only trust-material request rejects
 unknown fields, and the handler reads no fleet, seat, child, or federation
 state. It has no endpoint-specific rate limit, so deployment-level abuse
 controls remain necessary. Relying verifiers must cap canonical response size,
-public API URLs, holder authorizations, and credentials; reject stale, overlong,
-future-issued, or expired responses; and fail closed when required issuer
+public API URLs, holder authorizations, and credentials; reject responses outside
+their own freshness and future-clock-skew policies; and fail closed when required issuer
 revocation lookups are unavailable. The response signature and every holder
 authorization must bind to the exact `material.fman_pubkey` selected from
 consensus metadata; relayed material from another MG is rejected unless a
 future protocol explicitly defines delegation.
+
+FLIP and FA liquidity readers accept MG evidence up to seven days after its
+signed issuance time and ignore the deprecated optional expiry hint. MGs
+emit the legacy one-hour expiry hint for old readers, without lifetime
+negotiation. This age limit does not prove availability: a stopped MG can remain
+trusted within that window. Removing an authorization from newly issued MG
+material does not revoke older signed evidence: it remains eligible within the
+same window absent issuer revocation. Readers check credential admission and
+revocation live.
+Transfer and replacement readers retain their existing narrower verification
+rules.
 
 Each seat's fedimintd binds its p2p and api ports on all interfaces because
 its iroh UDP sockets live at those addresses; ui and metrics stay loopback. In

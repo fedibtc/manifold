@@ -44,15 +44,9 @@ fn preview_error_rejection(error: FederationPreviewError) -> (PublicRejectionCod
     }
 }
 
-/// Longest `expires_at - issued_at` window FLIP accepts on MG trust material.
-///
-/// The requester collects material for a request it is about to send, so a long
-/// window buys it nothing. What the bound is actually for: with the live
-/// advertisement lookup gone, nothing else tells FLIP that an MG is *still*
-/// operating. An MG that goes dark stays trusted until its last material
-/// expires, so this is how long that shadow lasts. Revocation still runs live,
-/// so a withdrawn badge is caught inside the window regardless.
-const FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS: u64 = 3600;
+/// Evidence age is reader policy, not a lifetime negotiated with the MG.
+const FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS: u64 =
+    fedi_decentralized_service_liquidity_manager::MG_TRUST_MATERIAL_MAX_AGE_SECS;
 
 /// One operating identity's verified trust material.
 struct ResolvedTrustMaterial {
@@ -420,7 +414,7 @@ impl VerificationPipeline {
             };
 
             let verified = response
-                .verify_for_mg(
+                .verify_for_mg_age(
                     &Pubkey(mg_pubkey.clone()),
                     now,
                     FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS,

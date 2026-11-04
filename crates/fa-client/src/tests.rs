@@ -1643,9 +1643,7 @@ impl ManifoldGuardianService for TestMg {
         let material = fedi_decentralized_domain::MgTrustMaterial {
             mg_pubkey: fedi_decentralized_domain::Pubkey(keys.public_key().to_string()),
             issued_at: Timestamp(now),
-            expires_at: Timestamp(
-                now + crate::liquidity::FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
-            ),
+            expires_at: Some(Timestamp(now + 3600)),
             public_api_urls: vec![fedi_decentralized_domain::Url(format!(
                 "iroh://{}",
                 locator(self.index).endpoint_addr.id

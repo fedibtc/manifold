@@ -273,9 +273,14 @@ membership comes only from the consensus `fedi:fman_seat_bindings` directory;
 the live response does not repeat it. The verb is unauthenticated because the
 material is what any verifier holding an invite code is meant to be able to
 fetch, so there is no requester, federation, or seat to authorize. Its response
-carries an issue and expiry timestamp and the relying verifier
-applies its own upper bound on that window. The relying verifier also performs
-fresh issuer-policy and revocation checks over every retained envelope. Before a Nostr relay is
+carries a signed issuance timestamp; readers choose the maximum age they accept.
+The optional `expires_at` field is deprecated. MGs emit its legacy one-hour
+value to preserve compatibility with old readers and signed bytes, without
+negotiation. MGs must keep emitting that value while old readers are supported.
+Liquidity readers ignore it and enforce a seven-day age limit.
+Transfer and replacement readers retain their existing narrower checks. The
+relying verifier also performs fresh issuer-policy and revocation checks over
+every retained envelope. Before a Nostr relay is
 configured the MG cannot enroll a Holder authorization, so the verb
 answers `UnsupportedVerb` rather than an empty document, which would let a
 verifier read "not participating" as "participating but untrusted".

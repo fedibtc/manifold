@@ -198,14 +198,8 @@ impl ManifoldGuardianRpc {
     }
 }
 
-/// How long a signed trust-material response stays valid.
-///
-/// Deliberately short. The relying verifier applies its own upper bound on
-/// `expires_at - issued_at`, and this is the MG's side of that bargain: the
-/// FA collects material for a request it is about to make, so a long window
-/// buys nothing and only widens how far a withdrawn MG's material outlives
-/// it. One hour leaves room for a slow formation without becoming a standing
-/// credential.
+/// Legacy expiry hint retained for old readers. New readers select their own
+/// maximum evidence age from the signed issuance time.
 const TRUST_MATERIAL_VALIDITY_SECS: u64 = 3600;
 
 fn now() -> Timestamp {
@@ -1036,7 +1030,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
         let material = MgTrustMaterial {
             mg_pubkey: Pubkey(self.attestation_keys.public_key().to_string()),
             issued_at,
-            expires_at: Timestamp(issued_at.0.saturating_add(TRUST_MATERIAL_VALIDITY_SECS)),
+            expires_at: Some(Timestamp(
+                issued_at.0.saturating_add(TRUST_MATERIAL_VALIDITY_SECS),
+            )),
             public_api_urls: vec![source.iroh_endpoint_url()],
             holder_authorizations: source.holder_authorizations(),
         };

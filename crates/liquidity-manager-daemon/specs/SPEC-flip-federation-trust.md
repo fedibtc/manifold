@@ -43,9 +43,10 @@ untrusted. Material for an identity the directory does not name is ignored
 rather than refused, since it can never be consulted; two documents for one
 identity are refused, because resolving them by position would let list order
 decide a trust outcome. Live documents carry no peer attestations; the verified
-consensus directory is the sole seat-membership source. FLIP bounds the accepted
-`expires_at - issued_at` window, which is the only remaining bound on how long
-a withdrawn MG's material outlives it.
+consensus directory is the sole seat-membership source. FLIP accepts evidence
+at most seven days old, measured from signed `issued_at`, with the existing
+one-hour future clock-skew allowance. FLIP ignores the deprecated optional
+`expires_at` hint and negotiates neither a lifetime nor an API capability.
 
 The requester also embeds one guardian's `fman_endorsement` (attestation plus
 holder-authorization envelope) in `RequestLiquidity`; FLIP verifies the
@@ -65,14 +66,14 @@ FLIP resolves every directory-selected MG identity's standing from
 MG-signed trust material carried inside `RequestLiquidity`; the request path
 does not look up standing over Nostr. Missing material, or missing material for
 any identity selected by the directory, fails closed. Every document has a
-bounded `expires_at - issued_at` interval, and revocation is resolved live at
+reader-bounded age, and revocation is resolved live at
 verification time.
 
 Carriage is not authorship. The seat-binding directory chooses the identities,
 each document is signed by the identity it describes, and verification consults
 it only for that identity. The requester can omit an identity and be rejected,
 but cannot add an operator, substitute one operator's standing for another's, or
-forge standing. Material remains replayable until its bounded expiry, and an
+forge standing. Material remains replayable within the reader's age limit, and an
 MG that stops serving can remain trusted until then; live revocation can
 withdraw it earlier.
 
@@ -163,7 +164,7 @@ egress boundary outside the process.
 
 An identity the request carries no trust material for is untrusted;
 structurally valid but insufficient distinct trusted identities are
-`policy_mismatch`. Malformed, unverifiable, revoked, expired, below-minimum,
+`policy_mismatch`. Malformed, unverifiable, revoked, stale, below-minimum,
 wrong-subject, or wrong-federation credential material is
 `invalid_credentials`, as are a
 request carrying no trust material at all, duplicate documents for one

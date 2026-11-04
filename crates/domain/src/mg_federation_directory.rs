@@ -43,6 +43,9 @@ pub const MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS: u64 = 3600;
 /// Maximum future clock skew accepted for signed trust-material responses.
 pub const MG_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS: u64 = 3600;
 
+/// Liquidity readers accept MG-authored evidence issued at most seven days ago.
+pub const MG_TRUST_MATERIAL_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Canonical Fedimint metadata directory value for public MG API discovery.
 ///
 /// The value is discovery data only. Verifiers must treat every URL as an
@@ -296,8 +299,14 @@ pub struct MgTrustMaterial {
     /// Response issue timestamp.
     pub issued_at: Timestamp,
 
-    /// Response freshness limit.
-    pub expires_at: Timestamp,
+    /// Deprecated legacy expiry hint. Readers choose their own maximum age from
+    /// `issued_at`; MGs still emit the one-hour hint for older readers.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_legacy_expiry"
+    )]
+    pub expires_at: Option<Timestamp>,
 
     /// Current public MG API URLs for this service identity.
     pub public_api_urls: Vec<Url>,
@@ -314,6 +323,13 @@ pub struct MgTrustMaterial {
     /// advertisement loop embeds exactly this type — so splitting them here
     /// would be an un-pairing performed only to be undone.
     pub holder_authorizations: Vec<HolderAuthorizationEnvelope>,
+}
+
+/// Absence is canonical; explicit null must not silently change signed bytes.
+fn deserialize_legacy_expiry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Timestamp>, D::Error> {
+    <Timestamp as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
 impl MgTrustMaterial {
@@ -422,10 +438,40 @@ impl GetMgTrustMaterialResponse {
         }
         validate_freshness(
             self.material.issued_at,
-            self.material.expires_at,
+            self.material
+                .expires_at
+                .ok_or(MgTrustMaterialVerificationError::InvalidFreshnessWindow)?,
             now,
             max_validity_secs,
         )?;
+
+        self.verify_for_mg_age(expected_mg, now, max_validity_secs)
+    }
+
+    /// Verify signed evidence using the reader's maximum age, ignoring the
+    /// deprecated expiry hint. Credential and revocation admission remain live.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed evidence, identity/signature mismatches, excessive
+    /// future clock skew, and evidence older than the reader's policy.
+    pub fn verify_for_mg_age(
+        &self,
+        expected_mg: &Pubkey,
+        now: Timestamp,
+        max_age_secs: u64,
+    ) -> Result<MgTrustMaterial, MgTrustMaterialVerificationError> {
+        validate_response_bounds(self)?;
+        if &self.material.mg_pubkey != expected_mg {
+            return Err(MgTrustMaterialVerificationError::UnexpectedMg);
+        }
+        if self.material.issued_at.0 > now.0.saturating_add(MG_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS)
+        {
+            return Err(MgTrustMaterialVerificationError::IssuedInFuture);
+        }
+        if now.0.saturating_sub(self.material.issued_at.0) > max_age_secs {
+            return Err(MgTrustMaterialVerificationError::Expired);
+        }
 
         MgApiUrlsMetadata::new(self.material.public_api_urls.clone())
             .map_err(MgTrustMaterialVerificationError::InvalidPublicApiUrls)?;
