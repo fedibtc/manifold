@@ -57,6 +57,108 @@ fn availability(reports: &mut GuardianReports, reporter: u16, seen: u64, week: u
     );
 }
 
+/// What a reporter serves after resetting peer 0: no last-seen time, shared
+/// coverage kept, and only what it saw since the reset for peer 0.
+fn reset_availability(
+    reports: &mut GuardianReports,
+    reporter: u16,
+    coverage: u16,
+    score: Option<u16>,
+) {
+    let moved = PeerId::from(0);
+    reports.availability.insert(
+        PeerId::from(reporter),
+        PeerAvailability {
+            last_seen_secs: BTreeMap::new(),
+            windows: PEER_AVAILABILITY_WINDOWS_SECS
+                .into_iter()
+                .map(|window_secs| WindowAvailability {
+                    window_secs,
+                    coverage_bps: 10_000,
+                    peer_coverage_bps: BTreeMap::from([(moved, coverage)]),
+                    peers: score.map(|score| (moved, score)).into_iter().collect(),
+                })
+                .collect(),
+        },
+    );
+}
+
+#[test]
+fn eligibility_reset_drops_old_host_contributions_but_keeps_new_host_evidence() {
+    let mut reports = reports();
+    let policy = policy(3600, 90, 93);
+    let moved = PeerId::from(0);
+    let other = PeerId::from(3);
+    for reporter in [1, 2, 3] {
+        session(&mut reports, reporter, Some(900));
+        reports
+            .sessions
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .last_contribution
+            .insert(other, Some(99));
+    }
+    let stale = vec![ReplacementReason::MissedSessions { sessions: 900 }];
+    let before = replacement_reasons(&reports, &policy, 10_000);
+    assert_eq!(before[&moved], stale);
+    assert_eq!(before[&other], stale);
+
+    // Up to f reporters missed the vote and still show the old host's gap.
+    for reporter in [1, 2] {
+        reset_availability(&mut reports, reporter, 0, None);
+    }
+    let after = replacement_reasons(&reports, &policy, 10_000);
+    assert!(after[&moved].is_empty());
+    assert_eq!(after[&other], before[&other]);
+
+    // Every reporter reset and nobody has observed the new host yet.
+    reset_availability(&mut reports, 3, 0, None);
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&moved].is_empty());
+
+    // A new host that is down now shows at once, without a session gap.
+    for reporter in [1, 2] {
+        reports
+            .sessions
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .disconnected
+            .insert(moved);
+    }
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&moved],
+        vec![ReplacementReason::Disconnected]
+    );
+
+    // Its first fresh observations then score it, however few they are.
+    for reporter in [1, 2, 3] {
+        reset_availability(&mut reports, reporter, 10, Some(0));
+    }
+    let down = replacement_reasons(&reports, &policy, 10_000);
+    assert!(down[&moved].contains(&ReplacementReason::LowWeekScore { basis_points: 0 }));
+    assert!(down[&moved].contains(&ReplacementReason::LowMonthScore { basis_points: 0 }));
+}
+
+#[test]
+fn eligibility_up_to_f_reset_claims_cannot_hide_a_session_gap() {
+    let mut reports = reports();
+    let policy = policy(3600, 90, 93);
+    let moved = PeerId::from(0);
+    session(&mut reports, 1, Some(900));
+    session(&mut reports, 2, Some(800));
+    session(&mut reports, 3, Some(0));
+    reset_availability(&mut reports, 3, 0, None);
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&moved],
+        vec![ReplacementReason::MissedSessions { sessions: 800 }]
+    );
+    // The peer's own report cannot exempt it from the others' observations.
+    reset_availability(&mut reports, 0, 0, None);
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&moved],
+        vec![ReplacementReason::MissedSessions { sessions: 800 }]
+    );
+}
+
 #[test]
 fn eligibility_healthy_replacement_overcomes_old_host_scores_without_changing_other_peers() {
     let mut reports = reports();

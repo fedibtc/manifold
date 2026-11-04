@@ -304,6 +304,16 @@ fn replacement_reasons(
                     .sessions
                     .iter()
                     .filter(|(reporter, _)| *reporter != peer && reports.peers.contains(reporter))
+                    // A reset clears a moved peer's last-seen time but not its
+                    // last contribution, which can still be the old host's.
+                    .filter(|(reporter, _)| {
+                        !availability.get(reporter).is_some_and(|report| {
+                            report
+                                .windows
+                                .iter()
+                                .any(|window| window.peer_coverage_bps.contains_key(peer))
+                        })
+                    })
                     .filter_map(|(_, report)| {
                         let last = (*report.last_contribution.get(peer)?)?;
                         // A contribution to the current session means no missed
