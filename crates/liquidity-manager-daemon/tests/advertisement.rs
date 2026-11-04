@@ -964,6 +964,10 @@ async fn readiness_loss_withdraws_and_hides_advertisement() -> anyhow::Result<()
         AdvertisementPublicationStatus::NotReady
     );
     assert!(state.advertisement.is_none());
+    assert!(
+        state.withdrawn_at.is_none(),
+        "readiness loss must not record a durable operator withdrawal"
+    );
     assert_eq!(state.relay_states.len(), 1);
     assert_eq!(state.relay_states[0].status, RelayStatus::Disconnected);
     Ok(())
@@ -1015,13 +1019,17 @@ async fn a_withdrawal_survives_every_automatic_republication() -> anyhow::Result
     setup_ready_provider(&context, true, vec![Url("ws://127.0.0.1:8080".to_owned())]).await?;
     republish(&context, true).await?;
 
-    withdraw(&context, Some("maintenance".to_owned())).await?;
-    let withdrawn = load_advertisement_record(&context).await?;
+    // Make the operator withdraw while a readiness withdrawal is already active.
+    // Recovering readiness must not undo this later, deliberate decision.
+    let ready_phase = {
+        let mut state = context.daemon_state.write().await;
+        std::mem::replace(&mut state.phase, DaemonPhase::Recovering)
+    };
+    reconcile_after_config_change(&context).await?;
+    let withdrawn = withdraw(&context, Some("maintenance".to_owned())).await?;
     assert_eq!(withdrawn.status, AdvertisementPublicationStatus::Withdrawn);
     let withdrawn_at = withdrawn.withdrawn_at.expect("withdrawal is recorded");
-
-    // Readiness is unchanged by a withdrawal: nothing about the deployment
-    // became unfit, which is exactly why the publisher would otherwise undo it.
+    context.daemon_state.write().await.phase = ready_phase;
     assert!(public_readiness(&context).await?.ready);
 
     // The publisher tick, and the path every config verb and the
