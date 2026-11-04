@@ -514,17 +514,19 @@ impl ManifoldGuardianCallError {
 /// Produces clients implementing the existing MG service contract.
 pub trait ManifoldGuardianConnector: Send + Sync + 'static {
     /// Concrete transport or mock client.
-    type Client: ManifoldGuardianService;
+    type Client: ManifoldGuardianService + MaybeSend;
 
     /// Connect using a selected locator.
     ///
     /// The locator keeps dialing data and the commitment-verification key in
     /// one protocol-owned value, preventing transport adapters from silently
     /// dropping the identity half of the connection contract.
-    async fn connect(
+    /// The connection future and client can run in the trust-prefetch worker
+    /// (`Send` on native targets, with no added WASM thread requirement).
+    fn connect(
         &self,
         locator: &Locator,
-    ) -> Result<Self::Client, ManifoldGuardianConnectorError>;
+    ) -> impl Future<Output = Result<Self::Client, ManifoldGuardianConnectorError>> + MaybeSend;
 
     /// Call the value-free availability verb while retaining local transport
     /// failure outside the serialized service result.
@@ -712,7 +714,7 @@ pub(crate) struct FaClientPorts<I, P, N, F, C> {
     pub(crate) identity: I,
     pub(crate) payments: P,
     pub(crate) registry: N,
-    pub(crate) mg_connector: F,
+    pub(crate) mg_connector: Arc<F>,
     pub(crate) consensus_reader: C,
     pub(crate) fa_fee_account_provider: Arc<dyn FaFeeAccountProvider>,
 }

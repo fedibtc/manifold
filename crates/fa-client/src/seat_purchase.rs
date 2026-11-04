@@ -166,7 +166,7 @@ where
             &self.inner.ports.registry,
             verifier,
             &crate::selection::TransferDestinationProber {
-                connector: &self.inner.ports.mg_connector,
+                connector: self.inner.ports.mg_connector.as_ref(),
             },
             self.inner.peer_badge_verifier.provenance(),
             federation.federation_id()?,
@@ -312,8 +312,12 @@ where
     ) -> FaResult<StoredDestinationSeat> {
         let lease = run.lease();
         let intent = &purchase.terms.clone();
-        let client =
-            MgClient::connect(&self.inner.ports.mg_connector, &purchase.locator, run).await?;
+        let client = MgClient::connect(
+            self.inner.ports.mg_connector.as_ref(),
+            &purchase.locator,
+            run,
+        )
+        .await?;
         let payment_federation = OnceCell::new();
 
         // A stored paid quote whose outputs never started may be stale; give

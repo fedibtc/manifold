@@ -4,6 +4,43 @@ This crate orchestrates authenticated remote services and consumer-owned value.
 Changes to identity, intent validation, quote handling, payment calls,
 persistence, cancellation, or progress output are security-sensitive.
 
+## Cached MG evidence
+
+The post-formation trust-prefetch worker only reads from the MG and writes only
+disposable signed evidence and refresh metadata to dedicated local database
+prefixes. It holds no formation lease, does not change recovery or backup
+records, and cannot delay formation success. Client shutdown joins the worker;
+dropping the last client
+cancels it. Formation, restore, reopen, and changes to the formed MG set each
+trigger acquisition. The idle worker sleeps until eight hours before the
+evidence's seven-day reader-policy deadline, then refreshes only the due MG.
+After a failed refresh, it retains still-valid evidence for foreground use.
+
+For each cache hit, the FA must verify the exact MG identity, signature, and time
+bounds under the seven-day issuance-age policy, ignoring the deprecated expiry
+hint. One entry per exact MG identity suffices; there are no lifetime slots or
+capabilities. The FA must still check live credentials and revocations at
+admission. It invalidates a cached response for credential rejection only when
+every credential candidate is definitively unusable, without removing any newer
+concurrent replacement. Any transient or
+indeterminate outcome, unchecked candidate, or reached deadline causes the FA
+to reject admission but retain the evidence.
+After an authenticated `invalid_credentials` or `policy_mismatch` rejection
+from a provider, the FA marks the exact submitted cached documents for refresh
+on the next explicit start. It retains fallback and does not mark a concurrent
+replacement. Fetching the identical refused document does not clear the marker;
+the FA honors it on every cache shortcut. Cache writes retain and return a
+strictly newer valid document transactionally.
+At the start of provider discovery, the FA makes one bounded, concurrent batch
+of best-effort reads to refresh cached MG documents older than thirty minutes
+for old FLIPs that enforce a one-hour expiry. Failed reads do not prevent
+discovery or cause the FA to discard usable fallback. This temporary fetch does
+not narrow the seven-day reader policy or guarantee admission by an old FLIP
+when the MG is offline.
+The FA never resubmits liquidity automatically under these refresh rules. See
+[SPEC-fa-post-formation-liquidity](specs/SPEC-fa-post-formation-liquidity.md).
+Cached evidence from an old guardian set cannot satisfy a new consensus identity.
+
 ## Trust boundary
 
 Locators enter the FA only through verified selection. They are
