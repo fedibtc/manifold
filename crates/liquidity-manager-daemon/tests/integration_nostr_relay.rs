@@ -304,6 +304,82 @@ async fn withdrawal_stops_a_real_relay_from_serving_the_advertisement() -> anyho
     Ok(())
 }
 
+/// A hidden withdrawal still orders subsequent events on the pinned relay.
+///
+/// Fix T once: elapsed wall time must not turn the equal-timestamp attempt
+/// into the strictly newer control. An OK acknowledgement alone proves neither
+/// insertion nor discoverability.
+#[tokio::test(flavor = "multi_thread")]
+async fn republish_must_be_newer_than_the_hidden_withdrawal() -> anyhow::Result<()> {
+    use fedi_decentralized_liquidity_manager_daemon::{
+        FLIP_PROVIDER_ADVERTISEMENT_D_TAG, FLIP_PROVIDER_ADVERTISEMENT_EVENT_KIND,
+        FLIP_PROVIDER_ADVERTISEMENT_HASHTAG, NostrRelayPublisher, RelayPublishRequest,
+        RelayPublisher, RelayWithdrawRequest,
+    };
+    use fedi_decentralized_service_liquidity_manager::{Timestamp, Url};
+
+    init_logging();
+    let relay = NostrRelayFixture::start().await?;
+    let keys = nostr_sdk::Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let secret = keys.secret_key().to_secret_hex();
+    let relay_url = Url(relay.ws_url().to_owned());
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 10;
+    let publish = |created_at, marker: &str| RelayPublishRequest {
+        relay_url: relay_url.clone(),
+        content: format!(r#"{{"marker":"{marker}"}}"#),
+        created_at: Timestamp(created_at),
+        nostr_secret_key_hex: secret.clone(),
+    };
+    let read = || {
+        find_advertisement_event(
+            relay.ws_url(),
+            &pubkey,
+            FLIP_PROVIDER_ADVERTISEMENT_EVENT_KIND,
+            FLIP_PROVIDER_ADVERTISEMENT_D_TAG,
+            FLIP_PROVIDER_ADVERTISEMENT_HASHTAG,
+        )
+    };
+
+    let live = NostrRelayPublisher
+        .publish(publish(t - 1, "live"))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(read().await?.unwrap()["id"], live.event_id);
+    NostrRelayPublisher
+        .withdraw(RelayWithdrawRequest {
+            relay_url: relay_url.clone(),
+            reason: None,
+            nostr_secret_key_hex: secret.clone(),
+            expired_content: r#"{"marker":"withdrawn"}"#.to_owned(),
+            expired_created_at: Timestamp(t),
+        })
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(read().await?.is_none());
+
+    let suppressed = NostrRelayPublisher
+        .publish(publish(t, "equal-timestamp"))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(!suppressed.event_id.is_empty(), "duplicate OK is accepted");
+    assert!(
+        read().await?.is_none(),
+        "hidden row suppresses the new event"
+    );
+
+    let newer = NostrRelayPublisher
+        .publish(publish(t + 1, "strictly-newer"))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(read().await?.unwrap()["id"], newer.event_id);
+    relay.close().await?;
+    Ok(())
+}
+
 /// Enrollment against a real relay, including the vocabulary boundary.
 ///
 /// The unit tests drive ingest through a fake fetcher, so they never exercise
