@@ -55,18 +55,12 @@ it('should show no dot once everything is read', () => {
   expect(document.querySelector('a [aria-hidden="true"]')).toBeNull();
 });
 
-it.each([
-  ['no phone is linked', { available: true, link: null, offer: null }],
-  [
-    'notifications stopped',
-    {
-      available: true,
-      link: { ...activePhone, delivery: { state: 'terminal', reason: 'hook_not_found' } },
-      offer: null
-    }
-  ]
-])('should flag Phone link when %s', (_name, data) => {
-  phoneStatus(data);
+it('should flag Phone link when notifications stopped', () => {
+  phoneStatus({
+    available: true,
+    link: { ...activePhone, delivery: { state: 'terminal', reason: 'hook_not_found' } },
+    offer: null
+  });
   renderItems();
 
   expect(screen.getByRole('link', { name: 'Phone link, needs attention' })).toBeInTheDocument();
@@ -76,6 +70,7 @@ it.each([
 
 it.each([
   ['a phone is active', { available: true, link: activePhone, offer: null }],
+  ['no phone was ever linked', { available: true, link: null, offer: null }],
   ['this host cannot notify at all', { available: false, link: null, offer: null }],
   ['the status has not loaded', undefined]
 ])('should not flag Phone link when %s', (_name, data) => {

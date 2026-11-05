@@ -7,14 +7,13 @@ import { GUARDIAN_LINK_NAV_POLL_MS, SUPPORT_UNREAD_POLL_MS } from '@/shared/api/
 export const NavigationItems = () => {
   const unreadSupport = useSupportChat(SUPPORT_UNREAD_POLL_MS).data?.unread ?? 0;
   const phone = useGuardianLink(GUARDIAN_LINK_NAV_POLL_MS).data;
-  const phoneNeedsAttention =
-    phone?.available === true && (!phone.link || phone.link.delivery.state === 'terminal');
+  const phoneStopped = phone?.link?.delivery.state === 'terminal';
   return NAV_ITEMS.map((item) => (
     <NavigationItem
       key={item.key}
       item={item}
       count={item.key === 'support' ? unreadSupport : 0}
-      attention={item.key === 'phone-link' && phoneNeedsAttention}
+      attention={item.key === 'phone-link' && phoneStopped}
     />
   ));
 };
