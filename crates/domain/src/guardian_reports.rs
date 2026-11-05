@@ -14,19 +14,9 @@ pub struct GuardianReports {
     pub federation_id: FederationId,
     /// Complete peer set from that config, not just respondents.
     pub peers: BTreeSet<PeerId>,
-    /// Legacy status observations, keyed by the peer that answered.
-    pub sessions: BTreeMap<PeerId, GuardianSessionReport>,
+    /// Peers each status reporter explicitly reports disconnected, keyed by the
+    /// peer that answered. Missing replies are not included.
+    pub disconnected: BTreeMap<PeerId, BTreeSet<PeerId>>,
     /// Newer availability observations; old servers simply have no entry.
     pub availability: BTreeMap<PeerId, PeerAvailability>,
-}
-
-/// One guardian's view of consensus participation.
-#[derive(Clone, Debug)]
-pub struct GuardianSessionReport {
-    /// Number of sessions completed by this reporter.
-    pub session_count: u64,
-    /// Last contribution per peer. None means unknown, never session zero.
-    pub last_contribution: BTreeMap<PeerId, Option<u64>>,
-    /// Peers explicitly reported disconnected. Missing replies are not included.
-    pub disconnected: BTreeSet<PeerId>,
 }

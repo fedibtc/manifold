@@ -15339,17 +15339,13 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
             .iter()
             .map(|seat| PeerId::from(seat.index))
             .collect(),
-        sessions: BTreeMap::new(),
+        disconnected: BTreeMap::new(),
         availability: BTreeMap::new(),
     };
     for seat in &authority.seats[1..] {
-        reports.sessions.insert(
+        reports.disconnected.insert(
             PeerId::from(seat.index),
-            fedi_decentralized_domain::GuardianSessionReport {
-                session_count: 1000,
-                disconnected: BTreeSet::new(),
-                last_contribution: BTreeMap::from([(PeerId::from(target.index), Some(1))]),
-            },
+            BTreeSet::from([PeerId::from(target.index)]),
         );
     }
     *client
@@ -15364,7 +15360,7 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
     assert_eq!(check.candidates[0].seat_id, target.seat_id);
     assert!(matches!(
         check.candidates[0].reasons.as_slice(),
-        [ReplacementReason::MissedSessions { .. }]
+        [ReplacementReason::Disconnected]
     ));
     reports.federation_id = FederationId("another federation".into());
     *client
@@ -15426,19 +15422,10 @@ async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
     let peers = (0..MIN_FEDERATION_SIZE)
         .map(PeerId::from)
         .collect::<BTreeSet<_>>();
-    let sessions = peers
+    let disconnected = peers
         .iter()
         .filter(|peer| **peer != down)
-        .map(|peer| {
-            (
-                *peer,
-                fedi_decentralized_domain::GuardianSessionReport {
-                    session_count: 1000,
-                    disconnected: BTreeSet::new(),
-                    last_contribution: BTreeMap::from([(down, Some(1))]),
-                },
-            )
-        })
+        .map(|peer| (*peer, BTreeSet::from([down])))
         .collect();
     *client
         .inner
@@ -15453,7 +15440,7 @@ async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
                 .to_string(),
         ),
         peers,
-        sessions,
+        disconnected,
         availability: BTreeMap::new(),
     });
 
