@@ -12,7 +12,7 @@ test('should show a one-time QR code as soon as the Phone link page opens', asyn
   ).toBeVisible();
 
   await expect(page.getByRole('img', { name: 'Guardian link QR code' })).toBeVisible();
-  await expect(page.getByText(/once, when it starts, and at most twice an hour/)).toBeVisible();
+  await expect(page.getByText(/one alert when a problem starts/)).toBeVisible();
   await expect(page.getByText(/tap Scan\/Paste and point the camera here/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
 });

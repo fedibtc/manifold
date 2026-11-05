@@ -84,7 +84,7 @@ it('should show the linked device and never claim a notification was sent when n
     'An update is recommended',
     'Support writes to you'
   ]);
-  expect(screen.getByText(/once, when it starts, and at most twice an hour/)).toBeInTheDocument();
+  expect(screen.getByText(/one alert when a problem starts/)).toBeInTheDocument();
 });
 
 it('should say Today only for a notification within the current local day', async () => {
