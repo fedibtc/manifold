@@ -31,9 +31,7 @@ pub(crate) fn spawn(process: &'static str) {
                     anon_bytes = memory.anon_bytes,
                     peak_rss_bytes = memory.peak_rss_bytes,
                     threads = memory.threads,
-                    thp_mode = thp_mode(
-                        std::fs::read_to_string(THP_MODE_PATH).ok().as_deref()
-                    ),
+                    thp_mode = thp_mode(std::fs::read_to_string(THP_MODE_PATH).ok().as_deref()),
                     "process memory sample"
                 ),
                 // Non-Linux development hosts have no procfs.
