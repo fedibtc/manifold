@@ -17,9 +17,7 @@ test('should show a one-time QR code as soon as the Phone link page opens', asyn
   await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
 });
 
-test('should bring up the code for a stopped phone from one button', async ({
-  page
-}) => {
+test('should bring up the code for a stopped phone from one button', async ({ page }) => {
   await resetScenario(page, 'fedi-app-terminal');
   await page.goto('/');
   await signIn(page);
@@ -32,7 +30,9 @@ test('should bring up the code for a stopped phone from one button', async ({
   await expect(page.getByRole('heading', { name: 'Reconnect your phone' })).toBeVisible();
 });
 
-test('should say the phone connected when a scan lands while the page is open', async ({ page }) => {
+test('should say the phone connected when a scan lands while the page is open', async ({
+  page
+}) => {
   await resetScenario(page, 'fedi-app-unlinked');
   await page.goto('/');
   await signIn(page);
