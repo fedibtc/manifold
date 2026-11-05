@@ -16,19 +16,17 @@ pub fn disable() -> io::Result<()> {
     Ok(())
 }
 
+/// Whether [`disable`] holds for this process. False too where the kernel
+/// refuses the query: nothing then shows that huge pages are off.
+pub fn disabled() -> bool {
+    // SAFETY: PR_GET_THP_DISABLE takes no pointers and only returns a value.
+    unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) == 1 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
-
-    fn disabled() -> bool {
-        // SAFETY: PR_GET_THP_DISABLE takes no pointers and only returns a value.
-        match unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) } {
-            0 => false,
-            1 => true,
-            other => panic!("PR_GET_THP_DISABLE returned {other}"),
-        }
-    }
 
     fn child(mode: &str) {
         let output = Command::new(std::env::current_exe().unwrap())

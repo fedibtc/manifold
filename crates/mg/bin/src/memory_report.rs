@@ -32,6 +32,7 @@ pub(crate) fn spawn(process: &'static str) {
                     peak_rss_bytes = memory.peak_rss_bytes,
                     threads = memory.threads,
                     thp_mode = thp_mode(std::fs::read_to_string(THP_MODE_PATH).ok().as_deref()),
+                    thp_disabled = thp_disabled(),
                     "process memory sample"
                 ),
                 // Non-Linux development hosts have no procfs.
@@ -58,6 +59,15 @@ fn thp_mode(enabled: Option<&str>) -> &'static str {
         Some("[never]") => "never",
         _ => "unknown",
     }
+}
+
+/// Whether this process has huge pages off regardless of [`thp_mode`], which
+/// separates a seat the MG protected from one on a host with huge pages off.
+fn thp_disabled() -> bool {
+    #[cfg(target_os = "linux")]
+    return crate::huge_pages::disabled();
+    #[cfg(not(target_os = "linux"))]
+    return false;
 }
 
 #[derive(Debug, PartialEq, Eq)]
