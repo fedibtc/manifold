@@ -102,6 +102,15 @@ Default temp policy:
 - Explicit release level: a client can release one handle early.
 - Server finalization level: command exit releases everything unconditionally.
 
+For each independent exclusive allocation, the manager reserves a separate slot
+and starts the resource without holding its registry mutex. A slow Bitcoin Core
+startup no longer blocks unrelated exclusive relay requests. The pending start
+owns the resource until publication in the registry. It may publish only while
+allocation admission remains open. During shutdown, the manager closes admission
+and waits until each pending start has published or stopped its unpublished
+resource. Shared starts, restarts, and published-slot stops remain serialized
+under the registry mutex.
+
 
 ## Non-goals
 

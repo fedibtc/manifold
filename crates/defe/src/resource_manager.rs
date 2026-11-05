@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use defe_api::{
     ApiError, ApiErrorKind, NostrRelayInfo, ResourceDescriptor, ResourceHandleId, ResourceLease,
@@ -123,15 +123,16 @@ pub trait ResourceDriver: Send + Sync {
 
 /// Owns resource slots shared by all client connections.
 ///
-/// TODO: start, restart, and stop operations currently run while the manager
-/// mutex is held. Releasing it safely requires an explicit per-slot
-/// "starting/stopping" state so concurrent shared allocations still coalesce to
-/// a single process start and handles cannot observe a half-restarted slot.
+/// Independent exclusive starts run outside the registry mutex. Shared starts,
+/// restarts, and stops remain serialized so shared allocations coalesce and
+/// handles cannot observe a half-restarted slot.
 pub struct ResourceManager {
     /// Mutable slot registry protected by a mutex for cross-client access.
     inner: Mutex<ManagerInner>,
     /// Driver used to start concrete resource implementations.
     driver: Arc<dyn ResourceDriver>,
+    /// Wake shutdown callers when exclusive startup ownership is resolved.
+    exclusive_starts_finished: Condvar,
 }
 
 impl ResourceManager {
@@ -141,6 +142,7 @@ impl ResourceManager {
         Self {
             inner: Mutex::new(ManagerInner::default()),
             driver,
+            exclusive_starts_finished: Condvar::new(),
         }
     }
 
@@ -158,6 +160,12 @@ impl ResourceManager {
     pub fn shutdown(&self) {
         let mut inner = self.lock_inner();
         inner.closed = true;
+        while inner.pending_exclusive_starts != 0 {
+            inner = self
+                .exclusive_starts_finished
+                .wait(inner)
+                .expect("resource manager mutex poisoned");
+        }
         inner.shared.clear();
         inner.stop_all_slots();
     }
@@ -230,18 +238,37 @@ impl ResourceManager {
             sharing_key: None,
             generation: 1,
         };
-        let resource = self.driver.start(&allocation)?;
-        let descriptor = resource.descriptor();
+        inner.pending_exclusive_starts += 1;
+        let mut pending = PendingExclusiveStart {
+            manager: self,
+            resource: None,
+        };
+        drop(inner);
+
+        pending.resource = Some(self.driver.start(&allocation)?);
+        let descriptor = pending
+            .resource
+            .as_ref()
+            .expect("started resource")
+            .descriptor();
+        let mut inner = self.lock_inner();
+        if inner.closed {
+            // Drop the registry lock before pending startup cleanup runs. Its
+            // resource must stop before shutdown can observe startup completion.
+            drop(inner);
+            return Err(manager_closed_error());
+        }
         let slot = ResourceSlot {
             id: slot_id,
             kind: spec.kind.clone(),
             sharing_key: None,
             generation: 1,
             lease_count: 1,
-            resource,
+            resource: pending.resource.take().expect("started resource"),
             latest_descriptor: descriptor.clone(),
         };
         inner.slots.insert(slot_id, slot);
+        drop(inner);
         Ok((slot_id, descriptor))
     }
 
@@ -314,6 +341,43 @@ impl ResourceManager {
 
     fn lock_inner(&self) -> MutexGuard<'_, ManagerInner> {
         self.inner.lock().expect("resource manager mutex poisoned")
+    }
+}
+
+/// Own an exclusive start until it is published or its resource has stopped.
+struct PendingExclusiveStart<'a> {
+    /// Manager whose shutdown barrier includes this start.
+    manager: &'a ResourceManager,
+    /// Started resource not yet transferred into the registry.
+    resource: Option<Box<dyn ManagedResource>>,
+}
+
+impl Drop for PendingExclusiveStart<'_> {
+    fn drop(&mut self) {
+        // This separate guard also resolves accounting if resource cleanup
+        // unwinds. It never runs while the registry mutex is held.
+        let _count = PendingExclusiveStartCount(self.manager);
+        if let Some(mut resource) = self.resource.take() {
+            resource.stop();
+        }
+    }
+}
+
+/// Resolve pending-start accounting on success, error, or unwind.
+struct PendingExclusiveStartCount<'a>(
+    /// Manager owning the pending-start count.
+    &'a ResourceManager,
+);
+
+impl Drop for PendingExclusiveStartCount<'_> {
+    fn drop(&mut self) {
+        let mut inner = self
+            .0
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        inner.pending_exclusive_starts -= 1;
+        self.0.exclusive_starts_finished.notify_all();
     }
 }
 fn manager_closed_error() -> ApiError {
@@ -415,6 +479,8 @@ struct ManagerInner {
     slots: HashMap<ResourceSlotId, ResourceSlot>,
     /// Whether the manager has been shut down.
     closed: bool,
+    /// Exclusive starts that have not published a slot or finished cleanup.
+    pending_exclusive_starts: usize,
     /// Shared-resource lookup from compatibility key to live slot id.
     shared: HashMap<SharedResourceKey, ResourceSlotId>,
 }
