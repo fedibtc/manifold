@@ -652,12 +652,12 @@ observes success or replays the idempotent typed mutation.
 The FA checks the other guardians' public reports and authenticated MG trust
 material against the signed setup-payment policy. It recommends replacement
 for prolonged absence, a low weekly or monthly peer score, or confirmed holder
-credential revocation. Older guardians supply session participation instead of
-last-seen timestamps; the FA estimates duration at three minutes per missed
-session. Historical absence decisions need f+1 other reporters. If neither
-last-seen nor session history is sufficient, f+1 other peers explicitly reporting
-current disconnection also qualify; this fallback does not establish duration.
-Sufficient recent history prevents that fallback. Missing responses alone never
+credential revocation. Absence is judged from last-seen timestamps and needs
+f+1 other reporters. Without enough of those, as just after a guardian transfer
+resets a moved peer, f+1 other peers explicitly reporting current disconnection
+also qualify; this fallback does not establish duration. Sufficient recent
+history prevents that fallback. Session contributions are not evidence: a
+moved guardian's can still be its old host's. Missing responses alone never
 qualify. Peer scores use Fedimint's coverage-aware merge. Reports name
 Fedimint peers, which the FA maps to seats through the verified consensus seat
 bindings, matching each seat's MG; a seat's index is not its peer id. Without

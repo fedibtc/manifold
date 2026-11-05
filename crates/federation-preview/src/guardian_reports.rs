@@ -5,7 +5,7 @@ use std::future::Future;
 use std::str::FromStr as _;
 use std::time::Duration;
 
-use fedi_decentralized_domain::{FederationId, GuardianReports, GuardianSessionReport, InviteCode};
+use fedi_decentralized_domain::{FederationId, GuardianReports, InviteCode};
 use fedimint_api_client::api::{
     DynGlobalApi, IGlobalFederationApi, LegacyP2PConnectionStatus, StatusResponse,
 };
@@ -64,7 +64,7 @@ pub async fn read_guardian_reports_from_api(
     let mut result = GuardianReports {
         federation_id,
         peers: peers.clone(),
-        sessions: BTreeMap::new(),
+        disconnected: BTreeMap::new(),
         availability: BTreeMap::new(),
     };
     let answers = join_all(peers.iter().copied().map(|peer| async move {
@@ -91,24 +91,16 @@ pub async fn read_guardian_reports_from_api(
             .and_then(|value| serde_json::from_value::<StatusResponse>(value).ok())
             .and_then(|status| status.federation)
         {
-            result.sessions.insert(
+            result.disconnected.insert(
                 peer,
-                GuardianSessionReport {
-                    session_count: status.session_count,
-                    disconnected: status
-                        .status_by_peer
-                        .iter()
-                        .filter(|(_, status)| {
-                            status.connection_status == LegacyP2PConnectionStatus::Disconnected
-                        })
-                        .map(|(peer, _)| *peer)
-                        .collect(),
-                    last_contribution: status
-                        .status_by_peer
-                        .into_iter()
-                        .map(|(peer, status)| (peer, status.last_contribution))
-                        .collect(),
-                },
+                status
+                    .status_by_peer
+                    .into_iter()
+                    .filter(|(_, status)| {
+                        status.connection_status == LegacyP2PConnectionStatus::Disconnected
+                    })
+                    .map(|(peer, _)| peer)
+                    .collect(),
             );
         }
         if let Some(report) = availability.and_then(|value| serde_json::from_value(value).ok()) {
@@ -192,11 +184,13 @@ mod tests {
                 session_count: 600,
                 status_by_peer: BTreeMap::from([
                     (
+                        // Connected, but its last contribution is long past, as
+                        // for a guardian that just moved off a host that was down.
                         PeerId::from(2),
                         LegacyPeerStatus {
                             connection_status: LegacyP2PConnectionStatus::Connected,
-                            last_contribution: None,
-                            flagged: false,
+                            last_contribution: Some(100),
+                            flagged: true,
                         },
                     ),
                     (
@@ -222,14 +216,12 @@ mod tests {
 
     fn assert_partial_reports(reports: &GuardianReports) {
         assert_eq!(reports.peers.len(), 4);
-        assert_eq!(reports.sessions.len(), 2);
+        assert_eq!(reports.disconnected.len(), 2);
+        // Peer 0 answers status but not availability. Only the current
+        // connection state reports a peer; peer 2's old contribution does not.
         assert_eq!(
-            reports.sessions[&PeerId::from(0)].disconnected,
+            reports.disconnected[&PeerId::from(0)],
             BTreeSet::from([PeerId::from(3)])
-        );
-        assert_eq!(
-            reports.sessions[&PeerId::from(0)].last_contribution[&PeerId::from(3)],
-            Some(100)
         );
         assert_eq!(
             reports.availability.keys().copied().collect::<Vec<_>>(),

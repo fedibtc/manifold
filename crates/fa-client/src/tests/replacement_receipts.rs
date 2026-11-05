@@ -6,8 +6,8 @@ async fn candidate_client() -> (TestClient, Arc<MgState>) {
     (client, state)
 }
 
-/// Every guardian but the one at seat 0 reports a session count, and none
-/// has seen it contribute lately: it becomes a replacement candidate.
+/// Every guardian but the one at seat 0 reports it disconnected: it becomes a
+/// replacement candidate.
 async fn report_guardian_zero_down(client: &TestClient) {
     let authority = client
         .post_formed_authority(client.fa_id().unwrap())
@@ -24,20 +24,11 @@ async fn report_guardian_zero_down(client: &TestClient) {
             .iter()
             .map(|seat| PeerId::from(seat.index))
             .collect(),
-        sessions: authority
+        disconnected: authority
             .seats
             .iter()
             .skip(1)
-            .map(|seat| {
-                (
-                    PeerId::from(seat.index),
-                    fedi_decentralized_domain::GuardianSessionReport {
-                        session_count: 1000,
-                        disconnected: BTreeSet::new(),
-                        last_contribution: BTreeMap::from([(PeerId::from(0), Some(1))]),
-                    },
-                )
-            })
+            .map(|seat| (PeerId::from(seat.index), BTreeSet::from([PeerId::from(0)])))
             .collect(),
         availability: BTreeMap::new(),
     };

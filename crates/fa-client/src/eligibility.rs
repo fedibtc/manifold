@@ -23,11 +23,6 @@ use crate::{
     FormationRunOptions, ManifoldGuardianConnector, SeatId,
 };
 
-// MG production configs use 3,600 broadcast rounds at 50 ms. This estimates
-// missed participation; it is not a wall-clock measurement of an outage.
-// These server-only defaults are not exposed in the client config:
-// https://github.com/fedibtc/fedimint/blob/v0.12.0-fedi15/fedimint-server/src/config/mod.rs#L66
-const SESSION_SECONDS: u64 = 180;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Evidence supporting replacement. Missing reports never become a reason.
@@ -36,9 +31,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub enum ReplacementReason {
     Offline {
         last_seen_secs: u64,
-    },
-    MissedSessions {
-        sessions: u64,
     },
     /// f+1 other peers report disconnection, but duration cannot be established.
     Disconnected,
@@ -121,7 +113,7 @@ where
         let reports = reports.unwrap_or_else(|| GuardianReports {
             federation_id: federation_id.clone(),
             peers: peers.clone(),
-            sessions: BTreeMap::new(),
+            disconnected: BTreeMap::new(),
             availability: BTreeMap::new(),
         });
         let now = now_secs()?;
@@ -212,7 +204,7 @@ where
         .filter(|report| {
             report.federation_id == *federation_id
                 && report.peers == *peers
-                && (!report.sessions.is_empty() || !report.availability.is_empty())
+                && (!report.disconnected.is_empty() || !report.availability.is_empty())
         })
     }
 
@@ -300,48 +292,19 @@ fn replacement_reasons(
                     });
                 }
             } else {
-                let mut gaps = reports
-                    .sessions
+                // Unknown history is not itself evidence. Without a last-seen
+                // time, f+1 other peers must explicitly report disconnection now.
+                let disconnected = reports
+                    .disconnected
                     .iter()
-                    .filter(|(reporter, _)| *reporter != peer && reports.peers.contains(reporter))
-                    // A reset clears a moved peer's last-seen time but not its
-                    // last contribution, which can still be the old host's.
-                    .filter(|(reporter, _)| {
-                        !availability.get(reporter).is_some_and(|report| {
-                            report
-                                .windows
-                                .iter()
-                                .any(|window| window.peer_coverage_bps.contains_key(peer))
-                        })
+                    .filter(|(reporter, disconnected)| {
+                        *reporter != peer
+                            && reports.peers.contains(reporter)
+                            && disconnected.contains(peer)
                     })
-                    .filter_map(|(_, report)| {
-                        let last = (*report.last_contribution.get(peer)?)?;
-                        // A contribution to the current session means no missed
-                        // completed sessions, not missing history.
-                        (last <= report.session_count)
-                            .then(|| report.session_count.saturating_sub(last.saturating_add(1)))
-                    })
-                    .collect::<Vec<_>>();
-                gaps.sort_unstable_by(|a, b| b.cmp(a));
-                if let Some(gap) = gaps.get(num_peers.one_honest() - 1) {
-                    if gap.saturating_mul(SESSION_SECONDS) > policy.max_guardian_offline_secs() {
-                        reasons.push(ReplacementReason::MissedSessions { sessions: *gap });
-                    }
-                } else {
-                    // Unknown history is not itself evidence. In this fallback,
-                    // f+1 other peers must explicitly report disconnection now.
-                    let disconnected = reports
-                        .sessions
-                        .iter()
-                        .filter(|(reporter, report)| {
-                            *reporter != peer
-                                && reports.peers.contains(reporter)
-                                && report.disconnected.contains(peer)
-                        })
-                        .count();
-                    if disconnected >= num_peers.one_honest() {
-                        reasons.push(ReplacementReason::Disconnected);
-                    }
+                    .count();
+                if disconnected >= num_peers.one_honest() {
+                    reasons.push(ReplacementReason::Disconnected);
                 }
             }
             for (index, minimum) in [(0, min.week), (1, min.month)] {

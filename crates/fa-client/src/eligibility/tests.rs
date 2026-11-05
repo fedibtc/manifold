@@ -1,4 +1,3 @@
-use fedi_decentralized_domain::GuardianSessionReport;
 use fedimint_core::peer_availability::{
     PEER_AVAILABILITY_WINDOWS_SECS, PeerAvailability, WindowAvailability,
 };
@@ -22,19 +21,16 @@ fn reports() -> GuardianReports {
     GuardianReports {
         federation_id: FederationId("test".into()),
         peers: (0..4).map(PeerId::from).collect(),
-        sessions: BTreeMap::new(),
+        disconnected: BTreeMap::new(),
         availability: BTreeMap::new(),
     }
 }
 
-fn session(reports: &mut GuardianReports, reporter: u16, gap: Option<u64>) {
-    reports.sessions.insert(
+/// A status answer from `reporter`, naming the given peers as disconnected.
+fn status(reports: &mut GuardianReports, reporter: u16, disconnected: &[u16]) {
+    reports.disconnected.insert(
         PeerId::from(reporter),
-        GuardianSessionReport {
-            session_count: 1000,
-            disconnected: BTreeSet::new(),
-            last_contribution: BTreeMap::from([(PeerId::from(0), gap.map(|gap| 999 - gap))]),
-        },
+        disconnected.iter().copied().map(PeerId::from).collect(),
     );
 }
 
@@ -84,78 +80,54 @@ fn reset_availability(
 }
 
 #[test]
-fn eligibility_reset_drops_old_host_contributions_but_keeps_new_host_evidence() {
+fn eligibility_just_moved_guardian_needs_evidence_about_its_new_host() {
     let mut reports = reports();
     let policy = policy(3600, 90, 93);
     let moved = PeerId::from(0);
-    let other = PeerId::from(3);
+
+    // Status answers but every availability read failed. Nothing says the new
+    // host is down, whatever the old host's contributions were.
     for reporter in [1, 2, 3] {
-        session(&mut reports, reporter, Some(900));
-        reports
-            .sessions
-            .get_mut(&PeerId::from(reporter))
-            .unwrap()
-            .last_contribution
-            .insert(other, Some(99));
+        status(&mut reports, reporter, &[]);
     }
-    let stale = vec![ReplacementReason::MissedSessions { sessions: 900 }];
-    let before = replacement_reasons(&reports, &policy, 10_000);
-    assert_eq!(before[&moved], stale);
-    assert_eq!(before[&other], stale);
-
-    // Up to f reporters missed the vote and still show the old host's gap.
-    for reporter in [1, 2] {
-        reset_availability(&mut reports, reporter, 0, None);
-    }
-    let after = replacement_reasons(&reports, &policy, 10_000);
-    assert!(after[&moved].is_empty());
-    assert_eq!(after[&other], before[&other]);
-
-    // Every reporter reset and nobody has observed the new host yet.
-    reset_availability(&mut reports, 3, 0, None);
     assert!(replacement_reasons(&reports, &policy, 10_000)[&moved].is_empty());
 
-    // A new host that is down now shows at once, without a session gap.
-    for reporter in [1, 2] {
-        reports
-            .sessions
-            .get_mut(&PeerId::from(reporter))
-            .unwrap()
-            .disconnected
-            .insert(moved);
+    // Availability answers too, with every reporter reset and nothing observed.
+    for reporter in [1, 2, 3] {
+        reset_availability(&mut reports, reporter, 0, None);
     }
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&moved].is_empty());
+
+    // f reporters cannot call it down.
+    status(&mut reports, 1, &[0]);
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&moved].is_empty());
+
+    // f+1 can, at once and with or without availability.
+    status(&mut reports, 2, &[0]);
     assert_eq!(
         replacement_reasons(&reports, &policy, 10_000)[&moved],
         vec![ReplacementReason::Disconnected]
     );
+    let availability = std::mem::take(&mut reports.availability);
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&moved],
+        vec![ReplacementReason::Disconnected]
+    );
+    reports.availability = availability;
 
-    // Its first fresh observations then score it, however few they are.
+    // Fresh scores still qualify a connected new host that takes no part.
+    for reporter in [1, 2] {
+        status(&mut reports, reporter, &[]);
+    }
     for reporter in [1, 2, 3] {
         reset_availability(&mut reports, reporter, 10, Some(0));
     }
-    let down = replacement_reasons(&reports, &policy, 10_000);
-    assert!(down[&moved].contains(&ReplacementReason::LowWeekScore { basis_points: 0 }));
-    assert!(down[&moved].contains(&ReplacementReason::LowMonthScore { basis_points: 0 }));
-}
-
-#[test]
-fn eligibility_up_to_f_reset_claims_cannot_hide_a_session_gap() {
-    let mut reports = reports();
-    let policy = policy(3600, 90, 93);
-    let moved = PeerId::from(0);
-    session(&mut reports, 1, Some(900));
-    session(&mut reports, 2, Some(800));
-    session(&mut reports, 3, Some(0));
-    reset_availability(&mut reports, 3, 0, None);
     assert_eq!(
         replacement_reasons(&reports, &policy, 10_000)[&moved],
-        vec![ReplacementReason::MissedSessions { sessions: 800 }]
-    );
-    // The peer's own report cannot exempt it from the others' observations.
-    reset_availability(&mut reports, 0, 0, None);
-    assert_eq!(
-        replacement_reasons(&reports, &policy, 10_000)[&moved],
-        vec![ReplacementReason::MissedSessions { sessions: 800 }]
+        vec![
+            ReplacementReason::LowWeekScore { basis_points: 0 },
+            ReplacementReason::LowMonthScore { basis_points: 0 },
+        ]
     );
 }
 
@@ -249,32 +221,10 @@ fn eligibility_poor_uptime_after_reset_uses_fresh_coverage() {
 }
 
 #[test]
-fn eligibility_session_fallback_requires_other_reporters_and_uses_policy_duration() {
-    let mut reports = reports();
-    let policy = policy(3600, 90, 93);
-    session(&mut reports, 0, Some(900)); // Self-report cannot help.
-    session(&mut reports, 1, Some(21));
-    session(&mut reports, 2, None); // Unknown is not zero.
-    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
-    session(&mut reports, 2, Some(20)); // Exactly one hour is not over the limit.
-    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
-    session(&mut reports, 2, Some(21));
-    assert_eq!(
-        replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)],
-        vec![ReplacementReason::MissedSessions { sessions: 21 }]
-    );
-    assert!(
-        replacement_reasons(&reports, &super::tests::policy(7200, 90, 93), 10_000)
-            [&PeerId::from(0)]
-            .is_empty()
-    );
-}
-
-#[test]
-fn eligibility_recent_timestamps_override_old_session_estimates_and_scores_use_policy() {
+fn eligibility_recent_timestamps_override_disconnection_and_scores_use_policy() {
     let mut reports = reports();
     for peer in [1, 2] {
-        session(&mut reports, peer, Some(900));
+        status(&mut reports, peer, &[0]);
         availability(&mut reports, peer, 9999, 8500, 9100);
     }
     assert_eq!(
@@ -316,25 +266,14 @@ fn eligibility_disconnection_fallback_requires_f_plus_one_other_members() {
     let mut reports = reports();
     reports.peers = (0..10).map(PeerId::from).collect();
     for reporter in [0, 1, 2, 3, 99] {
-        session(&mut reports, reporter, None);
-        reports
-            .sessions
-            .get_mut(&PeerId::from(reporter))
-            .unwrap()
-            .disconnected
-            .insert(PeerId::from(0));
+        status(&mut reports, reporter, &[0]);
     }
     let policy = policy(86_400, 90, 93);
     // Self and outsider reports cannot make three actual peers count as four.
     assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
-    session(&mut reports, 4, None); // Unknown contribution, but not disconnected.
+    status(&mut reports, 4, &[]); // Answered, but not disconnected.
     assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
-    reports
-        .sessions
-        .get_mut(&PeerId::from(4))
-        .unwrap()
-        .disconnected
-        .insert(PeerId::from(0));
+    status(&mut reports, 4, &[0]);
     assert_eq!(
         replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)],
         vec![ReplacementReason::Disconnected]
@@ -346,27 +285,12 @@ fn eligibility_recent_history_prevents_disconnection_fallback() {
     let mut reports = reports();
     let policy = policy(3600, 90, 93);
     for reporter in [1, 2] {
-        session(&mut reports, reporter, None);
-        reports
-            .sessions
-            .get_mut(&PeerId::from(reporter))
-            .unwrap()
-            .disconnected
-            .insert(PeerId::from(0));
+        status(&mut reports, reporter, &[0]);
     }
     assert_eq!(
         replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)],
         vec![ReplacementReason::Disconnected]
     );
-    for report in reports.sessions.values_mut() {
-        report
-            .last_contribution
-            .insert(PeerId::from(0), Some(report.session_count));
-    }
-    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
-    for report in reports.sessions.values_mut() {
-        report.last_contribution.insert(PeerId::from(0), None);
-    }
     for reporter in [1, 2] {
         availability(&mut reports, reporter, 9999, 10_000, 10_000);
     }
