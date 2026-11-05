@@ -9,8 +9,8 @@ export const PhoneLinkPage = (_props: PhoneLinkPageProps) => (
       <h1 className={styles.heading}>Phone link</h1>
 
       <p className={styles.intro}>
-        Stay connected to your guardians. Alerts and support messages on your phone, wherever you
-        are.
+        Stay connected to your guardians. Alerts and support messages in the Fedi App on your phone,
+        wherever you are.
       </p>
     </div>
 

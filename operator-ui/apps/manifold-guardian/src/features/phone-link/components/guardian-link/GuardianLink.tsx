@@ -17,7 +17,7 @@ const formatDay = (seconds: number) => formatDate(seconds * 1000);
 const LINK_STEPS: { title: string; detail: string }[] = [
   {
     title: 'Scan this code',
-    detail: 'Open the app on your phone, tap Scan/Paste and point the camera here.'
+    detail: 'Open the Fedi App on your phone, tap Scan/Paste and point the camera here.'
   },
   {
     title: 'Tap Link guardian',

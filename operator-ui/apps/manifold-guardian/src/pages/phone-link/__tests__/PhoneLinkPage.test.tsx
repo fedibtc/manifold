@@ -53,7 +53,7 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
     '2. Tap Link guardian',
     '3. Allow notifications'
   ]);
-  expect(steps[0]).toHaveTextContent('tap Scan/Paste');
+  expect(steps[0]).toHaveTextContent('Open the Fedi App on your phone, tap Scan/Paste');
   expect(screen.getByText(/expires at 2023-11-14 23:23 UTC/)).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
