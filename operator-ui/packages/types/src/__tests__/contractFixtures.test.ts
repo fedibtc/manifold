@@ -764,7 +764,6 @@ describe('committed fixtures match their type-checked mirrors', () => {
 const guardianLinkMirror = {
   available: true,
   link: {
-    callback_expires_at: 1702592000,
     delivery: { reason: 'hook_expired_or_revoked', state: 'terminal' },
     device_label: 'Pixel 8',
     last_notified_at: 1700003600,

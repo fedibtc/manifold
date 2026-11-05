@@ -659,7 +659,6 @@ pub fn guardian_link_json(status: crate::guardian_link::GuardianLinkStatus) -> V
         json!({
             "device_label": link.device_label,
             "linked_at": link.linked_at_ms / 1000,
-            "callback_expires_at": link.callback_expires_at,
             "last_notified_at": link.last_notified_at_ms.map(|at| at / 1000),
             "notified_reasons": link.notified_reasons,
             "delivery": { "state": state, "reason": reason },

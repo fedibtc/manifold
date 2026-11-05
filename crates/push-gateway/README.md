@@ -257,8 +257,9 @@ Endpoints:
 
 - `POST /v1/hooks`
   - management endpoint for creating hook records scoped to the authenticated recipient.
-  - every request must name an active owned `installation_id` and a positive
-    `policy.ttl_seconds`.
+  - every request must name an active owned `installation_id`.
+  - a positive `policy.ttl_seconds` sets the expiry, up to one year. Omitted, the
+    hook never expires and its registration doesn't go stale while it is live.
   - requires Nostr HTTP auth.
   - stores only a hash of the generated hook secret.
   - returns the raw hook secret and full invocation URL once.

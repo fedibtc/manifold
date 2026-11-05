@@ -23,7 +23,6 @@ pub enum GuardianLinkDelivery {
 pub struct GuardianLinkRecord {
     pub device_label: String,
     pub callback: Option<DkgCompletionCallback>,
-    pub callback_expires_at: u64,
     pub linked_at_ms: i64,
     pub notification_seq: u64,
     pub notified_reasons: Vec<AttentionReason>,
@@ -37,7 +36,6 @@ impl std::fmt::Debug for GuardianLinkRecord {
             .debug_struct("GuardianLinkRecord")
             .field("device_label", &self.device_label)
             .field("callback", &self.callback.as_ref().map(|_| "<redacted>"))
-            .field("callback_expires_at", &self.callback_expires_at)
             .field("linked_at_ms", &self.linked_at_ms)
             .field("notification_seq", &self.notification_seq)
             .field("notified_reasons", &self.notified_reasons)
@@ -51,7 +49,6 @@ impl std::fmt::Debug for GuardianLinkRecord {
 struct GuardianLinkRow {
     device_label: String,
     callback: Option<String>,
-    callback_expires_at: i64,
     linked_at_ms: i64,
     notification_seq: i64,
     notified_reasons: String,
@@ -98,8 +95,6 @@ impl TryFrom<GuardianLinkRow> for GuardianLinkRecord {
         Ok(Self {
             device_label: row.device_label,
             callback,
-            callback_expires_at: u64::try_from(row.callback_expires_at)
-                .expect("non-negative by schema CHECK"),
             linked_at_ms: row.linked_at_ms,
             notification_seq: u64::try_from(row.notification_seq)
                 .expect("non-negative by schema CHECK"),
@@ -122,7 +117,7 @@ impl Db {
     /// The linked device, if any.
     pub async fn guardian_link(&self) -> Result<Option<GuardianLinkRecord>, DbError> {
         sqlx::query_as::<_, GuardianLinkRow>(
-            "SELECT device_label, callback, callback_expires_at, linked_at_ms, \
+            "SELECT device_label, callback, linked_at_ms, \
              notification_seq, notified_reasons, last_notified_at_ms, delivery, delivery_reason \
              FROM guardian_link WHERE id = ?",
         )
@@ -139,7 +134,6 @@ impl Db {
         &self,
         device_label: &str,
         callback: &DkgCompletionCallback,
-        callback_expires_at: u64,
     ) -> Result<(), DbError> {
         let linked_at_ms = now_ms();
         let mut tx = self.begin_write().await?;
@@ -148,13 +142,12 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO guardian_link (id, device_label, callback, callback_expires_at, \
-             linked_at_ms) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO guardian_link (id, device_label, callback, linked_at_ms) \
+             VALUES (?, ?, ?, ?)",
         )
         .bind(LINK_ID)
         .bind(device_label)
         .bind(callback_json(callback))
-        .bind(i64::try_from(callback_expires_at).unwrap_or(i64::MAX))
         .bind(linked_at_ms)
         .execute(&mut *tx)
         .await?;

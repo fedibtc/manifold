@@ -8,7 +8,7 @@
 //! by the one-time secret the dashboard shows as a QR code; nothing after
 //! that, so the phone holds no key for this MG.
 
-use fedi_decentralized_services::domain::{ProtocolV1, Timestamp};
+use fedi_decentralized_services::domain::ProtocolV1;
 use fedi_iroh_rpc::service;
 use serde::{Deserialize, Serialize};
 
@@ -162,9 +162,6 @@ pub struct LinkDeviceRequest {
     pub device_label: String,
     /// The push-gateway hook the MG invokes, under its configured origin.
     pub callback: DkgCompletionCallback,
-    /// When the hook expires at the gateway. Nothing renews it: once it has
-    /// expired, the host links the phone again.
-    pub callback_expires_at: Timestamp,
 }
 
 impl core::fmt::Debug for LinkDeviceRequest {
@@ -172,7 +169,6 @@ impl core::fmt::Debug for LinkDeviceRequest {
         formatter
             .debug_struct("LinkDeviceRequest")
             .field("device_label", &self.device_label)
-            .field("callback_expires_at", &self.callback_expires_at)
             .finish_non_exhaustive()
     }
 }

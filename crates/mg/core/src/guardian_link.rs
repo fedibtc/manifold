@@ -520,11 +520,7 @@ impl GuardianLinkService for GuardianLinkRpc {
         }
         self.fleet
             .db()
-            .replace_guardian_link(
-                request.device_label.trim(),
-                &request.callback,
-                request.callback_expires_at.0,
-            )
+            .replace_guardian_link(request.device_label.trim(), &request.callback)
             .await
             .map_err(|error| internal("link_device", &error))?;
         self.fleet.guardian_link.changed.notify_one();

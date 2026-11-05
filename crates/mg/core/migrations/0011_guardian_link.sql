@@ -6,8 +6,6 @@ CREATE TABLE guardian_link (
     device_label TEXT NOT NULL,
     -- JSON DkgCompletionCallback (hook URL + idempotency key); NULL once terminal.
     callback TEXT,
-    -- Unix seconds the hook expires at the gateway; nothing renews it.
-    callback_expires_at INTEGER NOT NULL CHECK (callback_expires_at >= 0),
     linked_at_ms INTEGER NOT NULL CHECK (linked_at_ms >= 0),
     -- Count of delivered notifications; part of the next idempotency key.
     notification_seq INTEGER NOT NULL DEFAULT 0 CHECK (notification_seq >= 0),

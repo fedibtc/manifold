@@ -33,7 +33,7 @@ app created, exactly as it invokes an FI's DKG completion hook.
 - **Hook.** `link_device` carries a hook URL under the deployment's
   configured push-gateway origin, else `PushGatewayUnusable`. The app creates
   the hook with its own fixed title and body, workflow `guardian_link`, and
-  the gateway's longest TTL, one year. The daemon's invocation carries no
+  no TTL, so it never expires. The daemon's invocation carries no
   `data`: nothing about the host's seats, federations, amounts, messages, or
   reasons leaves it. The delivered push still holds the gateway's own `pg.*`
   fields, taken from the hook the app created; the app recognizes the push by
@@ -76,11 +76,14 @@ app created, exactly as it invokes an FI's DKG completion hook.
   transient: the next tick after the window sends again. An outcome for a
   replaced phone's hook never touches the new link: every update is guarded
   on the link's `linked_at_ms`.
-- **Expiry.** Nothing renews the hook. When it expires, or the app is
-  reinstalled, the gateway rejects the next invocation for good and the link
-  parks as `terminal`; the dashboard then shows a fresh code to link the phone
-  again. A host relinks about once a year in exchange for the phone holding no
-  key and making no calls after linking.
+- **Lifetime.** A link has no end date, and the app makes no call after linking:
+  the gateway keeps a registration fresh while a hook with no expiry targets it
+  ([SPEC-hook-invocation](../../push-gateway/specs/SPEC-hook-invocation.md)). The
+  link ends when the host unlinks, when the app links to another MG, or when the
+  provider rejects the phone's token. After a rejection, as after a reinstall
+  once the old token has failed, the gateway answers the next invocation for good
+  and the link parks as `terminal`. The dashboard then offers to reconnect the
+  phone with a new code.
 - **Unlink.** Only the host ends the link, with `RevokeGuardianLink` on the
   dashboard; the daemon then holds no device and no hook. The app has no
   unlink of its own; when it links to another MG it revokes its previous

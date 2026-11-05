@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use fedi_decentralized_service_manifold_guardian::{DkgCompletionCallbackInput, Timestamp};
+use fedi_decentralized_service_manifold_guardian::DkgCompletionCallbackInput;
 use tempfile::TempDir;
 
 use super::*;
@@ -173,14 +173,6 @@ fn hook(path: &str) -> DkgCompletionCallback {
     .unwrap()
 }
 
-fn a_year_from_now() -> Timestamp {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    Timestamp(now + 365 * 24 * 3600)
-}
-
 /// Link a phone through the RPC, the way the app does.
 async fn link(harness: &Harness) -> GuardianLinkRpc {
     let rpc = GuardianLinkRpc::new(harness.fleet.clone());
@@ -190,7 +182,6 @@ async fn link(harness: &Harness) -> GuardianLinkRpc {
         secret: invite.secret,
         device_label: "Pixel".to_owned(),
         callback: hook("h1/s1"),
-        callback_expires_at: a_year_from_now(),
     })
     .await
     .unwrap();
@@ -374,7 +365,6 @@ async fn link_needs_the_open_offer_and_a_hook_under_the_gateway() {
         secret,
         device_label: "Pixel".to_owned(),
         callback,
-        callback_expires_at: a_year_from_now(),
     };
     // No offer open.
     assert_eq!(
@@ -466,7 +456,6 @@ async fn relinking_replaces_the_phone_and_test_notifies_it() {
         secret: invite.secret,
         device_label: "  iPhone  ".to_owned(),
         callback: hook("h3/s3"),
-        callback_expires_at: a_year_from_now(),
     })
     .await
     .unwrap();
@@ -506,7 +495,6 @@ async fn an_outcome_for_the_replaced_phone_leaves_the_new_link_alone() {
         secret: invite.secret,
         device_label: "iPhone".to_owned(),
         callback: hook("h3/s3"),
-        callback_expires_at: a_year_from_now(),
     })
     .await
     .unwrap();

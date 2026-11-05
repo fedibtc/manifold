@@ -398,7 +398,6 @@ export interface GuardianLinkResponse {
   link: {
     device_label: string;
     linked_at: number;
-    callback_expires_at: number;
     last_notified_at: number | null;
     notified_reasons: (
       | 'relay_check_failed'

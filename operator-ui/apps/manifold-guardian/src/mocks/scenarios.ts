@@ -208,7 +208,6 @@ const mockPhone = (): NonNullable<MockState['guardianLink']['link']> => {
   return {
     device_label: 'Pixel 8',
     linked_at: now - 86_400,
-    callback_expires_at: now + 30 * 86_400,
     last_notified_at: now - 600,
     notified_reasons: ['uptime_check_failed', 'support_message'],
     delivery: { state: 'active', reason: null }

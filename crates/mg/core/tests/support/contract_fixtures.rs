@@ -764,7 +764,6 @@ pub fn guardian_link_fixture() -> Value {
         link: Some(GuardianLinkRecord {
             device_label: "Pixel 8".to_owned(),
             callback: Some(callback),
-            callback_expires_at: 1_702_592_000,
             linked_at_ms: 1_700_000_000_000,
             notification_seq: 3,
             notified_reasons: vec![

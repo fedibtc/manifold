@@ -1,7 +1,6 @@
 {
   "available": true,
   "link": {
-    "callback_expires_at": 1702592000,
     "delivery": {
       "reason": "hook_expired_or_revoked",
       "state": "terminal"

@@ -67,6 +67,15 @@ pub struct PushRegistrationRepository {
     pool: AnyPool,
 }
 
+/// A registration does not go stale while a live hook with no expiry targets it:
+/// that hook exists so that a phone which never calls again stays reachable.
+/// Provider token rejection still disables it.
+const HELD_BY_PERMANENT_HOOK: &str = "EXISTS (
+    SELECT 1 FROM notification_hooks hook
+    WHERE hook.recipient_id = push_registrations.recipient_id
+      AND hook.installation_id = push_registrations.installation_id
+      AND hook.expires_at IS NULL AND hook.revoked_at IS NULL)";
+
 impl PushRegistrationRepository {
     /// Creates a repository using the given database pool.
     #[must_use]
@@ -299,13 +308,14 @@ impl PushRegistrationRepository {
         recipient_id: &RecipientId,
         eligibility: RegistrationEligibility,
     ) -> Result<Vec<PushRegistration>, sqlx::Error> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at
-             ORDER BY installation_id",
-        )
+             WHERE recipient_id = $1 AND disabled_at IS NULL
+               AND ($2 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK})
+             ORDER BY installation_id"
+        ))
         .bind(&recipient_id.0)
         .bind(eligibility.cutoff_timestamp)
         .fetch_all(&self.pool)
@@ -339,13 +349,14 @@ impl PushRegistrationRepository {
         installation_id: &DeviceInstallationId,
         eligibility: RegistrationEligibility,
     ) -> Result<Option<PushRegistration>, sqlx::Error> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
              WHERE recipient_id = $1 AND installation_id = $2
-               AND disabled_at IS NULL AND $3 <= last_seen_at",
-        )
+               AND disabled_at IS NULL
+               AND ($3 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK})"
+        ))
         .bind(&recipient_id.0)
         .bind(&installation_id.0)
         .bind(eligibility.cutoff_timestamp)
@@ -362,13 +373,14 @@ impl PushRegistrationRepository {
         recipient_id: &RecipientId,
         eligibility: RegistrationEligibility,
     ) -> Result<Vec<PushRegistration>, sqlx::Error> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at
-             ORDER BY installation_id",
-        )
+             WHERE recipient_id = $1 AND disabled_at IS NULL
+               AND ($2 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK})
+             ORDER BY installation_id"
+        ))
         .bind(&recipient_id.0)
         .bind(eligibility.cutoff_timestamp)
         .fetch_all(&mut **transaction)
@@ -382,11 +394,13 @@ impl PushRegistrationRepository {
         eligibility: RegistrationEligibility,
     ) -> Result<RegistrationRowMetrics, sqlx::Error> {
         let registration_row = sqlx::query(
-            "SELECT COUNT(*) AS registrations,
-                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND $1 <= last_seen_at THEN 1 ELSE 0 END), 0) AS active,
+            &format!(
+                "SELECT COUNT(*) AS registrations,
+                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND ($1 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK}) THEN 1 ELSE 0 END), 0) AS active,
                     COALESCE(SUM(CASE WHEN disabled_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS disabled,
-                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND last_seen_at < $1 THEN 1 ELSE 0 END), 0) AS stale
-             FROM push_registrations",
+                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND last_seen_at < $1 AND NOT {HELD_BY_PERMANENT_HOOK} THEN 1 ELSE 0 END), 0) AS stale
+             FROM push_registrations"
+            ),
         )
         .bind(eligibility.cutoff_timestamp)
         .fetch_one(&self.pool)
@@ -490,11 +504,14 @@ impl PushRegistrationRepository {
     pub async fn purge_stale(&self, cutoff_timestamp: i64) -> Result<u64, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
         acquire_admission_lock(&mut transaction, "registration", unix_timestamp()).await?;
-        let registrations = sqlx::query("DELETE FROM push_registrations WHERE last_seen_at < $1")
-            .bind(cutoff_timestamp)
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected();
+        let registrations = sqlx::query(&format!(
+            "DELETE FROM push_registrations
+             WHERE last_seen_at < $1 AND NOT {HELD_BY_PERMANENT_HOOK}"
+        ))
+        .bind(cutoff_timestamp)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
         let token_owners = purge_orphaned_token_owners_in_transaction(
             &mut transaction,
             cutoff_timestamp,
@@ -515,13 +532,14 @@ async fn purge_stale_in_transaction(
         return Ok(0);
     }
     let batch_size_i64 = i64::try_from(batch_size).unwrap_or(i64::MAX);
-    let registrations = sqlx::query(
+    let registrations = sqlx::query(&format!(
         "DELETE FROM push_registrations
          WHERE (recipient_id, installation_id) IN (
              SELECT recipient_id, installation_id FROM push_registrations
-             WHERE last_seen_at < $1 ORDER BY last_seen_at LIMIT $2
-         )",
-    )
+             WHERE last_seen_at < $1 AND NOT {HELD_BY_PERMANENT_HOOK}
+             ORDER BY last_seen_at LIMIT $2
+         )"
+    ))
     .bind(cutoff_timestamp)
     .bind(batch_size_i64)
     .execute(&mut **transaction)
@@ -569,19 +587,21 @@ async fn active_registration_count(
     cutoff_timestamp: i64,
 ) -> Result<u64, sqlx::Error> {
     let count: i64 = if let Some(recipient_id) = recipient_id {
-        sqlx::query_scalar(
+        sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at",
-        )
+             WHERE recipient_id = $1 AND disabled_at IS NULL
+               AND ($2 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK})"
+        ))
         .bind(&recipient_id.0)
         .bind(cutoff_timestamp)
         .fetch_one(&mut **transaction)
         .await?
     } else {
-        sqlx::query_scalar(
+        sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM push_registrations
-             WHERE disabled_at IS NULL AND $1 <= last_seen_at",
-        )
+             WHERE disabled_at IS NULL
+               AND ($1 <= last_seen_at OR {HELD_BY_PERMANENT_HOOK})"
+        ))
         .bind(cutoff_timestamp)
         .fetch_one(&mut **transaction)
         .await?
