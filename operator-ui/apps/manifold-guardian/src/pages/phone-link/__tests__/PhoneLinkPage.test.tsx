@@ -65,7 +65,7 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
     'Allow notifications'
   ]);
   expect(steps[0]).toHaveTextContent('Open the Fedi app on your phone, tap Scan/Paste');
-  expect(screen.getByText('Once linked, your phone appears on this page.')).toBeInTheDocument();
+  expect(screen.queryByText(/Scanning it replaces/)).not.toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
 });
@@ -84,6 +84,7 @@ it('should show the linked device and never claim a notification was sent when n
     'An update is recommended',
     'Support writes to you'
   ]);
+  expect(screen.getByText(/once, when it starts, and at most twice an hour/)).toBeInTheDocument();
 });
 
 it('should say Today only for a notification within the current local day', async () => {

@@ -65,6 +65,10 @@ const notifiedAbout = (
         </li>
       ))}
     </ul>
+
+    <p className={styles.note}>
+      You hear about each once, when it starts, and at most twice an hour.
+    </p>
   </section>
 );
 
@@ -114,10 +118,6 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   useEffect(() => {
     if (wantsOffer && !creating && !createFailed) handleCreate();
   }, [wantsOffer, creating, createFailed, handleCreate]);
-
-  let offerFootnote = 'Once linked, your phone appears on this page.';
-  if (terminal) offerFootnote = 'Scanning it replaces this phone and the warning goes away.';
-  else if (link) offerFootnote = 'Scanning it replaces this phone.';
 
   return (
     <QuerySurface disposition={disposition} onRetry={retry}>
@@ -272,7 +272,13 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
                   </ol>
                 </div>
 
-                <p className={styles.note}>{offerFootnote}</p>
+                {link && (
+                  <p className={styles.note}>
+                    {terminal
+                      ? 'Scanning it replaces this phone and the warning goes away.'
+                      : 'Scanning it replaces this phone.'}
+                  </p>
+                )}
               </section>
             )}
             {wantsOffer && !createFailed && (
