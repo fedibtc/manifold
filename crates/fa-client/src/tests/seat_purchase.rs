@@ -605,15 +605,51 @@ fn a_backup_without_past_hosts_keeps_its_earlier_encoding() {
     assert_eq!(decoded, with_past_host);
 }
 
+/// A current MG's v2 advertisement, which reports the guardian transfer.
 pub(super) fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
-    selection::issuer_ad_for_version_and_service_key_at(
-        &mg_keys(index),
+    mg_ad_reporting(
+        index,
+        price_msats,
+        version,
+        AdvertisedApi::V2(Some(GUARDIAN_TRANSFER_V2_API_VERSION)),
+    )
+}
+
+/// What an advertisement says about the MG's API.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AdvertisedApi {
+    /// Only the kind-37701 advertisement, which has no version.
+    Legacy,
+    /// A v2 advertisement reporting this API version, or none.
+    V2(Option<MgApiVersion>),
+}
+
+pub(super) fn mg_ad_reporting(
+    index: usize,
+    price_msats: u64,
+    version: &str,
+    api: AdvertisedApi,
+) -> nostr_sdk::Event {
+    let mg = mg_keys(index);
+    let payload = selection::issuer_payload_for_version_and_service_key_at(
+        &mg,
         &discovery::issuer_keys(0),
         price_msats,
         version,
         manager_key(index).x_only_public_key().0,
         test_now_secs(),
-    )
+    );
+    match api {
+        AdvertisedApi::Legacy => discovery::ad_event_at(&mg, payload, test_now_secs() - 1),
+        AdvertisedApi::V2(api_version) => {
+            let mut offer = fedi_decentralized_nostr::mg::AdvertisementV2Payload::from(payload);
+            offer.version = api_version.map(|api_version| GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version,
+            });
+            discovery::v2_event_signed_by(&mg, &mg, &offer, test_now_secs() - 1)
+        }
+    }
 }
 
 /// A fresh FA restored from the backup of a formed paid federation, with
@@ -819,6 +855,145 @@ async fn a_guardian_holder_cannot_receive_a_guardian_through_another_mg() {
         .await
         .unwrap();
     assert_eq!(preview.seat().candidate().mg_id(), test_mg_id(other));
+}
+
+/// A destination that cannot take part in a transfer costs its seat in the
+/// preview, so the walk goes on to one that can.
+#[tokio::test]
+async fn the_preview_skips_a_destination_without_guardian_transfer() {
+    let (old, new) = (19, 20);
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    // The old MG is cheaper, so the walk reaches it first.
+    *client
+        .inner
+        .ports
+        .registry
+        .advertisements
+        .lock()
+        .expect("test lock") = vec![
+        mg_ad(old, PAYMENT_AMOUNT_MSATS / 2, FEDIMINTD_VERSION_0_1),
+        mg_ad(new, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+    ];
+    let preview = async || {
+        client
+            .preview_transfer_destination_with_verifier(
+                crate::MgDiscoveryOptions::default(),
+                &HolderVerifier(BTreeMap::new()),
+            )
+            .await
+            .unwrap()
+            .seat()
+            .candidate()
+            .mg_id()
+    };
+    assert_eq!(preview().await, test_mg_id(old));
+
+    // The advertisement reports the transfer; the MG itself does not.
+    for version in [
+        TestMgVersion::BeforeGetVersion,
+        TestMgVersion::WithoutTransfer,
+    ] {
+        mg_state
+            .versions
+            .lock()
+            .expect("test lock")
+            .insert(old, version);
+        assert_eq!(preview().await, test_mg_id(new), "{version:?}");
+    }
+}
+
+/// Discovery skips, before any dial, an MG whose v2 advertisement reports
+/// an API version without the guardian transfer. An MG that reports none is
+/// left to the live probe, so a transfer-capable MG from before the field
+/// stays a destination when only the FA upgrades.
+#[tokio::test]
+async fn the_preview_skips_destinations_advertising_an_older_api_version() {
+    let (cheapest, current) = (19, 20);
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let preview = async || {
+        client
+            .preview_transfer_destination_with_verifier(
+                crate::MgDiscoveryOptions::default(),
+                &HolderVerifier(BTreeMap::new()),
+            )
+            .await
+            .unwrap()
+            .seat()
+            .candidate()
+            .mg_id()
+    };
+    let advertise = |events| {
+        *client
+            .inner
+            .ports
+            .registry
+            .advertisements
+            .lock()
+            .expect("test lock") = events;
+    };
+    let dials = |index: usize| {
+        mg_state
+            .connect_attempts
+            .lock()
+            .expect("test lock")
+            .get(&index)
+            .copied()
+            .unwrap_or_default()
+    };
+
+    // An older reported version costs the MG its offer without a dial.
+    advertise(vec![
+        mg_ad_reporting(
+            cheapest,
+            PAYMENT_AMOUNT_MSATS / 2,
+            FEDIMINTD_VERSION_0_1,
+            AdvertisedApi::V2(Some(MgApiVersion(0))),
+        ),
+        mg_ad(current, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+    ]);
+    let dials_before = dials(cheapest);
+    assert_eq!(preview().await, test_mg_id(current));
+    assert_eq!(dials(cheapest), dials_before, "the skipped MG was dialed");
+
+    // An MG that reports no version is probed: a transfer-capable one is
+    // offered, an old one is not.
+    for api in [AdvertisedApi::Legacy, AdvertisedApi::V2(None)] {
+        advertise(vec![
+            mg_ad_reporting(
+                cheapest,
+                PAYMENT_AMOUNT_MSATS / 2,
+                FEDIMINTD_VERSION_0_1,
+                api,
+            ),
+            mg_ad(current, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        ]);
+        mg_state
+            .versions
+            .lock()
+            .expect("test lock")
+            .remove(&cheapest);
+        assert_eq!(preview().await, test_mg_id(cheapest), "{api:?}");
+        mg_state
+            .versions
+            .lock()
+            .expect("test lock")
+            .insert(cheapest, TestMgVersion::BeforeGetVersion);
+        assert_eq!(preview().await, test_mg_id(current), "{api:?}");
+    }
+    mg_state
+        .versions
+        .lock()
+        .expect("test lock")
+        .remove(&cheapest);
+
+    // An MG advertising a later API version is offered.
+    advertise(vec![mg_ad_reporting(
+        cheapest,
+        PAYMENT_AMOUNT_MSATS / 2,
+        FEDIMINTD_VERSION_0_1,
+        AdvertisedApi::V2(Some(MgApiVersion(2))),
+    )]);
+    assert_eq!(preview().await, test_mg_id(cheapest));
 }
 
 #[tokio::test]

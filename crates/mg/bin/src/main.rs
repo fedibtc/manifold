@@ -12,6 +12,8 @@ mod duplicate_instance;
 #[cfg(target_os = "linux")]
 mod file_limit;
 mod guardian_config;
+#[cfg(target_os = "linux")]
+mod huge_pages;
 mod memory_report;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
@@ -181,6 +183,10 @@ enum AdminHttpAuthArg {
 const MAX_BLOCKING_THREADS: usize = 16;
 
 fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Err(error) = huge_pages::disable() {
+        eprintln!("could not disable transparent huge pages; continuing: {error}");
+    }
     // Do this before opening sockets or spawning seats, which inherit the limit.
     #[cfg(target_os = "linux")]
     if let Err(error) = file_limit::raise() {
@@ -576,6 +582,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             // capacity or consume another verb's bounded writer slots.
             IrohProtocol::new(server).with_method_response_write_limits([
                 ("get_availability", 128),
+                ("get_version", 128),
                 ("get_quote", 128),
                 ("get_fman_trust_material", 128),
             ]),

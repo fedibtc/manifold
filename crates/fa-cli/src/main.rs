@@ -18,8 +18,8 @@ use fa_client::{
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::{
-    FaNostrClient, MgAdvertisementFormat, NostrClientError, NostrClientResult, NostrFaClient,
-    NostrRelayClient, ROLE_FETCHED_EVENT_MAX_BYTES,
+    FaNostrClient, NostrClientError, NostrClientResult, NostrFaClient, NostrRelayClient,
+    ROLE_FETCHED_EVENT_MAX_BYTES,
 };
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_liquidity_manager::{
@@ -899,7 +899,6 @@ impl FaNostrClient for CliRegistry {
 
     async fn fetch_mg_advertisements(
         &self,
-        format: MgAdvertisementFormat,
         timeout: Duration,
     ) -> NostrClientResult<Vec<NostrEvent>> {
         self.live
@@ -907,7 +906,7 @@ impl FaNostrClient for CliRegistry {
             .ok_or(NostrClientError::MissingEvent {
                 context: "fa-cli live registry capability unavailable",
             })?
-            .fetch_mg_advertisements(format, timeout)
+            .fetch_mg_advertisements(timeout)
             .await
     }
 
@@ -1078,6 +1077,39 @@ async fn run(
     payment_wallet_preflight: Option<PaymentWalletPreflight>,
     maintenance_preflight: Option<MaintenancePreflight>,
 ) -> anyhow::Result<()> {
+    let mut clients = Vec::new();
+    let mut result = run_inner(
+        args,
+        wallet_secret,
+        create_preflight,
+        payment_wallet_preflight,
+        maintenance_preflight,
+        &mut clients,
+    )
+    .await;
+    // Keep ownership outside command dispatch: every `?` (including output
+    // failures) must return through this barrier before Tokio tears down.
+    for client in clients {
+        if let Err(error) = client.shutdown().await {
+            result = match result {
+                Ok(()) => Err(anyhow::anyhow!("shut down FA backup workers: {error}")),
+                Err(command_error) => {
+                    Err(command_error.context(format!("shut down FA backup workers: {error}")))
+                }
+            };
+        }
+    }
+    result
+}
+
+async fn run_inner(
+    args: AppArgs,
+    wallet_secret: Option<WalletRootSecret>,
+    create_preflight: Option<CreatePreflight>,
+    payment_wallet_preflight: Option<PaymentWalletPreflight>,
+    maintenance_preflight: Option<MaintenancePreflight>,
+    clients: &mut Vec<CliClient>,
+) -> anyhow::Result<()> {
     let mut output = CliOutput::stdio();
     let resume_options = match &args.command {
         Command::Resume {
@@ -1099,11 +1131,14 @@ async fn run(
         .then(|| PeerBadgeVerifier::try_from_profile(&profile))
         .transpose()
         .context("construct PeerBadge verifier for Manifold environment")?;
-    let open_existing = async |resume: &ResumeArgs, wallet_secret: Option<WalletRootSecret>| {
+    let open_existing = async |resume: &ResumeArgs,
+                               wallet_secret: Option<WalletRootSecret>,
+                               clients: &mut Vec<CliClient>| {
         let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
         let endpoint = bind_iroh_endpoint().await?;
         let live_registry = connect_environment_registry(args.manifold_environment).await?;
         let client = open_client_with_fee_account_provider(
+            clients,
             &args.state_dir,
             identity,
             CliPayments::open_for_resume(resume, wallet_secret).await?,
@@ -1123,6 +1158,7 @@ async fn run(
         Command::Init => {
             let identity = CliIdentity::load_or_create(&args.state_dir, true)?;
             let client = open_client(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::unavailable(),
@@ -1141,7 +1177,6 @@ async fn run(
             } else {
                 println!("initialized FA {}", hex::encode(fa_pubkey.0.serialize()));
             }
-            client.shutdown().await;
         }
         Command::Create(create) => {
             let CreatePreflight {
@@ -1184,6 +1219,7 @@ async fn run(
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let payments = CliPayments::open(payment_preflight, format, &mut output).await?;
             let client = open_client_with_fee_account_provider(
+                clients,
                 &args.state_dir,
                 identity,
                 payments,
@@ -1235,22 +1271,19 @@ async fn run(
                 observer.borrow_and_update();
             }
             output.snapshot(&observer.borrow(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
         Command::Resume { args: resume, .. } => {
-            let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+            let (client, endpoint) = open_existing(&resume, wallet_secret, clients).await?;
             let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
         Command::RestartDkg(restart) => {
-            let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
+            let (client, endpoint) = open_existing(&restart, wallet_secret, clients).await?;
             let results = client.restart_dkg(FormationRunOptions::default()).await;
-            client.shutdown().await;
             endpoint.close().await;
             let results = results?;
             let output: Vec<_> = results
@@ -1278,6 +1311,7 @@ async fn run(
             let endpoint = bind_iroh_endpoint().await?;
             let live_registry = connect_environment_registry(args.manifold_environment).await?;
             let client = open_client_with_fee_account_provider(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::open_for_resume(&authorize.resume, wallet_secret).await?,
@@ -1301,13 +1335,13 @@ async fn run(
                 )
                 .await;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
         Command::Status => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::unavailable(),
@@ -1320,7 +1354,6 @@ async fn run(
             )
             .await?;
             output.snapshot(&client.status(), format)?;
-            client.shutdown().await;
         }
         Command::Discover(discover) => {
             let requirements = MgCandidateRequirements {
@@ -1361,6 +1394,7 @@ async fn run(
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client_with_fee_account_provider(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::unavailable(),
@@ -1393,7 +1427,6 @@ async fn run(
                 let check = client.check_replacement_candidates().await?;
                 output.replacement_candidates(&check, format)?;
             }
-            client.shutdown().await;
         }
         Command::Maintenance(_) => {
             let operation = maintenance_preflight
@@ -1401,6 +1434,7 @@ async fn run(
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client_with_fee_account_provider(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::unavailable(),
@@ -1437,7 +1471,6 @@ async fn run(
                     .and_then(|()| output.guardian_fee_consensus(send_ppm.value(), format))
                 }
             };
-            client.shutdown().await;
             endpoint.close().await;
             result?;
         }
@@ -1445,11 +1478,11 @@ async fn run(
             let run_timeout = Duration::from_secs(transfer.run_timeout_secs);
             match transfer.command {
                 TransferCommand::Preview => {
-                    let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
+                    let (client, endpoint) =
+                        open_existing(&ResumeArgs::none(), None, clients).await?;
                     let result = client
                         .preview_transfer_destination(MgDiscoveryOptions::default())
                         .await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.transfer_preview(&result?, format)?;
                 }
@@ -1471,7 +1504,8 @@ async fn run(
                         .payment_federation_id
                         .clone()
                         .map(fa_client::FederationId);
-                    let (client, endpoint) = open_existing(&start.payment, wallet_secret).await?;
+                    let (client, endpoint) =
+                        open_existing(&start.payment, wallet_secret, clients).await?;
                     // Reconcile first: the approval below is short-lived.
                     let result = async {
                         client.resume().await?;
@@ -1496,20 +1530,19 @@ async fn run(
                         )
                     }
                     .await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(Some(&result?), format)?;
                 }
                 TransferCommand::Run(run) => {
-                    let (client, endpoint) = open_existing(&run, wallet_secret).await?;
+                    let (client, endpoint) = open_existing(&run, wallet_secret, clients).await?;
                     let transfer = drive_guardian_transfer(&client, run_timeout).await;
-                    client.shutdown().await;
                     endpoint.close().await;
                     output.guardian_transfer(transfer.as_ref(), format)?;
                 }
                 TransferCommand::Status => {
                     let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                     let client = open_client(
+                        clients,
                         &args.state_dir,
                         identity,
                         CliPayments::unavailable(),
@@ -1525,7 +1558,6 @@ async fn run(
                         client.observe_guardian_transfer().borrow().as_ref(),
                         format,
                     )?;
-                    client.shutdown().await;
                 }
             }
         }
@@ -1533,6 +1565,7 @@ async fn run(
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client(
+                clients,
                 &args.state_dir,
                 identity,
                 CliPayments::unavailable(),
@@ -1546,7 +1579,6 @@ async fn run(
             )
             .await?;
             let result = client.decommission_seats().await;
-            client.shutdown().await;
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
         }
@@ -1664,6 +1696,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                 let client = open_client(
+                    clients,
                     &args.state_dir,
                     identity,
                     CliPayments::unavailable(),
@@ -1683,7 +1716,6 @@ async fn run(
                     )
                     .await?;
                 output.liquidity_discovery(&discovery, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Request(request) => {
@@ -1691,6 +1723,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                 let client = open_client(
+                    clients,
                     &args.state_dir,
                     identity,
                     CliPayments::unavailable(),
@@ -1733,7 +1766,6 @@ async fn run(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Resume(resume) => {
@@ -1741,6 +1773,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                 let client = open_client(
+                    clients,
                     &args.state_dir,
                     identity,
                     CliPayments::unavailable(),
@@ -1762,12 +1795,12 @@ async fn run(
                 )
                 .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
                 endpoint.close().await;
             }
             LiquidityCommand::Status(status) => {
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                 let client = open_client(
+                    clients,
                     &args.state_dir,
                     identity,
                     CliPayments::unavailable(),
@@ -1784,11 +1817,11 @@ async fn run(
                     .liquidity_status(&LiquidityOperationId(status.operation_id))
                     .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
-                client.shutdown().await;
             }
             LiquidityCommand::List(list) => {
                 let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
                 let client = open_client(
+                    clients,
                     &args.state_dir,
                     identity,
                     CliPayments::unavailable(),
@@ -1804,7 +1837,6 @@ async fn run(
                     .list_liquidity_operations(after.as_ref(), list.limit)
                     .await?;
                 output.liquidity_page(&page, format)?;
-                client.shutdown().await;
             }
         },
     }
@@ -1889,6 +1921,7 @@ async fn bind_iroh_endpoint() -> anyhow::Result<Endpoint> {
     reason = "test consumer capabilities remain explicit at the fa-client construction boundary"
 )]
 async fn open_client(
+    clients: &mut Vec<CliClient>,
     state_dir: &Path,
     identity: CliIdentity,
     payments: CliPayments,
@@ -1899,6 +1932,7 @@ async fn open_client(
     profile: ManifoldEnvironmentProfile,
 ) -> anyhow::Result<CliClient> {
     open_client_with_fee_account_provider(
+        clients,
         state_dir,
         identity,
         payments,
@@ -1917,6 +1951,7 @@ async fn open_client(
     reason = "test consumer capabilities remain explicit at the fa-client construction boundary"
 )]
 async fn open_client_with_fee_account_provider(
+    clients: &mut Vec<CliClient>,
     state_dir: &Path,
     identity: CliIdentity,
     payments: CliPayments,
@@ -1933,7 +1968,7 @@ async fn open_client_with_fee_account_provider(
         .context("open FA database")?
         .into();
     let registry = setup_payment.registry(live_registry);
-    match setup_payment.publisher {
+    let client = match setup_payment.publisher {
         Some(publisher) => FaClient::open_with_setup_payment_publisher(
             database,
             identity,
@@ -1962,7 +1997,9 @@ async fn open_client_with_fee_account_provider(
         )
         .await
         .context("open FA client"),
-    }
+    }?;
+    clients.push(client.clone());
+    Ok(client)
 }
 
 fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {

@@ -56,6 +56,32 @@ To recover an existing mixed-version transfer, upgrade both endpoints;
 changing flags or the minimum version alone does not recover a previously
 retired source/destination pair.
 
+The policy says whether transfer is on; it cannot say whether the MGs a
+transfer needs speak this shape. Each MG reports its API version through
+`GetVersion` ([SPEC-fa-rpc](./SPEC-fa-rpc.md)), and also in its v2
+advertisement ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md));
+this shape is in API version 1 and later. An MG from before `GetVersion` is below it, and that includes
+every release with the old shape. The FA therefore buys a destination seat only from an MG
+at that API version or later: the destination preview skips MGs whose
+advertisement reports an older version, asks the rest live, and before it
+pays the FA asks the destination, the source, and every staying guardian's MG
+again, each probe capped at the selection probe timeout:
+
+- The destination must answer at that API version.
+- The source must not answer below it. A source probe that fails
+  any other way (unreachable, timed out, another error, or a malformed
+  response) does not block, since a guardian usually needs a new host
+  because its MG is down.
+- Staying guardians only vote `ReplaceSeatBinding`, which takes effect at the
+  federation's consensus threshold. The voters are the destination, in the
+  source's place, and the staying guardians. The FA counts the destination
+  and each staying guardian that answers at that API version; an old or
+  unanswering staying guardian counts as no. The start needs at least the
+  threshold.
+
+Otherwise the FA refuses with a typed error that names the old MGs and the
+voter count, and buys nothing.
+
 The flag gates only the start of a transfer. A transfer that an MG already
 stored always runs to completion or recovery, so a policy change never
 leaves a guardian half moved:
@@ -147,6 +173,18 @@ online once. The FA does not have to be online at the same time.
    peer's fee recipient share moves to the new account. Nothing else
    changes. The FA confirms by readback that consensus holds exactly those
    values.
+   Before it submits its vote, each MG resets the moved peer's availability
+   observations in its own guardian. It resets only when the moved peer's
+   `mg_pubkey` differs from the one in the current directory, so a rebind
+   that keeps the host votes without wiping history. A retried vote resets
+   again; that only drops observations of the new host made since the
+   previous attempt, which is harmless. A failed reset fails the vote, and
+   the FA retries it. The reset happens at vote time, not when consensus
+   adopts the new directory: a transfer that then fails still leaves the
+   moved peer's history cleared, which is accepted. An MG that misses the
+   vote keeps the old host's history; the FA's availability merge takes the
+   `f + 1`-th lowest report, so up to `f` such guardians do not affect the
+   merged score.
 6. The FA sends `RemoveSeat` to the source. The source deletes the seat's
    guardian data at once and reports `Removed`; its next backup publication
    drops the archive and keeps the tombstone. A failed removal leaves the

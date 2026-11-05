@@ -60,6 +60,9 @@ const PURPOSE_TAG_PREFIX: &[u8] = b"fedi-signed-json/";
 /// A change that old readers must enforce, or that changes an existing
 /// field's meaning, needs a new `v<N>`, and over Nostr also a new kind or `d`
 /// tag. Each purpose defines its tag as a constant next to its payload type.
+///
+/// A purpose's payload schema must not contain the signer's key: the
+/// envelope's `signer` is its only home (see [`SignedJsonEnvelope`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PurposeTag(&'static [u8]);
 
@@ -144,8 +147,19 @@ impl PurposeTag {
 /// signer serializes the payload once and never again; a store or forwarder
 /// keeps the envelope or payload string verbatim, since a typed projection
 /// loses unknown fields. `signer` sits outside the payload so the key is
-/// chosen before any payload is read. A purpose whose payload also names its
-/// signer must require the two to be equal.
+/// chosen before any payload is read.
+///
+/// # The payload never names the signer
+///
+/// **A payload must not carry the signer's key again.** `signer` is the
+/// key's only home. A second copy is a second value that some reader may use
+/// in place of the checked one, so it only creates room for key confusion.
+/// The signed bytes are `SHA256(tag || payload)` and do not contain
+/// `signer`, but the key is still bound: the BIP-340 tagged challenge hash
+/// (tag `BIP0340/challenge`, over `R || P || m`) commits to the public key
+/// `P`, so a signature verifies under the key that made it and no other. Hashing the key into the
+/// payload or the tag adds nothing. A payload key with another role, such as
+/// the MG advertisement's commitment-signing `service_pubkey`, is not a copy.
 ///
 /// A verifier stops at the first failing step:
 ///
@@ -155,13 +169,13 @@ impl PurposeTag {
 ///    hex `signer` and `signature`, a string `payload` without an unpaired
 ///    surrogate. Unknown envelope members are unsigned and ignored.
 /// 3. At most [`SIGNED_JSON_PAYLOAD_MAX_BYTES`] of decoded payload bytes.
-/// 4. The signature under the tag the context selects.
+/// 4. The `signer` equal to the one key the context expects (for Nostr, the
+///    event author), then the signature under the tag the context selects.
 /// 5. Only then the payload parse. Structure the reader decodes is bounded at
 ///    127 nested containers, counting the top-level object. Unknown values,
 ///    including duplicate unknown names, are skipped by syntax at any depth,
 ///    bounded only by the payload size. Reject duplicate known names.
-/// 6. Purpose checks: the signer bound to the transport identity (for Nostr,
-///    the event author), then freshness, authorization and semantics.
+/// 6. Purpose checks: freshness, authorization and semantics.
 ///
 /// The bounds are independent: escaping can double the payload inside the
 /// envelope and double it again in a Nostr event, so writers check the
@@ -254,7 +268,12 @@ impl SignedJsonEnvelope {
         )
     }
 
-    /// Verify the signature under `tag`, then parse the payload as `T`.
+    /// Check that `expected_signer` signed the envelope under `tag`, then
+    /// parse the payload as `T`.
+    ///
+    /// The caller's context names the one key it accepts (for a Nostr event,
+    /// the event author). The envelope's own `signer` must equal it, so no
+    /// caller can accept whoever signed the document.
     ///
     /// `T` must decode known integer fields as integers and skip unknown
     /// fields (the default for derived structs). A `T` that buffers values
@@ -264,13 +283,18 @@ impl SignedJsonEnvelope {
     ///
     /// # Errors
     ///
-    /// [`SignedJsonError::InvalidSignature`] when the signature does not
-    /// verify, and [`SignedJsonError::InvalidPayload`] when the verified
+    /// [`SignedJsonError::UnexpectedSigner`] when the envelope names another
+    /// signer, [`SignedJsonError::InvalidSignature`] when the signature does
+    /// not verify, and [`SignedJsonError::InvalidPayload`] when the verified
     /// payload does not parse as `T`.
     pub fn verify<T: DeserializeOwned>(
         &self,
+        expected_signer: nostr::PublicKey,
         tag: PurposeTag,
-    ) -> Result<Verified<T>, SignedJsonError> {
+    ) -> Result<T, SignedJsonError> {
+        if self.signer != expected_signer {
+            return Err(SignedJsonError::UnexpectedSigner);
+        }
         let signer = self
             .signer
             .xonly()
@@ -278,18 +302,7 @@ impl SignedJsonEnvelope {
         nostr::SECP256K1
             .verify_schnorr(&self.signature, &tag.digest(&self.payload), &signer)
             .map_err(|_| SignedJsonError::InvalidSignature)?;
-        let payload =
-            serde_json::from_str(&self.payload).map_err(|_| SignedJsonError::InvalidPayload)?;
-        Ok(Verified {
-            signer: self.signer,
-            payload,
-        })
-    }
-
-    /// The claimed signer. Unauthenticated until [`Self::verify`] succeeds.
-    #[must_use]
-    pub fn signer(&self) -> nostr::PublicKey {
-        self.signer
+        serde_json::from_str(&self.payload).map_err(|_| SignedJsonError::InvalidPayload)
     }
 
     /// Encode the envelope as a JSON document.
@@ -351,35 +364,6 @@ fn parse_lower_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(bytes)
 }
 
-/// A payload whose envelope signature verified under the caller's tag.
-///
-/// Only [`SignedJsonEnvelope::verify`] constructs it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Verified<T> {
-    signer: nostr::PublicKey,
-    payload: T,
-}
-
-impl<T> Verified<T> {
-    /// The key the signature verified under.
-    #[must_use]
-    pub fn signer(&self) -> nostr::PublicKey {
-        self.signer
-    }
-
-    /// The parsed payload.
-    #[must_use]
-    pub fn payload(&self) -> &T {
-        &self.payload
-    }
-
-    /// Take the parsed payload.
-    #[must_use]
-    pub fn into_payload(self) -> T {
-        self.payload
-    }
-}
-
 /// Error signing, decoding, or verifying a [`SignedJsonEnvelope`].
 ///
 /// Variants carry no parser detail, which is attacker-influenced.
@@ -393,6 +377,9 @@ pub enum SignedJsonError {
 
     /// The decoded payload exceeds [`SIGNED_JSON_PAYLOAD_MAX_BYTES`].
     PayloadTooLarge,
+
+    /// The envelope names a signer other than the one the caller expects.
+    UnexpectedSigner,
 
     /// The signature does not verify for the signer, tag, and payload.
     InvalidSignature,
@@ -410,6 +397,7 @@ impl core::fmt::Display for SignedJsonError {
             Self::EnvelopeTooLarge => "signed JSON envelope too large",
             Self::MalformedEnvelope => "malformed signed JSON envelope",
             Self::PayloadTooLarge => "signed JSON payload too large",
+            Self::UnexpectedSigner => "signed JSON envelope names an unexpected signer",
             Self::InvalidSignature => "invalid signed JSON signature",
             Self::InvalidPayload => "invalid signed JSON payload",
             Self::SerializePayload => "failed to serialize signed JSON payload",

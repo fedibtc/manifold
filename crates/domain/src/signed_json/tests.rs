@@ -49,13 +49,20 @@ fn signed(payload: &str) -> SignedJsonEnvelope {
 }
 
 fn verify_counter(payload: &str) -> Result<Counter, SignedJsonError> {
-    signed(payload)
-        .verify::<Counter>(TAG)
-        .map(Verified::into_payload)
+    let envelope = signed(payload);
+    envelope.verify::<Counter>(envelope.signer, TAG)
 }
 
 fn fixture() -> SignedJsonEnvelope {
     SignedJsonEnvelope::decode(FIXTURE).expect("fixture decodes")
+}
+
+fn fixture_signer() -> nostr::PublicKey {
+    nostr::PublicKey::from_hex(FIXTURE_SIGNER_HEX).expect("fixture signer parses")
+}
+
+fn other_signer() -> nostr::PublicKey {
+    nostr::PublicKey::from_hex(OTHER_SIGNER_HEX).expect("other signer parses")
 }
 
 fn fixture_signature_hex() -> String {
@@ -70,12 +77,11 @@ fn pinned_fixture_signs_the_decoded_payload_bytes() {
         FIXTURE_DIGEST_HEX
     );
     let verified = envelope
-        .verify::<FixturePayload>(TAG)
+        .verify::<FixturePayload>(fixture_signer(), TAG)
         .expect("fixture verifies");
-    assert_eq!(verified.signer().to_hex(), FIXTURE_SIGNER_HEX);
     assert_eq!(
-        verified.payload(),
-        &FixturePayload {
+        verified,
+        FixturePayload {
             issued_at: 9_007_199_254_740_993,
             note: "caf\u{e9} \"quoted\" \\ slash/".to_owned(),
         }
@@ -89,7 +95,7 @@ fn reescaped_fixture_still_verifies() {
     let envelope = SignedJsonEnvelope::decode(FIXTURE_REESCAPED).expect("re-escaped decodes");
     assert_eq!(envelope, fixture());
     envelope
-        .verify::<FixturePayload>(TAG)
+        .verify::<FixturePayload>(fixture_signer(), TAG)
         .expect("re-escaped fixture verifies");
 }
 
@@ -110,7 +116,6 @@ fn tampering_fails_the_signature_before_the_payload_is_parsed() {
             &format!("{} ", fixture.payload),
             &signature_hex,
         ),
-        envelope_text(OTHER_SIGNER_HEX, &fixture.payload, &signature_hex),
         envelope_text(
             FIXTURE_SIGNER_HEX,
             &fixture.payload,
@@ -119,7 +124,7 @@ fn tampering_fails_the_signature_before_the_payload_is_parsed() {
     ] {
         let envelope = SignedJsonEnvelope::decode(&tampered).expect("tampered envelope decodes");
         assert_eq!(
-            envelope.verify::<FixturePayload>(TAG),
+            envelope.verify::<FixturePayload>(fixture_signer(), TAG),
             Err(SignedJsonError::InvalidSignature),
             "{tampered}"
         );
@@ -129,15 +134,16 @@ fn tampering_fails_the_signature_before_the_payload_is_parsed() {
 #[test]
 fn wrong_purpose_tag_fails() {
     assert_eq!(
-        fixture().verify::<FixturePayload>(OTHER_TAG),
+        fixture().verify::<FixturePayload>(fixture_signer(), OTHER_TAG),
         Err(SignedJsonError::InvalidSignature)
     );
     let request = PurposeTag::new(b"fedi-signed-json/test-verb-request/v1\0");
     let response = PurposeTag::new(b"fedi-signed-json/test-verb-response/v1\0");
-    let signed = SignedJsonEnvelope::sign(request, &Counter { n: 7 }, &nostr::Keys::generate())
-        .expect("request signs");
+    let keys = nostr::Keys::generate();
+    let signed =
+        SignedJsonEnvelope::sign(request, &Counter { n: 7 }, &keys).expect("request signs");
     assert_eq!(
-        signed.verify::<Counter>(response),
+        signed.verify::<Counter>(keys.public_key(), response),
         Err(SignedJsonError::InvalidSignature)
     );
 }
@@ -147,9 +153,38 @@ fn sign_round_trips_through_the_encoded_envelope() {
     let keys = nostr::Keys::generate();
     let envelope = SignedJsonEnvelope::sign(TAG, &Counter { n: u64::MAX }, &keys).expect("signs");
     let decoded = SignedJsonEnvelope::decode(&envelope.to_json()).expect("decodes");
-    let verified = decoded.verify::<Counter>(TAG).expect("verifies");
-    assert_eq!(verified.signer(), keys.public_key());
-    assert_eq!(verified.into_payload(), Counter { n: u64::MAX });
+    assert_eq!(
+        decoded.verify::<Counter>(keys.public_key(), TAG),
+        Ok(Counter { n: u64::MAX })
+    );
+}
+
+/// The envelope verifies only for the key the caller expects. A signer
+/// member naming another key fails before the signature check, whether the
+/// signature is the original one or not.
+#[test]
+fn only_the_expected_signer_verifies() {
+    let fixture = fixture();
+    assert_eq!(
+        fixture.verify::<FixturePayload>(other_signer(), TAG),
+        Err(SignedJsonError::UnexpectedSigner)
+    );
+
+    // Swapping the named signer cannot redirect verification to that key.
+    let relabeled = SignedJsonEnvelope::decode(&envelope_text(
+        OTHER_SIGNER_HEX,
+        &fixture.payload,
+        &fixture_signature_hex(),
+    ))
+    .expect("relabeled envelope decodes");
+    assert_eq!(
+        relabeled.verify::<FixturePayload>(fixture_signer(), TAG),
+        Err(SignedJsonError::UnexpectedSigner)
+    );
+    assert_eq!(
+        relabeled.verify::<FixturePayload>(other_signer(), TAG),
+        Err(SignedJsonError::InvalidSignature)
+    );
 }
 
 /// A payload of `quotes` escaped quotes and `filler` plain bytes. Each quote
@@ -178,7 +213,7 @@ fn envelope_bound_counts_escaped_bytes() {
     assert!(at_limit.payload.len() < SIGNED_JSON_ENVELOPE_MAX_BYTES * 3 / 4);
     let decoded = SignedJsonEnvelope::decode(&at_limit.to_json()).expect("at the limit decodes");
     assert_eq!(
-        decoded.verify::<Counter>(TAG).map(Verified::into_payload),
+        decoded.verify::<Counter>(decoded.signer, TAG),
         Ok(Counter { n: 1 })
     );
     assert_eq!(
@@ -327,8 +362,9 @@ fn nesting_is_bounded_where_the_payload_is_decoded() {
     // Decoded structure has at most 127 containers, counting the top-level
     // object.
     let decode_all = |depth: usize| {
-        signed(&nested(depth))
-            .verify::<serde_json::Value>(TAG)
+        let envelope = signed(&nested(depth));
+        envelope
+            .verify::<serde_json::Value>(envelope.signer, TAG)
             .map(|_| ())
     };
     assert_eq!(decode_all(126), Ok(()));

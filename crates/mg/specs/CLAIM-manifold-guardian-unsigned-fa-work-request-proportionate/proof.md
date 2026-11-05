@@ -11,6 +11,10 @@ obsolete falsification record was removed. This maintenance sets the claim to
 Unverified rather than treating repair of one counterexample as full
 re-verification.
 
+`GetVersion` was added to the claim later and this proof does not cover it.
+Its handler returns a constant of the build and reads no state, and the daemon
+gives it its own response-write partition like the other unsigned verbs.
+
 ## Scope and model
 
 This proof supports

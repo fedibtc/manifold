@@ -165,8 +165,8 @@ where
         crate::selection::preview_transfer_destination_with(
             &self.inner.ports.registry,
             verifier,
-            &crate::selection::LiveAvailabilityProber {
-                connector: Some(&self.inner.ports.mg_connector),
+            &crate::selection::TransferDestinationProber {
+                connector: &self.inner.ports.mg_connector,
             },
             self.inner.peer_badge_verifier.provenance(),
             federation.federation_id()?,

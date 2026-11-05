@@ -56,7 +56,7 @@ pub use setup_payment_federations::{
 };
 pub use signed_json::{
     PurposeTag, SIGNED_JSON_ENVELOPE_MAX_BYTES, SIGNED_JSON_PAYLOAD_MAX_BYTES, SignedJsonEnvelope,
-    SignedJsonError, Verified,
+    SignedJsonError,
 };
 pub use trust_score::{
     HolderAuthorizationEnvelope, HolderTrustEnvelopeError, PeerBadgeTrustPolicy,

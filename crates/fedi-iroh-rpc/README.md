@@ -43,6 +43,12 @@ The macro keeps the trait and generates:
 - `PingServiceClient`
 - `PingServiceServer<S>`
 
+A service can version its API with `#[service(api_version = Type)]`. Every
+method then names the version that added it in its current shape with
+`#[added_in(expr)]`, an expression of `Type`, and the client gets
+`METHOD_API_VERSIONS`, each method's wire name with that version. A method
+without `#[added_in]` does not compile.
+
 ## Serve it with iroh
 
 ```rust

@@ -12,13 +12,17 @@ The public boundary provides hardened relay connection, publishing, and
 hard-capped fetch primitives plus shared role clients. `HolderNostrClient`
 publishes holder authorization events, while `FaNostrClient` fetches MG
 advertisements for pre-formation selection — one pinned author's latest
-event, or the authorless enumeration of one advertisement format (kind 37701
-or kind 37709), each bounded by its own
-`MG_ADVERTISEMENTS_CANDIDATE_LIMIT` and explicit
-`MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` aggregate byte cap —
-and a bounded common setup-payment candidate set. MG-specific relay
-operations live in the deep `mg-nostr` component rather than
+event, or the authorless enumeration of both advertisement formats (kind
+37701 and kind 37709) — and a bounded common setup-payment candidate set.
+MG-specific relay operations live in the deep `mg-nostr` component rather than
 this shared crate.
+The enumeration runs one query per format, each bounded by its own
+`MG_ADVERTISEMENTS_CANDIDATE_LIMIT` and explicit
+`MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` aggregate byte cap, and returns both
+kinds in one list. Every MG publishes kind 37701, so that query alone decides
+the result. The kind-37709 query gets half of the timeout, and a failed or
+timed-out kind-37709 query leaves the kind-37701 events alone. A consumer that
+only forwards the call therefore needs no knowledge of the formats.
 `FlipNostrClient` supports MG-ad lookups. Current FLIP federation eligibility
 starts from the invite code, reads Fedimint consensus metadata, and queries the
 public MG APIs listed in `fedi:fman_api_urls`. Returning federation

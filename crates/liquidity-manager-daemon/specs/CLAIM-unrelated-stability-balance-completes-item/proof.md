@@ -49,7 +49,7 @@ L1–L5 establish the claim.
   the aggregate report. This is liveness, not false completion.
 - The no-id crash branch intentionally needs trusted Admin reconciliation. Its
   lack of automatic recovery is covered separately by
-  `found-bugs/ambiguous-stability-deposit-has-no-official-recovery-path.md`.
+  [CLAIM-ambiguous-stability-deposit-has-no-official-recovery-path](../CLAIM-ambiguous-stability-deposit-has-no-official-recovery-path.md).
 - The completed row stores operation id in JSON rather than a schema foreign
   key. Under A1, production control flow still supplies the binding; direct DB
   edits are outside the model.

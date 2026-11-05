@@ -171,9 +171,15 @@ section reads `fman_id_pubkey`.
 
 The payload has the legacy fields with the same meanings and serde shapes:
 `service_pubkey`, `issued_at`, `expires_at`, `api_endpoints`, `availability`,
-`plans` and `holder_authorizations`. It drops `version`, because the purpose
-tag versions the schema, and it drops `fman_id_pubkey`, because the envelope
-signer is the identity. It adds one field:
+`plans` and `holder_authorizations`. It drops the legacy schema-version
+integer `version`, because the purpose tag versions the schema (the new
+`version` object below reports the MG build instead), and it drops `fman_id_pubkey`, because the envelope
+signer is the identity. No second payload field identifies the envelope
+signer, as the envelope contract requires. `service_pubkey` is a different
+key: the MG's commitment-signing key, not its Nostr service key. An embedded
+holder authorization may carry the same key as `statement.subject_pubkey`.
+That field has its own role, the subject the Holder authorized, and keeps its
+own trust binding. It adds two fields:
 
 - `uptime_permille`: an optional object `{"1d", "7d", "30d"}` of integers in
   `0..=1000`. The values are the scores that the MG's latest readiness run
@@ -184,6 +190,15 @@ signer is the identity. It adds one field:
   from its own clock. Signing makes them attributable to the MG, but it does
   not make them true, so FAs must not use them to admit, reject, rank or select
   an MG. FAs may display them.
+- `version`: an optional object `{"mg_version", "api_version"}`, the MG's
+  own `GetVersion` answer: its release as a SemVer string and its MG API
+  version as an integer ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
+  Absent means unknown, as from an MG that predates the field, not
+  unsupported. It is self-asserted like the uptime report, but an MG that
+  lies about it only loses or wastes offers, so an FA may skip an MG on it:
+  a guardian transfer preview skips, without dialing, an MG whose reported
+  API version lacks the guardian transfer, and asks an MG that reports none
+  live. An FA still asks the MG itself before it pays.
 
 Unknown payload fields follow the envelope's rule: readers verify the exact
 bytes and then ignore the unknown fields. The rule covers the objects this
@@ -203,7 +218,8 @@ accepting seats, it stops publishing both, and both lapse at their signed
 expiry. Retiring `37701` publication is a separate, approved change.
 
 **Reading.** An FA queries the two kinds separately, and each query has its
-own copy of the legacy candidate and retained-byte bounds. While every MG
+own copy of the legacy candidate and retained-byte bounds. The v2 query may
+use at most half of the time budget. While every MG
 publishes kind `37701`, the legacy query alone decides whether the enumeration
 is complete. A failed v2 query leaves every author on its legacy
 advertisement. For each author, it

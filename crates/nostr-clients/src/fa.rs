@@ -103,19 +103,29 @@ pub trait FaNostrClient {
         timeout: Duration,
     ) -> NostrClientResult<Vec<Event>>;
 
-    /// Fetch hard-bounded MG advertisement candidates of one `format` from
+    /// Fetch hard-bounded MG advertisement candidates of both formats from
     /// every author.
     ///
     /// This is the registry enumeration query: unlike
     /// [`Self::fetch_mg_advertisement`] it pins no author, so one relay
     /// answer can contain events from many claimed MG identities, including
-    /// multiple or conflicting events per author.
+    /// multiple or conflicting events per author. The result holds kind-37701
+    /// and kind-37709 events in one list; the caller tells them apart by
+    /// kind.
     ///
     /// Returned events are untrusted relay data. The caller must verify event
     /// signatures, advertisement document proofs, content/tag consistency,
     /// credential proofs, revocation state, and the authenticated
     /// subject-to-author binding before selecting an MG, and owns semantic
     /// admission policy including per-author replacement ordering.
+    ///
+    /// Implementations query each format separately and apply every bound
+    /// below to each format's query on its own. Every MG publishes kind
+    /// 37701, so only that query decides the result: if it fails, the call
+    /// fails. The kind-37709 query is optional. It may use at most half of
+    /// `timeout`, so a stalled answer still leaves the caller time to admit
+    /// the legacy events. If it fails or times out, the call returns the
+    /// kind-37701 events alone.
     ///
     /// Implementations must enforce these transport bounds before returning:
     ///
@@ -143,13 +153,9 @@ pub trait FaNostrClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if relay querying fails or the relay answer is
+    /// Returns an error if the kind-37701 relay query fails or its answer is
     /// incomplete.
-    async fn fetch_mg_advertisements(
-        &self,
-        format: MgAdvertisementFormat,
-        timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>>;
+    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>>;
 
     /// Fetch a complete-or-locally-bounded set of current FLIP provider ads.
     ///
@@ -210,25 +216,21 @@ impl FaNostrClient for NostrFaClient {
             .await
     }
 
-    async fn fetch_mg_advertisements(
-        &self,
-        format: MgAdvertisementFormat,
-        timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>> {
-        let filter = mg_advertisements_filter(format);
-        // The enumeration is the registry's only completeness signal, so a
-        // stalled or truncated relay answer must fail closed instead of
-        // looking like a small registry; reaching a local resource bound —
-        // the candidate cap or the aggregate byte bound — is still a
-        // successful (deliberately truncated) enumeration.
-        self.relay
-            .fetch_events_complete_or_capped(
-                filter,
+    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>> {
+        fetch_both_mg_advertisement_formats(timeout, |format, timeout| {
+            // The enumeration is the registry's only completeness signal, so
+            // a stalled or truncated relay answer must fail closed instead of
+            // looking like a small registry; reaching a local resource bound
+            // — the candidate cap or the aggregate byte bound — is still a
+            // successful (deliberately truncated) enumeration.
+            self.relay.fetch_events_complete_or_capped(
+                mg_advertisements_filter(format),
                 Instant::now() + timeout,
                 MG_ADVERTISEMENTS_CANDIDATE_LIMIT,
                 MG_ADVERTISEMENTS_RETAINED_MAX_BYTES,
             )
-            .await
+        })
+        .await
     }
 
     async fn fetch_liquidity_provider_advertisements(
@@ -244,6 +246,37 @@ impl FaNostrClient for NostrFaClient {
             )
             .await
     }
+}
+
+/// Runs one query per advertisement format, as
+/// [`FaNostrClient::fetch_mg_advertisements`] documents: the legacy query
+/// decides the result, and the v2 query gets half of `timeout` and degrades
+/// to no events.
+async fn fetch_both_mg_advertisement_formats<Fut>(
+    timeout: Duration,
+    fetch: impl Fn(MgAdvertisementFormat, Duration) -> Fut,
+) -> NostrClientResult<Vec<Event>>
+where
+    Fut: Future<Output = NostrClientResult<Vec<Event>>>,
+{
+    let v2_timeout = timeout / 2;
+    let (legacy, v2) = futures_util::join!(
+        fetch(MgAdvertisementFormat::Legacy, timeout),
+        fedimint_core::runtime::timeout(v2_timeout, fetch(MgAdvertisementFormat::V2, v2_timeout)),
+    );
+    let mut events = legacy?;
+    match v2 {
+        Ok(Ok(v2)) => events.extend(v2),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
+        }
+        Err(_) => {
+            tracing::warn!(
+                "MG advertisement v2 enumeration timed out; using legacy advertisements"
+            );
+        }
+    }
+    Ok(events)
 }
 
 fn mg_advertisements_filter(format: MgAdvertisementFormat) -> Filter {

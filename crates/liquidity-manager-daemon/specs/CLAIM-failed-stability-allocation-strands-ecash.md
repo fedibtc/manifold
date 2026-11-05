@@ -11,7 +11,7 @@ The claim is about **who can strand value**, not about whether stranded value ca
 be recovered.  It says FLIP never writes off provider value on its own, and that
 no write-off happens without an operator choosing it and a durable record of the
 choice.  It does not say the value comes back; see
-`## What this record does not claim`.
+[the proof](CLAIM-failed-stability-allocation-strands-ecash/proof.md#what-this-record-does-not-claim).
 
 Stranded is exactly this enumerable conjunction:
 
@@ -30,14 +30,6 @@ Stranded is exactly this enumerable conjunction:
    exposed by this binary lacks a transition that can either resume a
    stability deposit of that value for `I` or recover/return the value from the
    target client.
-
-The mechanically enumerable domain is: all production post-`Claimed`
-stability-worker exits; all allocation-item and wallet-operation terminal
-writers; all active-item/operation selectors; both manual retry/cancel guards;
-all authenticated Admin wallet/allocation verbs; all target-client wallet and
-stability-pool calls; startup recovery and periodic task wiring; and the pinned
-stability-pool transaction plus primary-mint input/refund state machines in
-Scope.
 
 The adversary may hard-crash the daemon at any instruction, await, SQLite
 commit, target-client commit, or dependency-return boundary; restart it

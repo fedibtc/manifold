@@ -28,11 +28,11 @@ use fedi_decentralized_service_liquidity_manager::{
     GetAllocationStatusResponse, GuardianIdentity, ItemAllocationStatus, LiquidityAmountBounds,
     LiquidityProviderAdvertisement, MgEndorsement, PUBLIC_LIQUIDITY_API_ALPN,
     PUBLIC_LIQUIDITY_PROTOCOL_VERSION, PayloadProof, PeerId, ProtocolVersion, Pubkey,
-    PublicLiquidityApi, PublicRpcPayloadDomain, RequestLiquidityDetailsCommitmentV1,
-    RequestLiquidityOutcome, RequestLiquidityRequest, RequestLiquidityResponse, Sats,
-    ServiceErrorCode, Sha256Digest, Signed, SourceType, Timestamp as LiquidityTimestamp, Url,
-    advertisement_hash, public_rpc_payload_hash, request_liquidity_details_hash,
-    request_liquidity_details_hash_for_request,
+    PublicLiquidityApi, PublicRejectionCode, PublicRpcPayloadDomain,
+    RequestLiquidityDetailsCommitmentV1, RequestLiquidityOutcome, RequestLiquidityRequest,
+    RequestLiquidityResponse, Sats, ServiceErrorCode, Sha256Digest, Signed, SourceType,
+    Timestamp as LiquidityTimestamp, Url, advertisement_hash, public_rpc_payload_hash,
+    request_liquidity_details_hash, request_liquidity_details_hash_for_request,
 };
 use fedi_iroh_rpc::iroh::{EndpointAddr, EndpointId};
 use fedimint_core::runtime::{Instant, timeout};
@@ -69,6 +69,14 @@ pub const FA_LIQUIDITY_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 /// Exact request lifetime. Recovery still queries an accepted allocation
 /// after expiry but never invents a new semantic request hash.
 pub const FA_LIQUIDITY_REQUEST_VALIDITY: Duration = Duration::from_secs(60 * 60);
+
+/// How long after a request's expiry, by the local clock, a provider
+/// `NotFound` proves the request can never be accepted.
+///
+/// The provider refuses an expired request by its own clock, so the grace
+/// covers provider clock skew. It equals the provider-response freshness
+/// window: a skew beyond it already fails every provider exchange.
+pub const FA_LIQUIDITY_EXPIRY_GRACE: Duration = FA_LIQUIDITY_REQUEST_VALIDITY;
 
 /// Largest single durable-operation page accepted by the public recovery API.
 pub const FA_LIQUIDITY_OPERATION_PAGE_MAX: usize = 100;
@@ -163,14 +171,24 @@ pub(crate) struct StoredLiquidityOperation {
     pub(crate) response: Option<Signed<RequestLiquidityResponse>>,
     pub(crate) status: Option<Signed<GetAllocationStatusResponse>>,
     pub(crate) verified_gateway_api: Option<GatewayApiUrl>,
+    /// The provider answered `NotFound` after the request's expiry plus
+    /// [`FA_LIQUIDITY_EXPIRY_GRACE`], with no acceptance evidence journaled.
+    /// The exact request can then never be accepted, so it is terminal like
+    /// a signed rejection and frees the federation for a new start.
+    #[serde(default)]
+    pub(crate) expired_without_acceptance: bool,
 }
 
 impl StoredLiquidityOperation {
     pub(crate) fn is_terminal_for_backup(&self) -> FaResult<bool> {
-        Ok(matches!(
-            self.response.as_ref().map(|v| &v.payload.outcome),
-            Some(RequestLiquidityOutcome::Rejected(_))
-        ) || self.snapshot()?.is_complete())
+        Ok(self.is_rejected() || self.snapshot()?.is_complete())
+    }
+    fn is_rejected(&self) -> bool {
+        self.expired_without_acceptance
+            || matches!(
+                self.response.as_ref().map(|v| &v.payload.outcome),
+                Some(RequestLiquidityOutcome::Rejected(_))
+            )
     }
     fn allocation_status(&self) -> Option<&AllocationStatus> {
         self.status
@@ -216,6 +234,10 @@ impl StoredLiquidityOperation {
             ));
         }
         let (phase, rejection_code) = match self.response.as_ref().map(|v| &v.payload.outcome) {
+            None if self.expired_without_acceptance => (
+                LiquidityOperationPhase::Rejected,
+                Some(PublicRejectionCode::RequestExpired.to_string()),
+            ),
             None if self.status.is_some() => (LiquidityOperationPhase::Accepted, None),
             None => (LiquidityOperationPhase::Prepared, None),
             Some(RequestLiquidityOutcome::Accepted(_)) => (LiquidityOperationPhase::Accepted, None),
@@ -629,17 +651,22 @@ where
                 response: None,
                 status: None,
                 verified_gateway_api: None,
+                expired_without_acceptance: false,
             };
 
+            // Every MG proof is gathered before the operation is persisted.
+            // Nothing has reached the provider yet, so an unreachable MG
+            // fails this start cleanly instead of leaving a live operation
+            // that blocks every later start until all MGs answer at once.
+            lease.renew().await?;
+            let trust = self.collect_mg_trust(&context, verifier).await?;
             lease.renew().await?;
             self.inner
                 .store
                 .insert_liquidity_operation(operation.clone())
                 .await?;
             let snapshot = self
-                .submit_prepared_liquidity(
-                    operation, context, provider, connector, verifier, &lease,
-                )
+                .submit_prepared_liquidity(operation, context, provider, trust, connector, &lease)
                 .await?;
             self.attach_completed_gateway(
                 &snapshot.operation_id,
@@ -708,12 +735,7 @@ where
             .store
             .load_liquidity_operation(operation_id)
             .await?;
-        if operation.response.as_ref().is_some_and(|response| {
-            matches!(
-                response.payload.outcome,
-                RequestLiquidityOutcome::Rejected(_)
-            )
-        }) {
+        if operation.is_rejected() {
             return operation.snapshot();
         }
         let options = FormationRunOptions::default();
@@ -799,8 +821,26 @@ where
                                 .to_owned(),
                         ));
                     }
+                    // Past expiry the provider can never accept this exact
+                    // request, so its `NotFound` is final. Replaying would
+                    // only wait for every MG to answer at once.
+                    if is_past_expiry_grace(&operation.commitment, now_secs()?) {
+                        lease.renew().await?;
+                        self.inner
+                            .store
+                            .mark_liquidity_expired_without_acceptance(operation_id)
+                            .await?;
+                        return self
+                            .inner
+                            .store
+                            .load_liquidity_operation(operation_id)
+                            .await?
+                            .snapshot();
+                    }
+                    lease.renew().await?;
+                    let trust = self.collect_mg_trust(&context, verifier).await?;
                     self.submit_prepared_liquidity(
-                        operation, context, provider, connector, verifier, &lease,
+                        operation, context, provider, trust, connector, &lease,
                     )
                     .await
                 }
@@ -1137,22 +1177,19 @@ where
         })
     }
 
-    async fn submit_prepared_liquidity<L, V>(
+    async fn submit_prepared_liquidity<L>(
         &self,
         operation: StoredLiquidityOperation,
         context: FormedLiquidityContext,
         provider: AdmittedLiquidityProvider,
+        (endorsement, trust_material): (MgEndorsement, Vec<GetMgTrustMaterialResponse>),
         connector: &L,
-        verifier: &V,
         lease: &crate::db::DriverLease,
     ) -> FaResult<LiquidityOperationSnapshot>
     where
         L: LiquidityProviderConnector,
-        V: LiquidityBadgeVerifier,
     {
         context.matches_commitment(&operation.commitment)?;
-        lease.renew().await?;
-        let (endorsement, trust_material) = self.collect_mg_trust(&context, verifier).await?;
         let request = RequestLiquidityRequest {
             version: operation.commitment.version,
             requester_pubkey: operation.commitment.requester_pubkey.clone(),
@@ -1646,6 +1683,15 @@ fn completed_gateway_api(status: &AllocationStatus) -> FaResult<Option<GatewayAp
             }
         })
         .transpose()
+}
+
+/// Whether a provider `NotFound` for this exact request is final.
+fn is_past_expiry_grace(commitment: &RequestLiquidityDetailsCommitmentV1, now: u64) -> bool {
+    commitment
+        .expires_at
+        .0
+        .saturating_add(FA_LIQUIDITY_EXPIRY_GRACE.as_secs())
+        < now
 }
 
 fn now_secs() -> FaResult<u64> {
@@ -2187,6 +2233,7 @@ mod tests {
                 },
             }),
             verified_gateway_api: None,
+            expired_without_acceptance: false,
         };
         assert_eq!(
             stored.snapshot().expect("snapshot").phase,

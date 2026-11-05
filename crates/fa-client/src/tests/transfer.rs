@@ -1341,6 +1341,206 @@ async fn a_policy_without_v2_transfer_buys_no_seat() {
     assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
+/// Start a transfer against MGs with the given `GetVersion` answers. A
+/// refused start must leave no trace: no quote, no payment, no transfer.
+async fn start_against_versions(
+    versions: &[(usize, TestMgVersion)],
+    offline: &[usize],
+) -> (FaResult<GuardianTransfer>, Arc<MgState>) {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    mg_state
+        .versions
+        .lock()
+        .expect("test lock")
+        .extend(versions.iter().copied());
+    mg_state
+        .offline_indices
+        .lock()
+        .expect("test lock")
+        .extend(offline.iter().copied());
+    let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
+    let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
+
+    let result = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await;
+
+    if result.is_err() {
+        assert_eq!(client.guardian_transfer().await, None);
+        assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
+        assert_eq!(
+            payment_state.create_calls.load(Ordering::SeqCst),
+            funded_before
+        );
+        assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+    }
+    (result, mg_state)
+}
+
+/// The refusal's old MGs, voters and threshold.
+fn unsupported(error: FaError) -> (Vec<UnsupportedTransferMg>, u16, u16) {
+    assert_eq!(error.code(), FaErrorCode::CapabilityUnavailable);
+    match error {
+        FaError::GuardianTransferUnsupported {
+            unsupported,
+            voters,
+            threshold,
+        } => (unsupported, voters, threshold),
+        error => panic!("expected GuardianTransferUnsupported, got {error:?}"),
+    }
+}
+
+fn old_guardian(seat_index: usize) -> UnsupportedTransferMg {
+    UnsupportedTransferMg {
+        role: GuardianTransferRole::Guardian {
+            seat_index: seat_index as u16,
+        },
+        mg_id: test_mg_id(seat_index),
+    }
+}
+
+/// The test federation has 7 guardians, so the move's binding vote needs 5.
+const THRESHOLD: u16 = 5;
+
+/// QA found an FA paying a destination on MGs that could not transfer. In a
+/// mixed fleet the FA asks every MG it needs first, and pays none of them
+/// while one from before `GetVersion` hosts the source.
+#[tokio::test]
+async fn a_source_from_before_get_version_buys_no_seat() {
+    let (result, mg_state) =
+        start_against_versions(&[(MOVED, TestMgVersion::BeforeGetVersion)], &[]).await;
+
+    assert_eq!(
+        unsupported(result.unwrap_err()),
+        (
+            vec![UnsupportedTransferMg {
+                role: GuardianTransferRole::Source,
+                mg_id: test_mg_id(MOVED),
+            }],
+            7,
+            THRESHOLD
+        )
+    );
+    // The destination and every guardian's MG were asked.
+    let mut asked = mg_state.version_calls.lock().expect("test lock").clone();
+    asked.sort_unstable();
+    let mut expected = (0..usize::from(MIN_FEDERATION_SIZE))
+        .chain([DESTINATION])
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(asked, expected);
+}
+
+/// A destination without the protocol refuses even when every guardian
+/// supports it, and the refusal names it first.
+#[tokio::test]
+async fn a_destination_without_guardian_transfer_buys_no_seat() {
+    let (result, _mg_state) = start_against_versions(
+        &[
+            (3, TestMgVersion::BeforeGetVersion),
+            (DESTINATION, TestMgVersion::WithoutTransfer),
+        ],
+        &[],
+    )
+    .await;
+
+    assert_eq!(
+        unsupported(result.unwrap_err()),
+        (
+            vec![
+                UnsupportedTransferMg {
+                    role: GuardianTransferRole::Destination,
+                    mg_id: test_mg_id(DESTINATION),
+                },
+                old_guardian(3),
+            ],
+            5,
+            THRESHOLD
+        )
+    );
+}
+
+/// Staying guardians only vote the binding, which needs the consensus
+/// threshold. The destination votes in the source's place, so of 7 voters
+/// two staying guardians may be old, and a third stops the start.
+#[tokio::test]
+async fn old_staying_guardians_block_only_below_the_threshold() {
+    let (result, _mg_state) = start_against_versions(
+        &[
+            (2, TestMgVersion::BeforeGetVersion),
+            (3, TestMgVersion::WithoutTransfer),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+
+    let (result, _mg_state) = start_against_versions(
+        &[
+            (2, TestMgVersion::BeforeGetVersion),
+            (3, TestMgVersion::WithoutTransfer),
+            (4, TestMgVersion::BeforeGetVersion),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        unsupported(result.unwrap_err()),
+        (
+            vec![old_guardian(2), old_guardian(3), old_guardian(4)],
+            4,
+            THRESHOLD
+        )
+    );
+}
+
+/// A staying guardian that does not answer may not vote either, so it
+/// counts against the threshold like an old one.
+#[tokio::test]
+async fn unanswered_staying_guardians_count_against_the_threshold() {
+    let (result, _mg_state) = start_against_versions(
+        &[
+            (2, TestMgVersion::BeforeGetVersion),
+            (3, TestMgVersion::Failing),
+        ],
+        &[4],
+    )
+    .await;
+    assert_eq!(
+        unsupported(result.unwrap_err()),
+        (vec![old_guardian(2)], 4, THRESHOLD)
+    );
+}
+
+/// A guardian usually needs a new host because its MG is down, so a source
+/// whose probe fails, unreachable or with another error, does not block the
+/// start, nor do staying guardians above the threshold. The destination is
+/// paid, so it must answer.
+#[tokio::test]
+async fn only_the_destination_must_answer_get_version() {
+    let (result, _mg_state) = start_against_versions(&[], &[MOVED, 3]).await;
+    assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+    let (result, _mg_state) = start_against_versions(
+        &[(MOVED, TestMgVersion::Failing), (3, TestMgVersion::Failing)],
+        &[],
+    )
+    .await;
+    assert_eq!(result.unwrap().phase, GuardianTransferPhase::AwaitingSource);
+    let (result, _mg_state) =
+        start_against_versions(&[(DESTINATION, TestMgVersion::Failing)], &[]).await;
+    assert!(matches!(result, Err(FaError::Mg(_))), "{result:?}");
+
+    let (result, _mg_state) = start_against_versions(&[], &[DESTINATION]).await;
+    let error = result.unwrap_err();
+    assert!(
+        matches!(&error, FaError::Mg(failure) if failure.mg == manager_key(DESTINATION).x_only_public_key().0),
+        "{error:?}"
+    );
+}
+
 /// The FA admits only the v2 flag and otherwise follows its environment's default,
 /// even when a production policy sets the retired flag to true.
 #[tokio::test]

@@ -41,4 +41,18 @@ fn init_and_idle_status_pin_json_stdout_and_empty_stderr() {
     assert!(status.status.success());
     assert_eq!(status.stdout, b"\"idle\"\n");
     assert_eq!(status.stderr, b"");
+
+    // This error occurs after opening the client and starting its workers.
+    // Preserve the command error, without appending a teardown panic.
+    let invalid_operation = Command::new(test_support::fa_cli_bin())
+        .args(["--state-dir", state_dir.to_str().unwrap(), "--json"])
+        .args(["liquidity", "status", "--operation-id", "invalid"])
+        .output()
+        .unwrap();
+    assert!(!invalid_operation.status.success());
+    assert_eq!(invalid_operation.stdout, b"");
+    assert_eq!(
+        String::from_utf8(invalid_operation.stderr).unwrap(),
+        "Error: invalid formation intent: liquidity operation id must be a lowercase 32-byte hex digest\n"
+    );
 }

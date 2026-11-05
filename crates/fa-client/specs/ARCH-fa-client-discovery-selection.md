@@ -11,13 +11,16 @@ and the badge chain by
 ## Discovery
 
 `discover_mg_candidates` does not write durable state, take a driver lease, or
-change formation status. It queries kind 37701 and kind 37709 separately, each
-with its own candidate and byte bounds. It fails when the kind-37701 query
-fails. Every MG publishes kind 37701, so that query alone decides completeness.
-A failed kind-37709 query only leaves every candidate on its legacy
-advertisement, without uptime, so discovery continues. The kind-37709 query may
-use at most half of the run's remaining budget, so a stalled answer still leaves
-time to admit the legacy results. A v2 event must be fresh before the
+change formation status. It makes one `FaNostrClient::fetch_mg_advertisements`
+call and splits the result by kind. The client queries kind 37701 and kind
+37709 separately, each with its own candidate and byte bounds
+([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md)).
+Discovery fails when the kind-37701 query fails. Every MG publishes kind 37701,
+so that query alone decides completeness. A failed kind-37709 query only leaves
+every candidate on its legacy advertisement, without uptime, so discovery
+continues. The kind-37709 query may use at most half of the run's remaining
+budget, so a stalled answer still leaves time to admit the legacy results. A v2
+event must be fresh before the
 newest-per-author reduction, so an author's newest fresh v2 advertisement wins. For
 each event it checks the event role and signature, the payload proof (for v2,
 the exact-payload envelope signature and payload parse), the signer equal to the
@@ -61,12 +64,9 @@ records that falsification.
 
 The 16 MiB bound is deliberately lower than the candidate ceiling multiplied by
 the per-event cap. The measured worst-case legitimate advertisement event is
-7,299 bytes, so 2,048 such events fit within it. **TODO:** tighten the
-advertisement-specific per-event cap from that measurement with margin; the
-follow-up is beside `MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` in
-`crates/nostr-clients/src/fa.rs`. A relay response that ends, closes, or times
-out before EOSE without reaching a local bound is instead a typed incomplete
-query error.
+7,299 bytes, so 2,048 such events fit within it. A relay response that ends,
+closes, or times out before EOSE without reaching a local bound is instead a
+typed incomplete query error.
 
 Candidates are shuffled on every discovery run. Advertisements have no capacity
 signal, and a stable ordering would concentrate consumers on the same MG.
@@ -129,7 +129,13 @@ After badge and key checks, a connector-equipped walk calls `GetAvailability`
 and applies the same size, allowed range, selected major/minor/vendor identity,
 accepting-seats, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
-price-blind: a live price change is resolved only by the signed quote. The
+price-blind: a live price change is resolved only by the signed quote. A
+guardian transfer preview first drops, before any dial, each candidate whose
+v2 advertisement reports an API version below
+`GUARDIAN_TRANSFER_V2_API_VERSION` (`NoAdvertisedGuardianTransfer`); one that
+reports none is unknown and left to the probe. It then
+also calls `GetVersion` and rejects an MG
+below `GUARDIAN_TRANSFER_V2_API_VERSION` as `LiveNoGuardianTransfer`. The
 transport-less `MgSelectionQuery` intentionally uses advertised claims alone;
 the full `FaClient` and replacement preview always probe.
 

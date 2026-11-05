@@ -40,8 +40,3 @@ so independently released components do not assign different chains to the
 same environment name. Private Bitcoin Core URLs and credentials remain
 deployment capabilities. MG may select such a backend but derives the
 network from the profile.
-
-## Remaining work
-
-Define the MG multi-relay transport contract separately; the profile must not
-imply a general relay failover policy.

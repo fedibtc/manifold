@@ -690,13 +690,9 @@ impl FaNostrClient for SlowRegistry {
             .await
     }
 
-    async fn fetch_mg_advertisements(
-        &self,
-        format: MgAdvertisementFormat,
-        timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>> {
+    async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>> {
         tokio::time::sleep(self.delay).await;
-        self.registry.fetch_mg_advertisements(format, timeout).await
+        self.registry.fetch_mg_advertisements(timeout).await
     }
 }
 
@@ -826,7 +822,7 @@ fn v2_offer(payload: AdvertisementPayload) -> AdvertisementV2Payload {
 }
 
 /// A kind-37709 event authored by `author`, its envelope signed by `signer`.
-fn v2_event_signed_by(
+pub(crate) fn v2_event_signed_by(
     author: &Keys,
     signer: &Keys,
     offer: &AdvertisementV2Payload,
@@ -1013,97 +1009,6 @@ async fn each_format_has_its_own_candidate_bound() {
                 && candidate.self_reported_uptime() == Some(uptime())),
         "the v2 advertisement is admitted beside a full legacy query",
     );
-}
-
-/// Registry whose kind-37709 enumeration fails at once, or answers only after
-/// `v2_delay`, like a relay that handles the new kind badly.
-struct BadV2Registry {
-    registry: TestRegistry,
-    v2_delay: Option<Duration>,
-}
-
-impl FaNostrClient for BadV2Registry {
-    async fn fetch_mg_advertisement(
-        &self,
-        mg_pubkey: PublicKey,
-        timeout: Duration,
-    ) -> NostrClientResult<Event> {
-        self.registry
-            .fetch_mg_advertisement(mg_pubkey, timeout)
-            .await
-    }
-
-    async fn fetch_setup_payment_federations(
-        &self,
-        publisher: PublicKey,
-        timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>> {
-        self.registry
-            .fetch_setup_payment_federations(publisher, timeout)
-            .await
-    }
-
-    async fn fetch_mg_advertisements(
-        &self,
-        format: MgAdvertisementFormat,
-        timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>> {
-        match (format, self.v2_delay) {
-            (MgAdvertisementFormat::Legacy, _) => {
-                self.registry.fetch_mg_advertisements(format, timeout).await
-            }
-            (MgAdvertisementFormat::V2, None) => Err(NostrClientError::IncompleteQuery {
-                reason: "test relay stalled before EOSE",
-            }),
-            // Ignores `timeout`, as a misbehaving injected client may.
-            (MgAdvertisementFormat::V2, Some(delay)) => {
-                tokio::time::sleep(delay).await;
-                self.registry.fetch_mg_advertisements(format, timeout).await
-            }
-        }
-    }
-}
-
-/// Every MG publishes the legacy format, so a failed or stalled v2
-/// enumeration leaves discovery complete: each author falls back to its
-/// legacy advertisement, within the run's deadline.
-#[tokio::test]
-async fn failed_or_stalled_v2_enumeration_falls_back_to_legacy() {
-    let mg = mg_keys(1);
-    let events = vec![
-        ad_event(&mg, self_authorized_payload(&mg)),
-        v2_event(&mg, &v2_offer(self_authorized_payload(&mg))),
-    ];
-    for v2_delay in [None, Some(Duration::from_secs(5))] {
-        let started = Instant::now();
-        let discovery = discover_mg_candidates_with(
-            &BadV2Registry {
-                registry: registry(events.clone()),
-                v2_delay,
-            },
-            &requirements(),
-            started + Duration::from_millis(500),
-            NOW,
-        )
-        .await
-        .expect("the legacy enumeration completes discovery");
-
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "{v2_delay:?}: the stalled v2 query must not outlast the deadline",
-        );
-        assert!(
-            discovery.rejected.is_empty(),
-            "{v2_delay:?}: {:?}",
-            discovery.rejected
-        );
-        assert_eq!(discovery.candidates.len(), 1, "{v2_delay:?}");
-        assert_eq!(
-            discovery.candidates[0].advertised_price_msats(),
-            AD_PRICE_MSATS
-        );
-        assert_eq!(discovery.candidates[0].self_reported_uptime(), None);
-    }
 }
 
 /// The newest *fresh* v2 advertisement wins. A newer v2 event that is not

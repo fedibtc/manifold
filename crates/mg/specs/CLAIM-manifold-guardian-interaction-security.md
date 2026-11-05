@@ -19,14 +19,13 @@ latency or operating-cost bounds, or resistance to traffic analysis.
 
 ## Status
 
-Unverified. The callback-aware signed RPC expands the remote
-method/effect roster, while the proof still enumerates the preceding 3+10
-surface. Durable Holder-authorization enrollment also adds an Admin-triggered
-Nostr-to-SQLite effect not covered by the proof roster. The complete
-current 3+11 roster, including both effects, before treating this parent claim
-as current. The proof also predates the transfer-retired source deletion
-exception, imported here from
-[CLAIM-manifold-guardian-preserves-published-guardian-data](CLAIM-manifold-guardian-preserves-published-guardian-data.md).
+Unverified: the proof enumerates the earlier 3+10 surface roster. It predates
+the callback-aware signed RPC, the Admin-triggered Nostr-to-SQLite effect of
+durable Holder-authorization enrollment, and the transfer-retired source
+deletion exception imported from
+[CLAIM-manifold-guardian-preserves-published-guardian-data](CLAIM-manifold-guardian-preserves-published-guardian-data.md);
+the current 3+11 roster must be re-derived before this claim is treated as
+current.
 
 ## Assumptions
 

@@ -31,6 +31,7 @@ mod status;
 mod telemetry;
 mod transfer;
 mod types;
+mod version;
 
 pub use signing::{
     DESTINATION_ADMISSION_MAX_BYTES, DestinationAdmission, DestinationAdmissionProof,
@@ -49,7 +50,7 @@ pub use fedi_decentralized_services::domain::{
     FederationId, FederationName, GatewayApiUrl, GetMgTrustMaterialRequest,
     GetMgTrustMaterialResponse, InvalidGatewayApiUrl, InviteCode, MG_API_URLS_META_FIELD_KEY,
     MG_TRUST_MATERIAL_MAX_RESPONSE_BYTES, MG_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
-    MgApiUrlsMetadata, MgTrustMaterial, MgTrustMaterialVerificationError, Timestamp,
+    MgApiUrlsMetadata, MgTrustMaterial, MgTrustMaterialVerificationError, MgVersion, Timestamp,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use guardian_link::{
@@ -127,4 +128,8 @@ pub use types::{
     FedimintdVersionCore, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
     MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
+};
+pub use version::{
+    GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest, GetVersionResponse, MG_API_VERSION,
+    MgApiVersion,
 };

@@ -18,9 +18,7 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::setup_payment_federations::{
     SETUP_PAYMENT_FEDERATIONS_D_TAG, SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
 };
-use fedi_decentralized_nostr_clients::{
-    FaNostrClient, MgAdvertisementFormat, NostrClientError, NostrClientResult,
-};
+use fedi_decentralized_nostr_clients::{FaNostrClient, NostrClientError, NostrClientResult};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_liquidity_manager as liquidity_api;
 use fedi_decentralized_service_manifold_guardian::*;
@@ -185,11 +183,7 @@ impl FaNostrClient for TestRegistry {
         Ok(self.candidates.lock().expect("test lock").clone())
     }
 
-    async fn fetch_mg_advertisements(
-        &self,
-        format: MgAdvertisementFormat,
-        _timeout: Duration,
-    ) -> NostrClientResult<Vec<Event>> {
+    async fn fetch_mg_advertisements(&self, _timeout: Duration) -> NostrClientResult<Vec<Event>> {
         if self.fail.load(Ordering::SeqCst) {
             // The registry client's fail-closed enumeration reports a stalled
             // or truncated relay answer as a typed incomplete query.
@@ -200,15 +194,7 @@ impl FaNostrClient for TestRegistry {
         if !self.advertisement_delay.is_zero() {
             tokio::time::sleep(self.advertisement_delay).await;
         }
-        // Relays answer each format's query with that format's kind only.
-        Ok(self
-            .advertisements
-            .lock()
-            .expect("test lock")
-            .iter()
-            .filter(|event| event.kind == Kind::Custom(format.kind()))
-            .cloned()
-            .collect())
+        Ok(self.advertisements.lock().expect("test lock").clone())
     }
 
     async fn fetch_liquidity_provider_advertisements(
@@ -904,6 +890,24 @@ struct MgState {
     binding_votes: Mutex<HashMap<usize, fedi_decentralized_domain::MgPeerAttestation>>,
     /// Every accepted `RemoveSeat`, by MG.
     removed_seats: Mutex<Vec<(usize, SeatId)>>,
+    /// Per-MG `GetVersion` answer; absent answers `Current`.
+    versions: Mutex<HashMap<usize, TestMgVersion>>,
+    /// Every `GetVersion` call, by MG.
+    version_calls: Mutex<Vec<usize>>,
+}
+
+/// What a test MG answers to `GetVersion`.
+#[derive(Clone, Copy, Debug, Default)]
+enum TestMgVersion {
+    /// At the API version with guardian transfer v2.
+    #[default]
+    Current,
+    /// Answers, but below that API version.
+    WithoutTransfer,
+    /// From before `GetVersion`.
+    BeforeGetVersion,
+    /// Answers `GetVersion` with another service error.
+    Failing,
 }
 
 #[derive(Clone)]
@@ -1083,6 +1087,36 @@ impl TestMg {
 }
 
 impl ManifoldGuardianService for TestMg {
+    async fn get_version(&self, _request: GetVersionRequest) -> FmResult<GetVersionResponse> {
+        self.state
+            .version_calls
+            .lock()
+            .expect("test lock")
+            .push(self.index);
+        match self
+            .state
+            .versions
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .copied()
+            .unwrap_or_default()
+        {
+            TestMgVersion::Current => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version: GUARDIAN_TRANSFER_V2_API_VERSION,
+            }),
+            TestMgVersion::WithoutTransfer => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version: MgApiVersion(0),
+            }),
+            // What the generated client turns an "unknown RPC method" answer
+            // into.
+            TestMgVersion::BeforeGetVersion => unsupported_test_verb("get_version"),
+            TestMgVersion::Failing => Err(ManifoldGuardianError::SeatUnavailable),
+        }
+    }
+
     async fn get_availability(
         &self,
         _request: GetAvailabilityRequest,
@@ -3032,6 +3066,7 @@ fn stored_liquidity_operation(marker: u64) -> crate::liquidity::StoredLiquidityO
         response: None,
         status: None,
         verified_gateway_api: None,
+        expired_without_acceptance: false,
     }
 }
 
@@ -3602,7 +3637,7 @@ async fn shutdown_returns_once_the_backup_workers_have_stopped() {
         metrics.num_alive_tasks() > 0,
         "the staging profile starts backup workers"
     );
-    client.shutdown().await;
+    client.shutdown().await.unwrap();
     assert_eq!(metrics.num_alive_tasks(), 0);
 }
 
@@ -4408,9 +4443,8 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
             .event_id,
         "event-a"
     );
-    let backup_tasks = fedimint_core::task::TaskGroup::new();
     crate::backup_worker::spawn_workers(
-        &backup_tasks,
+        &client.inner.backup_tasks,
         client.inner.store.clone(),
         client.inner.ports.identity.scoped_root(),
         vec![nostr_sdk::RelayUrl::parse("ws://127.0.0.1:1").unwrap()],
@@ -4421,7 +4455,43 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
         .await
         .expect("ordinary FA operation did not wait for relay")
         .unwrap();
-    backup_tasks.shutdown_join_all(None).await.unwrap();
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_joins_workers_across_clones_and_cancelled_waiters() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, mut finished_rx) = tokio::sync::oneshot::channel();
+    client
+        .inner
+        .backup_tasks
+        .spawn("shutdown barrier", |handle| async move {
+            started_tx.send(()).unwrap();
+            handle.make_shutdown_rx().await;
+            finish_rx.await.unwrap();
+            finished_tx.send(()).unwrap();
+        });
+    started_rx.await.unwrap();
+
+    let mut first = Box::pin(client.shutdown());
+    assert!(futures::poll!(&mut first).is_pending());
+    let clone = client.clone();
+    let mut second = Box::pin(clone.shutdown());
+    assert!(futures::poll!(&mut second).is_pending());
+    assert!(finished_rx.try_recv().is_err());
+    drop(first);
+    drop(second);
+
+    let mut resumed = Box::pin(client.shutdown());
+    assert!(futures::poll!(&mut resumed).is_pending());
+    finish_tx.send(()).unwrap();
+    resumed.await.unwrap();
+    finished_rx
+        .try_recv()
+        .expect("shutdown returned before the worker finished");
+    client.shutdown().await.unwrap();
 }
 
 fn options() -> FormationRunOptions {
@@ -4772,6 +4842,7 @@ async fn open_client_with_store_and_registry(
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
             backup_tasks: fedimint_core::task::TaskGroup::new(),
             replacement_checks: replacement_checks::ReplacementChecks::default(),
+            backup_shutdown: std::sync::OnceLock::new(),
         }),
     }
 }
@@ -13762,6 +13833,169 @@ async fn completed_gateway_recovery_uses_durable_evidence_before_provider_connec
     );
 }
 
+/// A prepared operation whose request never reached the provider, with its
+/// expiry moved `expired_for_secs` into the past.
+async fn expired_prepared_liquidity(
+    expired_for_secs: u64,
+) -> (
+    TestClient,
+    FormationId,
+    Arc<MgState>,
+    TestLiquidityConnector,
+    LiquidityOperationId,
+) {
+    let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+    connector
+        .0
+        .fail_first_before_allocation
+        .store(true, Ordering::SeqCst);
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(100_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect_err("the request fails before the provider accepts it");
+    let prepared = client
+        .current_liquidity_operation()
+        .await
+        .expect("current operation")
+        .expect("one prepared operation");
+    let operation_id = client
+        .inner
+        .store
+        .backdate_liquidity_operation_for_test(
+            &prepared.operation_id,
+            test_now_secs() - expired_for_secs,
+        )
+        .await;
+    connector.0.calls.lock().expect("test lock").clear();
+    mg_state
+        .trust_material_requests
+        .lock()
+        .expect("test lock")
+        .clear();
+    (client, formation_id, mg_state, connector, operation_id)
+}
+
+#[tokio::test]
+async fn liquidity_recovery_ends_an_expired_request_the_provider_never_saw() {
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() + 60;
+    let (client, formation_id, mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+
+    let ended = client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect("NotFound past expiry is final");
+    assert_eq!(ended.phase, LiquidityOperationPhase::Rejected);
+    assert_eq!(ended.rejection_code.as_deref(), Some("request_expired"));
+    // No replay, and so no MG proof is needed to end it.
+    assert_eq!(
+        *connector.0.calls.lock().expect("test lock"),
+        vec!["status"]
+    );
+    assert!(
+        mg_state
+            .trust_material_requests
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+    // Durable: a later status read and resume agree, and the federation is
+    // free for a new explicit start.
+    assert_eq!(
+        client
+            .liquidity_status(&operation_id)
+            .await
+            .expect("status")
+            .phase,
+        LiquidityOperationPhase::Rejected
+    );
+    assert!(
+        client
+            .current_liquidity_operation()
+            .await
+            .expect("current operation")
+            .is_none()
+    );
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    let started = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(100_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("an expired operation does not block a new start");
+    assert_eq!(started.phase, LiquidityOperationPhase::Accepted);
+    assert_ne!(started.operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn liquidity_recovery_keeps_an_expired_request_live_within_the_grace() {
+    // Expired by the local clock, but a provider clock running behind could
+    // still accept it, so it must stay live and replay.
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() - 60;
+    let (client, _formation_id, mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+    mg_state
+        .corrupt_trust_material_signature
+        .store(true, Ordering::SeqCst);
+
+    client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect_err("the replay still needs every MG proof");
+    assert_eq!(
+        *connector.0.calls.lock().expect("test lock"),
+        vec!["status"]
+    );
+    assert!(
+        !mg_state
+            .trust_material_requests
+            .lock()
+            .expect("test lock")
+            .is_empty(),
+        "the replay was attempted",
+    );
+    let operation = client
+        .liquidity_status(&operation_id)
+        .await
+        .expect("status");
+    assert_eq!(operation.phase, LiquidityOperationPhase::Prepared);
+    assert_eq!(operation.rejection_code, None);
+}
+
+#[tokio::test]
+async fn liquidity_recovery_keeps_an_expired_request_live_without_not_found() {
+    let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() + 60;
+    let (client, _formation_id, _mg_state, connector, operation_id) =
+        expired_prepared_liquidity(expired_for).await;
+    // An unanswered status query does not rule out an acceptance.
+    *connector.0.status_error.lock().expect("test lock") =
+        Some(liquidity_api::ServiceErrorCode::Unavailable);
+
+    client
+        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect_err("only NotFound may end the request");
+    assert_eq!(
+        client
+            .liquidity_status(&operation_id)
+            .await
+            .expect("status")
+            .phase,
+        LiquidityOperationPhase::Prepared
+    );
+}
+
 #[tokio::test]
 async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() {
     let (client, formation_id, _mg_state, connector) = formed_client_for_liquidity().await;
@@ -13890,15 +14124,31 @@ async fn liquidity_rejects_invalid_mg_and_provider_proofs_without_accepting() {
         .await
         .expect_err("invalid MG trust signature fails closed");
     assert!(connector.0.requests.lock().expect("test lock").is_empty());
+    // Nothing reached the provider, so nothing is persisted that could block
+    // the next start.
     let operations = client
         .list_liquidity_operations(None, 10)
         .await
-        .expect("the refused acknowledgement remains recoverable");
-    assert_eq!(operations.operations.len(), 1);
-    assert_eq!(
-        operations.operations[0].phase,
-        LiquidityOperationPhase::Prepared
+        .expect("operations list");
+    assert!(operations.operations.is_empty());
+    assert!(
+        client
+            .current_liquidity_operation()
+            .await
+            .expect("current operation")
+            .is_none()
     );
+    let started = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(130_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("a start after the MG proof recovers is not blocked");
+    assert_eq!(started.phase, LiquidityOperationPhase::Accepted);
 
     for (index, fault) in [
         LiquidityResponseFault::InvalidSignature,

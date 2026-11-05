@@ -23,15 +23,6 @@ middleware: `/`, `/index.html`, and `/assets/*` are public on this private
 listener so the dashboard can load before the operator enters a token. This
 does not make any `/admin/*` route public.
 
-`GET` and `HEAD` serve exact embedded files; extensionless browser-navigation
-paths fall back to `index.html`. Missing `/admin/*`, `/health/*`, `/assets/*`,
-and mock-control paths return 404 rather than HTML. The shell and non-hashed
-files use `Cache-Control: no-store`; Vite's content-hashed assets use
-`Cache-Control: public, max-age=31536000, immutable`. Static responses carry
-their media type and `X-Content-Type-Options: nosniff`, and are gzipped when the
-client accepts that encoding. No proxy sits between the dashboard and this
-listener, so the daemon owns compression for its own assets.
-
 ## Transport, auth, and errors
 
 Routes are `POST /admin/v1/<method>` with JSON bodies. `GET /health` is the
@@ -76,13 +67,9 @@ responses or logs.
 
 Secrets are also not carried *into* the daemon inside the configuration they
 belong to. They are written by name, one at a time, with an explicit set or
-clear, and a configuration write can neither store nor remove one. A config
-write states the whole configuration, so a secret inside one has an absent case
-that has to mean something — and a client cannot restate a secret it was never
-allowed to read. Every interpretation of that absence is wrong: reading it as
-"remove" destroys a working secret when an operator edits an unrelated field,
-and reading it as "required" forces them to retype a secret their edit does not
-concern. An empty value is refused rather than treated as a removal, and a
+clear, and a configuration write can neither store nor remove one: a
+whole-configuration write has no sound meaning for an absent secret that the
+client was never allowed to read. An empty value is refused rather than treated as a removal, and a
 secret the daemon cannot operate without cannot be cleared at all.
 
 ## Boot modes
@@ -125,13 +112,10 @@ Attestation install carries operator-configured trust policy only, meaning an
 issuer authority. Trust material about this provider is never uploaded, so a
 Holder authorization or a credential is refused rather than stored where
 nothing would read it. Installing policy needs no provider identity, because
-the document describes an issuer rather than this provider. The Admin API bearer token is
-rotatable, and a rotated token supersedes the boot bootstrap token outright.
-A target federation's Fedimint client can be closed so the next use reopens
-it, releasing its database lock in between.
+the document describes an issuer rather than this provider.
 
-A rotated token supersedes the bootstrap token outright, including when it
-cannot be read: unreadable secret storage locks the authenticated surface
+The Admin API bearer token is rotatable. A rotated token supersedes the bootstrap
+token outright, including when it cannot be read: unreadable secret storage locks the authenticated surface
 rather than falling back, so a storage failure cannot resurrect a retired
 credential. Recovering from that is a boot-time decision, not a request-time
 one — a break-glass argument re-enables the bootstrap token, and using it

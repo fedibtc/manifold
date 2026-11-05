@@ -196,8 +196,8 @@ authenticated set; canonical selection uses canonical set order.
 
 ## Registry discovery and selection
 
-`discover_mg_candidates` turns two bounded, authorless enumerations, kind
-37701 and kind 37709, ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
+`discover_mg_candidates` turns the bounded, authorless enumeration of kind
+37701 and kind 37709 ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
 into a statically admitted candidate set without writing durable state,
 taking the driver lease, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's
@@ -724,7 +724,15 @@ the advertisements of the federation's own MGs: an MG that is full or offline,
 which is when a guardian needs a new host, advertises nothing. The preview
 then selects one MG on that line that does not host, and never
 hosted, a peer of the federation, and with a badge holder that holds none of
-its seats. The FA keeps the verified holder of each formed and each bought
+its seats. An MG whose v2 advertisement reports an API version below
+`GUARDIAN_TRANSFER_V2_API_VERSION` is rejected as
+`no_advertised_guardian_transfer` before any dial. An advertisement without a
+version, including a legacy one, means unknown, not unsupported: the FA may
+read only kind 37701 when its v2 query fails, and an MG from before the field
+may still transfer, so the live probe decides.
+Its live probe also calls `GetVersion` and rejects an MG whose API
+version is below `GUARDIAN_TRANSFER_V2_API_VERSION` with
+`live_no_guardian_transfer`, so the walk moves on to another MG. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.
 `start_guardian_transfer` takes the approved preview with a price cap and an
@@ -739,7 +747,21 @@ the policy omits it, the default of the client's Manifold environment, the
 same resolution the MG uses
 ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
 MGs start no transfer otherwise, so the FA buys no seat for one. A client
-opened without a Manifold profile takes the production default. Then it records the transfer.
+opened without a Manifold profile takes the production default. It then asks
+the destination, the source, and every staying guardian's MG for `GetVersion`
+at once, each probe capped at `MG_SELECTION_PROBE_TIMEOUT`. It refuses with
+`FaError::GuardianTransferUnsupported` (category `capability_unavailable`),
+naming each MG below `GUARDIAN_TRANSFER_V2_API_VERSION` and its role, when
+the destination or the source answers below it (or is from before
+`GetVersion`), or when fewer than the federation's consensus threshold of the
+binding voters reach it. The voters are the destination, in the source's
+place, and the staying guardians; an old or unanswering staying guardian
+counts as no. The destination must answer. A source probe that fails any
+other way (unreachable, timed out, another error, or a malformed response)
+does not block the start, since a guardian usually needs a new host because
+its MG is down
+([Enabling transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
+Then it records the transfer.
 The retired `guardian_transfer` field must never be set to `true` in production:
 older consumers read it to enable the incompatible old `TransferSeat` shape.
 Before production activation, upgrade both transfer endpoints and set

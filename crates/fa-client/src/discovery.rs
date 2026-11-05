@@ -29,7 +29,7 @@ use fedi_decentralized_nostr::mg::{
 use fedi_decentralized_nostr_clients::{FaNostrClient, MG_ADVERTISEMENTS_CANDIDATE_LIMIT};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationSize, FedimintdDkgVersion, Locator, MgName, Plan, Timestamp,
+    FederationSize, FedimintdDkgVersion, Locator, MgApiVersion, MgName, Plan, Timestamp,
 };
 use fedi_iroh_rpc::iroh::{EndpointAddr, EndpointId};
 use fedimint_core::runtime::Instant;
@@ -198,6 +198,10 @@ pub struct EligibleMgCandidate {
 
     /// Uptime scores the MG reports about itself in a v2 advertisement.
     pub(crate) self_reported_uptime: Option<AdvertisedUptime>,
+
+    /// The API version the MG reports about itself in a v2 advertisement;
+    /// `None` for a legacy one or an MG that predates the field.
+    pub(crate) advertised_api_version: Option<MgApiVersion>,
 }
 
 impl EligibleMgCandidate {
@@ -363,6 +367,15 @@ pub enum AdvertisementRejection {
     /// plan preference.
     LiveNoRequestedPlan,
 
+    /// A guardian transfer destination does not speak the guardian transfer
+    /// protocol this client drives: its `GetVersion` answer does not list
+    /// it, or it is from before `GetVersion`.
+    LiveNoGuardianTransfer,
+
+    /// A guardian transfer destination's v2 advertisement reports an API
+    /// version below the one with the guardian transfer this client drives.
+    NoAdvertisedGuardianTransfer,
+
     /// `expires_at` has passed.
     Expired,
 
@@ -418,6 +431,8 @@ impl AdvertisementRejection {
             Self::LiveUnsupportedFederationSize => "live_unsupported_federation_size",
             Self::LiveUnsupportedFedimintdVersion => "live_unsupported_fedimintd_version",
             Self::LiveNoRequestedPlan => "live_no_requested_plan",
+            Self::LiveNoGuardianTransfer => "live_no_guardian_transfer",
+            Self::NoAdvertisedGuardianTransfer => "no_advertised_guardian_transfer",
             Self::Expired => "expired",
             Self::IssuedInFuture => "issued_in_future",
             Self::Stale => "stale",
@@ -543,34 +558,16 @@ pub(crate) async fn discover_mg_candidates_with(
     now: u64,
 ) -> FaResult<MgDiscovery> {
     let timeout = deadline.saturating_duration_since(Instant::now());
-    // Each format has its own query and bounds (`SPEC-mg-nostr-events`, *MG
-    // advertisement v2*). Every MG publishes the legacy format, so only its
-    // enumeration decides completeness. A failed v2 enumeration degrades to
-    // legacy advertisements alone, which lack only the uptime reports. The
-    // optional v2 query may use at most half the run's budget, so a stalled v2
-    // answer still leaves time to admit the legacy results.
-    let v2_timeout = timeout / 2;
-    let (legacy_events, v2_events) = futures::join!(
-        registry.fetch_mg_advertisements(MgAdvertisementFormat::Legacy, timeout),
-        fedimint_core::runtime::timeout(
-            v2_timeout,
-            registry.fetch_mg_advertisements(MgAdvertisementFormat::V2, v2_timeout),
-        ),
-    );
-    let legacy_events = legacy_events.map_err(|error| FaError::Registry(error.to_string()))?;
-    let v2_events = match v2_events {
-        Ok(Ok(events)) => events,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "MG advertisement v2 enumeration failed; using legacy advertisements");
-            Vec::new()
-        }
-        Err(_) => {
-            tracing::warn!(
-                "MG advertisement v2 enumeration timed out; using legacy advertisements"
-            );
-            Vec::new()
-        }
-    };
+    // The registry runs one query per format, each with its own bounds, and
+    // lets only the legacy query decide completeness
+    // (`FaNostrClient::fetch_mg_advertisements`). A failed v2 query leaves
+    // legacy advertisements alone, which lack only the uptime reports.
+    let (v2_events, legacy_events): (Vec<_>, Vec<_>) = registry
+        .fetch_mg_advertisements(timeout)
+        .await
+        .map_err(|error| FaError::Registry(error.to_string()))?
+        .into_iter()
+        .partition(|event| event.kind == Kind::Custom(MgAdvertisementFormat::V2.kind()));
 
     let mut discovery = MgDiscovery::default();
     // The transport bound belongs to the client; re-applying it here keeps a
@@ -770,6 +767,7 @@ fn admit_eligible_advertisement(
         claimed_issuer,
         holder_authorizations: offer.holder_authorizations,
         self_reported_uptime: offer.uptime_permille,
+        advertised_api_version: offer.version.map(|version| version.api_version),
     })
 }
 

@@ -19,20 +19,36 @@ are indexing hints only and are never trusted over the signed content.
 
 Withdrawal restates the same document under the same coordinate with
 `expires_at` equal to its `issued_at`, then requests deletion of that event.
-Superseding is what makes a withdrawal effective and deletion is only an
-attempt to tidy up: a relay must keep just the newest event per addressable
-coordinate, whereas honouring a deletion request is optional and some relays
-decline. A withdrawn provider is therefore discoverable at most as an expired
-advertisement, which the freshness rule below already rejects — clients need no
-new message type, and a client that never learns of the withdrawal is in the
-same position as one reading any other expired advertisement.
+Withdrawal takes effect by superseding the previous event; deletion only
+attempts cleanup. A relay must keep just the newest event per addressable
+coordinate, but may decline a deletion request. Clients can therefore discover a
+withdrawn provider at most as an expired advertisement, which they reject under
+the freshness rule below. They need no new message type. A client that never
+learns of the withdrawal is in the same position as one reading any other
+expired advertisement.
 
 A withdrawal is durable. Publication requires validation to pass *and* no
-standing withdrawal, so no automatic pass — periodic reconciliation, a config
-change, or a relay refresh — returns a withdrawn provider to the relays. Only an
+standing withdrawal, so no automatic pass (periodic reconciliation, a config
+change, or a relay refresh) returns a withdrawn provider to the relays. Only an
 explicit operator republish does. Withdrawal changes no configuration, so
-without this the operator's decision would be undone by the next reconciliation
-under a fresh signature, while the operator believed they had left the market.
+without this latch, the next reconciliation would undo the operator's decision
+under a fresh signature while the operator believed they had left the market.
+Withdrawal and ready explicit-republish requests commit their intent before
+queueing for relay writes. The latest committed intent wins, including when a
+request is canceled while queued; superseded queued operations need not send.
+An in-flight publication cannot clear a newer withdrawal. Relay I/O that has
+started may finish, and a canceled withdrawal may leave that event live until
+expiry.
+
+Publication and withdrawal share one serialized, time-paced writer. All callers
+wait through a two-second startup guard, then each attempt waits for a
+wall-clock second strictly newer than the last in-memory attempt. This assumes
+one writer and a nondecreasing wall clock across restart, not durable ordering
+through arbitrary clock rollback. Each clock wait has a separate, bounded budget that
+starts after writer admission; slow relay I/O does not consume the next caller's
+clock budget. A failed or canceled withdrawal retains its committed intent unless
+an explicit republish supersedes it. Relay acknowledgment alone does not prove
+visibility on arbitrary relays.
 
 The signed document follows the shared MG/FLIP publication convention: a
 typed `payload` (with `version`, `provider_pubkey`, `issued_at`,
