@@ -11,6 +11,7 @@ use std::time::Duration;
 const FIRST_SAMPLE_DELAY: Duration = Duration::from_secs(60);
 /// The peak field covers the time between samples.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const THP_MODE_PATH: &str = "/sys/kernel/mm/transparent_hugepage/enabled";
 
 /// Sample this process until the runtime shuts down. `process` names the
 /// process role in each event.
@@ -30,6 +31,7 @@ pub(crate) fn spawn(process: &'static str) {
                     anon_bytes = memory.anon_bytes,
                     peak_rss_bytes = memory.peak_rss_bytes,
                     threads = memory.threads,
+                    thp_mode = thp_mode(std::fs::read_to_string(THP_MODE_PATH).ok().as_deref()),
                     "process memory sample"
                 ),
                 // Non-Linux development hosts have no procfs.
@@ -38,6 +40,24 @@ pub(crate) fn spawn(process: &'static str) {
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
     });
+}
+
+/// The host's transparent huge page mode, which decides how much a process
+/// without [`crate::huge_pages::disable`] retains. Only these fixed names reach
+/// the shareable event, whatever the file holds.
+fn thp_mode(enabled: Option<&str>) -> &'static str {
+    let Some(enabled) = enabled else {
+        return "not_built";
+    };
+    match enabled
+        .split_whitespace()
+        .find(|word| word.starts_with('['))
+    {
+        Some("[always]") => "always",
+        Some("[madvise]") => "madvise",
+        Some("[never]") => "never",
+        _ => "unknown",
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,7 +94,18 @@ impl ProcessMemory {
 
 #[cfg(test)]
 mod tests {
-    use super::ProcessMemory;
+    use super::{ProcessMemory, thp_mode};
+
+    #[test]
+    fn reads_the_bracketed_thp_mode() {
+        assert_eq!(thp_mode(Some("[always] madvise never\n")), "always");
+        assert_eq!(thp_mode(Some("always [madvise] never\n")), "madvise");
+        assert_eq!(thp_mode(Some("always madvise [never]\n")), "never");
+        assert_eq!(thp_mode(None), "not_built");
+        // Anything else stays out of the shareable event.
+        assert_eq!(thp_mode(Some("always defer [secret]\n")), "unknown");
+        assert_eq!(thp_mode(Some("")), "unknown");
+    }
 
     #[test]
     fn parses_linux_status_fields_in_bytes() {
