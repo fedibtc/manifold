@@ -66,7 +66,9 @@ const notifiedAbout = (
       ))}
     </ul>
 
-    <p className={styles.note}>You get one alert when a problem starts, and no reminders after that.</p>
+    <p className={styles.note}>
+      You get one alert when a problem starts, and no reminders after that.
+    </p>
   </section>
 );
 
