@@ -13,6 +13,23 @@ export const formatSats = (amountMsat: number | null | undefined): string =>
     ? UNKNOWN_AMOUNT
     : `${Math.floor(amountMsat / 1000).toLocaleString('en-US')} sats`;
 
+// For a person reading their own timeline rather than comparing log lines: in
+// the browser's timezone, e.g. "4 Nov 2026".
+export const formatLocalDay = (unixSeconds: number): string =>
+  new Date(unixSeconds * 1000).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
+
+// "Today, 14:04" within the current local day, else "4 Nov 2026, 14:04".
+export const formatLocalMoment = (unixSeconds: number): string => {
+  const date = new Date(unixSeconds * 1000);
+  const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const today = new Date(Date.now()).toDateString() === date.toDateString();
+  return `${today ? 'Today' : formatLocalDay(unixSeconds)}, ${time}`;
+};
+
 export const formatDate = (timestampMs: number): string =>
   new Date(timestampMs).toISOString().slice(0, 10);
 

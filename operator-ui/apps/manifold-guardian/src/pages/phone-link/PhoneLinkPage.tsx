@@ -6,11 +6,10 @@ interface PhoneLinkPageProps extends Record<string, never> {}
 export const PhoneLinkPage = (_props: PhoneLinkPageProps) => (
   <div className={styles.root}>
     <div className={styles.pageHead}>
-      <h1 className={styles.heading}>Phone link</h1>
+      <h1 className={styles.heading}>Stay connected to your guardian</h1>
 
       <p className={styles.intro}>
-        Stay connected to your guardians. Alerts and support messages in the Fedi App on your phone,
-        wherever you are.
+        Alert notifications in the Fedi app on your phone, wherever you are.
       </p>
     </div>
 

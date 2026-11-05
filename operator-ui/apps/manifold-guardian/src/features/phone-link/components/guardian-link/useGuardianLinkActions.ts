@@ -5,9 +5,9 @@ import { useTestGuardianLinkNotification } from '@/features/phone-link/api/hooks
 import { describeActionError } from '@/shared/utils/describeActionError';
 
 const TEST_MESSAGES = {
-  delivered: 'Test notification delivered.',
-  retryable: 'Test notification could not be delivered. Try again.',
-  terminal: 'Notifications stopped. Link your phone again with the new code below.'
+  delivered: 'Test alert sent. Check your phone.',
+  retryable: 'Test alert could not be sent. Try again.',
+  terminal: 'Notifications stopped. Reconnect your phone.'
 };
 
 export const useGuardianLinkActions = (linkedAt: number | undefined, terminal: boolean) => {
@@ -28,11 +28,6 @@ export const useGuardianLinkActions = (linkedAt: number | undefined, terminal: b
   }, [create.mutate, revoke.reset, test.reset]);
   const handleRevoke = () => {
     // Revocation closes the offer AND forgets the phone, even while relinking.
-    if (
-      linkedAt !== undefined &&
-      !window.confirm('Unlink this phone? It will stop getting notifications from this host.')
-    )
-      return;
     resetResults();
     revoke.mutate();
   };

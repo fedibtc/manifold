@@ -1,6 +1,6 @@
 import type { GuardianLinkResponse } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PhoneLinkPage } from '@/pages/phone-link/PhoneLinkPage';
 import * as adminCallModule from '@/shared/api/adminCall';
@@ -9,7 +9,6 @@ const unlinked: GuardianLinkResponse = { available: true, link: null, offer: nul
 const phone: NonNullable<GuardianLinkResponse['link']> = {
   device_label: 'Pixel 8',
   linked_at: 1700000000,
-  callback_expires_at: 1702592000,
   last_notified_at: null,
   notified_reasons: [],
   delivery: { state: 'active', reason: null }
@@ -17,24 +16,36 @@ const phone: NonNullable<GuardianLinkResponse['link']> = {
 const linked: GuardianLinkResponse = { ...unlinked, link: phone };
 const offer = { uri: 'manifold:guardian-link?secret=mock-only', expires_at: 1700004200 };
 
-const renderPage = (response: GuardianLinkResponse) => {
-  const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(response);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+let client: QueryClient;
+
+const renderPageFor = (response: GuardianLinkResponse) => {
+  vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(response);
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
     <QueryClientProvider client={client}>
       <PhoneLinkPage />
     </QueryClientProvider>
   );
-  return adminCall;
+};
+
+const renderPage = (response: GuardianLinkResponse) => {
+  renderPageFor(response);
+  return vi.mocked(adminCallModule.adminCall);
 };
 
 beforeEach(() => vi.spyOn(Date, 'now').mockReturnValue(1700004000000));
 
 afterEach(() => vi.restoreAllMocks());
 
-it('should explain when no push gateway is configured without minting a code', async () => {
+const terminalLink: NonNullable<GuardianLinkResponse['link']> = {
+  ...phone,
+  delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' }
+};
+
+it('should name the setting when no push gateway is configured, without minting a code', async () => {
   const adminCall = renderPage({ ...unlinked, available: false });
-  expect(await screen.findByText(/isn't set up to send phone notifications/)).toBeInTheDocument();
+  expect(await screen.findByText('Phone alerts are off on this host')).toBeInTheDocument();
+  expect(screen.getByText('FLEET_MANAGER_PUSH_GATEWAY_ORIGIN')).toBeInTheDocument();
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 
@@ -49,12 +60,12 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
   // The steps follow the phone: scan, confirm, then the notification prompt.
   const steps = within(screen.getByRole('list', { name: 'Link steps' })).getAllByRole('listitem');
   expect(steps.map((step) => within(step).getByRole('heading').textContent)).toEqual([
-    '1. Scan this code',
-    '2. Tap Link guardian',
-    '3. Allow notifications'
+    'Scan this code',
+    'Tap Link guardian',
+    'Allow notifications'
   ]);
-  expect(steps[0]).toHaveTextContent('Open the Fedi App on your phone, tap Scan/Paste');
-  expect(screen.getByText(/expires at 2023-11-14 23:23 UTC/)).toBeInTheDocument();
+  expect(steps[0]).toHaveTextContent('Open the Fedi app on your phone, tap Scan/Paste');
+  expect(screen.getByText('Once linked, your phone appears on this page.')).toBeInTheDocument();
   expect(screen.queryByText(offer.uri)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
 });
@@ -62,34 +73,65 @@ it('should show an open offer as a QR with the scan steps and never the URI', as
 it('should show the linked device and never claim a notification was sent when none was', async () => {
   renderPage(linked);
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
-  expect(screen.getByText('Never')).toBeInTheDocument();
-  expect(screen.getByText('Linked')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Send test notification' })).toBeInTheDocument();
-  // The host sees what reaches the phone, and that money news never does.
-  const notified = within(screen.getByRole('list', { name: 'What you are notified about' }));
-  expect(notified.getAllByRole('listitem')).toHaveLength(3);
-  expect(notified.getByText('A check on the Health page fails')).toBeInTheDocument();
-  expect(screen.getByText(/Never about earnings or seats sold/)).toBeInTheDocument();
+  expect(screen.getByText('None yet')).toBeInTheDocument();
+  expect(screen.getByText('Notifications active')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Send a test alert' })).toBeInTheDocument();
+  // Links have no end date to show.
+  expect(screen.queryByText('Link expires')).not.toBeInTheDocument();
+  const notified = within(screen.getByRole('list', { name: 'What you’ll get notified about' }));
+  expect(notified.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+    'A Health check fails',
+    'An update is recommended',
+    'Support writes to you'
+  ]);
 });
 
-it('should require confirmation before unlinking', async () => {
+it('should say Today only for a notification within the current local day', async () => {
+  // Date.now is pinned, so one second before and a full day before it fall on
+  // either side of the label regardless of the runner's timezone.
+  const nowSeconds = 1700004000;
+  const first = renderPageFor({
+    ...linked,
+    link: { ...phone, last_notified_at: nowSeconds - 1 }
+  });
+  expect(await screen.findByText(/^Today, \d\d:\d\d$/)).toBeInTheDocument();
+  first.unmount();
+  renderPageFor({
+    ...linked,
+    link: { ...phone, last_notified_at: nowSeconds - 86_400 * 2 }
+  });
+  expect(await screen.findByText(/^1[2-3] Nov 2023, \d\d:\d\d$/)).toBeInTheDocument();
+});
+
+it('should ask on the page before unlinking and name the phone', async () => {
   const adminCall = renderPage(linked);
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   fireEvent.click(await screen.findByRole('button', { name: 'Unlink' }));
   expect(adminCall).not.toHaveBeenCalledWith('RevokeGuardianLink');
-  confirm.mockReturnValue(true);
+  expect(
+    screen.getByText('Unlink Pixel 8? It stops getting alerts from this guardian.')
+  ).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Send a test alert' })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(adminCall).not.toHaveBeenCalledWith('RevokeGuardianLink');
+  expect(screen.getByRole('button', { name: 'Send a test alert' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
   fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('RevokeGuardianLink'));
 });
 
-it('should show the stopped link and mint a new code without forgetting the device', async () => {
-  const adminCall = renderPage({
-    ...linked,
-    link: { ...phone, delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } }
-  });
-  expect(await screen.findByRole('alert')).toHaveTextContent('Notifications stopped');
+it('should offer only Reconnect on a stopped phone and mint when pressed, not before', async () => {
+  const adminCall = renderPage({ ...linked, link: terminalLink });
+  expect(await screen.findByRole('alert')).toHaveTextContent('Your phone stopped getting alerts');
   expect(screen.getByText('Pixel 8')).toBeInTheDocument();
-  expect(screen.queryByText('Linked')).not.toBeInTheDocument();
+  expect(screen.getByText('Notifications stopped')).toBeInTheDocument();
+  expect(screen.queryByText('Notifications active')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Unlink' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Send a test alert' })).not.toBeInTheDocument();
+  expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Reconnect phone' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith('CreateGuardianLinkOffer'));
   expect(adminCall).not.toHaveBeenCalledWith('RevokeGuardianLink');
 });
@@ -101,28 +143,61 @@ it('should not mint a code while the linked phone can still be reached', async (
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 
-it('should show a stopped phone and its new code together', async () => {
-  renderPage({
-    ...linked,
-    link: { ...phone, delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
-    offer
-  });
+it('should show a stopped phone and its new code together, without the button', async () => {
+  renderPage({ ...linked, link: terminalLink, offer });
   expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Reconnect your phone' })).toBeInTheDocument();
+  expect(screen.getByText(/Scanning it replaces this phone and the warning/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reconnect phone' })).not.toBeInTheDocument();
+});
+
+it('should announce a link that lands while the page is open, until dismissed', async () => {
+  const adminCall = renderPage({ ...unlinked, offer });
+  expect(await screen.findByRole('img', { name: 'Guardian link QR code' })).toBeInTheDocument();
+  expect(screen.queryByText('Phone connected')).not.toBeInTheDocument();
+
+  adminCall.mockResolvedValue(linked as never);
+  await act(() => client.invalidateQueries());
+  expect(await screen.findByText('Phone connected')).toBeInTheDocument();
+  expect(screen.getByText('Pixel 8 will now get guardian alerts.')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByText('Phone connected')).not.toBeInTheDocument();
+});
+
+it('should not announce a link that was already there when the page opened', async () => {
+  renderPage(linked);
+  expect(await screen.findByText('Pixel 8')).toBeInTheDocument();
+  await act(() => client.invalidateQueries());
+  expect(screen.queryByText('Phone connected')).not.toBeInTheDocument();
+});
+
+it('should announce a stopped phone replaced by a new scan', async () => {
+  const adminCall = renderPage({ ...linked, link: terminalLink, offer });
+  expect(await screen.findByText('Notifications stopped')).toBeInTheDocument();
+
+  adminCall.mockResolvedValue({
+    ...linked,
+    link: { ...phone, linked_at: phone.linked_at + 60 }
+  } as never);
+  await act(() => client.invalidateQueries());
+  expect(await screen.findByText('Phone connected')).toBeInTheDocument();
+  expect(screen.getByText('Notifications active')).toBeInTheDocument();
 });
 
 it.each([
-  ['delivered', 'Test notification delivered.'],
-  ['retryable', 'Test notification could not be delivered. Try again.'],
-  ['terminal', 'Notifications stopped. Link your phone again with the new code below.']
-] as const)('should show the %s test notification outcome inline', async (outcome, message) => {
+  ['delivered', 'Test alert sent. Check your phone.'],
+  ['retryable', 'Test alert could not be sent. Try again.'],
+  ['terminal', 'Notifications stopped. Reconnect your phone.']
+] as const)('should show the %s test alert outcome inline', async (outcome, message) => {
   const adminCall = renderPage(linked);
   adminCall.mockImplementation(async (request) =>
     request === 'TestGuardianLinkNotification'
       ? ({ outcome, reason: null } as never)
       : (linked as never)
   );
-  fireEvent.click(await screen.findByRole('button', { name: 'Send test notification' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Send a test alert' }));
   expect(await screen.findByRole('status')).toHaveTextContent(message);
   expect(adminCall).toHaveBeenCalledWith('TestGuardianLinkNotification');
 });

@@ -6,12 +6,12 @@ import { GUARDIAN_LINK_POLL_MS } from '@/shared/api/pollingIntervals';
 
 export const GUARDIAN_LINK_KEY = ['guardian-link'] as const;
 
-export const useGuardianLink = () => {
+export const useGuardianLink = (pollMs: number = GUARDIAN_LINK_POLL_MS) => {
   const [now, setNow] = useState(Date.now);
   const query = useQuery({
     queryKey: GUARDIAN_LINK_KEY,
     queryFn: () => adminCall<GuardianLinkResponse>('GuardianLink'),
-    refetchInterval: GUARDIAN_LINK_POLL_MS,
+    refetchInterval: pollMs,
     gcTime: 0
   });
   const expiresAt = query.data?.offer?.expires_at;

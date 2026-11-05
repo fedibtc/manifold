@@ -17,6 +17,10 @@
   animation: dot-pop 200ms cubic-bezier(0.25, 0.25, 0.315, 1.325);
 }
 
+.attentionDot {
+  @apply absolute -right-4 top-1/2 size-2 -translate-y-1/2 rounded-full bg-warning;
+}
+
 @keyframes dot-pop {
   from {
     transform: scale(0);
