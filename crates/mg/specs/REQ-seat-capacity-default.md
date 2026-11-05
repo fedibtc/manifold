@@ -63,3 +63,11 @@ The budget moved from 1.5 GiB to 1.2 GiB as a conservative first step after
 a 7-guardian federation under a 30-minute payment and ecash workload measured
 `fedimintd` at 129 MiB peak RSS per seat with a bounded blocking pool. The
 publication can move it further without a release.
+
+Peak RSS depends on the host's transparent huge page mode. With
+`transparent_hugepage=always`, a local 10-guardian federation with production
+session length, client load and restarts peaked over 700 MiB per seat after 4
+hours, and climbing, with most anonymous memory in huge pages. The same load
+with huge pages off peaked near 225 MiB. So the daemon turns huge pages off for
+itself and its seats at start, and a budget measured before that change
+overstates what a seat needs.
