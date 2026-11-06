@@ -1408,6 +1408,12 @@ async fn run_inner(
                 CliFaFeeAccountProvider::unavailable(),
             )
             .await?;
+            // Each run opens the formed federation unsynced, and the check
+            // needs it reconciled. This command has no payments to drive an
+            // unfinished formation with, so it leaves one alone.
+            if matches!(client.status(), FaStatus::Formed(_)) {
+                client.resume().await?;
+            }
             if watch {
                 let mut checks = client.observe_replacement_candidates();
                 let run = client.run_replacement_checks();
