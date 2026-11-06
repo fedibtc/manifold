@@ -59,7 +59,7 @@ fn example_material(keys: &Keys) -> MgTrustMaterial {
     MgTrustMaterial {
         mg_pubkey: Pubkey(keys.public_key().to_string()),
         issued_at: Timestamp(10),
-        expires_at: Timestamp(20),
+        expires_at: Some(Timestamp(20)),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
         holder_authorizations: vec![],
     }
@@ -185,7 +185,7 @@ fn mg_trust_material_canonical_payload_is_typed() {
     let material = MgTrustMaterial {
         mg_pubkey: Pubkey("fman".to_owned()),
         issued_at: Timestamp(10),
-        expires_at: Timestamp(20),
+        expires_at: Some(Timestamp(20)),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
         holder_authorizations: vec![],
     };
@@ -200,7 +200,7 @@ fn mg_trust_material_digest_is_stable() {
     let material = MgTrustMaterial {
         mg_pubkey: Pubkey("fman".to_owned()),
         issued_at: Timestamp(10),
-        expires_at: Timestamp(20),
+        expires_at: Some(Timestamp(20)),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
         holder_authorizations: vec![],
     };
@@ -220,7 +220,11 @@ fn mg_trust_material_response_verifies_for_expected_identity() {
     let expected = Pubkey(keys.public_key().to_string());
     assert_eq!(
         response
-            .verify_for_mg(&expected, Timestamp(12), 60)
+            .verify_for_mg_age(
+                &expected,
+                Timestamp(10 + MG_TRUST_MATERIAL_MAX_AGE_SECS),
+                MG_TRUST_MATERIAL_MAX_AGE_SECS
+            )
             .expect("response verifies"),
         response.material
     );
@@ -292,7 +296,7 @@ fn mg_trust_material_response_rejects_invalid_time_windows() {
     let keys = Keys::generate();
     let expected = Pubkey(keys.public_key().to_string());
     let mut material = example_material(&keys);
-    material.expires_at = Timestamp(10);
+    material.expires_at = Some(Timestamp(10));
     assert_eq!(
         signed_response(&keys, material)
             .verify_for_mg(&expected, Timestamp(12), 60)
@@ -302,7 +306,7 @@ fn mg_trust_material_response_rejects_invalid_time_windows() {
 
     let mut material = example_material(&keys);
     material.issued_at = Timestamp(5000);
-    material.expires_at = Timestamp(5010);
+    material.expires_at = Some(Timestamp(5010));
     assert_eq!(
         signed_response(&keys, material)
             .verify_for_mg(&expected, Timestamp(12), 60)
@@ -354,26 +358,30 @@ fn mg_trust_material_response_rejects_noncanonical_mg_pubkey() {
 }
 
 #[test]
-fn mg_trust_material_response_rejects_expired_and_overlong_validity() {
+fn mg_trust_material_response_rejects_evidence_older_than_reader_policy() {
     let keys = Keys::generate();
     let expected = Pubkey(keys.public_key().to_string());
     let mut material = example_material(&keys);
     material.issued_at = Timestamp(1);
-    material.expires_at = Timestamp(10);
+    material.expires_at = None;
     assert_eq!(
         signed_response(&keys, material)
-            .verify_for_mg(&expected, Timestamp(10), 60)
+            .verify_for_mg_age(
+                &expected,
+                Timestamp(2 + MG_TRUST_MATERIAL_MAX_AGE_SECS),
+                MG_TRUST_MATERIAL_MAX_AGE_SECS
+            )
             .unwrap_err(),
         MgTrustMaterialVerificationError::Expired
     );
 
     let mut material = example_material(&keys);
-    material.expires_at = Timestamp(100);
+    material.expires_at = Some(Timestamp(100));
     assert_eq!(
         signed_response(&keys, material)
-            .verify_for_mg(&expected, Timestamp(12), 60)
+            .verify_for_mg_age(&expected, Timestamp(71), 60)
             .unwrap_err(),
-        MgTrustMaterialVerificationError::ValidityWindowTooLarge
+        MgTrustMaterialVerificationError::Expired
     );
 }
 

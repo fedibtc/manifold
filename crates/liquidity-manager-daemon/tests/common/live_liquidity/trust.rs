@@ -329,7 +329,7 @@ pub fn sign_trust_material(
     let material = MgTrustMaterial {
         mg_pubkey: Pubkey(mg_keys.public_key().to_hex()),
         issued_at: Timestamp(now),
-        expires_at: Timestamp(now + 600),
+        expires_at: Some(Timestamp(now + 600)),
         public_api_urls: vec![Url(format!("iroh://{}", mg_keys.public_key().to_hex()))],
         holder_authorizations,
     };

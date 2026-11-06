@@ -228,7 +228,7 @@ where
                 .verify_for_mg(
                     &Pubkey(seat.mg_id.to_string()),
                     fedi_decentralized_domain::Timestamp(now),
-                    crate::liquidity::FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
+                    4 * 60 * 60,
                 )
                 .ok()?;
             if material.holder_authorizations.is_empty() {

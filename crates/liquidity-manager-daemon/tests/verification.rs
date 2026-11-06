@@ -114,7 +114,7 @@ fn material_for(
     let material = MgTrustMaterial {
         mg_pubkey: Pubkey(mg.pubkey_hex.clone()),
         issued_at: now,
-        expires_at: Timestamp(now.0 + 600),
+        expires_at: Some(Timestamp(now.0 + 600)),
         public_api_urls: vec![Url(format!("iroh://{}", mg.pubkey_hex))],
         holder_authorizations,
     };
