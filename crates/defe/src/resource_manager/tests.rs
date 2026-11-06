@@ -224,21 +224,35 @@ fn shutdown_rejects_restart_of_existing_handles() {
 
 #[test]
 fn exclusive_resources_do_not_share_slots() {
-    let fake = FakeDriver::default();
+    let fake = FakeDriver {
+        start_barrier: Some(Arc::new(Barrier::new(2))),
+        ..Default::default()
+    };
     let manager = Arc::new(ResourceManager::new(fake.clone_driver()));
-    let mut connection = manager.connection();
-
-    let first = connection
-        .allocate(fake_exclusive_spec())
-        .expect("allocate first exclusive resource");
-    let second = connection
-        .allocate(fake_exclusive_spec())
-        .expect("allocate second exclusive resource");
+    let starts = (0..2)
+        .map(|_| {
+            let manager = Arc::clone(&manager);
+            thread::spawn(move || {
+                let mut connection = manager.connection();
+                let lease = connection
+                    .allocate(fake_exclusive_spec())
+                    .expect("allocate independent exclusive resource");
+                (connection, lease)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut started = starts
+        .into_iter()
+        .map(|start| start.join().expect("exclusive start succeeds"))
+        .collect::<Vec<_>>();
+    let (second_connection, second) = started.pop().expect("second allocation");
+    let (first_connection, first) = started.pop().expect("first allocation");
 
     assert_ne!(first.descriptor, second.descriptor);
     assert_eq!(fake.start_count(), 2);
 
-    drop(connection);
+    drop(first_connection);
+    drop(second_connection);
     assert_eq!(fake.stop_count(), 2);
 }
 
@@ -316,6 +330,8 @@ fn slot_id_from_descriptor(descriptor: &ResourceDescriptor) -> ResourceSlotId {
 #[derive(Clone, Default)]
 struct FakeDriver {
     inner: Arc<Mutex<FakeDriverState>>,
+    /// Require concurrent starts to meet before either can complete.
+    start_barrier: Option<Arc<Barrier>>,
 }
 
 impl FakeDriver {
@@ -362,6 +378,9 @@ impl FakeDriver {
 
 impl ResourceDriver for FakeDriver {
     fn start(&self, allocation: &ResourceAllocation) -> Result<Box<dyn ManagedResource>, ApiError> {
+        if let Some(barrier) = &self.start_barrier {
+            barrier.wait();
+        }
         let descriptor = fake_nostr_descriptor(allocation.slot_id, allocation.generation);
         let mut inner = self.inner.lock().expect("fake mutex");
         inner.starts += 1;
