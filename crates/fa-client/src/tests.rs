@@ -3071,6 +3071,23 @@ fn stored_liquidity_operation(marker: u64) -> crate::liquidity::StoredLiquidityO
 #[derive(Clone, Copy)]
 struct TestLiquidityVerifier;
 
+/// Models a fresh issuer revocation after evidence was cached.
+struct RevokedLiquidityMg;
+
+impl TestLiquidityBadgeVerifier for RevokedLiquidityMg {
+    async fn verify_subject_for_test(
+        &self,
+        envelope: &fedi_decentralized_domain::HolderAuthorizationEnvelope,
+    ) -> Result<PublicKey, fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError> {
+        let subject = envelope.holder_authorization.authorization.subject_pubkey.0;
+        if subject == test_mg_id(0) {
+            Err(fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError::CredentialRevoked)
+        } else {
+            Ok(subject)
+        }
+    }
+}
+
 impl TestLiquidityBadgeVerifier for TestLiquidityVerifier {
     async fn verify_subject_for_test(
         &self,
@@ -3329,13 +3346,13 @@ impl liquidity_api::PublicLiquidityApi for TestLiquidityProvider {
         if fault == Some(LiquidityResponseFault::Rejected) {
             // A signed rejection is terminal: no allocation is created.
             let payload = liquidity_api::RequestLiquidityResponse {
-                version: liquidity_api::PUBLIC_LIQUIDITY_PROTOCOL_VERSION,
+                version: request.payload.version,
                 details_payload_hash: request.payload.details_payload_hash,
                 provider_pubkey: provider,
                 issued_at: liquidity_api::Timestamp(test_now_secs()),
                 outcome: liquidity_api::RequestLiquidityOutcome::Rejected(
                     liquidity_api::PublicRejection {
-                        code: liquidity_api::PublicRejectionCode::InsufficientCapacity,
+                        code: liquidity_api::PublicRejectionCode::PolicyMismatch,
                         reason: Some("injected rejection".to_owned()),
                     },
                 ),
@@ -3397,7 +3414,7 @@ impl liquidity_api::PublicLiquidityApi for TestLiquidityProvider {
         }
 
         let payload = liquidity_api::RequestLiquidityResponse {
-            version: liquidity_api::PUBLIC_LIQUIDITY_PROTOCOL_VERSION,
+            version: request.payload.version,
             details_payload_hash: if fault == Some(LiquidityResponseFault::WrongHash) {
                 liquidity_api::Sha256Digest([99; 32])
             } else {
@@ -3523,6 +3540,21 @@ async fn formed_client_for_liquidity() -> (
         .await
         .expect("form selected test federation");
     let formation_id = formed(&client.status()).formation_id.clone();
+    // The production worker is opportunistic; wait for its evidence before
+    // exercising liquidity so cache and outage assertions are deterministic.
+    let mut writes = client.inner.store.watch_mg_trust_writes_for_test();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        writes.wait_for(|count| *count >= usize::from(MIN_FEDERATION_SIZE)),
+    )
+    .await
+    .expect("formation proactively caches every MG")
+    .expect("prefetch completion watch remains live");
+    mg_state
+        .trust_material_requests
+        .lock()
+        .expect("test lock")
+        .clear();
     let provider = TestLiquidityProviderState::new(client.inner.store.clone());
     (
         client,
@@ -4637,10 +4669,10 @@ async fn open_client_that_cannot_pay(
             identity: TestIdentity,
             payments,
             registry: TestRegistry::default(),
-            mg_connector: TestConnector {
+            mg_connector: Arc::new(TestConnector {
                 state: state.clone(),
                 config,
-            },
+            }),
             consensus_reader: TestConsensusReader::new(state),
             fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
         },
@@ -4744,7 +4776,7 @@ async fn open_client_with_registry_reader_and_fee_account(
             identity: TestIdentity,
             payments,
             registry,
-            mg_connector: TestConnector { state, config },
+            mg_connector: Arc::new(TestConnector { state, config }),
             consensus_reader,
             fa_fee_account_provider: Arc::new(fa_fee_account_provider),
         },
@@ -4776,10 +4808,10 @@ async fn open_client_with_verifier(
             identity: TestIdentity,
             payments,
             registry,
-            mg_connector: TestConnector {
+            mg_connector: Arc::new(TestConnector {
                 state: state.clone(),
                 config,
-            },
+            }),
             consensus_reader: TestConsensusReader::new(state),
             fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
         },
@@ -4824,10 +4856,10 @@ async fn open_client_with_store_and_registry(
                 identity: TestIdentity,
                 payments,
                 registry,
-                mg_connector: TestConnector {
+                mg_connector: Arc::new(TestConnector {
                     state: state.clone(),
                     config,
-                },
+                }),
                 consensus_reader: TestConsensusReader::new(state),
                 fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
             },
@@ -13550,7 +13582,71 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
     for (index, intent) in intents.into_iter().enumerate() {
         // One live operation per federation: every intent exercises its own
         // freshly formed federation.
-        let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+        let (mut client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+        if index == 1 {
+            for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
+                mg_state
+                    .versions
+                    .lock()
+                    .expect("test lock")
+                    .insert(mg, TestMgVersion::BeforeGetVersion);
+                let id = test_mg_id(mg).to_string();
+                let mut response = client.inner.store.mg_trust_material(&id).await.unwrap();
+                // Reuse this existing intent's MGs for the invalidation matrix.
+                // Each bad cache entry must be replaced, never carried to FLIP.
+                match mg {
+                    0 => {
+                        response.material.issued_at.0 = test_now_secs()
+                            - fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS
+                            - 1;
+                    }
+                    1 => response.material.issued_at.0 = test_now_secs() + 7200,
+                    2 => response.material.public_api_urls.clear(),
+                    3 => response.material.mg_pubkey.0 = test_mg_id(mg + 1).to_string(),
+                    _ => {}
+                }
+                let signing_mg = if mg == 4 { mg + 1 } else { mg };
+                response.proof.signature =
+                    mg_keys(signing_mg).sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(
+                        response.material.digest().unwrap(),
+                    ));
+                let bytes = if mg >= 5 {
+                    b"not JSON".to_vec()
+                } else {
+                    serde_json::to_vec(&response).unwrap()
+                };
+                client
+                    .inner
+                    .store
+                    .set_mg_trust_material_for_test(id, bytes)
+                    .await;
+            }
+        } else if index == 2 {
+            // A new client/store must reuse the on-disk evidence even when
+            // every MG is unreachable. Consensus and issuer checks remain live.
+            client.shutdown().await.unwrap();
+            let store = client.inner.store.reopen_for_test();
+            let registry = client.inner.ports.registry.clone();
+            drop(client);
+            let (payments, _) = TestPayments::new();
+            client = open_client_with_store_and_registry(
+                store,
+                payments,
+                mg_state.clone(),
+                MgConfig::given_away(),
+                registry,
+            )
+            .await;
+            mg_state
+                .offline_indices
+                .lock()
+                .expect("test lock")
+                .extend(0..usize::from(MIN_FEDERATION_SIZE));
+            client
+                .resume()
+                .await
+                .expect("reconcile through federation consensus");
+        }
         let snapshot = client
             .start_liquidity_for_test(
                 &formation_id,
@@ -13567,6 +13663,10 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
         let requests = connector.0.requests.lock().expect("test lock");
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
+        assert_eq!(
+            request.payload.version,
+            liquidity_api::PUBLIC_LIQUIDITY_PROTOCOL_VERSION
+        );
         let endorsement = request
             .payload
             .mg_endorsement
@@ -13597,6 +13697,9 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
             .as_ref()
             .expect("all MG trust material is carried");
         assert_eq!(trust.len(), usize::from(MIN_FEDERATION_SIZE));
+        assert!(trust.iter().all(|response| {
+            response.material.expires_at.unwrap().0 - response.material.issued_at.0 == 3600
+        }));
         assert_eq!(
             trust
                 .iter()
@@ -13609,11 +13712,16 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
         drop(requests);
 
         let trust_requests = mg_state.trust_material_requests.lock().expect("test lock");
-        assert_eq!(trust_requests.len(), usize::from(MIN_FEDERATION_SIZE));
+        let expected_fetches = if index == 1 {
+            usize::from(MIN_FEDERATION_SIZE)
+        } else {
+            0
+        };
+        assert_eq!(trust_requests.len(), expected_fetches);
         assert_eq!(
             trust_requests.iter().copied().collect::<HashSet<_>>().len(),
-            usize::from(MIN_FEDERATION_SIZE),
-            "each distinct MG is queried once per exact request",
+            expected_fetches,
+            "only missing or unusable evidence requires an MG request",
         );
     }
 }
@@ -13943,25 +14051,30 @@ async fn liquidity_recovery_keeps_an_expired_request_live_within_the_grace() {
     let expired_for = crate::liquidity::FA_LIQUIDITY_EXPIRY_GRACE.as_secs() - 60;
     let (client, _formation_id, mg_state, connector, operation_id) =
         expired_prepared_liquidity(expired_for).await;
-    mg_state
-        .corrupt_trust_material_signature
-        .store(true, Ordering::SeqCst);
-
     client
-        .resume_liquidity_for_test(&operation_id, &connector, &TestLiquidityVerifier)
+        .resume_liquidity_for_test(&operation_id, &connector, &RevokedLiquidityMg)
         .await
-        .expect_err("the replay still needs every MG proof");
+        .expect_err("cached evidence does not bypass fresh revocation checks");
     assert_eq!(
         *connector.0.calls.lock().expect("test lock"),
         vec!["status"]
     );
     assert!(
-        !mg_state
+        mg_state
             .trust_material_requests
             .lock()
             .expect("test lock")
             .is_empty(),
-        "the replay was attempted",
+        "valid signed evidence needs no MG connection during replay",
+    );
+    assert!(
+        client
+            .inner
+            .store
+            .mg_trust_material(&test_mg_id(0).to_string())
+            .await
+            .is_none(),
+        "revoked evidence is invalidated for the next attempt"
     );
     let operation = client
         .liquidity_status(&operation_id)
@@ -14111,6 +14224,11 @@ async fn liquidity_rejects_invalid_mg_and_provider_proofs_without_accepting() {
     mg_state
         .corrupt_trust_material_signature
         .store(true, Ordering::SeqCst);
+    client
+        .inner
+        .store
+        .set_mg_trust_material_for_test(test_mg_id(0).to_string(), b"invalid cache".to_vec())
+        .await;
     client
         .start_liquidity_for_test(
             &formation_id,
@@ -14356,7 +14474,7 @@ async fn provider_not_found_cannot_overturn_durable_acceptance_evidence() {
 
 #[tokio::test]
 async fn provider_rejection_is_terminal_and_frees_the_federation() {
-    let (client, formation_id, _mg_state, connector) = formed_client_for_liquidity().await;
+    let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
     *connector.0.response_fault.lock().expect("test lock") = Some(LiquidityResponseFault::Rejected);
     let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
     let rejected = client
@@ -14370,10 +14488,7 @@ async fn provider_rejection_is_terminal_and_frees_the_federation() {
         .await
         .expect("a signed rejection is a durable terminal outcome");
     assert_eq!(rejected.phase, LiquidityOperationPhase::Rejected);
-    assert_eq!(
-        rejected.rejection_code.as_deref(),
-        Some("insufficient_capacity")
-    );
+    assert_eq!(rejected.rejection_code.as_deref(), Some("policy_mismatch"));
 
     let resumed = client
         .resume_liquidity_for_test(&rejected.operation_id, &connector, &TestLiquidityVerifier)
@@ -14395,6 +14510,7 @@ async fn provider_rejection_is_terminal_and_frees_the_federation() {
     );
 
     // The terminal rejection frees the federation for a fresh request.
+    mg_state.trust_material_requests.lock().unwrap().clear();
     let fresh = client
         .start_liquidity_for_test(
             &formation_id,
@@ -14406,6 +14522,11 @@ async fn provider_rejection_is_terminal_and_frees_the_federation() {
         .await
         .expect("a rejected federation may start fresh");
     assert_eq!(fresh.phase, LiquidityOperationPhase::Accepted);
+    assert_eq!(
+        mg_state.trust_material_requests.lock().unwrap().len(),
+        usize::from(MIN_FEDERATION_SIZE),
+        "a new explicit start refreshes even still-young refused evidence",
+    );
     assert_eq!(
         client
             .current_liquidity_operation()

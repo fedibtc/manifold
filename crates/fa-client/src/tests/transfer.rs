@@ -1594,10 +1594,10 @@ async fn transfer_policy_uses_only_v2_and_the_environment_default() {
                 identity: TestIdentity,
                 payments,
                 registry,
-                mg_connector: TestConnector {
+                mg_connector: Arc::new(TestConnector {
                     state: state.clone(),
                     config: MgConfig::given_away(),
-                },
+                }),
                 consensus_reader: TestConsensusReader::new(state),
                 fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
             },

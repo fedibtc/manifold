@@ -59,7 +59,33 @@ enum FaDbPrefix {
     FormedFederation = 0x07,
     RecoveryCompleted = 0x08,
     GuardianTransfer = 0x09,
+    MgTrustMaterial = 0x0a,
+    MgTrustMaterialRefreshRequired = 0x0b,
 }
+
+/// Disposable signed evidence, outside recovery records and backup formats.
+#[derive(Clone, Debug, Decodable, Encodable)]
+struct MgTrustMaterialKey {
+    /// Exact MG signing identity, never a seat index or transport endpoint.
+    mg_pubkey: String,
+}
+impl_db_record!(
+    key = MgTrustMaterialKey,
+    value = Vec<u8>,
+    db_prefix = FaDbPrefix::MgTrustMaterial
+);
+
+/// Exact refused document; it remains usable only as failed-refresh fallback.
+#[derive(Clone, Debug, Decodable, Encodable)]
+struct MgTrustMaterialRefreshRequiredKey {
+    /// Exact MG signing identity.
+    mg_pubkey: String,
+}
+impl_db_record!(
+    key = MgTrustMaterialRefreshRequiredKey,
+    value = Vec<u8>,
+    db_prefix = FaDbPrefix::MgTrustMaterialRefreshRequired
+);
 
 #[derive(Debug, Decodable, Encodable)]
 struct GuardianTransferKey;
@@ -918,6 +944,9 @@ struct FormationTestHook {
 #[derive(Clone)]
 pub(crate) struct FaStore {
     database: Database,
+    /// Completed evidence writes, used only to await proactive fetching in tests.
+    #[cfg(test)]
+    trust_material_writes: Arc<watch::Sender<usize>>,
     lease_clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     #[cfg(test)]
     lease_acquisition_hook: LeaseTestHook,
@@ -946,9 +975,170 @@ pub(crate) struct FaStore {
 }
 
 impl FaStore {
+    /// Read optional evidence; malformed JSON is a cache miss, not lost recovery.
+    pub(crate) async fn mg_trust_material(
+        &self,
+        mg_pubkey: &str,
+    ) -> Option<fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse> {
+        let bytes = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&MgTrustMaterialKey {
+                mg_pubkey: mg_pubkey.to_owned(),
+            })
+            .await?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Persist verified evidence, retaining and returning a newer valid winner.
+    pub(crate) async fn cache_mg_trust_material(
+        &self,
+        response: &fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+    ) -> FaResult<fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse> {
+        let material = &response.material;
+        let key = MgTrustMaterialKey {
+            mg_pubkey: material.mg_pubkey.0.clone(),
+        };
+        let bytes = serde_json::to_vec(response)
+            .map_err(|error| FaError::Storage(format!("encoding MG trust material: {error}")))?;
+        let response = response.clone();
+        let winner = self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let key = key.clone();
+                    let bytes = bytes.clone();
+                    let response = response.clone();
+                    Box::pin(async move {
+                        if let Some(existing) = dbtx.get_value(&key).await
+                            && let Ok(existing) = serde_json::from_slice::<
+                                fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+                            >(&existing)
+                            && existing.material.issued_at > response.material.issued_at
+                            && existing.verify_for_mg_age(
+                                &response.material.mg_pubkey,
+                                fedi_decentralized_service_manifold_guardian::Timestamp(
+                                    fedimint_core::time::duration_since_epoch().as_secs(),
+                                ),
+                                fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS,
+                            ).is_ok()
+                        {
+                            return Ok(existing);
+                        }
+                        dbtx.insert_entry(&key, &bytes).await;
+                        let refresh_key = MgTrustMaterialRefreshRequiredKey {
+                            mg_pubkey: key.mg_pubkey,
+                        };
+                        // Re-fetching the identical refused document does not
+                        // make it acceptable to the provider.
+                        if dbtx.get_value(&refresh_key).await.as_ref() != Some(&bytes) {
+                            dbtx.remove_entry(&refresh_key).await;
+                        }
+                        Ok::<_, FaError>(response)
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|_| FaError::Storage("persisting MG trust material failed".to_owned()))?;
+        #[cfg(test)]
+        self.trust_material_writes.send_modify(|count| *count += 1);
+        Ok(winner)
+    }
+
+    /// Require refresh only for the exact evidence a provider refused.
+    pub(crate) async fn require_mg_trust_material_refresh(
+        &self,
+        response: &fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+    ) -> FaResult<()> {
+        let bytes = serde_json::to_vec(response)
+            .map_err(|error| FaError::Storage(format!("encoding MG trust material: {error}")))?;
+        let mg_pubkey = response.material.mg_pubkey.0.clone();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let mg_pubkey = mg_pubkey.clone();
+                    let bytes = bytes.clone();
+                    Box::pin(async move {
+                        if dbtx
+                            .get_value(&MgTrustMaterialKey {
+                                mg_pubkey: mg_pubkey.clone(),
+                            })
+                            .await
+                            .as_ref()
+                            == Some(&bytes)
+                        {
+                            dbtx.insert_entry(
+                                &MgTrustMaterialRefreshRequiredKey { mg_pubkey },
+                                &bytes,
+                            )
+                            .await;
+                        }
+                        Ok::<_, FaError>(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|_| {
+                FaError::Storage("marking MG trust material for refresh failed".to_owned())
+            })
+    }
+
+    /// Check whether this exact cached document was refused by a provider.
+    pub(crate) async fn mg_trust_material_refresh_required(
+        &self,
+        response: &fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+    ) -> bool {
+        let Some(bytes) = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&MgTrustMaterialRefreshRequiredKey {
+                mg_pubkey: response.material.mg_pubkey.0.clone(),
+            })
+            .await
+        else {
+            return false;
+        };
+        serde_json::from_slice::<
+            fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+        >(&bytes)
+        .is_ok_and(|refused| refused == *response)
+    }
+
+    /// Remove rejected evidence, without deleting a concurrent replacement.
+    pub(crate) async fn invalidate_mg_trust_material(
+        &self,
+        response: &fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse,
+    ) -> FaResult<()> {
+        let bytes = serde_json::to_vec(response)
+            .map_err(|error| FaError::Storage(format!("encoding MG trust material: {error}")))?;
+        let mg_pubkey = response.material.mg_pubkey.0.clone();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let mg_pubkey = mg_pubkey.clone();
+                    let bytes = bytes.clone();
+                    Box::pin(async move {
+                        let key = MgTrustMaterialKey { mg_pubkey };
+                        if dbtx.get_value(&key).await.as_ref() == Some(&bytes) {
+                            dbtx.remove_entry(&key).await;
+                        }
+                        Ok::<_, FaError>(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|_| FaError::Storage("invalidating MG trust material failed".to_owned()))
+    }
+
     pub(crate) fn new(database: Database) -> Self {
         Self {
             database,
+            #[cfg(test)]
+            trust_material_writes: Arc::new(watch::channel(0).0),
             lease_clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
             #[cfg(test)]
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -1546,6 +1736,7 @@ impl FaStore {
         Self {
             database,
             lease_clock,
+            trust_material_writes: Arc::new(watch::channel(0).0),
             lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_renewal_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             lease_release_commit_hook: Arc::new(std::sync::Mutex::new(None)),

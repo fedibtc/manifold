@@ -13,6 +13,39 @@ signed issuance time. They ignore the deprecated optional expiry hint and do
 not negotiate lifetime through the request shape or an API capability.
 Existing transfer and replacement policies remain separate.
 
+FA stores one signed evidence document per exact MG identity, outside recovery
+and backup authority. Formation, reopen/restore, and membership changes start
+opportunistic acquisition without delaying formation success. While idle, the
+worker sleeps until each document's refresh deadline and fetches when less than
+eight hours remain in the seven-day reader window. Evidence with at least eight
+hours remaining needs no network request except after a provider refusal or
+for the liquidity-shopping compatibility refresh. After a failed refresh, the FA
+retains and may use still-valid evidence, but never extends its age limit.
+
+At the start of provider discovery, the FA makes one bounded MG read for each
+cached document older than thirty minutes in a concurrent batch. This temporary
+compatibility fetch helps old FLIPs that enforce the historical one-hour expiry;
+maintainers may remove it when those readers no longer need support. Refresh
+errors do not fail discovery or cause the FA to discard usable cached evidence.
+The FA runs one batch per shopping entry without polling or automatic liquidity
+resubmission, and keeps the seven-day reader policy. Provider discovery runs
+alongside the batch with its own deadline. An old FLIP can still refuse retained
+evidence if refreshing fails or shopping takes longer than the old expiry.
+
+On every use, the FA rechecks identity, signature, bounds, and freshness. It
+checks credentials and revocations live at admission. The FA invalidates only
+the matching cached document when it definitively rejects all credential
+candidates. Transient or indeterminate outcomes, or unchecked candidates, cause
+it to reject admission but retain the document.
+
+After an authenticated `invalid_credentials` or `policy_mismatch` rejection
+from a provider, the FA marks only the submitted matching cached documents for
+refresh on the next explicit start. It never resubmits liquidity automatically
+or deletes usable fallback, and cannot mark a newer concurrent replacement.
+The FA honors the marker on every cache shortcut; fetching the identical refused
+document does not clear it. Cache writes retain a strictly newer valid document
+transactionally and return that retained document to the caller.
+
 Liquidity is post-formation work. `federation_created` remains the terminal
 formation success state and is never delayed or rewritten by gateway or
 stability-pool provisioning.

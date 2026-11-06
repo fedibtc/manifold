@@ -928,7 +928,7 @@ where
             &self.inner.ports.registry,
             &self.inner.peer_badge_verifier,
             &LiveAvailabilityProber {
-                connector: Some(&self.inner.ports.mg_connector),
+                connector: Some(self.inner.ports.mg_connector.as_ref()),
             },
             self.inner.peer_badge_verifier.provenance(),
             request,

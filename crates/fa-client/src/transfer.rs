@@ -407,7 +407,8 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<bool> {
         let probe = async {
-            let client = MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
+            let client =
+                MgClient::connect(self.inner.ports.mg_connector.as_ref(), locator, run).await?;
             match client
                 .call(run, MgOperation::GetVersion, |client| {
                     client.get_version(GetVersionRequest)
@@ -689,7 +690,7 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         let client = match MgClient::connect(
-            &self.inner.ports.mg_connector,
+            self.inner.ports.mg_connector.as_ref(),
             &destination.locator,
             run,
         )
@@ -791,8 +792,12 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<FormationSeatBinding> {
-        let client =
-            MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run).await?;
+        let client = MgClient::connect(
+            self.inner.ports.mg_connector.as_ref(),
+            &destination.locator,
+            run,
+        )
+        .await?;
         let request = self.sign(&GetPeerAttestationRequest {
             ts: Timestamp(now_secs()?),
             fa_id,
@@ -1034,7 +1039,7 @@ where
         run: DriverRun<'_>,
     ) -> FaResult<()> {
         let client = MgClient::connect(
-            &self.inner.ports.mg_connector,
+            self.inner.ports.mg_connector.as_ref(),
             &transfer.source_locator,
             run,
         )

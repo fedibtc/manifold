@@ -6,6 +6,21 @@ use fedimint_core::db::IDatabaseTransactionOpsCore as _;
 const SCHEMA_9_FORMATION: &[u8] = br#"{"schema_version":9,"fi_id":"02f66ab99ef6fb5f248cd0cdb7d2fcda9f12600be32b0bc13c8b556a4b6de8ff2e","formation_id":"legacy-schema-9","phase":"initialized","intent":{"federation_name":"Legacy Federation","federation_size":4,"plan":"infinite_best_effort","fedimintd_version":"0.11.1-fedi15"},"seat_count":0,"creation_mode":"pinned","payment_authorization":null,"payment_reservation_id":null,"payment_reservation_release_intended":false,"payment_authorization_recorded":false,"payment_outputs_started":false,"invite_code":null,"formation_meta_target":null}"#;
 
 impl FaStore {
+    pub(crate) fn watch_mg_trust_writes_for_test(&self) -> watch::Receiver<usize> {
+        self.trust_material_writes.subscribe()
+    }
+
+    pub(crate) fn reopen_for_test(&self) -> Self {
+        Self::new(self.database.clone())
+    }
+
+    pub(crate) async fn set_mg_trust_material_for_test(&self, mg_pubkey: String, bytes: Vec<u8>) {
+        let mut dbtx = self.database.begin_transaction().await;
+        dbtx.insert_entry(&MgTrustMaterialKey { mg_pubkey }, &bytes)
+            .await;
+        dbtx.commit_tx().await;
+    }
+
     pub(crate) async fn install_schema_9_fixture_for_test(&self) {
         self.install_raw_formation_for_test(SCHEMA_9_FORMATION)
             .await;

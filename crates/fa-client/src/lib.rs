@@ -15,6 +15,7 @@ mod guardian_fee_ppm;
 mod liquidity;
 mod maintenance;
 mod mg;
+mod mg_trust;
 mod ports;
 mod replacement_checks;
 mod seat_purchase;
@@ -151,7 +152,7 @@ struct FaClientInner<I, P, N, F, C> {
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C> {
-    /// Cancel and join the client's backup publication and recovery workers.
+    /// Cancel and join backup, recovery, and MG trust-prefetch workers.
     ///
     /// Call this after foreground operations finish and before destroying the
     /// async runtime. This stops workers for every clone; it neither flushes
@@ -237,7 +238,7 @@ where
                 identity,
                 payments,
                 registry,
-                mg_connector,
+                mg_connector: Arc::new(mg_connector),
                 consensus_reader,
                 fa_fee_account_provider: Arc::new(fa_fee_account_provider),
             },
@@ -286,7 +287,7 @@ where
                 identity,
                 payments,
                 registry,
-                mg_connector,
+                mg_connector: Arc::new(mg_connector),
                 consensus_reader,
                 fa_fee_account_provider: Arc::new(fa_fee_account_provider),
             },
@@ -360,7 +361,7 @@ where
                 identity,
                 payments,
                 registry,
-                mg_connector,
+                mg_connector: Arc::new(mg_connector),
                 consensus_reader,
                 fa_fee_account_provider: Arc::new(fa_fee_account_provider),
             },
@@ -429,6 +430,12 @@ where
         store.load_guardian_transfer_watch().await;
         let (progress, _) = watch::channel(status);
         let backup_tasks = TaskGroup::new();
+        mg_trust::spawn(
+            &backup_tasks,
+            store.clone(),
+            ports.mg_connector.clone(),
+            progress.subscribe(),
+        );
         Ok(Self {
             inner: Arc::new(FaClientInner {
                 store,
@@ -475,7 +482,7 @@ where
         let _ = (
             &self.inner.ports.payments,
             &self.inner.ports.registry,
-            &self.inner.ports.mg_connector,
+            self.inner.ports.mg_connector.as_ref(),
         );
         self.publish_error(FaErrorCode::CapabilityUnavailable);
         Err(FaError::CapabilityUnavailable(Capability::Registry))

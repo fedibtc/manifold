@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use fedi_decentralized_domain::{
-    BitcoinNetwork, HolderAuthorizationEnvelope, MG_SEAT_BINDINGS_META_FIELD_KEY, MgSeatBindings,
-    ProtocolV1, VerifiedSeatBinding, federation_seats,
+    BitcoinNetwork, HolderAuthorizationEnvelope, MG_SEAT_BINDINGS_META_FIELD_KEY,
+    MG_TRUST_MATERIAL_MAX_AGE_SECS, MgSeatBindings, ProtocolV1, VerifiedSeatBinding,
+    federation_seats,
 };
 use fedi_decentralized_nostr::flip::{
     FLIP_PROVIDER_ADVERTISEMENT_D_TAG, FLIP_PROVIDER_ADVERTISEMENT_EVENT_KIND,
@@ -50,8 +51,7 @@ use crate::{
 };
 
 use fedi_decentralized_service_manifold_guardian::{
-    GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, ManifoldGuardianService,
-    Timestamp as MgTimestamp,
+    GetMgTrustMaterialResponse, Timestamp as MgTimestamp,
 };
 
 /// End-to-end deadline for one provider enumeration and trust walk.
@@ -83,7 +83,7 @@ pub const FA_LIQUIDITY_OPERATION_PAGE_MAX: usize = 100;
 
 /// Maximum accepted age of MG trust material from its signed issuance time.
 pub const FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY: Duration =
-    Duration::from_secs(fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS);
+    Duration::from_secs(MG_TRUST_MATERIAL_MAX_AGE_SECS);
 
 /// Stable semantic identifier of one exact liquidity request.
 ///
@@ -496,34 +496,45 @@ where
 {
     /// Enumerate and fully verify currently eligible FLIP providers.
     ///
-    /// This is deliberately read-only and uncached.  Re-entering the Fedi flow
-    /// performs a new relay query and fresh PeerBadge revocation checks.
+    /// Provider admission is uncached. Re-entering the Fedi flow performs a new
+    /// relay query and fresh PeerBadge revocation checks, alongside a best-effort
+    /// MG evidence refresh for compatibility with old FLIP readers.
     pub async fn discover_liquidity_providers(
         &self,
         intent: &LiquidityRequestIntent,
         network: BitcoinNetwork,
     ) -> FaResult<LiquidityDiscovery> {
         intent.validate()?;
-        let deadline = Instant::now() + FA_LIQUIDITY_DISCOVERY_TIMEOUT;
-        let events = self
-            .inner
-            .ports
-            .registry
-            .fetch_liquidity_provider_advertisements(
-                deadline.saturating_duration_since(Instant::now()),
+        let status = self.status();
+        let refresh = crate::mg_trust::refresh_for_liquidity_shopping(
+            &self.inner.store,
+            self.inner.ports.mg_connector.as_ref(),
+            &status,
+        );
+        let discovery = async {
+            let deadline = Instant::now() + FA_LIQUIDITY_DISCOVERY_TIMEOUT;
+            let events = self
+                .inner
+                .ports
+                .registry
+                .fetch_liquidity_provider_advertisements(
+                    deadline.saturating_duration_since(Instant::now()),
+                )
+                .await
+                .map_err(|error| FaError::Registry(error.to_string()))?;
+            discover_with(
+                events,
+                intent,
+                network,
+                None,
+                &self.inner.peer_badge_verifier,
+                deadline,
+                fedimint_core::time::duration_since_epoch().as_secs(),
             )
             .await
-            .map_err(|error| FaError::Registry(error.to_string()))?;
-        discover_with(
-            events,
-            intent,
-            network,
-            None,
-            &self.inner.peer_badge_verifier,
-            deadline,
-            fedimint_core::time::duration_since_epoch().as_secs(),
-        )
-        .await
+        };
+        let ((), result) = futures::join!(refresh, discovery);
+        result
     }
 
     /// Start one exact post-formation liquidity request.
@@ -1201,7 +1212,7 @@ where
             details_payload_hash: operation.details_payload_hash,
             federation_details: operation.commitment.federation_details.clone(),
             mg_endorsement: Some(endorsement),
-            mg_trust_material: Some(trust_material),
+            mg_trust_material: Some(trust_material.clone()),
             expires_at: operation.commitment.expires_at,
         };
         let recomputed = request_liquidity_details_hash_for_request(&request)
@@ -1234,6 +1245,21 @@ where
             })?;
         self.verify_request_response(&operation, &response)?;
         lease.renew().await?;
+        if let RequestLiquidityOutcome::Rejected(rejection) = &response.payload.outcome
+            && matches!(
+                rejection.code,
+                PublicRejectionCode::InvalidCredentials | PublicRejectionCode::PolicyMismatch
+            )
+        {
+            // The authenticated refusal may reflect a stricter reader's age or
+            // issuer policy. Refresh on the next explicit start, never resubmit.
+            for material in &trust_material {
+                self.inner
+                    .store
+                    .require_mg_trust_material_refresh(material)
+                    .await?;
+            }
+        }
         self.inner
             .store
             .store_liquidity_response(&operation.operation_id, response)
@@ -1273,44 +1299,49 @@ where
                     )
                 })?
                 .clone();
-            let request = GetMgTrustMaterialRequest {
-                version: ProtocolV1,
-            };
             pending.push(async move {
-                let client = self
-                    .inner
-                    .ports
-                    .mg_connector
-                    .connect(&locator)
-                    .await
-                    .map_err(|error| {
-                        FaError::Liquidity(format!("connecting to federation MG: {error}"))
-                    })?;
-                let response = client
-                    .get_fman_trust_material(request.clone())
-                    .await
-                    .map_err(|error| {
-                        FaError::Liquidity(format!("fetching MG trust material: {error}"))
-                    })?;
+                let response = crate::mg_trust::acquire(
+                    &self.inner.store,
+                    self.inner.ports.mg_connector.as_ref(),
+                    &mg_pubkey,
+                    &locator,
+                )
+                .await?;
                 let material = response
                     .verify_for_mg_age(
                         &mg_pubkey,
                         MgTimestamp(now_secs()?),
-                        FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
+                        MG_TRUST_MATERIAL_MAX_AGE_SECS,
                     )
                     .map_err(|error| {
                         FaError::Liquidity(format!("verifying MG trust material: {error}"))
                     })?;
-                let trust = first_verified_badge(
+                let trust = match first_verified_badge(
                     &mg_pubkey,
                     &material.holder_authorizations,
                     verifier,
                     Instant::now() + FA_LIQUIDITY_RPC_TIMEOUT,
                 )
                 .await
-                .map_err(|reason| {
-                    FaError::Liquidity(format!("MG PeerBadge admission failed: {}", reason.code()))
-                })?;
+                {
+                    Ok(trust) => trust,
+                    Err(rejection) => {
+                        // An unavailable authority/revocation service is not
+                        // evidence that an immutable document became invalid.
+                        // Definitive credential rejection invalidates it for
+                        // the next acquisition, without retrying this operation.
+                        if rejection.all_definitive {
+                            self.inner
+                                .store
+                                .invalidate_mg_trust_material(&response)
+                                .await?;
+                        }
+                        return Err(FaError::Liquidity(format!(
+                            "MG PeerBadge admission failed: {}",
+                            rejection.reason.code()
+                        )));
+                    }
+                };
                 Ok::<_, FaError>((mg_pubkey, response, material, trust, attestation))
             });
         }
@@ -1919,6 +1950,15 @@ where
     first_verified_badge(provider, envelopes, verifier, deadline)
         .await
         .map(drop)
+        .map_err(|rejection| rejection.reason)
+}
+
+/// Admission failure and whether every candidate was definitively rejected.
+struct BadgeRejection {
+    /// Public reason used for the admission failure.
+    reason: LiquidityProviderRejection,
+    /// False if any credential was unchecked or its authority was unavailable.
+    all_definitive: bool,
 }
 
 async fn first_verified_badge<V>(
@@ -1926,37 +1966,60 @@ async fn first_verified_badge<V>(
     envelopes: &[HolderAuthorizationEnvelope],
     verifier: &V,
     deadline: Instant,
-) -> Result<HolderAuthorizationEnvelope, LiquidityProviderRejection>
+) -> Result<HolderAuthorizationEnvelope, BadgeRejection>
 where
     V: LiquidityBadgeVerifier,
 {
     if envelopes.is_empty() {
-        return Err(LiquidityProviderRejection::MissingPeerBadge);
+        return Err(BadgeRejection {
+            reason: LiquidityProviderRejection::MissingPeerBadge,
+            all_definitive: true,
+        });
     }
     let mut last_error = None;
     let mut subject_mismatch = false;
+    let mut all_definitive = envelopes.len() <= FA_LIQUIDITY_MAX_HOLDER_AUTHORIZATIONS;
     for envelope in envelopes
         .iter()
         .take(FA_LIQUIDITY_MAX_HOLDER_AUTHORIZATIONS)
     {
         if Instant::now() >= deadline {
-            return Err(LiquidityProviderRejection::DeadlineExpired);
+            return Err(BadgeRejection {
+                reason: LiquidityProviderRejection::DeadlineExpired,
+                all_definitive: false,
+            });
         }
         match verifier.verify_subject(envelope).await {
             Ok(subject) if subject.to_string() == provider.0 => {
                 return Ok(envelope.clone());
             }
             Ok(_) => subject_mismatch = true,
-            Err(error) => last_error = Some(error),
+            Err(error) => {
+                all_definitive &= matches!(
+                    error,
+                    PeerBadgeVerificationError::CredentialRevoked
+                        | PeerBadgeVerificationError::InvalidEnvelope(_)
+                        | PeerBadgeVerificationError::InvalidSchema(_)
+                        | PeerBadgeVerificationError::InsufficientTrustLevel(_)
+                        | PeerBadgeVerificationError::UntrustedIssuer { .. }
+                );
+                last_error = Some(error);
+            }
         }
     }
     if subject_mismatch {
-        return Err(LiquidityProviderRejection::PeerBadgeSubjectMismatch);
+        return Err(BadgeRejection {
+            reason: LiquidityProviderRejection::PeerBadgeSubjectMismatch,
+            all_definitive,
+        });
     }
-    Err(last_error.map_or(
-        LiquidityProviderRejection::MissingPeerBadge,
-        LiquidityProviderRejection::PeerBadgeRejected,
-    ))
+    Err(BadgeRejection {
+        reason: last_error.map_or(
+            LiquidityProviderRejection::MissingPeerBadge,
+            LiquidityProviderRejection::PeerBadgeRejected,
+        ),
+        all_definitive,
+    })
 }
 
 #[cfg(test)]

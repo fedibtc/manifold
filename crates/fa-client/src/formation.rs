@@ -890,7 +890,7 @@ where
             &self.inner.ports.registry,
             &self.inner.peer_badge_verifier,
             &crate::selection::LiveAvailabilityProber {
-                connector: Some(&self.inner.ports.mg_connector),
+                connector: Some(self.inner.ports.mg_connector.as_ref()),
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
@@ -2061,11 +2061,12 @@ where
             .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
             .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
         loop {
-            let error = match MgClient::connect(&self.inner.ports.mg_connector, locator, run).await
-            {
-                Ok(client) => return Ok(client),
-                Err(error) => error,
-            };
+            let error =
+                match MgClient::connect(self.inner.ports.mg_connector.as_ref(), locator, run).await
+                {
+                    Ok(client) => return Ok(client),
+                    Err(error) => error,
+                };
             let FaError::Mg(failure) = error else {
                 return Err(error);
             };
@@ -2122,7 +2123,7 @@ where
         loop {
             let result = async {
                 let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
+                    MgClient::connect(self.inner.ports.mg_connector.as_ref(), locator, run).await?;
                 self.request_new_quote(
                     index,
                     &client,
@@ -2288,7 +2289,8 @@ where
             )?;
             pending_replays.push(async move {
                 let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
+                    MgClient::connect(self.inner.ports.mg_connector.as_ref(), &locator, run)
+                        .await?;
                 let creation = self
                     .create_or_replay_seat(
                         formation_id,
@@ -4071,11 +4073,12 @@ where
             .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
             .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
         loop {
-            let error = match MgClient::connect(&self.inner.ports.mg_connector, locator, run).await
-            {
-                Ok(client) => return Ok(client),
-                Err(error) => error,
-            };
+            let error =
+                match MgClient::connect(self.inner.ports.mg_connector.as_ref(), locator, run).await
+                {
+                    Ok(client) => return Ok(client),
+                    Err(error) => error,
+                };
             let FaError::Mg(failure) = error else {
                 return Err(error);
             };
