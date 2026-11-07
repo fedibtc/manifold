@@ -55,6 +55,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         max_seats_per_mg: None,
         guardian_transfer_v2: None,
         min_mg_version: None,
+        recommended_min_mg_version: None,
     })
     .expect("test content serializes")
 }
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             max_seats_per_mg: None,
             guardian_transfer_v2: None,
             min_mg_version: None,
+            recommended_min_mg_version: None,
         })
         .unwrap();
         assert_eq!(
@@ -472,6 +474,7 @@ fn unset_seat_limits_stay_off_the_wire() {
     assert!(!encoded.contains("max_seats_per_mg"));
     assert!(!encoded.contains("guardian_transfer_v2"));
     assert!(!encoded.contains("min_mg_version"));
+    assert!(!encoded.contains("recommended_min_mg_version"));
 }
 
 /// A minimum is optional (absent or null), compares by SemVer precedence, may not exceed the latest
@@ -522,6 +525,37 @@ fn min_mg_version_is_optional_semver_and_at_most_the_latest() {
             "{malformed}"
         );
     }
+}
+
+/// A recommendation is optional like the minimum, independent of it, and
+/// may not exceed the latest release either.
+#[test]
+fn recommended_min_mg_version_is_optional_and_at_most_the_latest() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.10.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    assert_eq!(admitted("").unwrap().recommended_min_mg_version(), None);
+    let both =
+        admitted(r#","min_mg_version":"0.2.0","recommended_min_mg_version":"0.9.0""#).unwrap();
+    assert_eq!(
+        both.recommended_min_mg_version().map(ToString::to_string),
+        Some("0.9.0".to_owned())
+    );
+    assert_eq!(
+        both.min_mg_version().map(ToString::to_string),
+        Some("0.2.0".to_owned())
+    );
+    assert_eq!(
+        admitted(r#","recommended_min_mg_version":"0.10.1""#),
+        Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest)
+    );
+    assert_eq!(
+        admitted(r#","recommended_min_mg_version":"0.9""#),
+        Err(SetupPaymentFederationsContentError::MalformedContent)
+    );
 }
 
 #[test]

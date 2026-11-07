@@ -68,7 +68,9 @@ pub struct HookOpenSettings {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookPolicySettings {
-    /// Optional TTL in seconds from creation.
+    /// TTL in seconds from creation. Absent means the hook never expires: it
+    /// lasts until revoked or until its installation is disabled or removed,
+    /// and its registration does not go stale meanwhile.
     #[serde(rename = "ttl_seconds")]
     pub expires_in_seconds: Option<i64>,
     /// Optional maximum number of accepted invocations.

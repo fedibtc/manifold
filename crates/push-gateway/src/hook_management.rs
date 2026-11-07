@@ -195,12 +195,6 @@ fn validate_create_hook_request(
             "expires_in_seconds is out of range",
         ));
     }
-    if request.policy.expires_in_seconds.is_none() {
-        return Err(ApiError::bad_request(
-            "ttl_seconds_required",
-            "hooks must expire",
-        ));
-    }
     if request
         .policy
         .max_uses

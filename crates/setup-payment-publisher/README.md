@@ -75,6 +75,11 @@ understand the minimum, set
 Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
 
+To ask operators below a release to update without stopping their sales, set
+`"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).
+An MG below it sends its linked phone one notification. Omitted, nothing is
+recommended.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files. Older consumers

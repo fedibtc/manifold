@@ -186,6 +186,15 @@ async fn accept_invocation(
     .collect::<Vec<_>>();
     if registrations.is_empty() {
         transaction.rollback().await.map_err(internal_error)?;
+        // A hook with no expiry exists for an app that never calls again, so no
+        // refresh is coming and retrying would be pointless.
+        if hook.policy.expires_at.is_none() {
+            return Err(ApiError::new(
+                StatusCode::GONE,
+                "hook_target_gone",
+                "hook target installation is gone",
+            ));
+        }
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "target_installation_unavailable",

@@ -1,0 +1,93 @@
+.root {
+  @apply uStack6;
+}
+.card {
+  @apply flex flex-col gap-4 rounded-card border border-muted bg-surface p-6;
+}
+.cardStopped {
+  @apply flex flex-col gap-4 rounded-card border border-warning bg-surface p-6;
+}
+.cardTitle {
+  @apply uCardTitle;
+}
+.phoneHead {
+  @apply flex items-center gap-3;
+}
+.kv {
+  @apply m-0 grid gap-3 text-sm;
+}
+.kvRow {
+  @apply grid grid-cols-[11rem_minmax(0,1fr)] gap-3;
+}
+.kvLabel {
+  @apply text-gray-500;
+}
+.kvValue {
+  @apply m-0 font-medium tabular-nums text-ink;
+}
+.actions {
+  @apply uActionsRow flex-wrap;
+}
+.buttonIcon {
+  @apply inline-flex items-center gap-2;
+}
+.confirm {
+  @apply flex flex-wrap items-center justify-between gap-3 rounded-card border border-muted p-4;
+}
+.confirmText {
+  @apply m-0 text-sm font-medium text-ink;
+}
+.dismiss {
+  @apply cursor-pointer border-0 bg-transparent px-1 text-lg leading-none text-current;
+}
+.qrBox {
+  @apply flex-none rounded-card border border-muted bg-surface p-3;
+}
+.stepNumber {
+  @apply flex size-7 flex-none items-center justify-center rounded-full border border-muted text-xs text-gray-500;
+}
+.stepBody {
+  @apply uStack1;
+}
+.stepTitle {
+  @apply uLabel;
+}
+.note {
+  @apply m-0 text-sm text-gray-500;
+}
+.empty {
+  @apply flex flex-col items-center gap-3 px-6 py-12 text-center;
+}
+.icon {
+  @apply size-6 flex-none fill-none stroke-current;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+.strongTitle {
+  @apply text-base font-semibold text-ink;
+}
+.emptyText {
+  @apply max-w-md text-sm text-gray-500;
+}
+.code {
+  @apply break-words font-mono text-xs text-ink;
+}
+.error {
+  @apply text-sm text-error;
+}
+.split {
+  @apply grid grid-cols-[auto_minmax(0,1fr)] items-start gap-8;
+}
+.rows {
+  @apply m-0 flex max-w-lg list-none flex-col p-0;
+}
+.row {
+  @apply flex gap-4 border-b border-muted py-4 first:pt-0 last:border-b-0 last:pb-0;
+}
+.notified {
+  @apply m-0 flex list-none flex-col p-0 text-sm text-ink;
+}
+.notifiedRow {
+  @apply flex items-center gap-3 border-b border-muted py-3 first:pt-0 last:border-b-0 last:pb-0;
+}

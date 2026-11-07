@@ -32,6 +32,7 @@ fn content(invites: &[&str]) -> String {
         max_seats_per_mg: None,
         guardian_transfer_v2: None,
         min_mg_version: None,
+        recommended_min_mg_version: None,
     })
     .expect("test content serializes")
 }

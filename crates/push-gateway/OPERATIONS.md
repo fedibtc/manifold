@@ -345,7 +345,9 @@ Admission lifecycle GC runs at the same startup boundary: registrations whose
 `last_seen_at` exceeds `PUSH_GATEWAY_REGISTRATION_TTL_DAYS` are deleted, and
 expired/revoked hooks with no retained notification event are deleted together
 with their now-useless idempotency markers. Stale
-registrations are excluded from hook creation/invocation even before restart.
+registrations are excluded from hook creation/invocation even before restart. A
+live hook with no expiry keeps its registration from going stale; that hook is
+deleted once its installation is disabled or removed.
 Startup is not the only reclamation boundary: each registration or hook
 admission transaction deletes up to `PUSH_GATEWAY_ADMISSION_GC_BATCH_SIZE`
 eligible stale/terminal rows before checking its physical row ceiling. Watch

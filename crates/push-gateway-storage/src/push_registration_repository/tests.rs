@@ -523,6 +523,17 @@ async fn test_pool() -> AnyPool {
     .await
     .expect("create token owner table");
     sqlx::query(
+        "CREATE TABLE notification_hooks (
+             recipient_id TEXT NOT NULL,
+             installation_id TEXT NOT NULL,
+             expires_at BIGINT,
+             revoked_at BIGINT
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create hook table");
+    sqlx::query(
         "CREATE TABLE push_gateway_admission_locks (
              resource TEXT PRIMARY KEY,
              updated_at BIGINT NOT NULL

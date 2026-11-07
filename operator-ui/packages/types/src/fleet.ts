@@ -392,6 +392,30 @@ export interface SupportChatResponse {
   messages: SupportMessage[];
   unread: number;
 }
+// Guardian-link timestamps are Unix seconds. The offer URI contains a one-time secret.
+export interface GuardianLinkResponse {
+  available: boolean;
+  link: {
+    device_label: string;
+    linked_at: number;
+    last_notified_at: number | null;
+    notified_reasons: (
+      | 'relay_check_failed'
+      | 'discovery_check_failed'
+      | 'bitcoin_check_failed'
+      | 'version_check_failed'
+      | 'uptime_check_failed'
+      | 'update_recommended'
+      | 'support_message'
+    )[];
+    delivery: { state: 'active' | 'terminal'; reason: string | null };
+  } | null;
+  offer: { uri: string; expires_at: number } | null;
+}
+export interface GuardianLinkTestResponse {
+  outcome: 'delivered' | 'retryable' | 'terminal';
+  reason: string | null;
+}
 export interface SendSupportMessageResponse {
   message: SupportMessage;
 }
@@ -491,6 +515,10 @@ export interface AdminResponseByName {
   SeatStatus: SeatStatusResponse;
   DecommissionSeat: DecommissionSeatResponse;
   ReenrollTelemetry: ReenrollTelemetryResponse;
+  GuardianLink: GuardianLinkResponse;
+  CreateGuardianLinkOffer: GuardianLinkResponse;
+  RevokeGuardianLink: GuardianLinkResponse;
+  TestGuardianLinkNotification: GuardianLinkTestResponse;
   SupportChat: SupportChatResponse;
   SendSupportMessage: SendSupportMessageResponse;
   MarkSupportRead: MarkSupportReadResponse;

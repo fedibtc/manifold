@@ -376,6 +376,138 @@ async fn stale_invocation_target_is_retryable_with_same_idempotency_key() {
     assert_unavailable_then_refreshes_once(&harness, &hook, "stale-target").await;
 }
 
+async fn create_permanent_hook(harness: &Harness) -> Response {
+    let hook = harness
+        .exact_json("POST", "/v1/hooks", json!({"installation_id": "device-1"}))
+        .await;
+    assert_eq!(hook.status, StatusCode::OK);
+    hook
+}
+
+async fn make_registrations_stale(harness: &Harness) {
+    sqlx::query("UPDATE push_registrations SET last_seen_at = 0")
+        .execute(harness.state.database().pool())
+        .await
+        .unwrap();
+}
+
+async fn registration_rows(harness: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM push_registrations")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap()
+}
+
+async fn hooks_targeting_device_1(harness: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM notification_hooks WHERE installation_id = 'device-1'")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap()
+}
+
+/// Registration admission reclaims stale rows as a side effect.
+async fn register_device_2(harness: &Harness) {
+    let response = harness
+        .json(
+            "POST",
+            "/registrations",
+            json!({
+                "installation_id": "device-2",
+                "fcm_token": "fcm-token-2",
+                "platform": "android"
+            }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn permanent_hook_has_no_expiry_and_reaches_a_phone_silent_past_the_refresh_horizon() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    let expires_at: Option<i64> = sqlx::query_scalar("SELECT expires_at FROM notification_hooks")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap();
+    assert_eq!(expires_at, None);
+    make_registrations_stale(&harness).await;
+
+    register_device_2(&harness).await;
+    assert_eq!(registration_rows(&harness).await, 2);
+
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let accepted = harness
+        .json("POST", url, json!({"idempotency_key": "quiet-month"}))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert_eq!(accepted.body["delivery_attempts"], 1);
+}
+
+#[tokio::test]
+async fn revoking_a_permanent_hook_lets_its_registration_go_stale_again() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    make_registrations_stale(&harness).await;
+    let id = hook.body["hook"]["hook_id"].as_str().expect("hook id");
+    let revoked = harness.empty("DELETE", &format!("/v1/hooks/{id}")).await;
+    assert_eq!(revoked.status, StatusCode::OK);
+
+    register_device_2(&harness).await;
+    assert_eq!(registration_rows(&harness).await, 1);
+}
+
+#[tokio::test]
+async fn permanent_hook_with_a_disabled_target_is_gone_and_later_reclaimed() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    assert_eq!(
+        harness
+            .empty("POST", "/registrations/device-1/disable")
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let gone = harness
+        .json("POST", url, json!({"idempotency_key": "after-disable"}))
+        .await;
+    // Not the retryable 503 a hook with a TTL gets: no refresh is coming.
+    assert_eq!(gone.status, StatusCode::GONE);
+    assert_eq!(gone.body["error"]["code"], "hook_target_gone");
+
+    // Hook admission reclaims terminal rows as a side effect.
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 0);
+}
+
+#[tokio::test]
+async fn hook_with_a_ttl_is_not_reclaimed_for_a_disabled_target() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    create_targeted_hook(&harness, "device-1").await;
+    assert_eq!(
+        harness
+            .empty("POST", "/registrations/device-1/disable")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 1);
+}
+
 #[tokio::test]
 async fn hook_target_must_be_an_active_owned_registration() {
     let harness = Harness::new().await;
@@ -1422,14 +1554,14 @@ async fn hooks_require_owned_installation_and_finite_ttl_in_every_mode() {
             .with_open_self_registration_enabled(true)
     })
     .await;
-    assert_hook_target_and_ttl_are_required(&production).await;
+    assert_hook_target_is_required(&production).await;
     drop(production);
 
     let local = Harness::new().await;
-    assert_hook_target_and_ttl_are_required(&local).await;
+    assert_hook_target_is_required(&local).await;
 }
 
-async fn assert_hook_target_and_ttl_are_required(harness: &Harness) {
+async fn assert_hook_target_is_required(harness: &Harness) {
     register_installation(harness, "recipient").await;
 
     let missing_installation = harness
@@ -1441,12 +1573,6 @@ async fn assert_hook_target_and_ttl_are_required(harness: &Harness) {
         .await;
     assert_eq!(missing_installation.status, StatusCode::BAD_REQUEST);
     assert_eq!(missing_installation.body["error"]["code"], "invalid_json");
-
-    let missing_ttl = harness
-        .exact_json("POST", "/v1/hooks", json!({"installation_id": "device-1"}))
-        .await;
-    assert_eq!(missing_ttl.status, StatusCode::BAD_REQUEST);
-    assert_eq!(missing_ttl.body["error"]["code"], "ttl_seconds_required");
 }
 
 #[tokio::test]
