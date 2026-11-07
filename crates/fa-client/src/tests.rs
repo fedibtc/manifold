@@ -13678,6 +13678,7 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
                 .await
                 .expect("reconcile through federation consensus");
         }
+        let started = tokio::time::Instant::now();
         let snapshot = client
             .start_liquidity_for_test(
                 &formation_id,
@@ -13691,6 +13692,10 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
         assert_eq!(snapshot.phase, LiquidityOperationPhase::Accepted);
         if index == 1 {
             assert_eq!(mg_state.trust_transport_failures.lock().unwrap()[&0], 0);
+            assert!(
+                started.elapsed() >= Duration::from_secs(10),
+                "cold acquisition waits through the operation retry backoff",
+            );
         }
         assert_eq!(snapshot.item_statuses.len(), if index == 2 { 2 } else { 1 });
 
@@ -13757,6 +13762,51 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
             expected_fetches,
             "only missing or unusable evidence requires an MG request",
         );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn due_cached_liquidity_evidence_falls_back_without_retry_delay() {
+    let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+    for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
+        let id = test_mg_id(mg).to_string();
+        let mut response = client.inner.store.mg_trust_material(&id).await.unwrap();
+        // Seven hours remain: still usable, but inside the refresh window.
+        response.material.issued_at.0 = test_now_secs()
+            - fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS
+            + 7 * 60 * 60;
+        response.proof.signature = mg_keys(mg).sign_schnorr(
+            &nostr_sdk::secp256k1::Message::from_digest(response.material.digest().unwrap()),
+        );
+        client
+            .inner
+            .store
+            .set_mg_trust_material_for_test(id, serde_json::to_vec(&response).unwrap())
+            .await;
+        mg_state
+            .trust_transport_failures
+            .lock()
+            .unwrap()
+            .insert(mg, 100);
+    }
+
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    let started = tokio::time::Instant::now();
+    let snapshot = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(10_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("usable retained evidence survives a failed refresh");
+    assert_eq!(snapshot.phase, LiquidityOperationPhase::Accepted);
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    let failures = mg_state.trust_transport_failures.lock().unwrap();
+    for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
+        assert_eq!(failures[&mg], 99, "one refresh attempt per MG");
     }
 }
 
