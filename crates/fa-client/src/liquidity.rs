@@ -671,7 +671,13 @@ where
             // fails this start cleanly instead of leaving a live operation
             // that blocks every later start until all MGs answer at once.
             lease.renew().await?;
-            let trust = self.collect_mg_trust(&context, verifier).await?;
+            let trust = self
+                .collect_mg_trust(
+                    &context,
+                    verifier,
+                    DriverRun::new(options, deadline, &lease),
+                )
+                .await?;
             lease.renew().await?;
             self.inner
                 .store
@@ -850,7 +856,13 @@ where
                             .snapshot();
                     }
                     lease.renew().await?;
-                    let trust = self.collect_mg_trust(&context, verifier).await?;
+                    let trust = self
+                        .collect_mg_trust(
+                            &context,
+                            verifier,
+                            DriverRun::new(options, deadline, &lease),
+                        )
+                        .await?;
                     self.submit_prepared_liquidity(
                         operation, context, provider, trust, connector, &lease,
                     )
@@ -1275,6 +1287,7 @@ where
         &self,
         context: &FormedLiquidityContext,
         verifier: &V,
+        run: DriverRun<'_>,
     ) -> FaResult<(MgEndorsement, Vec<GetMgTrustMaterialResponse>)>
     where
         V: LiquidityBadgeVerifier,
@@ -1346,16 +1359,23 @@ where
             });
         }
 
-        let collected = timeout(FA_LIQUIDITY_RPC_TIMEOUT, async move {
-            let mut all = BTreeMap::new();
-            while let Some(result) = pending.next().await {
-                let (pubkey, response, material, trust, attestation) = result?;
-                all.insert(pubkey, (response, material, trust, attestation));
-            }
-            Ok::<_, FaError>(all)
-        })
-        .await
-        .map_err(|_| FaError::Timeout("collecting federation MG trust material".to_owned()))??;
+        // Acquisition retries remain separate from live credential admission.
+        let collected = run
+            .call_with_timeout(
+                "collecting federation MG trust material",
+                crate::mg_trust::ACQUISITION_TIMEOUT + FA_LIQUIDITY_RPC_TIMEOUT,
+                || {
+                    Ok(async move {
+                        let mut all = BTreeMap::new();
+                        while let Some(result) = pending.next().await {
+                            let (pubkey, response, material, trust, attestation) = result?;
+                            all.insert(pubkey, (response, material, trust, attestation));
+                        }
+                        Ok::<_, FaError>(all)
+                    })
+                },
+            )
+            .await??;
 
         let mut endorsement = None;
         let mut all = Vec::with_capacity(collected.len());

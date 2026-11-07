@@ -13,6 +13,18 @@ signed issuance time. They ignore the deprecated optional expiry hint and do
 not negotiate lifetime through the request shape or an API capability.
 Existing transfer and replacement policies remain separate.
 
+During read-only MG acquisition, the FA retries only transport failures and
+timeouts, using bounded per-call backoff followed by a separate capped operation
+backoff. Without valid cached evidence, foreground reads have a five-minute
+acquisition budget, bounded by the driver deadline. When valid evidence is due
+for refresh or requires it, the FA makes one foreground connect/read attempt
+bounded by 60 seconds, then revalidates the retained fallback. The worker retries
+transient refresh failures until success or cancellation. The driver renews its
+lease during collection. The FA does not retry service refusals, invalid evidence,
+or credential admission.
+These retries never enclose liquidity submission or change the exact request
+commitment or status-before-replay rule.
+
 FA stores one signed evidence document per exact MG identity, outside recovery
 and backup authority. Formation, reopen/restore, and membership changes start
 opportunistic acquisition without delaying formation success. While idle, the

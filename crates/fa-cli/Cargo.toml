@@ -17,6 +17,7 @@ fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
 fedi-decentralized-service-manifold-guardian = { path = "../service-manifold-guardian" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-api-client = { workspace = true }
 fedimint-client = { workspace = true }
 fedimint-client-module = { workspace = true }

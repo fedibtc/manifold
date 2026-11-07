@@ -1579,6 +1579,19 @@ struct AvailabilityArmConnector {
 impl crate::ManifoldGuardianConnector for AvailabilityArmConnector {
     type Client = crate::unavailable::UnavailableManifoldGuardianClient;
 
+    async fn get_mg_trust_material(
+        &self,
+        _client: &Self::Client,
+        _request: fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialRequest,
+    ) -> Result<
+        FmResult<fedi_decentralized_service_manifold_guardian::GetMgTrustMaterialResponse>,
+        crate::ManifoldGuardianCallError,
+    > {
+        Err(crate::ManifoldGuardianCallError::new(
+            "unused in probe tests",
+        ))
+    }
+
     async fn connect(
         &self,
         _locator: &crate::Locator,

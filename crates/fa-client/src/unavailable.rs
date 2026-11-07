@@ -150,6 +150,16 @@ pub struct UnavailableManifoldGuardianConnector;
 impl ManifoldGuardianConnector for UnavailableManifoldGuardianConnector {
     type Client = UnavailableManifoldGuardianClient;
 
+    async fn get_mg_trust_material(
+        &self,
+        _client: &Self::Client,
+        _request: GetMgTrustMaterialRequest,
+    ) -> Result<FmResult<GetMgTrustMaterialResponse>, ManifoldGuardianCallError> {
+        Err(ManifoldGuardianCallError::new(
+            "MG transport capability unavailable",
+        ))
+    }
+
     async fn connect(
         &self,
         _locator: &Locator,

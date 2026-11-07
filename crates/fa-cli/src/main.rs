@@ -2091,6 +2091,23 @@ impl CliMgConnector {
 impl ManifoldGuardianConnector for CliMgConnector {
     type Client = ManifoldGuardianServiceClient;
 
+    async fn get_mg_trust_material(
+        &self,
+        client: &Self::Client,
+        request: GetMgTrustMaterialRequest,
+    ) -> Result<FmResult<GetMgTrustMaterialResponse>, ManifoldGuardianCallError> {
+        match client.transport().get_fman_trust_material(request).await {
+            Ok(result) => Ok(result),
+            Err(
+                error @ (fedi_iroh_rpc::RpcError::Iroh(_)
+                | fedi_iroh_rpc::RpcError::RequestTimedOut),
+            ) => Err(ManifoldGuardianCallError::new(error.to_string())),
+            // Unknown methods, remote refusals, malformed/oversized replies
+            // and local encoding errors are not transient connection loss.
+            Err(error) => Ok(Err(error.into())),
+        }
+    }
+
     async fn connect(
         &self,
         locator: &Locator,

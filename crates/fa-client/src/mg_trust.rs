@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use fedi_decentralized_domain::{MG_TRUST_MATERIAL_MAX_AGE_SECS, ProtocolV1, Pubkey};
 use fedi_decentralized_service_manifold_guardian::{
-    GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, ManifoldGuardianService, Timestamp,
+    GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, Timestamp,
 };
 use fedimint_core::{
     runtime::{sleep, timeout},
@@ -40,11 +40,43 @@ pub(crate) async fn refresh_for_liquidity_shopping<F: ManifoldGuardianConnector>
             {
                 // A failed compatibility fetch must not hide usable offline
                 // evidence or prevent the user from discovering providers.
-                let _ = refresh(store, connector, mg, locator).await;
+                let _ = refresh_call(store, connector, mg, locator).await;
             }
         });
     }
     while pending.next().await.is_some() {}
+}
+
+/// Foreground acquisition is bounded independently of individual RPCs.
+pub(crate) const ACQUISITION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CALL_ATTEMPTS: usize = 3;
+const OPERATION_RETRY_MIN: Duration = Duration::from_secs(10);
+const OPERATION_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+
+/// Only locally identified transport failures and timeouts grant retry authority.
+struct AcquisitionError {
+    /// Error returned to the foreground caller.
+    error: FaError,
+    /// Whether another read-only acquisition can make progress.
+    transient: bool,
+}
+
+impl From<FaError> for AcquisitionError {
+    fn from(error: FaError) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
+    }
+}
+
+impl AcquisitionError {
+    fn transient(error: FaError) -> Self {
+        Self {
+            error,
+            transient: true,
+        }
+    }
 }
 
 /// Revalidate evidence before every use. A failed refresh may still use the
@@ -55,13 +87,26 @@ pub(crate) async fn acquire<F: ManifoldGuardianConnector>(
     mg: &Pubkey,
     locator: &Locator,
 ) -> FaResult<GetMgTrustMaterialResponse> {
-    if let Some(response) = cached(store, mg).await
-        && refresh_delay(&response) > Duration::ZERO
-        && !store.mg_trust_material_refresh_required(&response).await
-    {
-        return Ok(response);
-    }
-    match refresh(store, connector, mg, locator).await {
+    let result = if let Some(response) = cached(store, mg).await {
+        if !refresh_delay(&response).is_zero()
+            && !store.mg_trust_material_refresh_required(&response).await
+        {
+            return Ok(response);
+        }
+        // Retained evidence must not wait behind the cold-acquisition budget:
+        // make one actual bounded RPC attempt, then revalidate the fallback.
+        refresh_call(store, connector, mg, locator)
+            .await
+            .map_err(|error| error.error)
+    } else {
+        timeout(
+            ACQUISITION_TIMEOUT,
+            refresh_with_backoff(store, connector, mg, locator),
+        )
+        .await
+        .unwrap_or_else(|_| Err(FaError::Timeout("acquiring MG trust material".to_owned())))
+    };
+    match result {
         Ok(response) => Ok(response),
         Err(error) => cached(store, mg).await.ok_or(error),
     }
@@ -76,31 +121,95 @@ async fn cached(store: &FaStore, mg: &Pubkey) -> Option<GetMgTrustMaterialRespon
     Some(response)
 }
 
-/// One bounded read, independent of liquidity submission.
-async fn refresh<F: ManifoldGuardianConnector>(
+/// A fresh call budget per acquisition operation, with a separate capped backoff.
+/// Background refresh continues until success or cancellation; foreground reads
+/// supply their own outer deadline. This never retries liquidity submission.
+async fn refresh_with_backoff<F: ManifoldGuardianConnector>(
     store: &FaStore,
     connector: &F,
     mg: &Pubkey,
     locator: &Locator,
 ) -> FaResult<GetMgTrustMaterialResponse> {
+    let mut delay = OPERATION_RETRY_MIN;
+    loop {
+        match refresh_attempt(store, connector, mg, locator).await {
+            Ok(response) => return Ok(response),
+            Err(error) if !error.transient => return Err(error.error),
+            Err(_) => {
+                sleep(delay).await;
+                delay = delay.saturating_mul(2).min(OPERATION_RETRY_MAX);
+            }
+        }
+    }
+}
+
+/// Bounded reconnect/read attempts, followed by the separate operation backoff.
+async fn refresh_attempt<F: ManifoldGuardianConnector>(
+    store: &FaStore,
+    connector: &F,
+    mg: &Pubkey,
+    locator: &Locator,
+) -> Result<GetMgTrustMaterialResponse, AcquisitionError> {
+    let mut delay = Duration::from_secs(1);
+    for attempt in 0..CALL_ATTEMPTS {
+        // Another acquisition may have refreshed this identity during backoff.
+        if let Some(response) = cached(store, mg).await
+            && !refresh_delay(&response).is_zero()
+            && !store.mg_trust_material_refresh_required(&response).await
+        {
+            return Ok(response);
+        }
+        let result = refresh_call(store, connector, mg, locator).await;
+        match result {
+            Ok(response) => return Ok(response),
+            Err(error) if !error.transient || attempt + 1 == CALL_ATTEMPTS => return Err(error),
+            Err(_) => {
+                sleep(delay).await;
+                delay = delay.saturating_mul(2);
+            }
+        }
+    }
+    unreachable!("call attempt budget is nonzero")
+}
+
+/// One connect/read call, bounded independently of retry and backoff budgets.
+async fn refresh_call<F: ManifoldGuardianConnector>(
+    store: &FaStore,
+    connector: &F,
+    mg: &Pubkey,
+    locator: &Locator,
+) -> Result<GetMgTrustMaterialResponse, AcquisitionError> {
     timeout(FA_LIQUIDITY_RPC_TIMEOUT, async {
-        let client = connector
-            .connect(locator)
+        let client = connector.connect(locator).await.map_err(|error| {
+            AcquisitionError::transient(FaError::Liquidity(format!(
+                "connecting to federation MG: {error}"
+            )))
+        })?;
+        let response = connector
+            .get_mg_trust_material(
+                &client,
+                GetMgTrustMaterialRequest {
+                    version: ProtocolV1,
+                },
+            )
             .await
-            .map_err(|error| FaError::Liquidity(format!("connecting to federation MG: {error}")))?;
-        let response = client
-            .get_fman_trust_material(GetMgTrustMaterialRequest {
-                version: ProtocolV1,
-            })
-            .await
+            .map_err(|error| {
+                AcquisitionError::transient(FaError::Liquidity(format!(
+                    "calling MG trust material: {error}"
+                )))
+            })?
             .map_err(|error| FaError::Liquidity(format!("fetching MG trust material: {error}")))?;
         response
             .verify_for_mg_age(mg, now(), MG_TRUST_MATERIAL_MAX_AGE_SECS)
             .map_err(|error| FaError::Liquidity(format!("verifying MG trust material: {error}")))?;
-        store.cache_mg_trust_material(&response).await
+        Ok(store.cache_mg_trust_material(&response).await?)
     })
     .await
-    .map_err(|_| FaError::Timeout("fetching MG trust material".to_owned()))?
+    .unwrap_or_else(|_| {
+        Err(AcquisitionError::transient(FaError::Timeout(
+            "fetching MG trust material".to_owned(),
+        )))
+    })
 }
 
 fn now() -> Timestamp {
@@ -135,7 +244,7 @@ async fn maintain<F: ManifoldGuardianConnector>(
                 continue;
             }
         }
-        let response = refresh(store, connector, mg, locator).await?;
+        let response = refresh_with_backoff(store, connector, mg, locator).await?;
         // A peer can replay valid but almost-stale evidence. Do not spin on it.
         if refresh_delay(&response).is_zero()
             || store.mg_trust_material_refresh_required(&response).await

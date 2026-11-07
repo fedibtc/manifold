@@ -880,6 +880,8 @@ struct MgState {
     consensus_down_after_binding_votes: AtomicBool,
     /// One entry per public trust-material request, preserving the MG queried.
     trust_material_requests: Mutex<Vec<usize>>,
+    /// Per-MG transient read failures remaining before evidence can be fetched.
+    trust_transport_failures: Mutex<HashMap<usize, usize>>,
     /// Corrupt the first MG trust-material response signature.
     corrupt_trust_material_signature: AtomicBool,
     /// Per-MG seat status; absent reports `Running`.
@@ -918,6 +920,28 @@ struct TestConnector {
 
 impl ManifoldGuardianConnector for TestConnector {
     type Client = TestMg;
+
+    async fn get_mg_trust_material(
+        &self,
+        client: &Self::Client,
+        request: GetMgTrustMaterialRequest,
+    ) -> Result<FmResult<GetMgTrustMaterialResponse>, ManifoldGuardianCallError> {
+        let fail = {
+            let mut failures = self
+                .state
+                .trust_transport_failures
+                .lock()
+                .expect("test lock");
+            let remaining = failures.entry(client.index).or_default();
+            let fail = *remaining > 0;
+            *remaining = remaining.saturating_sub(1);
+            fail
+        };
+        if fail {
+            return Err(ManifoldGuardianCallError::new("injected trust stream loss"));
+        }
+        Ok(client.get_fman_trust_material(request).await)
+    }
 
     async fn connect(
         &self,
@@ -13556,7 +13580,7 @@ async fn liquidity_operation_listing_is_bounded_paginated_and_fail_closed() {
         "listing must not project a commitment/id mismatch"
     );
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn post_formation_liquidity_supports_gateway_stability_and_combined_intents() {
     let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
     let intents = [
@@ -13584,6 +13608,13 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
         // freshly formed federation.
         let (mut client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
         if index == 1 {
+            // One MG exhausts the call budget, then succeeds in the next
+            // acquisition operation. Virtual time keeps routine CI cost flat.
+            mg_state
+                .trust_transport_failures
+                .lock()
+                .unwrap()
+                .insert(0, 4);
             for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
                 mg_state
                     .versions
@@ -13647,6 +13678,7 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
                 .await
                 .expect("reconcile through federation consensus");
         }
+        let started = tokio::time::Instant::now();
         let snapshot = client
             .start_liquidity_for_test(
                 &formation_id,
@@ -13658,6 +13690,13 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
             .await
             .unwrap_or_else(|error| panic!("intent {index} failed: {error}"));
         assert_eq!(snapshot.phase, LiquidityOperationPhase::Accepted);
+        if index == 1 {
+            assert_eq!(mg_state.trust_transport_failures.lock().unwrap()[&0], 0);
+            assert!(
+                started.elapsed() >= Duration::from_secs(10),
+                "cold acquisition waits through the operation retry backoff",
+            );
+        }
         assert_eq!(snapshot.item_statuses.len(), if index == 2 { 2 } else { 1 });
 
         let requests = connector.0.requests.lock().expect("test lock");
@@ -13723,6 +13762,51 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
             expected_fetches,
             "only missing or unusable evidence requires an MG request",
         );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn due_cached_liquidity_evidence_falls_back_without_retry_delay() {
+    let (client, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
+    for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
+        let id = test_mg_id(mg).to_string();
+        let mut response = client.inner.store.mg_trust_material(&id).await.unwrap();
+        // Seven hours remain: still usable, but inside the refresh window.
+        response.material.issued_at.0 = test_now_secs()
+            - fedi_decentralized_domain::MG_TRUST_MATERIAL_MAX_AGE_SECS
+            + 7 * 60 * 60;
+        response.proof.signature = mg_keys(mg).sign_schnorr(
+            &nostr_sdk::secp256k1::Message::from_digest(response.material.digest().unwrap()),
+        );
+        client
+            .inner
+            .store
+            .set_mg_trust_material_for_test(id, serde_json::to_vec(&response).unwrap())
+            .await;
+        mg_state
+            .trust_transport_failures
+            .lock()
+            .unwrap()
+            .insert(mg, 100);
+    }
+
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    let started = tokio::time::Instant::now();
+    let snapshot = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(10_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect("usable retained evidence survives a failed refresh");
+    assert_eq!(snapshot.phase, LiquidityOperationPhase::Accepted);
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    let failures = mg_state.trust_transport_failures.lock().unwrap();
+    for mg in 0..usize::from(MIN_FEDERATION_SIZE) {
+        assert_eq!(failures[&mg], 99, "one refresh attempt per MG");
     }
 }
 
