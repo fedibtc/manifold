@@ -215,9 +215,7 @@ impl Onboarding {
                 Ok(json!({
                     "onboarding": "complete",
                     "max_seats": max_seats,
-                    "plans": price_msats.map(|price_msats| json!({
-                        "InfiniteBestEffort": { "price_msats": price_msats }
-                    })).into_iter().collect::<Vec<_>>(),
+                    "plans": crate::db::offered_plans(price_msats.map(Msats)),
                 }))
             }
             AdminRequest::OnboardAsNew { if_needed: true } => {

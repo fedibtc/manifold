@@ -56,5 +56,24 @@ pub fn economical_mint_v2_denominations() -> Vec<fedimint_mintv2_common::Denomin
         .collect()
 }
 
+/// The price an offer of `price_msats` is sold at: the smallest multiple of
+/// the smallest economical mint-v2 denomination at or above it.
+///
+/// A mint-v2 payer can only fund [`quote_denominations`] over
+/// [`economical_mint_v2_denominations`], which has no note below that
+/// denomination, so any other price is unpayable from a mint-v2 federation.
+/// Every multiple of it splits into those powers of two, and into standard
+/// mint-v1 tiers, which reach down to 1 msat. Raising the price by less than
+/// one such note keeps the operator's price while making it payable from
+/// every payment federation. `None` only when rounding up overflows `u64`.
+pub fn payable_price_msats(price_msats: u64) -> Option<u64> {
+    let grid = economical_mint_v2_denominations()
+        .into_iter()
+        .map(|denomination| denomination.amount().msats)
+        .min()
+        .expect("mint-v2 has economical denominations");
+    price_msats.div_ceil(grid).checked_mul(grid)
+}
+
 #[cfg(test)]
 mod tests;

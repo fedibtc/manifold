@@ -94,16 +94,26 @@ pub(crate) struct QuoteSettings {
 }
 
 impl QuoteSettings {
-    /// The offer as the wire states it: the stored price as the single plan
-    /// this daemon serves, or an empty offer.
+    /// The offer as the wire states it; see [`offered_plans`].
     pub(crate) fn plans(&self) -> Vec<Plan> {
-        self.price
-            .map(|price| Plan::InfiniteBestEffort {
-                price_msats: price.0,
-            })
-            .into_iter()
-            .collect()
+        offered_plans(self.price)
     }
+}
+
+/// An operator's price as the wire states it: the single plan this daemon
+/// serves, or an empty offer. The plan sells at the
+/// [payable price](locked_payments::denominations::payable_price_msats), the
+/// stored price rounded up to what every payment federation can fund, so
+/// the advertisement, the quote and the operator's view share one price
+/// however the operator set it.
+pub(crate) fn offered_plans(price: Option<Msats>) -> Vec<Plan> {
+    price
+        .map(|price| Plan::InfiniteBestEffort {
+            price_msats: locked_payments::denominations::payable_price_msats(price.0)
+                .expect("a stored price fits i64, so its payable price fits u64"),
+        })
+        .into_iter()
+        .collect()
 }
 
 #[derive(Clone)]

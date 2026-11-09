@@ -419,6 +419,24 @@ fn the_stored_price_is_advertised_as_the_one_plan_this_daemon_serves() {
     }
 }
 
+/// A mint-v2 payer funds a quote only in notes of 128 msat and up, so an
+/// operator's round sat price such as 2,100 sat could never be paid from a
+/// mint-v2 federation. The plan sells at the next price it can fund, for
+/// prices already stored as well as new ones.
+#[test]
+fn an_unfundable_stored_price_is_offered_at_the_next_payable_price() {
+    let settings = QuoteSettings {
+        price: Some(Msats(2_100_000)),
+        payment_federations: vec![],
+    };
+    assert_eq!(
+        settings.plans(),
+        vec![Plan::InfiniteBestEffort {
+            price_msats: 2_100_096
+        }],
+    );
+}
+
 /// The stored offer read straight out of the row, so the round-trip test does
 /// not depend on a reader that production has no use for.
 async fn stored_price_msats(db: &Db) -> Option<i64> {

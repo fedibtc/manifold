@@ -47,6 +47,7 @@ hkdf = "0.12"
 iroh = { workspace = true }
 iroh-base-035 = { package = "iroh-base", version = "0.35" }
 libc = "0.2"
+locked-payments = { path = "../../locked-payments" }
 mg-meta-fields = { path = "../meta-fields" }
 nostr-sdk = "0.44"
 operator-ui-auth = { path = "../../operator-ui-auth" }

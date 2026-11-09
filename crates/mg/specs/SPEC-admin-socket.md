@@ -127,7 +127,14 @@ the fleet.
   stores one, and beyond the publisher gate nothing validates or rejects it
   on the way in, because there is nothing else it could be. Only the
   advertisement states the offer as a plan list, because the plan vocabulary
-  may grow — `InfiniteBestEffort` at the stored price, or no plan at all.
+  may grow — `InfiniteBestEffort` at the payable price, or no plan at all.
+  The payable price is the stored price rounded up to a multiple of 128 msat,
+  the smallest economical mint-v2 denomination
+  (`locked_payments::denominations::payable_price_msats`): a mint-v2 payer
+  can fund nothing finer, so an off-grid price could never be paid from a
+  mint-v2 federation. Rounding at render time covers prices stored before
+  this rule, so operators need not re-set them; `SetPrice` and `ShowPlans`
+  return the rounded plan.
 - `ListPaymentFederations` is read-only: acceptance is the authenticated
   common setup-payment set
   ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),

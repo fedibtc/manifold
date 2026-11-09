@@ -64,3 +64,33 @@ fn zero_and_maximum_tiers_do_not_break_the_bound() {
         Some(vec![Amount::from_msats(u64::MAX)])
     );
 }
+
+/// Prices observed in production adverts that a mint-v2 payer could not fund:
+/// round sat amounts not divisible by 16 sats (128 msat).
+#[test]
+fn payable_price_is_the_next_price_a_mint_v2_payer_can_fund() {
+    let tiers = economical_mint_v2_denominations()
+        .into_iter()
+        .map(|denomination| denomination.amount())
+        .collect::<Vec<_>>();
+    for (price, payable) in [
+        (0, 0),
+        (1, 128),
+        (127, 128),
+        (128, 128),
+        (129, 256),
+        (1_000_000, 1_000_064),
+        (2_000_000, 2_000_000),
+        (2_100_000, 2_100_096),
+        (2_575_000, 2_575_104),
+    ] {
+        assert_eq!(payable_price_msats(price), Some(payable), "{price}");
+        assert!(
+            quote_denominations(payable, &tiers).is_some(),
+            "{payable} must be fundable from mint-v2"
+        );
+    }
+    assert_eq!(quote_denominations(2_100_000, &tiers), None);
+    assert_eq!(payable_price_msats(u64::MAX - 127), Some(u64::MAX - 127));
+    assert_eq!(payable_price_msats(u64::MAX - 126), None);
+}

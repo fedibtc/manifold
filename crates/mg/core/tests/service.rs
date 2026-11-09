@@ -494,7 +494,7 @@ async fn a_give_away_refuses_payment_material() {
 async fn a_priced_quote_refuses_a_federation_outside_the_accepted_set() {
     let temp = TempDir::new().unwrap();
     let rpc = rpc(&temp, 29_050).await;
-    let price = Msats(1_000);
+    let price = Msats(1_024);
     rpc.fleet.set_offered_price(Some(price)).await.unwrap();
     let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let request = GetQuoteRequest {
