@@ -75,6 +75,12 @@ enum Command {
         #[arg(long)]
         invite: String,
     },
+    /// Print each guardian's registered LNv2 gateways, and whether each
+    /// gateway answers routing info for this federation.
+    Gateways {
+        #[arg(long)]
+        invite: String,
+    },
 }
 
 #[tokio::main]
@@ -153,6 +159,63 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Balance => print_balance(&archive)?,
         Command::Inspect { invite } => inspect(&invite).await?,
+        Command::Gateways { invite } => gateways(&invite).await?,
+    }
+    Ok(())
+}
+
+async fn gateways(invite: &str) -> anyhow::Result<()> {
+    use fedimint_lnv2_common::gateway_api::{GatewayConnection as _, RealGatewayConnection};
+
+    let invite = InviteCode::from_str(invite).context("malformed invite code")?;
+    let connectors = ConnectorRegistry::build_from_client_defaults()
+        .bind()
+        .await?;
+    let (config, api) = download_from_invite_code(&connectors, &invite)
+        .await
+        .context("download the federation config")?;
+    let federation_id = config.calculate_federation_id();
+    let lnv2 = FederationInfo::from_config(&config)
+        .lnv2_instance()
+        .context("the federation has no lnv2 module")?;
+    let module_api = api.with_module(lnv2);
+    let mut union = std::collections::BTreeSet::new();
+    for peer in config.global.api_endpoints.keys() {
+        let answer = tokio::time::timeout(
+            Duration::from_secs(20),
+            module_api.request_single_peer::<Vec<fedimint_core::util::SafeUrl>>(
+                fedimint_lnv2_common::endpoint_constants::GATEWAYS_ENDPOINT.to_owned(),
+                fedimint_core::module::ApiRequestErased::default(),
+                *peer,
+            ),
+        )
+        .await;
+        match answer {
+            Ok(Ok(urls)) => {
+                let list: Vec<String> = urls.iter().map(ToString::to_string).collect();
+                println!("peer_gateways\t{peer}\t{}\t{}", list.len(), list.join(","));
+                union.extend(urls);
+            }
+            Ok(Err(e)) => println!("peer_gateways\t{peer}\terror\t{e}"),
+            Err(_) => println!("peer_gateways\t{peer}\ttimeout"),
+        }
+    }
+    let conn = RealGatewayConnection {
+        api: fedimint_ln_common::client::GatewayApi::new(None, connectors.clone()),
+    };
+    for url in union {
+        let info = tokio::time::timeout(
+            Duration::from_secs(30),
+            conn.routing_info(url.clone(), &federation_id),
+        )
+        .await;
+        let state = match info {
+            Ok(Ok(Some(info))) => format!("routing\t{}", serde_json::to_string(&info)?),
+            Ok(Ok(None)) => "not_connected_to_federation".to_owned(),
+            Ok(Err(e)) => format!("error\t{e}"),
+            Err(_) => "timeout".to_owned(),
+        };
+        println!("gateway\t{url}\t{state}");
     }
     Ok(())
 }
