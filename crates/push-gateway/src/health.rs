@@ -103,7 +103,7 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         Err(err) => return metrics_database_error("hook_row_metrics", err),
     };
     let registration_rows = match PushRegistrationRepository::new(state.database().pool().clone())
-        .row_metrics(state.registration_eligibility())
+        .row_metrics(state.registration_revalidation_cutoff())
         .await
     {
         Ok(metrics) => metrics,
@@ -191,7 +191,7 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
          push_gateway_registration_rows{{state=\"orphaned_token_owners\"}} {}\n\
          push_gateway_registration_rows{{state=\"active\"}} {}\n\
          push_gateway_registration_rows{{state=\"disabled\"}} {}\n\
-         push_gateway_registration_rows{{state=\"stale\"}} {}\n\
+         push_gateway_registration_rows{{state=\"awaiting_revalidation\"}} {}\n\
          # HELP push_gateway_metrics_scrape_db_error Whether this metrics scrape failed to read database-backed gauges.\n\
          # TYPE push_gateway_metrics_scrape_db_error gauge\n\
          push_gateway_metrics_scrape_db_error 0\n\
@@ -239,7 +239,7 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         registration_rows.orphaned_token_owners,
         registration_rows.active,
         registration_rows.disabled,
-        registration_rows.stale,
+        registration_rows.awaiting_revalidation,
         u8::from(snapshot.worker_running),
         state.config().provider_mode(),
     );

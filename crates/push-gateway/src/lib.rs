@@ -17,6 +17,7 @@ mod push_gateway_config;
 mod query_payload;
 mod rate_limits;
 mod register;
+mod registration_revalidation;
 mod telemetry_collector;
 mod telemetry_crypto;
 mod telemetry_receiver;
@@ -44,7 +45,7 @@ pub use fedi_decentralized_push_gateway_storage::{
     MAX_RATE_LIMIT_WINDOW_SECONDS, MarkFailedOutcome, OutboxAdminRow, OutboxDeadLetterReasonCount,
     OutboxDeadLetterSelector, OutboxOperationalMetrics, OutboxStatusCounts,
     PushRegistrationRepository, RegistrationAdmissionLimits, RegistrationAdmissionOutcome,
-    RegistrationEligibility, RegistrationRowMetrics, TelemetryRepository, TelemetryStorageMetrics,
+    RegistrationRowMetrics, TelemetryRepository, TelemetryStorageMetrics,
 };
 pub use fedi_decentralized_push_gateway_types::{
     AppId, CreateHookRequest, CreateHookResponse, DeviceInstallationId, FcmRegistrationToken,
@@ -62,6 +63,7 @@ pub use push_gateway_config::{
     RateLimitConfig, TelemetryReceiverConfig,
 };
 pub use rate_limits::TrustedProxyCidrs;
+pub use registration_revalidation::RegistrationRevalidationHandle;
 
 pub(crate) use json_payload::JsonPayload;
 pub(crate) use nostr_http_auth::{

@@ -157,8 +157,6 @@ pub struct OutboxOperationalMetrics {
 pub struct RetentionPurgeCounts {
     /// Terminal delivery rows deleted from `delivery_outbox`.
     pub delivery_outbox_rows: u64,
-    /// Old disabled registration rows deleted from `push_registrations`.
-    pub disabled_registration_rows: u64,
     /// Old notification events left without retained outbox rows.
     pub notification_event_rows: u64,
     /// Expired compact accepted-idempotency markers.
@@ -886,9 +884,9 @@ impl DeliveryOutboxRepository {
     ///
     /// The cleanup is intentionally conservative: it deletes only terminal outbox
     /// rows (`succeeded`, `invalid_token`, `dead_letter`) whose terminal
-    /// `updated_at` is older than the cutoff, disabled registrations whose
-    /// `disabled_at` is older than the cutoff, and notification events older than
-    /// the cutoff after all of their outbox rows have been removed. Pending,
+    /// `updated_at` is older than the cutoff and notification events older than
+    /// the cutoff after all of their outbox rows have been removed. Disabled
+    /// registrations follow their own grace period instead. Pending,
     /// retrying, and in-progress delivery state is never purged.
     pub async fn purge_retained_sensitive_data(
         &self,
@@ -900,15 +898,6 @@ impl DeliveryOutboxRepository {
             "DELETE FROM delivery_outbox
              WHERE status IN ('succeeded', 'invalid_token', 'dead_letter')
                AND updated_at < $1",
-        )
-        .bind(cutoff_timestamp)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-
-        let disabled_registration_rows = sqlx::query(
-            "DELETE FROM push_registrations
-             WHERE disabled_at IS NOT NULL AND disabled_at < $1",
         )
         .bind(cutoff_timestamp)
         .execute(&mut *transaction)
@@ -937,7 +926,6 @@ impl DeliveryOutboxRepository {
 
         Ok(RetentionPurgeCounts {
             delivery_outbox_rows,
-            disabled_registration_rows,
             notification_event_rows,
             idempotency_tombstone_rows,
         })

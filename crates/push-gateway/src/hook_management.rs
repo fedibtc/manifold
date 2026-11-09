@@ -36,7 +36,6 @@ pub(crate) async fn create_hook(
         .admit_hook(
             &recipient_id,
             &request,
-            state.registration_eligibility(),
             HookAdmissionLimits {
                 max_active_per_recipient: limits.max_active_hooks_per_recipient,
                 max_active_global: limits.max_active_hooks_global,
@@ -193,12 +192,6 @@ fn validate_create_hook_request(
         return Err(ApiError::bad_request(
             "expires_in_seconds_out_of_range",
             "expires_in_seconds is out of range",
-        ));
-    }
-    if request.policy.expires_in_seconds.is_none() {
-        return Err(ApiError::bad_request(
-            "ttl_seconds_required",
-            "hooks must expire",
         ));
     }
     if request

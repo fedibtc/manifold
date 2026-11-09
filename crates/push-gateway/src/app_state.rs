@@ -7,7 +7,7 @@ use crate::delivery_worker::start_delivery_worker_with_fallback;
 use crate::{
     ApiError, Database, DeliveryOutboxRepository, DeliveryWorkerHandle, FcmPushProvider,
     HookRepository, NoopPushProvider, NostrAuthReplayError, Observability, PushGatewayConfig,
-    PushProvider, PushProviderConfig, PushRegistrationRepository, RegistrationEligibility,
+    PushProvider, PushProviderConfig, PushRegistrationRepository,
     delivery_worker::start_delivery_worker, rate_limits::RateLimiters,
 };
 use fedi_decentralized_push_gateway_storage::{RequestDatabaseWriteGuard, WriteAdmissionError};
@@ -26,13 +26,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Returns the current signed-refresh cutoff for active registrations.
-    pub(crate) fn registration_eligibility(&self) -> RegistrationEligibility {
-        RegistrationEligibility {
-            cutoff_timestamp: crate::time::unix_timestamp().saturating_sub(
-                i64::try_from(self.config.registration_ttl_seconds()).unwrap_or(i64::MAX),
-            ),
-        }
+    /// Registrations whose token the provider last accepted before this
+    /// timestamp are due for a re-check.
+    pub(crate) fn registration_revalidation_cutoff(&self) -> i64 {
+        revalidation_cutoff(&self.config)
     }
 
     /// Creates application state.
@@ -115,6 +112,17 @@ impl AppState {
         )
     }
 
+    /// Starts the periodic provider re-check of registration tokens.
+    #[must_use]
+    pub fn start_registration_revalidation(&self) -> crate::RegistrationRevalidationHandle {
+        crate::registration_revalidation::start_registration_revalidation(
+            PushRegistrationRepository::new(self.database.pool().clone()),
+            self.push_provider.clone(),
+            self.config.registration_revalidation_seconds(),
+            self.database.write_lock(),
+        )
+    }
+
     /// Wakes the delivery worker after this process commits newly due outbox rows.
     pub fn notify_delivery_worker(&self) {
         // Retain one wakeup permit if the worker is between deadline queries and
@@ -186,25 +194,26 @@ pub(crate) fn database_write_admission_error(_error: WriteAdmissionError) -> Api
     )
 }
 
+fn revalidation_cutoff(config: &PushGatewayConfig) -> i64 {
+    crate::time::unix_timestamp().saturating_sub(
+        i64::try_from(config.registration_revalidation_seconds()).unwrap_or(i64::MAX),
+    )
+}
+
 async fn purge_expired_admission_data(
     database: &Database,
     config: &PushGatewayConfig,
 ) -> Result<(), sqlx::Error> {
-    let ttl_seconds = i64::try_from(config.registration_ttl_seconds()).unwrap_or(i64::MAX);
     let now = crate::time::unix_timestamp();
-    let registration_cutoff = now.saturating_sub(ttl_seconds);
-    let stale_registrations = PushRegistrationRepository::new(database.pool().clone())
-        .purge_stale(registration_cutoff)
+    let orphaned_token_owners = PushRegistrationRepository::new(database.pool().clone())
+        .purge_orphaned_token_owners(revalidation_cutoff(config))
         .await?;
     let terminal_hooks = HookRepository::new(database.pool().clone())
         .purge_terminal_unreferenced(now)
         .await?;
-    if 0 < stale_registrations || 0 < terminal_hooks {
+    if 0 < orphaned_token_owners || 0 < terminal_hooks {
         eprintln!(
-            "event=push_gateway_admission_gc stale_registration_rows={} terminal_hook_rows={} registration_ttl_seconds={}",
-            stale_registrations,
-            terminal_hooks,
-            config.registration_ttl_seconds()
+            "event=push_gateway_admission_gc orphaned_token_owner_rows={orphaned_token_owners} terminal_hook_rows={terminal_hooks}"
         );
     }
     Ok(())
@@ -222,9 +231,8 @@ async fn purge_sensitive_terminal_data(
         .await?;
     if counts != Default::default() {
         eprintln!(
-            "event=push_gateway_retention_purge delivery_outbox_rows={} disabled_registration_rows={} notification_event_rows={} idempotency_tombstone_rows={} retention_seconds={}",
+            "event=push_gateway_retention_purge delivery_outbox_rows={} notification_event_rows={} idempotency_tombstone_rows={} retention_seconds={}",
             counts.delivery_outbox_rows,
-            counts.disabled_registration_rows,
             counts.notification_event_rows,
             counts.idempotency_tombstone_rows,
             config.retention_seconds()
