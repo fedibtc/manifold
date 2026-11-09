@@ -11,11 +11,15 @@ clap = { version = "4", features = ["derive"] }
 fedimint-api-client = { workspace = true }
 fedimint-connectors = { workspace = true }
 fedimint-core = { workspace = true }
+fedimint-ln-common = { workspace = true }
 fedimint-lnv2-common = { workspace = true }
+fedimint-mint-common = { workspace = true }
+fedimint-wallet-common = { workspace = true }
 futures = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
+fedimint-tbs = { workspace = true }
 tempfile = "3"

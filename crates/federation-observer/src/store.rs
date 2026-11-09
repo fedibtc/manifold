@@ -19,7 +19,8 @@ use fedimint_core::encoding::{Decodable as _, Encodable as _};
 use fedimint_core::module::CommonModuleInit as _;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::session_outcome::SessionOutcome;
-use fedimint_lnv2_common::LightningCommonInit;
+use fedimint_mint_common::MintCommonInit;
+use fedimint_wallet_common::WalletCommonInit;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,21 +43,28 @@ impl FederationInfo {
     }
 
     pub fn lnv2_instance(&self) -> Option<ModuleInstanceId> {
+        self.instance("lnv2")
+    }
+
+    pub fn instance(&self, kind: &str) -> Option<ModuleInstanceId> {
         self.modules
             .iter()
-            .find(|(_, kind)| kind.as_str() == "lnv2")
+            .find(|(_, k)| k.as_str() == kind)
             .map(|(id, _)| *id)
     }
 
     /// Decoders for the modules this tool understands. Every other module
     /// decodes as an opaque item and re-encodes byte for byte.
     pub fn decoders(&self) -> ModuleDecoderRegistry {
-        ModuleDecoderRegistry::from_iter(self.lnv2_instance().map(|id| {
-            (
-                id,
-                ModuleKind::from_static_str("lnv2"),
-                LightningCommonInit::decoder(),
-            )
+        ModuleDecoderRegistry::from_iter(self.modules.iter().filter_map(|(id, kind)| {
+            let decoder = match kind.as_str() {
+                "lnv2" => fedimint_lnv2_common::LightningCommonInit::decoder(),
+                "ln" => fedimint_ln_common::LightningCommonInit::decoder(),
+                "mint" => MintCommonInit::decoder(),
+                "wallet" => WalletCommonInit::decoder(),
+                _ => return None,
+            };
+            Some((*id, ModuleKind::clone_from_str(kind), decoder))
         }))
         .with_fallback()
     }

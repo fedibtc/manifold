@@ -2,8 +2,10 @@
 //!
 //! `sync` downloads every finished session that is not yet on disk, `daemon`
 //! repeats `sync` and prints new LNv2 events, and `lnv2` prints the LNv2
-//! contract history from the archive without network access.
+//! contract history from the archive without network access. `balance`
+//! sums the mint, wallet and Lightning flows of the whole archive.
 
+mod balance;
 mod lnv2;
 mod store;
 
@@ -65,6 +67,9 @@ enum Command {
         #[arg(long)]
         gateway: Option<String>,
     },
+    /// Print the ecash outstanding, the wallet's bitcoin and the funds in
+    /// open Lightning contracts, summed over every archived session.
+    Balance,
 }
 
 #[tokio::main]
@@ -141,7 +146,77 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Command::Balance => print_balance(&archive)?,
     }
+    Ok(())
+}
+
+fn print_balance(archive: &Archive) -> anyhow::Result<()> {
+    let info = archive.info()?;
+    let instances = balance::Instances {
+        mint: info
+            .instance("mint")
+            .context("the federation has no mint module")?,
+        wallet: info.instance("wallet"),
+        ln: info.instance("ln"),
+    };
+    let lnv2 = info.lnv2_instance();
+    let decoders = info.decoders();
+    let indices = archive.indices()?;
+    // The sums start from zero, so a missing session would go unnoticed.
+    anyhow::ensure!(
+        indices.iter().copied().eq(0..indices.len() as u64),
+        "the archive misses sessions: run `sync` from 0 first"
+    );
+    let mut balances = balance::Balances::default();
+    let mut lnv2_sessions = vec![];
+    for index in indices.iter().copied() {
+        let outcome = archive
+            .load(index, &decoders)?
+            .context("session vanished")?;
+        balances.add_session(index, &outcome, instances)?;
+        if let Some(lnv2) = lnv2 {
+            lnv2_sessions.push(lnv2::session_events(index, &outcome, lnv2));
+        }
+    }
+    let last_time = lnv2_sessions.iter().filter_map(|s| s.time).max();
+    let lnv2_open = lnv2::contracts(lnv2_sessions)
+        .into_iter()
+        .filter(|c| c.settled.is_none())
+        .fold(balance::Flow::default(), |mut open, c| {
+            open.count += 1;
+            open.msat += c.amount_msat;
+            open
+        });
+    let ln_open = balances.ln_open();
+    let sat = |msat: i128| msat as f64 / 1000.0;
+    println!("federation\t{}", info.federation_id);
+    println!("sessions\t{}", indices.len());
+    println!(
+        "last_lnv2_time_utc\t{}",
+        last_time.map_or("-".to_owned(), lnv2::format_utc)
+    );
+    let flow = |name: &str, f: &balance::Flow| {
+        println!("{name}\t{}\t{} sat", f.count, sat(i128::from(f.msat)));
+    };
+    flow("mint_issued", &balances.mint_issued);
+    flow("mint_redeemed", &balances.mint_redeemed);
+    println!(
+        "ecash_outstanding\t{} sat",
+        sat(balances.ecash_outstanding_msat())
+    );
+    flow("peg_in", &balances.peg_in);
+    flow("peg_out", &balances.peg_out);
+    flow("peg_out_fees", &balances.peg_out_fees);
+    println!("wallet_net\t{} sat", sat(balances.wallet_msat()));
+    flow("ln_open", &ln_open);
+    flow("lnv2_open", &lnv2_open);
+    flow("fees", &balances.fees);
+    println!(
+        "to_other_modules\t{}\t{} sat",
+        balances.to_other_modules.count,
+        sat(balances.to_other_modules.msat)
+    );
     Ok(())
 }
 
@@ -161,6 +236,17 @@ impl Federation {
             .await
             .context("download the federation config")?;
         let info = FederationInfo::from_config(&config);
+        eprintln!(
+            "federation {} {:?}",
+            info.federation_id,
+            config.global.federation_name().unwrap_or("-")
+        );
+        for (id, module) in &config.modules {
+            eprintln!(
+                "module {id} {} config version {}",
+                module.kind, module.version
+            );
+        }
         archive.init(&info)?;
         let decoders = info.decoders();
         Ok(Self {
