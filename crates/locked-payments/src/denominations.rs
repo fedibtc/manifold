@@ -46,33 +46,30 @@ pub fn quote_denominations(price_msats: u64, available: &[Amount]) -> Option<Vec
     Some(selected)
 }
 
+/// The smallest mint-v2 note worth issuing: mint-v2 denominations are powers
+/// of two, and those at or below the 100 msat base fee cost more to spend
+/// than they carry. Every multiple of it is representable in
+/// [`economical_mint_v2_denominations`].
+pub const MIN_ECONOMICAL_MINT_V2_NOTE_MSATS: u64 = 128;
+
 /// The mint-v2 denominations both roles quote and refund in: the consensus
-/// set with the dust tiers (at or below 100 msat) removed. One definition,
+/// set from [`MIN_ECONOMICAL_MINT_V2_NOTE_MSATS`] up. One definition,
 /// because the payee's quote and the payer's refund commitment must select
 /// from the same tiers to agree.
 pub fn economical_mint_v2_denominations() -> Vec<fedimint_mintv2_common::Denomination> {
     fedimint_mintv2_common::config::consensus_denominations()
-        .filter(|denomination| denomination.amount().msats > 100)
+        .filter(|denomination| denomination.amount().msats >= MIN_ECONOMICAL_MINT_V2_NOTE_MSATS)
         .collect()
 }
 
-/// The price an offer of `price_msats` is sold at: the smallest multiple of
-/// the smallest economical mint-v2 denomination at or above it.
-///
-/// A mint-v2 payer can only fund [`quote_denominations`] over
-/// [`economical_mint_v2_denominations`], which has no note below that
-/// denomination, so any other price is unpayable from a mint-v2 federation.
-/// Every multiple of it splits into those powers of two, and into standard
-/// mint-v1 tiers, which reach down to 1 msat. Raising the price by less than
-/// one such note keeps the operator's price while making it payable from
-/// every payment federation. `None` only when rounding up overflows `u64`.
+/// `price_msats` rounded up to a multiple of
+/// [`MIN_ECONOMICAL_MINT_V2_NOTE_MSATS`], the finest price a mint-v2 payer
+/// can fund (mint-v1 tiers reach down to 1 msat, so it stays payable there).
+/// `None` only when rounding up overflows `u64`.
 pub fn payable_price_msats(price_msats: u64) -> Option<u64> {
-    let grid = economical_mint_v2_denominations()
-        .into_iter()
-        .map(|denomination| denomination.amount().msats)
-        .min()
-        .expect("mint-v2 has economical denominations");
-    price_msats.div_ceil(grid).checked_mul(grid)
+    price_msats
+        .div_ceil(MIN_ECONOMICAL_MINT_V2_NOTE_MSATS)
+        .checked_mul(MIN_ECONOMICAL_MINT_V2_NOTE_MSATS)
 }
 
 #[cfg(test)]
