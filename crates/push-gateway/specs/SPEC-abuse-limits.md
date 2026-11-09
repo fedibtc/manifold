@@ -88,8 +88,13 @@ token-owner rows bind live tokens to stable installation ids and become stale-GC
 candidates once their registration is gone and their own refresh timestamp is
 older than the same cutoff. Both owner and
 registration rows count toward the registration physical-row high-watermark.
-Every hook must have a finite TTL and target an active installation owned by the
-authenticated recipient.
+Every hook must target an active installation owned by the authenticated
+recipient. Its TTL is finite unless omitted: a hook with no TTL never expires,
+and while it is live its registration does not go stale, for an app that makes
+no calls after creating it. Such a hook still counts against the active-hook
+caps, and it ends when its installation is disabled or removed, so a rejected
+provider token frees its capacity. A phone that receives no invocations reveals
+no rejection, so its hook and registration stay until revoked.
 
 ## Source identity
 

@@ -31,7 +31,8 @@ are untrusted or semi-trusted, even if a user intentionally shared a hook URL
 with them.
 
 Hook URLs are bearer capabilities: possession of the full URL authorizes
-invocation until the hook expires or is revoked/deleted. Revocation and expiry
+invocation until the hook expires or is revoked/deleted, or, for a hook created
+with no TTL, until its installation is disabled or removed. Revocation and expiry
 also reject retained idempotency-key replays. URL tokens must be
 unguessable, stored only as hashes at rest, and redacted from logs, errors,
 metrics, traces, and tests. Do not log raw hook URLs. Public hook URLs generated
@@ -196,12 +197,13 @@ returns `422`; provider/auth/network ambiguity returns `503` and is never treate
 as successful admission. The test/no-op providers accept validation only for local development.
 Registration attestation is not part of the current wire contract.
 
-Hook creation in every mode requires an active owned `installation_id` and a finite
-TTL. Invocation may enqueue only that installation, which prevents a formation
+Hook creation in every mode requires an active owned `installation_id`. Its TTL is
+finite unless omitted; a hook with no TTL never expires. Invocation may enqueue only that installation, which prevents a formation
 callback from notifying every installation that shares the recipient key.
-Registration freshness is also finite (30 days by default); signed refreshes
-advance `last_seen_at`, stale rows stop receiving new notifications, and bounded
-admission GC plus startup GC remove them. Admission transactions enforce
+Registration freshness is also finite (30 days by default), except while a live
+hook with no expiry targets the registration; signed refreshes advance
+`last_seen_at`, stale rows stop receiving new notifications, and bounded admission
+GC plus startup GC remove them. Admission transactions enforce
 physical-row ceilings and fail closed when bounded GC cannot restore headroom.
 Token moves use their recipient/global net row deltas. A durable owner row binds
 a live token to its stable installation id. Stale GC removes an orphaned owner
@@ -226,8 +228,8 @@ durable formation state.
 
 Caller-provided idempotency keys are secret-adjacent correlation material and
 must not appear in logs or metrics. A compact accepted-key marker is retained
-after sensitive event/outbox cleanup through the hook's finite lifetime plus a
-seven-day cleanup margin while the hook remains usable. Revocation/expiry rejects
+after sensitive event/outbox cleanup through the hook's finite lifetime (one year from
+acceptance with no expiry) plus a seven-day cleanup margin while the hook remains usable. Revocation/expiry rejects
 replay, so terminal hook GC removes now-useless markers after retained events are
 gone. A marker contains no notification JSON or push token, but the table, database
 WAL, backups, and restored copies still require sensitive operational handling.

@@ -75,6 +75,16 @@ pub struct HookRepository {
     pool: AnyPool,
 }
 
+/// Hooks that can never be accepted again. A hook with no expiry ends when its
+/// installation does: nothing else would ever reclaim its capacity.
+const TERMINAL_HOOK: &str = "revoked_at IS NOT NULL
+    OR (expires_at IS NOT NULL AND expires_at <= $1)
+    OR (expires_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM push_registrations registration
+        WHERE registration.recipient_id = notification_hooks.recipient_id
+          AND registration.installation_id = notification_hooks.installation_id
+          AND registration.disabled_at IS NULL))";
+
 impl HookRepository {
     /// Creates a hook repository from a database pool.
     #[must_use]
@@ -331,14 +341,14 @@ impl HookRepository {
         &self,
         now_timestamp: i64,
     ) -> Result<u64, sqlx::Error> {
-        Ok(sqlx::query(
+        Ok(sqlx::query(&format!(
             "DELETE FROM notification_hooks
-             WHERE (expires_at IS NOT NULL AND expires_at <= $1 OR revoked_at IS NOT NULL)
+             WHERE ({TERMINAL_HOOK})
                 AND NOT EXISTS (
                     SELECT 1 FROM notification_events
                     WHERE notification_events.hook_id = notification_hooks.hook_id
-                )",
-        )
+                )"
+        ))
         .bind(now_timestamp)
         .execute(&self.pool)
         .await?
@@ -386,18 +396,18 @@ async fn purge_terminal_in_transaction(
     HookIdempotencyRepository::purge_expired_in_transaction(transaction, now_timestamp, batch_size)
         .await?;
     let batch_size = i64::try_from(batch_size).unwrap_or(i64::MAX);
-    Ok(sqlx::query(
+    Ok(sqlx::query(&format!(
         "DELETE FROM notification_hooks
          WHERE hook_id IN (
              SELECT hook_id FROM notification_hooks
-             WHERE (expires_at IS NOT NULL AND expires_at <= $1 OR revoked_at IS NOT NULL)
+             WHERE ({TERMINAL_HOOK})
                 AND NOT EXISTS (
                     SELECT 1 FROM notification_events
                     WHERE notification_events.hook_id = notification_hooks.hook_id
                 )
              ORDER BY created_at LIMIT $2
-         )",
-    )
+         )"
+    ))
     .bind(now_timestamp)
     .bind(batch_size)
     .execute(&mut **transaction)

@@ -29,15 +29,19 @@ target in one database transaction before returning `accepted` to the
 caller. Provider delivery is never required for the HTTP response to
 succeed.
 
-Hook creation in every mode requires both a finite `policy.ttl_seconds` and an
-`installation_id` that is currently registered, active, non-stale, and owned by
-the authenticated recipient. This scopes FA formation completion to the
-initiating installation.
+Hook creation in every mode requires an `installation_id` that is currently
+registered, active, non-stale, and owned by the authenticated recipient. This
+scopes FA formation completion to the initiating installation. `policy.ttl_seconds`
+is up to one year; omitted, the hook never expires and keeps its registration
+from going stale, for an app that makes no calls after creating it (the MG
+guardian link).
 
 If the named target is missing, disabled, or stale, invocation returns retryable
 `503 target_installation_unavailable` without consuming hook counters, creating
 an event, or pinning the caller's idempotency key. After signed refresh or
-re-registration, retrying the same key may enqueue exactly once. An already
+re-registration, retrying the same key may enqueue exactly once. A hook with no
+expiry instead answers `410 hook_target_gone`: its app is not expected to call
+again, so the caller should stop retrying. An already
 accepted retained event still replays its recorded target count even if the
 installation later becomes ineligible.
 
@@ -88,7 +92,8 @@ not consume hook counters or create additional outbox rows, even if sensitive
 event/outbox retention cleanup has run or max-use/rate-limit state has since
 changed. Revocation or expiry terminates the bearer capability before replay
 lookup, so a retained key does not authorize any response after either transition.
-Markers remain through the finite hook lifetime plus a seven-day cleanup margin.
+Markers remain through the finite hook lifetime, or one year from acceptance for a
+hook with no expiry, plus a seven-day cleanup margin.
 A new idempotency key is evaluated against current TTL, revocation,
 max-use, rate-limit, and marker-capacity state. Calls without `idempotency_key`
 are never deduplicated. FA formation creates its installation-scoped hook with an
