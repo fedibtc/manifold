@@ -104,13 +104,106 @@ pub enum LockedPaymentError {
 ///
 /// Each candidate coin costs `denomination + output_fee(denomination)` from
 /// the transaction's input side. The result uses only configured tiers and
-/// equals `target_msats` exactly; it first takes large coins greedily, then
-/// replaces the smallest selected coins until a bounded minimum-note dynamic
-/// program can repair the fee-sized remainder. Representations requiring more
-/// than [`MAX_LOCKED_PAYMENT_NOTES`] outputs are refused before expansion.
+/// equals `target_msats` exactly. Both protocol sides run this function and
+/// compare results, so it must stay deterministic and byte-identical with
+/// the Fedi bridge's port.
+///
+/// The repair search runs first, so every refund it found before the note
+/// count search existed is still chosen; only when it fails does
+/// [`equal_fee_note_count_refund`] run.
 pub fn refund_denominations(
     available: &[Amount],
     output_fee: impl Fn(Amount) -> Amount,
+    target_msats: u64,
+) -> Result<Vec<Amount>, LockedPaymentError> {
+    repair_refund_denominations(available, &output_fee, target_msats).or_else(|error| {
+        equal_fee_note_count_refund(available, &output_fee, target_msats).ok_or(error)
+    })
+}
+
+/// Exact refund for contiguous power-of-two tiers that all carry the same
+/// output fee (mint-v2's economical tiers under a base-only fee, as every
+/// production Manifold payment federation charges).
+///
+/// With `m` outputs, the notes must sum to `target - m * fee`, a multiple of
+/// the smallest tier with at least as many smallest-tier units as `m` and at
+/// most `m` set bits after the greedy split. For a fee that is not a multiple
+/// of the smallest tier that pins `m` to one residue class, which the
+/// bounded repair search often cannot reach (for example 2,100,096 msat paid
+/// in five mint-v2 notes at a 10 msat fee needs 59 refund notes). Tries
+/// `m = 1..=MAX_LOCKED_PAYMENT_NOTES`, takes the first that works, splits
+/// the greedy representation by halving the largest note until it has `m`
+/// notes, and returns them largest first. `None` when the tiers or fees do
+/// not have this shape or no count works.
+fn equal_fee_note_count_refund(
+    available: &[Amount],
+    output_fee: &impl Fn(Amount) -> Amount,
+    target_msats: u64,
+) -> Option<Vec<Amount>> {
+    let mut tiers = available
+        .iter()
+        .map(|amount| amount.msats)
+        .collect::<Vec<_>>();
+    tiers.sort_unstable();
+    tiers.dedup();
+    let (&smallest, &largest) = (tiers.first()?, tiers.last()?);
+    let contiguous = tiers.iter().all(|tier| tier.is_power_of_two())
+        && tiers
+            .windows(2)
+            .all(|pair| pair[0].checked_mul(2) == Some(pair[1]));
+    let fee = output_fee(Amount::from_msats(smallest)).msats;
+    if !contiguous
+        || tiers
+            .iter()
+            .any(|tier| output_fee(Amount::from_msats(*tier)).msats != fee)
+    {
+        return None;
+    }
+    for count in 1..=MAX_LOCKED_PAYMENT_NOTES as u64 {
+        let Some(net) = fee
+            .checked_mul(count)
+            .and_then(|fees| target_msats.checked_sub(fees))
+        else {
+            break;
+        };
+        if net % smallest != 0 || net / smallest < count {
+            continue;
+        }
+        let largest_notes = net / largest;
+        if largest_notes > count {
+            continue;
+        }
+        let mut notes = vec![largest; largest_notes as usize];
+        let mut rest = net % largest;
+        for &tier in tiers.iter().rev().skip(1) {
+            if rest >= tier {
+                notes.push(tier);
+                rest -= tier;
+            }
+        }
+        if notes.len() as u64 > count {
+            continue;
+        }
+        // Halve the largest note until there are `count` notes, keeping
+        // them sorted largest first.
+        while (notes.len() as u64) < count {
+            let half = notes[0] / 2;
+            notes[0] = half;
+            notes.push(half);
+            notes.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        return Some(notes.into_iter().map(Amount::from_msats).collect());
+    }
+    None
+}
+
+/// The bounded repair search: take large coins greedily, then replace the
+/// smallest selected coins until a bounded minimum-note dynamic program can
+/// repair the fee-sized remainder. Representations requiring more than
+/// [`MAX_LOCKED_PAYMENT_NOTES`] outputs are refused before expansion.
+fn repair_refund_denominations(
+    available: &[Amount],
+    output_fee: &impl Fn(Amount) -> Amount,
     target_msats: u64,
 ) -> Result<Vec<Amount>, LockedPaymentError> {
     const REPAIR_LIMIT_MSATS: u64 = 1_000_000;
@@ -522,6 +615,112 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, LockedPaymentError::DuplicateNoteNonce);
+    }
+
+    /// The mint-v2 refund target for a price: the paid notes' total minus one
+    /// input fee per paid note, as `prepare_refund_v2` computes it.
+    fn mint_v2_refund_target(price_msats: u64, fee_msats: u64) -> (Vec<Amount>, u64) {
+        let tiers = crate::denominations::economical_mint_v2_denominations()
+            .into_iter()
+            .map(|denomination| denomination.amount())
+            .collect::<Vec<_>>();
+        let paid = crate::denominations::quote_denominations(price_msats, &tiers).unwrap();
+        (tiers, price_msats - paid.len() as u64 * fee_msats)
+    }
+
+    fn assert_exact_refund(tiers: &[Amount], fee_msats: u64, target: u64, refund: &[Amount]) {
+        assert!(refund.len() <= MAX_LOCKED_PAYMENT_NOTES, "{target}");
+        assert!(
+            refund.iter().all(|amount| tiers.contains(amount)),
+            "{target}"
+        );
+        assert!(refund.windows(2).all(|pair| pair[0] >= pair[1]), "{target}");
+        assert_eq!(
+            refund
+                .iter()
+                .map(|amount| amount.msats + fee_msats)
+                .sum::<u64>(),
+            target
+        );
+    }
+
+    /// The production failure: a 2,100,096 msat seat paid in five mint-v2
+    /// notes under a 10 msat base fee balances only with 59 refund notes,
+    /// out of reach of the bounded repair search.
+    #[test]
+    fn a_mint_v2_refund_the_repair_search_misses_balances_with_the_note_count_search() {
+        let fee = |_| Amount::from_msats(10);
+        let (tiers, target) = mint_v2_refund_target(2_100_096, 10);
+        assert_eq!(target, 2_100_046);
+        assert_eq!(
+            repair_refund_denominations(&tiers, &fee, target),
+            Err(LockedPaymentError::UnrepresentableRefund)
+        );
+        let refund = refund_denominations(&tiers, fee, target).unwrap();
+        assert_eq!(refund.len(), 59);
+        assert_exact_refund(&tiers, 10, target, &refund);
+    }
+
+    /// Refund commitments signed before the note count search existed must
+    /// keep validating, so whatever the repair search finds is still chosen.
+    #[test]
+    fn a_refund_the_repair_search_finds_is_unchanged() {
+        let fee = |_| Amount::from_msats(10);
+        for price in [1_000_064, 2_000_000, 2_575_104, 3_200_000, 5_600_000] {
+            let (tiers, target) = mint_v2_refund_target(price, 10);
+            let repaired = repair_refund_denominations(&tiers, &fee, target).unwrap();
+            assert_eq!(refund_denominations(&tiers, fee, target).unwrap(), repaired);
+        }
+    }
+
+    /// Every mint-v2 payable price (a multiple of 128 msat) from 1,000 to
+    /// 10,000,000 sat has an exact refund under the production schedule and
+    /// other base-only fees. Since `refund_denominations` falls back to the
+    /// note count search, its success alone covers the whole function; the
+    /// stride keeps a debug run short, and an exhaustive release scan of
+    /// every price found no failure.
+    #[test]
+    fn every_payable_mint_v2_price_has_an_exact_refund_under_base_only_fees() {
+        let tiers = crate::denominations::economical_mint_v2_denominations()
+            .into_iter()
+            .map(|denomination| denomination.amount())
+            .collect::<Vec<_>>();
+        for fee_msats in [0, 10, 100, 128, 200] {
+            let fee = |_| Amount::from_msats(fee_msats);
+            let mut price = 1_000_064;
+            while price <= 10_000_000_000 {
+                let paid = crate::denominations::quote_denominations(price, &tiers).unwrap();
+                let target = price - paid.len() as u64 * fee_msats;
+                let refund = equal_fee_note_count_refund(&tiers, &fee, target)
+                    .unwrap_or_else(|| panic!("price {price} fee {fee_msats}"));
+                assert_exact_refund(&tiers, fee_msats, target, &refund);
+                price += 128 * 9_973;
+            }
+        }
+    }
+
+    /// The note count search only applies to equal fees on contiguous
+    /// power-of-two tiers; other shapes keep the repair search's answer.
+    #[test]
+    fn the_note_count_search_refuses_other_tier_and_fee_shapes() {
+        let (tiers, target) = mint_v2_refund_target(2_100_096, 10);
+        let gapped = tiers
+            .iter()
+            .copied()
+            .filter(|amount| amount.msats != 256)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            equal_fee_note_count_refund(&gapped, &|_| Amount::from_msats(10), target),
+            None
+        );
+        assert_eq!(
+            equal_fee_note_count_refund(
+                &tiers,
+                &|amount: Amount| Amount::from_msats(10 + amount.msats / 1_000_000),
+                target
+            ),
+            None
+        );
     }
 
     #[test]
