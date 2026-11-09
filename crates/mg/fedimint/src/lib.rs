@@ -798,9 +798,7 @@ impl Wallet {
     ) -> Result<Vec<MintV2Denomination>, WalletError> {
         let client = self.client(federation_id).await?;
         let _ = mint_v2_module(&client, mint_module)?;
-        Ok(fedimint_mintv2_common::config::consensus_denominations()
-            .filter(|denomination| denomination.amount().msats > 100)
-            .collect())
+        Ok(locked_payments::denominations::economical_mint_v2_denominations())
     }
 
     pub async fn first_mint_v2_module_id(

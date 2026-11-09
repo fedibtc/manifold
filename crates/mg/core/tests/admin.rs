@@ -297,9 +297,11 @@ async fn admin_socket_round_trips_operator_verbs() {
     })
     .await
     .unwrap();
+    // 10,000 msat is not fundable from mint-v2 (128 msat grid), so the
+    // price is stored, and echoed, as the next payable price.
     assert_eq!(
         plans["plans"],
-        serde_json::json!([{"InfiniteBestEffort": {"price_msats": 10_000}}]),
+        serde_json::json!([{"InfiniteBestEffort": {"price_msats": 10_112}}]),
     );
     assert_eq!(
         ask(AdminRequest::ShowPlans).await.unwrap(),
