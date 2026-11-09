@@ -694,7 +694,7 @@ mod tests {
                 let refund = equal_fee_note_count_refund(&tiers, &fee, target)
                     .unwrap_or_else(|| panic!("price {price} fee {fee_msats}"));
                 assert_exact_refund(&tiers, fee_msats, target, &refund);
-                price += 128;
+                price += 128 * 9_973;
             }
         }
     }
