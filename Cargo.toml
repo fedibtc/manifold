@@ -51,7 +51,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/fedibtc/manifold"
-version = "0.1.11"
+version = "0.1.12"
 
 [profile.dev]
 debug = false
@@ -226,7 +226,7 @@ fedimint-walletv2-common = { version = ">=0.11.2, <0.13", default-features = fal
 # Bundled into the MG binary. Not on crates.io, so it is a path into the same
 # Nix-provided source the patches above point at.
 fedimintd = { path = ".nix-deps/fedimint/fedimintd", default-features = false }
-iroh = "1.0.0"
+iroh = "1.4.1"
 proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"

@@ -7,7 +7,7 @@
 //! the per-generation note cryptography ([`locked_payment`] for mint v1,
 //! [`locked_payment_v2`]), the quote/refund denomination selection
 //! ([`denominations`]), and the refund preparation the payer commits with
-//! and the payee re-runs as its validation oracle ([`refund`]).
+//! and the payee validates it against ([`refund`]).
 //!
 //! This crate holds no wallet state. Each role brings its own Fedimint
 //! client and secret material: the MG side is `mg-fedimint`, the FA

@@ -398,7 +398,8 @@ async fn onboarding_progress_is_durable_and_ordered() {
         crate::db::OnboardingStage::Complete
     );
     assert_eq!(reopened.max_seats().await.unwrap(), Some(3));
-    assert_eq!(stored_price_msats(&reopened).await, Some(12));
+    // Stored as the payable price (128 msat grid).
+    assert_eq!(stored_price_msats(&reopened).await, Some(128));
 }
 
 /// The database stores the offer as a price; the wire states it as plans.
@@ -416,6 +417,68 @@ fn the_stored_price_is_advertised_as_the_one_plan_this_daemon_serves() {
             settings(Some(Msats(price_msats))).plans(),
             vec![Plan::InfiniteBestEffort { price_msats }],
         );
+    }
+}
+
+/// A mint-v2 payer funds a quote only in notes of 128 msat and up, so an
+/// operator's round sat price such as 2,100 sat could never be paid from a
+/// mint-v2 federation. Every setter stores the next price it can fund.
+#[tokio::test]
+async fn price_setters_store_the_next_payable_price() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    for (price, stored) in [
+        (2_100_000, 2_100_096),
+        (2_000_000, 2_000_000),
+        (1, 128),
+        (0, 0),
+    ] {
+        db.set_offered_price(Some(Msats(price))).await.unwrap();
+        assert_eq!(stored_price_msats(&db).await, Some(stored), "{price}");
+    }
+    assert!(matches!(
+        db.set_offered_price(Some(Msats(u64::MAX))).await,
+        Err(DbError::PriceOutOfRange { .. })
+    ));
+}
+
+/// Prices stored before setters rounded are rounded once by migration 0011;
+/// on-grid and absent prices, and their quotes' epoch, are kept.
+#[tokio::test]
+async fn migration_rounds_a_stored_unpayable_price_up_to_the_payable_grid() {
+    for (stored, migrated) in [
+        (Some(2_100_000), Some(2_100_096)),
+        (Some(1), Some(128)),
+        (Some(127), Some(128)),
+        (Some(129), Some(256)),
+        (Some(2_000_000), Some(2_000_000)),
+        (Some(128), Some(128)),
+        (Some(0), Some(0)),
+        (None, None),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        sqlx::query("UPDATE offer_state SET price_msats = ? WHERE id = 1")
+            .bind(stored)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let epoch: Vec<u8> = sqlx::query_scalar("SELECT offer_epoch FROM offer_state")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!("../migrations/0011_payable_price.sql"))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        assert_eq!(stored_price_msats(&db).await, migrated, "{stored:?}");
+        let after: Vec<u8> = sqlx::query_scalar("SELECT offer_epoch FROM offer_state")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(after != epoch, stored != migrated, "{stored:?} epoch");
     }
 }
 

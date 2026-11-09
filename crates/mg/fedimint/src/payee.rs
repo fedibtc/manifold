@@ -30,7 +30,6 @@ use fedimint_mintv2_client::{
     ECash as MintV2Ecash, FinalReceiveOperationState as MintV2ReceiveState,
     MintOperationMeta as MintV2OperationMeta, ReceiveECashError as MintV2ReceiveError,
 };
-use fedimint_mintv2_common::MintInput as MintV2Input;
 use futures::StreamExt as _;
 use std::future::Future;
 
@@ -40,9 +39,9 @@ use mg_core::wallet::{
     VerifiedLockedPayment,
 };
 
-use locked_payments::denominations::quote_denominations;
+use locked_payments::denominations::{MAX_LOCKED_PAYMENT_NOTES, quote_denominations};
 use locked_payments::locked_payment::{self, decode_blinded_signature, decode_issuance_request};
-use locked_payments::{locked_payment_v2, mint_v2_module, standard_module_root_secret};
+use locked_payments::{locked_payment_v2, mint_v2_module, refund, standard_module_root_secret};
 
 use crate::{Wallet, WalletError};
 
@@ -354,7 +353,7 @@ impl Wallet {
     }
 
     /// Verify a mint-v2 key-locked presentation and its refund balance
-    /// entirely offline.
+    /// ([`refund::check_refund_v2`]) entirely offline.
     pub(crate) async fn verify_locked_v2(
         &self,
         federation_id: FederationId,
@@ -377,55 +376,11 @@ impl Wallet {
             .map_err(|_| locked_payment_v2::LockedPaymentV2Error::InvalidMintSignature)?;
         locked_payment_v2::ensure_distinct_note_nonces(&notes)?;
 
-        let input_amount = notes
+        let paid = notes
             .iter()
-            .try_fold(0u64, |sum, note| sum.checked_add(note.amount().msats));
-        let output_amount = refund_issuance.iter().try_fold(0u64, |sum, output| {
-            sum.checked_add(output.denomination.amount().msats)
-        });
-        let input_fees = notes.iter().try_fold(0u64, |sum, note| {
-            let input = MintV2Input::new_v0(fedimint_mintv2_common::Note {
-                denomination: note.denomination,
-                nonce: note.keypair.public_key(),
-                signature: note.signature,
-            });
-            let fee = mint
-                .input_fee(&Amounts::new_bitcoin(note.amount()), &input)
-                .expect("bitcoin mint-v2 supplies input fees")
-                .get_bitcoin()
-                .msats;
-            sum.checked_add(fee)
-        });
-        let output_fees = refund_issuance.iter().try_fold(0u64, |sum, output| {
-            let mint_output = fedimint_mintv2_common::MintOutput::new_v0(
-                output.denomination,
-                output.blind_nonce,
-                output.tweak,
-            );
-            let fee = mint
-                .output_fee(
-                    &Amounts::new_bitcoin(output.denomination.amount()),
-                    &mint_output,
-                )
-                .expect("bitcoin mint-v2 supplies output fees")
-                .get_bitcoin()
-                .msats;
-            sum.checked_add(fee)
-        });
-        let Some((((input_amount, output_amount), input_fees), output_fees)) = input_amount
-            .zip(output_amount)
-            .zip(input_fees)
-            .zip(output_fees)
-        else {
-            return Err(locked_payment_v2::LockedPaymentV2Error::InvalidRefundAmount.into());
-        };
-        if output_amount
-            .checked_add(input_fees)
-            .and_then(|amount| amount.checked_add(output_fees))
-            != Some(input_amount)
-        {
-            return Err(locked_payment_v2::LockedPaymentV2Error::InvalidRefundAmount.into());
-        }
+            .map(|note| note.denomination)
+            .collect::<Vec<_>>();
+        refund::check_refund_v2(mint, &paid, refund_issuance)?;
         Ok(VerifiedLockedV2Payment {
             mint_module,
             notes,
@@ -851,27 +806,30 @@ impl EcashWallet for Wallet {
             .0
             .parse()
             .map_err(|_| LockedPaymentPrepareError::Invalid)?;
-        let nonce = match refund {
-            RefundIssuance::MintV1 { refund_nonce, .. }
-            | RefundIssuance::MintV2 { refund_nonce, .. } => *refund_nonce,
-        };
-        let expected = self
-            .prepare_quote_refund(
-                federation_id,
-                payment
-                    .total_msats()
-                    .ok_or(LockedPaymentPrepareError::Invalid)?,
-                nonce,
-            )
-            .await
-            .map_err(internal)?;
-        let matches = match (refund, expected) {
+        let matches = match (payment, refund) {
             (
-                RefundIssuance::MintV1 { issuance, .. },
+                _,
                 RefundIssuance::MintV1 {
-                    issuance: expected, ..
+                    refund_nonce,
+                    issuance,
                 },
             ) => {
+                let expected = self
+                    .prepare_quote_refund(
+                        federation_id,
+                        payment
+                            .total_msats()
+                            .ok_or(LockedPaymentPrepareError::Invalid)?,
+                        *refund_nonce,
+                    )
+                    .await
+                    .map_err(internal)?;
+                let RefundIssuance::MintV1 {
+                    issuance: expected, ..
+                } = expected
+                else {
+                    return Err(LockedPaymentPrepareError::Invalid);
+                };
                 issuance
                     .iter()
                     .map(|r| r.amount_msats)
@@ -880,19 +838,31 @@ impl EcashWallet for Wallet {
                         .iter()
                         .all(|r| decode_issuance_request(r.amount_msats, &r.blind_nonce).is_ok())
             }
-            (
-                RefundIssuance::MintV2 { issuance, .. },
-                RefundIssuance::MintV2 {
-                    issuance: expected, ..
-                },
-            ) => {
-                issuance
-                    .iter()
-                    .map(|r| r.amount_msats)
-                    .eq(expected.iter().map(|r| r.amount_msats))
-                    && issuance.iter().all(|r| decode_v2_request(r).is_ok())
+            (PaymentTerms::MintV2 { .. }, RefundIssuance::MintV2 { issuance, .. })
+                if issuance.len() > MAX_LOCKED_PAYMENT_NOTES =>
+            {
+                false
             }
-            _ => false,
+            (
+                PaymentTerms::MintV2 { issuance: paid, .. },
+                RefundIssuance::MintV2 { issuance, .. },
+            ) => {
+                let paid = paid
+                    .iter()
+                    .map(|r| locked_payment_v2::denomination_from_amount(r.amount_msats))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| LockedPaymentPrepareError::Invalid)?;
+                let refund = issuance
+                    .iter()
+                    .map(decode_v2_request)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let client = self.client(federation_id).await.map_err(internal)?;
+                let mint = client
+                    .get_first_module::<fedimint_mintv2_client::MintClientModule>()
+                    .map_err(internal)?;
+                refund::check_refund_v2(&mint, &paid, &refund).is_ok()
+            }
+            (PaymentTerms::MintV1 { .. }, RefundIssuance::MintV2 { .. }) => false,
         };
         if matches {
             Ok(())

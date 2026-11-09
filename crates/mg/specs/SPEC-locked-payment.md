@@ -152,8 +152,10 @@ under a fresh signature, or the same refusal and refund material.
 A refusal of a **paid** presentation returns a signed refund transaction in the
 same response. Its inputs are the verified paid notes and its outputs are the
 refund issuance requests bound into the signed quote request. The FA submits it; the MG background
-loop never submits refunds. The MG verifies the exact mint fee balance before
-admission.
+loop never submits refunds. The MG verifies the refund balance before
+admission: for mint-v1 the outputs balance the paid notes exactly after mint
+fees; for mint-v2 there are at most 64 outputs, and with mint fees they leave
+less than 128 msat of the paid notes, which the federation keeps.
 
 No refusal is persisted. An `OfferChanged` refusal compares the quote's signed
 offer epoch for equality with a durable epoch replaced atomically by the

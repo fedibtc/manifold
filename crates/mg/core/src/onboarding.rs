@@ -207,7 +207,8 @@ impl Onboarding {
                         "this environment has no setup-payment publisher, so a paid seat could never be paid for"
                     );
                 }
-                self.db
+                let price = self
+                    .db
                     .configure_initial_offer(price_msats.map(Msats), max_seats)
                     .await?;
                 // Raised only after the final stage is durable.
@@ -215,7 +216,7 @@ impl Onboarding {
                 Ok(json!({
                     "onboarding": "complete",
                     "max_seats": max_seats,
-                    "plans": price_msats.map(|price_msats| json!({
+                    "plans": price.map(|Msats(price_msats)| json!({
                         "InfiniteBestEffort": { "price_msats": price_msats }
                     })).into_iter().collect::<Vec<_>>(),
                 }))

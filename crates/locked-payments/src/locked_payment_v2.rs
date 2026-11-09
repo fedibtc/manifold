@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use fedimint_client_module::transaction::{ClientOutput, ClientOutputBundle};
+use fedimint_core::Amount;
 use fedimint_core::core::{IntoDynInstance as _, ModuleInstanceId};
 use fedimint_core::encoding::Decodable as _;
 use fedimint_core::module::Amounts;
@@ -14,6 +15,9 @@ use fedimint_mintv2_client::SpendableNote;
 use fedimint_mintv2_client::issuance::NoteIssuanceRequest;
 use fedimint_mintv2_common::{Denomination, MintInput, MintOutput, Note};
 use tbs::{BlindedMessage, BlindedSignature};
+
+use crate::denominations::{MAX_LOCKED_PAYMENT_NOTES, MIN_ECONOMICAL_MINT_V2_NOTE_MSATS};
+use crate::locked_payment::{self, LockedPaymentError};
 
 /// Public mint-v2 issuance output carried by quote/refund terms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +41,109 @@ pub enum LockedPaymentV2Error {
     DuplicateNoteNonce,
     #[error("refund outputs do not balance the paid notes after mint fees")]
     InvalidRefundAmount,
+}
+
+/// Most a mint-v2 refund may leave unclaimed: less than the smallest
+/// economical note. Fedimint accepts a transaction whose inputs exceed its
+/// outputs plus fees from core consensus 2.1 (Fedimint v0.10), which every
+/// mint-v2 federation runs; the excess stays with the federation.
+pub const MAX_REFUND_LEFTOVER_MSATS: u64 = MIN_ECONOMICAL_MINT_V2_NOTE_MSATS - 1;
+
+/// The refund rule the payee enforces for mint-v2: the refund outputs plus
+/// every mint fee fit within the paid notes and leave at most
+/// [`MAX_REFUND_LEFTOVER_MSATS`] behind. The payer chooses the outputs
+/// ([`refund_denominations`]); the payee checks only this property, so the
+/// two need not run the same search.
+pub fn refund_balances(
+    paid_msats: u64,
+    input_fees_msats: u64,
+    refund_msats: u64,
+    output_fees_msats: u64,
+) -> bool {
+    refund_msats
+        .checked_add(input_fees_msats)
+        .and_then(|spent| spent.checked_add(output_fees_msats))
+        .and_then(|spent| paid_msats.checked_sub(spent))
+        .is_some_and(|leftover| leftover <= MAX_REFUND_LEFTOVER_MSATS)
+}
+
+/// Choose mint-v2 refund outputs for `target_msats` (the paid amount after
+/// input fees). The exact search of
+/// [`locked_payment::refund_denominations`] runs first, so every refund it
+/// finds is unchanged and payees that still require an exact balance
+/// agree. When it finds none, take the fewest notes whose outputs and
+/// output fees leave at most [`MAX_REFUND_LEFTOVER_MSATS`]: 2,100,096 msat
+/// paid in five notes at a 10 msat fee refunds in 4 notes and leaves
+/// 38 msat, where an exact refund needs 59 notes.
+pub fn refund_denominations(
+    available: &[Amount],
+    output_fee: impl Fn(Amount) -> Amount,
+    target_msats: u64,
+) -> Result<Vec<Amount>, LockedPaymentError> {
+    locked_payment::refund_denominations(available, &output_fee, target_msats).or_else(|error| {
+        fewest_notes_within_leftover(available, &output_fee, target_msats).ok_or(error)
+    })
+}
+
+/// Fewest notes, at most [`MAX_LOCKED_PAYMENT_NOTES`], whose amounts plus
+/// output fees leave at most [`MAX_REFUND_LEFTOVER_MSATS`] of `target_msats`.
+/// For each note count it estimates the fees at the smallest tier's fee,
+/// splits the largest whole multiple of the smallest tier greedily, halves
+/// the largest note until the count is reached, and keeps the result only if
+/// its real fees satisfy the bound. The refund value only falls as the count
+/// grows, so the first count that works also loses the least. Largest first.
+fn fewest_notes_within_leftover(
+    available: &[Amount],
+    output_fee: &impl Fn(Amount) -> Amount,
+    target_msats: u64,
+) -> Option<Vec<Amount>> {
+    let mut tiers = available.to_vec();
+    tiers.sort_unstable_by(|a, b| b.cmp(a));
+    tiers.dedup();
+    let smallest = *tiers.last()?;
+    if smallest.msats == 0 {
+        return None;
+    }
+    for count in 1..=MAX_LOCKED_PAYMENT_NOTES {
+        let estimated_fees = output_fee(smallest).msats.checked_mul(count as u64)?;
+        let Some(budget) = target_msats.checked_sub(estimated_fees) else {
+            break;
+        };
+        let mut remaining = budget / smallest.msats * smallest.msats;
+        let mut notes = Vec::new();
+        for &tier in &tiers {
+            let take = remaining / tier.msats;
+            if take > (count - notes.len()) as u64 {
+                break;
+            }
+            notes.extend(std::iter::repeat_n(tier, take as usize));
+            remaining %= tier.msats;
+        }
+        if remaining != 0 || notes.is_empty() {
+            continue;
+        }
+        while notes.len() < count {
+            let largest = notes[0];
+            let half = Amount::from_msats(largest.msats / 2);
+            if largest.msats % 2 != 0 || !tiers.contains(&half) {
+                break;
+            }
+            notes[0] = half;
+            notes.push(half);
+            notes.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        if notes.len() != count {
+            continue;
+        }
+        let refund = notes.iter().map(|note| note.msats).sum::<u64>();
+        let fees = notes
+            .iter()
+            .try_fold(0u64, |sum, note| sum.checked_add(output_fee(*note).msats))?;
+        if refund_balances(target_msats, 0, refund, fees) {
+            return Some(notes);
+        }
+    }
+    None
 }
 
 pub fn denomination_from_amount(amount_msats: u64) -> Result<Denomination, LockedPaymentV2Error> {
@@ -197,6 +304,90 @@ mod tests {
     };
 
     use super::*;
+
+    fn economical_tiers() -> Vec<Amount> {
+        crate::denominations::economical_mint_v2_denominations()
+            .into_iter()
+            .map(Denomination::amount)
+            .collect()
+    }
+
+    /// The paid amount after input fees, for `price_msats` paid in the
+    /// quote's greedy notes under a base-only `fee_msats`.
+    fn refund_target(tiers: &[Amount], price_msats: u64, fee_msats: u64) -> u64 {
+        let paid = crate::denominations::quote_denominations(price_msats, tiers).unwrap();
+        price_msats - paid.len() as u64 * fee_msats
+    }
+
+    #[test]
+    fn refund_balance_admits_a_leftover_below_one_smallest_note() {
+        // 1,000 paid, 20 input fees, 30 output fees: 950 refunded is exact,
+        // 823 leaves 127, 822 leaves 128, 951 overspends.
+        assert!(refund_balances(1_000, 20, 950, 30));
+        assert!(refund_balances(1_000, 20, 823, 30));
+        assert!(!refund_balances(1_000, 20, 822, 30));
+        assert!(!refund_balances(1_000, 20, 951, 30));
+        assert!(!refund_balances(u64::MAX, 1, u64::MAX, 0));
+    }
+
+    /// 2,100,096 msat is paid in five notes (2^21 + 2048 + 512 + 256 +
+    /// 128). At a 10 msat fee the exact search finds no refund (one needs
+    /// 59 notes); the fewest-notes search refunds 2^21 + 2048 + 512 + 256 =
+    /// 2,099,968 msat in 4 notes, losing 50 + 40 fees + 38 leftover.
+    #[test]
+    fn a_refund_the_exact_search_misses_takes_the_fewest_notes() {
+        let tiers = economical_tiers();
+        let fee = |_| Amount::from_msats(10);
+        let target = refund_target(&tiers, 2_100_096, 10);
+        assert_eq!(target, 2_100_046);
+        assert_eq!(
+            locked_payment::refund_denominations(&tiers, fee, target),
+            Err(LockedPaymentError::UnrepresentableRefund)
+        );
+        let refund = refund_denominations(&tiers, fee, target).unwrap();
+        assert_eq!(
+            refund.iter().map(|note| note.msats).collect::<Vec<_>>(),
+            [2_097_152, 2048, 512, 256]
+        );
+        assert_eq!(target - 2_099_968 - 4 * 10, 38);
+    }
+
+    /// Over 128 msat grid prices from 1,000 to 10,000,000 sat, under the
+    /// base-only fees seen in practice, the fewest-notes search alone finds a
+    /// refund within the rule and the note limit for every price, so the
+    /// fallback never fails. It is called directly because the exact search
+    /// is slow in debug builds when it fails; the stride keeps the run short.
+    #[test]
+    fn every_payable_price_refunds_within_the_rule() {
+        let tiers = economical_tiers();
+        for fee_msats in [0, 10, 100, 128, 200] {
+            let fee = |_| Amount::from_msats(fee_msats);
+            for price in (1_000_064u64..=10_000_000_000).step_by(128 * 9_973) {
+                let target = refund_target(&tiers, price, fee_msats);
+                let refund = fewest_notes_within_leftover(&tiers, &fee, target)
+                    .unwrap_or_else(|| panic!("price {price} fee {fee_msats}"));
+                let refunded = refund.iter().map(|note| note.msats).sum::<u64>();
+                assert!(refund.len() <= MAX_LOCKED_PAYMENT_NOTES);
+                assert!(
+                    refund_balances(target, 0, refunded, refund.len() as u64 * fee_msats),
+                    "price {price} fee {fee_msats}"
+                );
+            }
+        }
+    }
+
+    /// Where the exact search finds a refund it is returned unchanged, so a
+    /// payee that still requires an exact balance agrees with this payer.
+    #[test]
+    fn an_exact_refund_is_unchanged() {
+        let tiers = economical_tiers();
+        let fee = |_| Amount::from_msats(10);
+        for price in [20_480, 1_000_064, 50_000_000] {
+            let target = refund_target(&tiers, price, 10);
+            let exact = locked_payment::refund_denominations(&tiers, fee, target).unwrap();
+            assert_eq!(refund_denominations(&tiers, fee, target).unwrap(), exact);
+        }
+    }
 
     /// Offline mirror of the production finalize-and-verify step, which
     /// delegates to `MintClientModule::finalize_external_issuance` and so

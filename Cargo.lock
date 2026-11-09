@@ -744,7 +744,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1029,7 +1029,7 @@ checksum = "102dbef1187b1893e6dfe05a774e79fd52265f49f214f6879c8ff49f52c8188b"
 
 [[package]]
 name = "bounded-rolling-file"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "rustix",
  "tempfile",
@@ -1824,12 +1824,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
 name = "defe"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "ctrlc",
  "defe-api",
@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "defe-api"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "ciborium",
  "serde",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "defe-client"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "defe-api",
  "futures-util",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "defe-env"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "defe-portalloc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "devmon"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "fa-cli"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "bitcoin_hashes",
@@ -2425,7 +2425,7 @@ dependencies = [
  "fedimint-walletv2-client",
  "futures",
  "hex",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "libc",
  "lightning-invoice",
  "locked-payments",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "fa-client"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -2497,7 +2497,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fedi-decentralized-cloud-mg-telemetry"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-domain"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bitcoin",
  "fedimint-core",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-federation-preview"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-guardian-metrics-policy"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-liquidity-manager-daemon"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2663,7 +2663,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-manifold-environment"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bitcoin",
  "nostr",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-nostr"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "blind-rsa-signatures",
  "fedi-decentralized-domain",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-nostr-clients"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "fedi-decentralized-nostr",
  "fedimint-core",
@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-peer-badge-verifier"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "fedi-decentralized-domain",
@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "axum 0.8.9",
@@ -2759,14 +2759,14 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-provider"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "fedi-decentralized-push-gateway-types",
 ]
 
 [[package]]
 name = "fedi-decentralized-push-gateway-provider-fcm"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "fedi-decentralized-push-gateway-provider",
  "fedi-decentralized-push-gateway-types",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-storage"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "fedi-decentralized-push-gateway-types",
  "serde",
@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-types"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-service-liquidity-manager"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "ciborium",
  "fedi-decentralized-services",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-service-manifold-guardian"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -2828,7 +2828,7 @@ dependencies = [
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
  "hex",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "nostr",
  "peerbadge-protocol",
  "petname",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-services"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "fedi-decentralized-domain",
  "fedi-iroh-rpc",
@@ -2858,12 +2858,12 @@ dependencies = [
 
 [[package]]
 name = "fedi-iroh-rpc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "ciborium",
  "fedi-iroh-rpc-macros",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "serde",
  "serde_bytes",
  "thiserror 2.0.18",
@@ -2872,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-iroh-rpc-macros"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3045,7 +3045,7 @@ dependencies = [
  "fedimint-metrics",
  "futures",
  "iroh 0.35.0",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "iroh-mainline-address-lookup",
  "jsonrpsee-core",
  "jsonrpsee-types",
@@ -3667,7 +3667,7 @@ dependencies = [
  "hex",
  "hyper",
  "iroh 0.35.0",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "iroh-mainline-address-lookup",
  "iroh-relay 0.35.0",
  "itertools 0.14.0",
@@ -4079,7 +4079,7 @@ dependencies = [
 
 [[package]]
 name = "flip-ui-e2e-runner"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -4311,7 +4311,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.1.3",
+ "windows-link 0.2.1",
  "windows-result 0.4.1",
 ]
 
@@ -4530,8 +4530,6 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.2.0",
 ]
 
@@ -4612,29 +4610,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3011d1213f159867b13cfd6ac92d2cd5f1345762c63be3554e84092d85a50bbd"
 
 [[package]]
-name = "hickory-net"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2295ed2f9c31e471e1428a8f88a3f0e1f4b27c15049592138d1eebe9c35b183"
-dependencies = [
- "async-trait",
- "cfg-if",
- "data-encoding",
- "futures-channel",
- "futures-io",
- "futures-util",
- "hickory-proto 0.26.1",
- "idna",
- "ipnet",
- "jni 0.22.4",
- "rand 0.10.1",
- "thiserror 2.0.18",
- "tinyvec",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "hickory-proto"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4660,26 +4635,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hickory-proto"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bab31817bfb44672a252e97fe81cd0c18d1b2cf892108922f6818820df8c643"
-dependencies = [
- "data-encoding",
- "idna",
- "ipnet",
- "jni 0.22.4",
- "once_cell",
- "prefix-trie",
- "rand 0.10.1",
- "ring",
- "thiserror 2.0.18",
- "tinyvec",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "hickory-resolver"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4687,7 +4642,7 @@ checksum = "dc62a9a99b0bfb44d2ab95a7208ac952d31060efc16241c87eaf36406fecf87a"
 dependencies = [
  "cfg-if",
  "futures-util",
- "hickory-proto 0.25.2",
+ "hickory-proto",
  "ipconfig",
  "moka",
  "once_cell",
@@ -4697,26 +4652,6 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "hickory-resolver"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0d58d28879ceecde6607729660c2667a081ccdc082e082675042793960f178c"
-dependencies = [
- "cfg-if",
- "futures-util",
- "hickory-net",
- "hickory-proto 0.26.1",
- "ipnet",
- "moka",
- "once_cell",
- "parking_lot",
- "rand 0.10.1",
- "smallvec",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -5263,9 +5198,6 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "iroh"
@@ -5287,7 +5219,7 @@ dependencies = [
  "futures-buffered",
  "futures-util",
  "getrandom 0.3.4",
- "hickory-resolver 0.25.2",
+ "hickory-resolver",
  "http",
  "igd-next 0.16.2",
  "instant",
@@ -5330,9 +5262,9 @@ dependencies = [
 
 [[package]]
 name = "iroh"
-version = "1.0.3"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72"
+checksum = "e3689cab508af9bcef7816c1201b403595ec6aa20e7d15e1f9683bb4be4a5b17"
 dependencies = [
  "backon",
  "blake3",
@@ -5344,24 +5276,23 @@ dependencies = [
  "ed25519-dalek 3.0.0-rc.0",
  "futures-util",
  "getrandom 0.4.2",
- "hickory-resolver 0.26.1",
  "http",
  "ipnet",
- "iroh-base 1.2.0",
+ "iroh-base 1.4.1",
  "iroh-dns",
- "iroh-metrics 1.0.1",
- "iroh-relay 1.2.0",
+ "iroh-metrics 1.0.2",
+ "iroh-relay 1.4.1",
  "n0-error",
  "n0-future 0.3.2",
  "n0-watcher",
- "netwatch 0.19.1",
+ "netwatch 0.19.3",
  "noq",
  "noq-proto",
  "noq-udp",
  "papaya",
  "pin-project",
  "portable-atomic",
- "portmapper 0.19.1",
+ "portmapper 0.19.3",
  "rand 0.10.1",
  "reqwest 0.13.4",
  "rustc-hash",
@@ -5397,9 +5328,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-base"
-version = "1.2.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffd1efd1aaecd68d4d1b0727a30c5811f43fb822843e48f65f6e5db3b7256cc9"
+checksum = "43b72366b16001af3a51574233df88ca6d62da0215807549a769e7de887da803"
 dependencies = [
  "curve25519-dalek 5.0.0-rc.0",
  "data-encoding",
@@ -5416,14 +5347,14 @@ dependencies = [
 
 [[package]]
 name = "iroh-dns"
-version = "1.3.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80276761b56e904e26ea71d0863beef0bb8d5ab6b639cbd1338e4b615209e3a1"
+checksum = "7481d0792dde1035a2b06ec06ed3cf6d01fcb1a494e6931b489e32073382048d"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
  "derive_more 2.1.1",
- "iroh-base 1.2.0",
+ "iroh-base 1.4.1",
  "n0-dns-resolver",
  "n0-error",
  "n0-future 0.3.2",
@@ -5444,8 +5375,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1fd07cb8b4af54ccf367fe79516484c544ea3e4b1984cdd2b9aaf3bacaa80f2"
 dependencies = [
  "derive_more 2.1.1",
- "iroh 1.0.3",
- "iroh-base 1.2.0",
+ "iroh 1.4.1",
+ "iroh-base 1.4.1",
  "iroh-dns",
  "n0-error",
  "n0-future 0.3.2",
@@ -5470,9 +5401,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "291065721ad7c477b972e581bbc528df031dc8eb5e39fe1ff3300ae5dfb157ef"
+checksum = "8ede55536349842337f7cdc63012ec33dc637945f3259c98a0763aac364cdf09"
 dependencies = [
  "iroh-metrics-derive 1.0.1",
  "itoa",
@@ -5572,7 +5503,7 @@ dependencies = [
  "data-encoding",
  "derive_more 1.0.0",
  "getrandom 0.3.4",
- "hickory-resolver 0.25.2",
+ "hickory-resolver",
  "http",
  "http-body-util",
  "hyper",
@@ -5609,9 +5540,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-relay"
-version = "1.2.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beb2294a9749d6a25fd7cd8bcf0fccd932f20716d4f967d85d3f23c7135ae6a2"
+checksum = "7e5589e7c1475700686603a970275687f760df853bc6525c7eb1347aa31d7230"
 dependencies = [
  "blake3",
  "bytes",
@@ -5623,15 +5554,16 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "iroh-base 1.2.0",
+ "iroh-base 1.4.1",
  "iroh-dns",
- "iroh-metrics 1.0.1",
- "lru 0.18.0",
+ "iroh-metrics 1.0.2",
+ "lru 0.18.5",
  "n0-error",
  "n0-future 0.3.2",
  "noq",
  "noq-proto",
  "num_enum",
+ "percent-encoding",
  "pin-project",
  "postcard",
  "rand 0.10.1",
@@ -6210,9 +6142,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.0"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
+checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -6353,7 +6285,7 @@ dependencies = [
 
 [[package]]
 name = "mg"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6380,7 +6312,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "libc",
  "mg-core",
  "mg-fedimint",
@@ -6403,7 +6335,7 @@ dependencies = [
 
 [[package]]
 name = "mg-cli"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -6417,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "mg-core"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6446,10 +6378,11 @@ dependencies = [
  "hex",
  "hkdf",
  "humantime",
- "iroh 1.0.3",
+ "iroh 1.4.1",
  "iroh-base 0.35.0",
  "jsonrpsee-server",
  "libc",
+ "locked-payments",
  "mg-meta-fields",
  "nostr-sdk",
  "operator-ui-auth",
@@ -6526,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "mg-meta-fields"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bitcoin",
  "fedi-decentralized-domain",
@@ -6537,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "mg-nostr"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6570,7 +6503,7 @@ dependencies = [
 
 [[package]]
 name = "mg-telemetry"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.22.1",
  "bounded-rolling-file",
@@ -6592,7 +6525,7 @@ dependencies = [
 
 [[package]]
 name = "mg-ui-e2e-runner"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -6716,7 +6649,7 @@ dependencies = [
  "derive_more 2.1.1",
  "ipconfig",
  "jni 0.22.4",
- "lru 0.18.0",
+ "lru 0.18.5",
  "n0-error",
  "n0-future 0.3.2",
  "ndk-context",
@@ -6805,7 +6738,7 @@ dependencies = [
  "dyn-clone",
  "ed25519-dalek 3.0.0-rc.0",
  "futures-core",
- "lru 0.18.0",
+ "lru 0.18.5",
  "n0-error",
  "noq-udp",
  "rand 0.10.1",
@@ -6863,7 +6796,7 @@ dependencies = [
  "libc",
  "netlink-packet-core 0.7.0",
  "netlink-packet-route 0.17.1",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "once_cell",
  "system-configuration 0.6.1",
  "windows-sys 0.52.0",
@@ -6885,11 +6818,35 @@ dependencies = [
  "ndk-context",
  "netlink-packet-core 0.8.1",
  "netlink-packet-route 0.31.0",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "objc2",
  "objc2-core-foundation",
  "objc2-core-wlan",
  "objc2-foundation",
+ "objc2-system-configuration",
+ "once_cell",
+ "plist",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "netdev"
+version = "0.46.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3c52c2584961c68f5a6e3356797344061f818c93b8acc9cd6d7e284795e563e"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "dlopen2 0.8.2",
+ "ipnet",
+ "jni 0.21.1",
+ "libc",
+ "mac-addr",
+ "ndk-context",
+ "netlink-packet-core 0.9.0",
+ "netlink-packet-route 0.33.0",
+ "netlink-sys 0.9.0",
+ "objc2-core-foundation",
  "objc2-system-configuration",
  "once_cell",
  "plist",
@@ -6915,6 +6872,12 @@ checksum = "3463cbb78394cb0141e2c926b93fc2197e473394b761986eca3b9da2c63ae0f4"
 dependencies = [
  "paste",
 ]
+
+[[package]]
+name = "netlink-packet-core"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d6e2daf9a8c2e21302714706860a0e6be02e03d17294ecc66b354ea7d4059dd"
 
 [[package]]
 name = "netlink-packet-route"
@@ -6958,6 +6921,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "netlink-packet-route"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59d48ffc8b73a506e1ff0878528c72668f2bfbc3d875b6be890a96be5d0d5576"
+dependencies = [
+ "bitflags 2.13.0",
+ "libc",
+ "log",
+ "netlink-packet-core 0.9.0",
+ "zerocopy",
+]
+
+[[package]]
 name = "netlink-packet-utils"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6979,7 +6955,7 @@ dependencies = [
  "futures",
  "log",
  "netlink-packet-core 0.7.0",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "thiserror 2.0.18",
 ]
 
@@ -6993,7 +6969,7 @@ dependencies = [
  "futures",
  "log",
  "netlink-packet-core 0.8.1",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "thiserror 2.0.18",
 ]
 
@@ -7008,6 +6984,17 @@ dependencies = [
  "libc",
  "log",
  "tokio",
+]
+
+[[package]]
+name = "netlink-sys"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c99d38e00b420df49e940fe0826e667c3dad82ac68eb4c2bbf754c1c14a83a10"
+dependencies = [
+ "bytes",
+ "libc",
+ "log",
 ]
 
 [[package]]
@@ -7028,7 +7015,7 @@ dependencies = [
  "netlink-packet-core 0.7.0",
  "netlink-packet-route 0.23.0",
  "netlink-proto 0.11.5",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "serde",
  "snafu",
  "socket2 0.5.10",
@@ -7044,9 +7031,9 @@ dependencies = [
 
 [[package]]
 name = "netwatch"
-version = "0.19.1"
+version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976"
+checksum = "39da9cad5f23aa43401f09497d3b280e51b5feba115d9ffbf38ca35d6ff95e96"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -7059,10 +7046,11 @@ dependencies = [
  "n0-future 0.3.2",
  "n0-watcher",
  "netdev 0.45.0",
+ "netdev 0.46.3",
  "netlink-packet-core 0.8.1",
  "netlink-packet-route 0.31.0",
  "netlink-proto 0.12.0",
- "netlink-sys",
+ "netlink-sys 0.8.8",
  "noq-udp",
  "objc2-core-foundation",
  "objc2-system-configuration",
@@ -7131,9 +7119,9 @@ dependencies = [
 
 [[package]]
 name = "noq"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b78be567e796cfa74bb9bdc4117790af2d505eb887019cf8803244353eb09d89"
+checksum = "6249a065adc1edbc1704a95436f38dd60476064dbc3b7c47cf279e02d1590eb5"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -7153,9 +7141,9 @@ dependencies = [
 
 [[package]]
 name = "noq-proto"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c1e5b6fe668491eca022f745a0a9402585626c73a7b839b3424ace15d6a9c8f"
+checksum = "c01a35be3ed37558c8db69554419f24eff8a63599b54f711bbe3863ec727c47d"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -7180,9 +7168,9 @@ dependencies = [
 
 [[package]]
 name = "noq-udp"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dc50afea61aff926e150a36c31f06094608848e114a3fe667d76ec233163b1c"
+checksum = "8d0160422832eea1cc11c34be04ee6d5a046452b0b46cfb14695d55a1f24c954"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -7596,7 +7584,7 @@ dependencies = [
 
 [[package]]
 name = "operator-ui-auth"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum 0.8.9",
  "axum-extra",
@@ -7608,7 +7596,7 @@ dependencies = [
 
 [[package]]
 name = "operator-ui-static"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum 0.8.9",
  "rust-embed",
@@ -7973,11 +7961,11 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plist"
-version = "1.9.0"
+version = "1.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
+checksum = "327a4cb2ad49dc48adfdc9da89e22c64d488b508c67a044d71ba729e4521a285"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "indexmap 2.14.0",
  "quick-xml",
  "serde",
@@ -8091,20 +8079,20 @@ dependencies = [
 
 [[package]]
 name = "portmapper"
-version = "0.19.1"
+version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb3713e4977408279158444a18c1a01ac9bf2e7eaf1fbfd1a19ac9cd18d90721"
+checksum = "ca97242f016e090a25330613bc2382aab65eb22f9149dbe84d8f8e711d49a530"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "derive_more 2.1.1",
  "hyper-util",
  "igd-next 0.17.1",
- "iroh-metrics 1.0.1",
+ "iroh-metrics 1.0.2",
  "libc",
  "n0-error",
  "n0-future 0.3.2",
- "netwatch 0.19.1",
+ "netwatch 0.19.3",
  "num_enum",
  "rand 0.10.1",
  "serde",
@@ -8207,17 +8195,6 @@ dependencies = [
  "lazy_static",
  "regex",
  "ucd-parse",
-]
-
-[[package]]
-name = "prefix-trie"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cf6e3177f0684016a5c209b00882e15f8bdd3f3bb48f0491df10cd102d0c6e7"
-dependencies = [
- "either",
- "ipnet",
- "num-traits",
 ]
 
 [[package]]
@@ -8401,9 +8378,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
 ]
@@ -8958,9 +8935,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -9064,7 +9041,7 @@ checksum = "dd29631678d6fb0903b69223673e122c32e9ae559d0960a38d574695ebc0ea15"
 
 [[package]]
 name = "safe-tracing"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bounded-rolling-file",
  "serde_json",
@@ -9418,7 +9395,7 @@ dependencies = [
 
 [[package]]
 name = "setup-payment-publisher"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -10238,7 +10215,7 @@ dependencies = [
 
 [[package]]
 name = "tests-e2e"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -11263,7 +11240,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
