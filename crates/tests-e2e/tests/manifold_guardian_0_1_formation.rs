@@ -100,14 +100,16 @@ const MINT_V2_REPLAY_TIMEOUT: Duration = Duration::from_secs(90);
 /// Lightning sweeps from the removed payment federation, one after an MG
 /// restart and one after a mnemonic restore.
 const PAID_FORMATION_TIMEOUT: Duration = Duration::from_secs(600);
-/// Per-seat InfiniteBestEffort price the paid test charges: two ecash notes
-/// (16384 + 4096 msat). One claimed payment leaves 19968 msat, of which the
-/// MG lists 14 sats as sweepable after the Defe gateway's send fees (2000 msat
-/// + 0.5% each for routing and transaction), covering
-/// [`FORMER_PAYMENT_SWEEP_MSAT`].
-const SEAT_PRICE_MSAT: u64 = 20_480;
+/// Per-seat InfiniteBestEffort price the paid test charges: five ecash notes
+/// (2^21 + 2048 + 512 + 256 + 128 msat), a 2,100 sat advert rounded to the
+/// mint-v2 grid. Under the payment federation's 10 msat base fee no exact
+/// refund fits the search, so every quote carries a refund that leaves a
+/// leftover below 128 msat, which the MG must accept by rule. One claimed
+/// payment leaves far more than [`FORMER_PAYMENT_SWEEP_MSAT`] after the Defe
+/// gateway's send fees.
+const SEAT_PRICE_MSAT: u64 = 2_100_096;
 /// One mint-v2 denomination large enough for every seat and transaction fee.
-const FA_FUNDING_MSAT: u64 = 262_144;
+const FA_FUNDING_MSAT: u64 = 16_777_216;
 /// What each MG sweeps out of the removed setup-payment federation.
 const FORMER_PAYMENT_SWEEP_MSAT: u64 = 12_000;
 const FA_WALLET_SECRET: [u8; 64] = [42; 64];

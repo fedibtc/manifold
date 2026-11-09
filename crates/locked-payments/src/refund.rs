@@ -6,12 +6,14 @@
 //! [`prepare_quote_refund`] to build the commitment it sends with a signed
 //! quote request, and later re-runs [`prepare_refund_v1`] /
 //! [`prepare_refund_v2`] to reconstruct the secrets when presenting or
-//! refunding. The payee (MG) runs the same preparation under its own
-//! secrets as the validation oracle: the denomination amounts are
+//! refunding. For mint v1 the payee (MG) runs the same preparation under
+//! its own secrets as the validation oracle: the denomination amounts are
 //! wallet-independent, so comparing them (and nonce decodability) against a
 //! presented commitment proves the eventual refund transaction balances
 //! exactly after fees. Only the amounts survive that comparison — the
-//! payee's derived nonces and secrets are discarded.
+//! payee's derived nonces and secrets are discarded. For mint v2 the payee
+//! instead checks the commitment by rule ([`check_refund_v2`]), which also
+//! admits a refund leaving less than one smallest note behind.
 //!
 //! Every function takes the caller's own Fedimint client material; this
 //! module holds no wallet state.
@@ -192,24 +194,7 @@ pub fn prepare_refund_v2(
     let paid_amount = paid.iter().try_fold(0u64, |sum, request| {
         sum.checked_add(request.denomination.amount().msats)
     });
-    let dummy_key = fedimint_core::secp256k1::Keypair::from_secret_key(
-        fedimint_core::secp256k1::SECP256K1,
-        &fedimint_core::secp256k1::SecretKey::from_slice(&[1; 32]).expect("one is a valid scalar"),
-    );
-    let input_fees = paid.iter().try_fold(0u64, |sum, request| {
-        let amount = request.denomination.amount();
-        let input = MintV2Input::new_v0(fedimint_mintv2_common::Note {
-            denomination: request.denomination,
-            nonce: dummy_key.public_key(),
-            signature: tbs::Signature(bls12_381::G1Affine::generator()),
-        });
-        let fee = mint
-            .input_fee(&Amounts::new_bitcoin(amount), &input)
-            .expect("bitcoin mint-v2 supplies input fees")
-            .get_bitcoin()
-            .msats;
-        sum.checked_add(fee)
-    });
+    let input_fees = mint_v2_input_fees(mint, paid.iter().map(|request| request.denomination));
     let target = paid_amount
         .zip(input_fees)
         .and_then(|(amount, fees)| amount.checked_sub(fees))
@@ -221,7 +206,7 @@ pub fn prepare_refund_v2(
         .into_iter()
         .map(MintV2Denomination::amount)
         .collect::<Vec<_>>();
-    let denominations = locked_payment::refund_denominations(
+    let denominations = locked_payment_v2::refund_denominations(
         &amounts,
         |amount| {
             let denomination = locked_payment_v2::denomination_from_amount(amount.msats)
@@ -257,6 +242,80 @@ pub fn prepare_refund_v2(
         &tweaks,
     )?;
     Ok(PreparedRefundV2 { issuance, private })
+}
+
+/// Check a presented mint-v2 refund commitment against the paid notes
+/// under the federation's fee schedule: at most
+/// [`MAX_LOCKED_PAYMENT_NOTES`](crate::denominations::MAX_LOCKED_PAYMENT_NOTES)
+/// outputs satisfying [`locked_payment_v2::refund_balances`]. The payee
+/// checks this property instead of re-running the payer's search, so it
+/// accepts both an exact refund and one leaving a bounded leftover.
+pub fn check_refund_v2(
+    mint: &MintV2ClientModule,
+    paid: &[MintV2Denomination],
+    refund: &[locked_payment_v2::IssuanceRequest],
+) -> Result<(), locked_payment_v2::LockedPaymentV2Error> {
+    let paid_msats = paid.iter().try_fold(0u64, |sum, denomination| {
+        sum.checked_add(denomination.amount().msats)
+    });
+    let refund_msats = refund.iter().try_fold(0u64, |sum, output| {
+        sum.checked_add(output.denomination.amount().msats)
+    });
+    let output_fees = refund.iter().try_fold(0u64, |sum, output| {
+        let fee = mint
+            .output_fee(
+                &Amounts::new_bitcoin(output.denomination.amount()),
+                &fedimint_mintv2_common::MintOutput::new_v0(
+                    output.denomination,
+                    output.blind_nonce,
+                    output.tweak,
+                ),
+            )
+            .expect("bitcoin mint-v2 supplies output fees")
+            .get_bitcoin()
+            .msats;
+        sum.checked_add(fee)
+    });
+    let input_fees = mint_v2_input_fees(mint, paid.iter().copied());
+    let balances = match (paid_msats, input_fees, refund_msats, output_fees) {
+        (Some(paid), Some(input_fees), Some(refund), Some(output_fees)) => {
+            locked_payment_v2::refund_balances(paid, input_fees, refund, output_fees)
+        }
+        _ => false,
+    };
+    if refund.len() <= crate::denominations::MAX_LOCKED_PAYMENT_NOTES && balances {
+        Ok(())
+    } else {
+        Err(locked_payment_v2::LockedPaymentV2Error::InvalidRefundAmount)
+    }
+}
+
+/// Total mint-v2 input fee for spending notes of these denominations. Fee
+/// methods ignore note contents; a syntactically valid placeholder note
+/// keeps the calculation on the real fee API.
+fn mint_v2_input_fees(
+    mint: &MintV2ClientModule,
+    denominations: impl IntoIterator<Item = MintV2Denomination>,
+) -> Option<u64> {
+    let dummy_key = fedimint_core::secp256k1::Keypair::from_secret_key(
+        fedimint_core::secp256k1::SECP256K1,
+        &fedimint_core::secp256k1::SecretKey::from_slice(&[1; 32]).expect("one is a valid scalar"),
+    );
+    denominations
+        .into_iter()
+        .try_fold(0u64, |sum, denomination| {
+            let input = MintV2Input::new_v0(fedimint_mintv2_common::Note {
+                denomination,
+                nonce: dummy_key.public_key(),
+                signature: tbs::Signature(bls12_381::G1Affine::generator()),
+            });
+            let fee = mint
+                .input_fee(&Amounts::new_bitcoin(denomination.amount()), &input)
+                .expect("bitcoin mint-v2 supplies input fees")
+                .get_bitcoin()
+                .msats;
+            sum.checked_add(fee)
+        })
 }
 
 /// Create FA-owned refund nonces that make the MG's refund transaction
