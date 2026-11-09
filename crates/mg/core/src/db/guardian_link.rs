@@ -1,0 +1,251 @@
+//! The linked operator device (SPEC-guardian-link): one row, replaced by
+//! every new link. The hook bearer lives only in `callback` and is never
+//! selected into an operator projection.
+
+use super::{Db, DbError, now_ms};
+use crate::facts::CompletionCallbackReason;
+use crate::guardian_link::AttentionReason;
+use fedi_decentralized_service_manifold_guardian::DkgCompletionCallback;
+
+const LINK_ID: i64 = 1;
+
+/// Whether the MG can still invoke the device's hook.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardianLinkDelivery {
+    Active,
+    /// The last attempt found the phone inactive: the push provider rejected
+    /// its token and the gateway holds the hook until the app is opened and
+    /// re-registers. The MG keeps retrying; the next delivery makes it active.
+    Inactive,
+    /// The gateway rejected the hook for good (it expired, or the app was
+    /// reinstalled); the host must link the phone again.
+    Terminal(CompletionCallbackReason),
+}
+
+/// The durable link. `callback` is `None` once delivery is terminal.
+#[derive(Clone)]
+pub struct GuardianLinkRecord {
+    pub device_label: String,
+    pub callback: Option<DkgCompletionCallback>,
+    pub linked_at_ms: i64,
+    pub notification_seq: u64,
+    pub notified_reasons: Vec<AttentionReason>,
+    pub last_notified_at_ms: Option<i64>,
+    pub delivery: GuardianLinkDelivery,
+}
+
+impl std::fmt::Debug for GuardianLinkRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuardianLinkRecord")
+            .field("device_label", &self.device_label)
+            .field("callback", &self.callback.as_ref().map(|_| "<redacted>"))
+            .field("linked_at_ms", &self.linked_at_ms)
+            .field("notification_seq", &self.notification_seq)
+            .field("notified_reasons", &self.notified_reasons)
+            .field("last_notified_at_ms", &self.last_notified_at_ms)
+            .field("delivery", &self.delivery)
+            .finish()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct GuardianLinkRow {
+    device_label: String,
+    callback: Option<String>,
+    linked_at_ms: i64,
+    notification_seq: i64,
+    notified_reasons: String,
+    last_notified_at_ms: Option<i64>,
+    delivery: String,
+    delivery_reason: Option<String>,
+}
+
+fn corrupt(detail: impl Into<String>) -> DbError {
+    DbError::CorruptRow {
+        table: "guardian_link",
+        key: LINK_ID.to_string(),
+        detail: detail.into(),
+    }
+}
+
+impl TryFrom<GuardianLinkRow> for GuardianLinkRecord {
+    type Error = DbError;
+
+    fn try_from(row: GuardianLinkRow) -> Result<Self, DbError> {
+        let callback = row
+            .callback
+            .as_deref()
+            .map(serde_json::from_str::<DkgCompletionCallback>)
+            .transpose()
+            .map_err(|_| corrupt("callback does not decode"))?;
+        let notified_reasons = serde_json::from_str::<Vec<AttentionReason>>(&row.notified_reasons)
+            .map_err(|_| corrupt("notified_reasons does not decode"))?;
+        let delivery = match (row.delivery.as_str(), row.delivery_reason.as_deref()) {
+            ("active", None) => GuardianLinkDelivery::Active,
+            ("inactive", None) => GuardianLinkDelivery::Inactive,
+            ("terminal", Some(reason)) => GuardianLinkDelivery::Terminal(
+                CompletionCallbackReason::from_str(reason)
+                    .ok_or_else(|| corrupt(format!("unknown delivery reason {reason:?}")))?,
+            ),
+            (delivery, reason) => {
+                return Err(corrupt(format!(
+                    "delivery {delivery:?} with reason {reason:?} is not a known state"
+                )));
+            }
+        };
+        if !matches!(delivery, GuardianLinkDelivery::Terminal(_)) && callback.is_none() {
+            return Err(corrupt("live delivery without a callback"));
+        }
+        Ok(Self {
+            device_label: row.device_label,
+            callback,
+            linked_at_ms: row.linked_at_ms,
+            notification_seq: u64::try_from(row.notification_seq)
+                .expect("non-negative by schema CHECK"),
+            notified_reasons,
+            last_notified_at_ms: row.last_notified_at_ms,
+            delivery,
+        })
+    }
+}
+
+fn reasons_json(reasons: &[AttentionReason]) -> String {
+    serde_json::to_string(reasons).expect("reason codes serialize")
+}
+
+fn callback_json(callback: &DkgCompletionCallback) -> String {
+    serde_json::to_string(callback).expect("a validated callback always serializes")
+}
+
+impl Db {
+    /// The linked device, if any.
+    pub async fn guardian_link(&self) -> Result<Option<GuardianLinkRecord>, DbError> {
+        sqlx::query_as::<_, GuardianLinkRow>(
+            "SELECT device_label, callback, linked_at_ms, \
+             notification_seq, notified_reasons, last_notified_at_ms, delivery, delivery_reason \
+             FROM guardian_link WHERE id = ?",
+        )
+        .bind(LINK_ID)
+        .fetch_optional(self.pool())
+        .await?
+        .map(GuardianLinkRecord::try_from)
+        .transpose()
+    }
+
+    /// Link a device, replacing whatever device was linked before. Everything
+    /// the previous link accumulated is discarded with it.
+    pub async fn replace_guardian_link(
+        &self,
+        device_label: &str,
+        callback: &DkgCompletionCallback,
+    ) -> Result<(), DbError> {
+        let linked_at_ms = now_ms();
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM guardian_link WHERE id = ?")
+            .bind(LINK_ID)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO guardian_link (id, device_label, callback, linked_at_ms) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(LINK_ID)
+        .bind(device_label)
+        .bind(callback_json(callback))
+        .bind(linked_at_ms)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forget the link (the operator's revoke). False when nothing was linked.
+    pub async fn delete_guardian_link(&self) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM guardian_link WHERE id = ?")
+            .bind(LINK_ID)
+            .execute(self.pool())
+            .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Record a delivered notification: the sequence the idempotency key was
+    /// minted from advances, these reasons count as told, and an inactive
+    /// phone is active again. Guarded on the
+    /// link (`linked_at_ms`) and the expected sequence, so a result for a
+    /// replaced phone or a stale worker cannot touch the current link.
+    pub async fn record_guardian_link_notified(
+        &self,
+        linked_at_ms: i64,
+        expected_seq: u64,
+        reasons: &[AttentionReason],
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE guardian_link SET notification_seq = notification_seq + 1, \
+             notified_reasons = ?, last_notified_at_ms = ?, delivery = 'active' \
+             WHERE id = ? AND linked_at_ms = ? AND notification_seq = ? \
+             AND delivery IN ('active', 'inactive')",
+        )
+        .bind(reasons_json(reasons))
+        .bind(now_ms())
+        .bind(LINK_ID)
+        .bind(linked_at_ms)
+        .bind(i64::try_from(expected_seq).unwrap_or(i64::MAX))
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Narrow the told reasons to those that still hold, so a reason that
+    /// returns later is told again.
+    pub async fn set_guardian_link_notified_reasons(
+        &self,
+        linked_at_ms: i64,
+        reasons: &[AttentionReason],
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE guardian_link SET notified_reasons = ? WHERE id = ? AND linked_at_ms = ?",
+        )
+        .bind(reasons_json(reasons))
+        .bind(LINK_ID)
+        .bind(linked_at_ms)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// The gateway rejected the link's hook for good: clear the bearer and
+    /// keep the reason for the operator. Guarded on the link, so a rejection
+    /// of a replaced phone's hook leaves the new link alone.
+    pub async fn record_guardian_link_terminal(
+        &self,
+        linked_at_ms: i64,
+        reason: CompletionCallbackReason,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE guardian_link SET callback = NULL, delivery = 'terminal', \
+             delivery_reason = ? WHERE id = ? AND linked_at_ms = ? \
+             AND delivery IN ('active', 'inactive')",
+        )
+        .bind(reason.as_str())
+        .bind(LINK_ID)
+        .bind(linked_at_ms)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// The gateway is holding the phone until the app is opened. Guarded on
+    /// the link, so a replaced phone's answer leaves the new link alone.
+    pub async fn record_guardian_link_inactive(&self, linked_at_ms: i64) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE guardian_link SET delivery = 'inactive' \
+             WHERE id = ? AND linked_at_ms = ? AND delivery = 'active'",
+        )
+        .bind(LINK_ID)
+        .bind(linked_at_ms)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+}

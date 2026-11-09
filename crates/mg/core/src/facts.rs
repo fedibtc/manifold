@@ -82,6 +82,9 @@ pub enum CompletionCallbackReason {
     HttpClientUnavailable,
     Network,
     GatewayUnavailable,
+    /// The gateway holds the phone: the provider rejected its token, and the
+    /// app has to be opened (and re-register) before alerts reach it again.
+    TargetInactive,
     RateLimited,
     HookNotFound,
     HookExpiredOrRevoked,
@@ -99,6 +102,7 @@ impl CompletionCallbackReason {
             Self::HttpClientUnavailable => "http_client_unavailable",
             Self::Network => "network",
             Self::GatewayUnavailable => "gateway_unavailable",
+            Self::TargetInactive => "target_inactive",
             Self::RateLimited => "rate_limited",
             Self::HookNotFound => "hook_not_found",
             Self::HookExpiredOrRevoked => "hook_expired_or_revoked",
@@ -116,6 +120,7 @@ impl CompletionCallbackReason {
             "http_client_unavailable" => Self::HttpClientUnavailable,
             "network" => Self::Network,
             "gateway_unavailable" => Self::GatewayUnavailable,
+            "target_inactive" => Self::TargetInactive,
             "rate_limited" => Self::RateLimited,
             "hook_not_found" => Self::HookNotFound,
             "hook_expired_or_revoked" => Self::HookExpiredOrRevoked,

@@ -1,4 +1,7 @@
+mod guardian_link;
 mod seats;
+
+pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 mod transfers;
 
 pub(crate) use seats::SeatAdmissionResult;
@@ -147,6 +150,9 @@ pub struct Db {
     /// the pool makes every database holder retain the root through detached
     /// cleanup.
     _data_root_lock: Arc<std::fs::File>,
+    /// Marked on every support-thread write, so a reader of the unread count
+    /// (the guardian-link notifier) wakes instead of polling.
+    support_changed: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 impl Db {
@@ -269,6 +275,7 @@ impl Db {
         Ok(Self {
             pool,
             _data_root_lock: data_root_lock,
+            support_changed: Arc::new(tokio::sync::watch::Sender::new(())),
         })
     }
 
@@ -933,7 +940,13 @@ impl Db {
         .bind(stored_secs(row.created_at))
         .execute(&self.pool)
         .await?;
+        self.support_changed.send_replace(());
         Ok(())
+    }
+
+    /// Wakes after every write to the support thread.
+    pub fn subscribe_support(&self) -> tokio::sync::watch::Receiver<()> {
+        self.support_changed.subscribe()
     }
 
     /// The whole support thread, oldest first; a same-second tie keeps
@@ -981,6 +994,7 @@ impl Db {
         .bind(serde_json::to_string(rumor_ids).expect("strings serialize"))
         .execute(&self.pool)
         .await?;
+        self.support_changed.send_replace(());
         Ok(())
     }
 }
