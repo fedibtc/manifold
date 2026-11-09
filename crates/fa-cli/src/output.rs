@@ -134,6 +134,34 @@ struct MetadataConsensusJson<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FederationStatsJson {
+    guardians: u16,
+    custodied_msats: CombinedFigureJson,
+    active_wallets_30d: CombinedFigureJson,
+    volume_7d_msats: CombinedFigureJson,
+    volume_30d_msats: CombinedFigureJson,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CombinedFigureJson {
+    value: u64,
+    based_on: u16,
+    partial: bool,
+}
+
+impl From<fa_client::CombinedFigure> for CombinedFigureJson {
+    fn from(figure: fa_client::CombinedFigure) -> Self {
+        Self {
+            value: figure.value,
+            based_on: figure.based_on,
+            partial: figure.partial,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DecommissionJson<'a> {
     decommissioned: &'a [u16],
     already_decommissioned: &'a [u16],
@@ -755,6 +783,44 @@ impl<'a> CliOutput<'a> {
             )?;
             for (index, reason) in &outcome.refused {
                 writeln!(self.stdout, "seat {index} NOT decommissioned: {reason}")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the formed federation's combined FA Stats.
+    pub(crate) fn federation_stats(
+        &mut self,
+        stats: &fa_client::FederationStats,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(
+                &mut self.stdout,
+                &FederationStatsJson {
+                    guardians: stats.guardians,
+                    custodied_msats: stats.custodied_msats.into(),
+                    active_wallets_30d: stats.active_wallets_30d.into(),
+                    volume_7d_msats: stats.volume_7d_msats.into(),
+                    volume_30d_msats: stats.volume_30d_msats.into(),
+                },
+            )?;
+            writeln!(self.stdout)?;
+        } else {
+            for (name, figure) in [
+                ("custodied msats", stats.custodied_msats),
+                ("active wallets 30d", stats.active_wallets_30d),
+                ("volume 7d msats", stats.volume_7d_msats),
+                ("volume 30d msats", stats.volume_30d_msats),
+            ] {
+                writeln!(
+                    self.stdout,
+                    "{name}: {} (based on {} of {} guardians{})",
+                    figure.value,
+                    figure.based_on,
+                    stats.guardians,
+                    if figure.partial { ", partial" } else { "" }
+                )?;
             }
         }
         Ok(())

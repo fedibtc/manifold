@@ -141,6 +141,8 @@ enum Command {
     /// Development and staging MGs alone accept the request, seats are
     /// forfeited rather than refunded, and local FA state is left untouched.
     Decommission,
+    /// Report the formed federation's FA Stats, combined from its guardians.
+    Stats,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -1582,6 +1584,31 @@ async fn run_inner(
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
         }
+        Command::Stats => {
+            let endpoint = bind_iroh_endpoint().await?;
+            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let client = open_client(
+                clients,
+                &args.state_dir,
+                identity,
+                CliPayments::unavailable(),
+                &setup_payment,
+                None,
+                CliMgConnector::new(endpoint.clone()),
+                peer_badge_verifier
+                    .clone()
+                    .expect("stats constructs a PeerBadge verifier"),
+                profile.clone(),
+            )
+            .await?;
+            let result =
+                reconcile_then_run_post_formation(client.resume(), client.federation_stats()).await;
+            endpoint.close().await;
+            output.federation_stats(
+                &result.context("reconcile and read federation stats")?,
+                format,
+            )?;
+        }
         Command::PaymentWallet(payment_wallet) => {
             let PaymentWalletPreflight {
                 federation_id,
@@ -2277,7 +2304,8 @@ impl WalletRootSecret {
                 command: TransferCommand::Preview | TransferCommand::Status,
                 ..
             })
-            | Command::Decommission => {
+            | Command::Decommission
+            | Command::Stats => {
                 return Ok(None);
             }
         };

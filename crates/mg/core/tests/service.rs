@@ -336,7 +336,7 @@ async fn get_version_names_this_release_and_its_api_version() {
     assert_eq!(version.mg_version.to_string(), env!("CARGO_PKG_VERSION"));
     assert_eq!(
         version.api_version,
-        fedi_decentralized_service_manifold_guardian::MgApiVersion(1)
+        fedi_decentralized_service_manifold_guardian::MgApiVersion(2)
     );
     assert!(
         version.supports(
@@ -904,7 +904,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     let stats = GetFedimintStatsRequest {
         ts: now(),
         fa_id: attacker_id,
-        seat_id,
+        seat_id: seat_id.clone(),
     };
     assert_eq!(
         rpc.get_fedimint_stats(SignedRequest::create(&stats, &attacker_key).unwrap())
@@ -912,6 +912,17 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
             .unwrap_err(),
         ManifoldGuardianError::UnknownSeat
     );
+    // The owner reaches the seat, which has no federation to report on yet.
+    let owner_stats = GetFedimintStatsRequest {
+        ts: now(),
+        fa_id: victim_id,
+        seat_id,
+    };
+    assert!(matches!(
+        rpc.get_fedimint_stats(SignedRequest::create(&owner_stats, &victim_key).unwrap())
+            .await,
+        Err(ManifoldGuardianError::WrongState { .. })
+    ));
     rpc.fleet.shutdown().await;
 }
 

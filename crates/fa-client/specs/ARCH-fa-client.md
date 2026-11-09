@@ -647,6 +647,20 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Federation stats
+
+`federation_stats` asks every formed seat's MG for its guardian's FA Stats
+in one pass, with no lease, retries or stored state. Custody comes from
+consensus; active wallets come from guardian-local client backups, so a moved
+or restored guardian reports that window as partial. The FA does not trust a
+single guardian. For each figure it takes the lower median of the complete
+answers once at least f+1 guardians gave one, and otherwise the lower median of
+every answer, marked partial. Each figure says how many answers it rests on.
+Each MG's `GetVersion` API version says whether it serves stats; a
+guardian that cannot be reached, errors, or runs an older MG gives no answer. The call fails only when no guardian answers, and its error
+separates guardians whose MG lacks the verb from guardians that failed, so the
+consumer can tell "stats arrive once guardians update" from "retry".
+
 ## Replacement eligibility
 
 The FA checks the other guardians' public reports and authenticated MG trust
@@ -876,6 +890,7 @@ seals a backup that restore would refuse.
 - `seat_purchase` — selection and purchase of a transfer's destination seat.
 - `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
+- `federation_stats` — combining the guardians' FA Stats.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 
 ## Testing

@@ -1,5 +1,6 @@
 mod callback;
 mod discovery;
+mod federation_stats;
 mod maintenance;
 mod recovery_policy;
 mod seat_purchase;
@@ -835,6 +836,8 @@ struct MgState {
     formation_guardian_verification_fee_accounts: Mutex<HashMap<usize, Account>>,
     /// Every LNv2 gateway URL accepted by a fake guardian.
     gateway_registrations: Mutex<Vec<(usize, String)>>,
+    /// Seat index -> the FA Stats that guardian reports; others refuse.
+    fedimint_stats: Mutex<HashMap<usize, FedimintStats>>,
     /// Every signed merge base observed by a fake, in submission-wave order.
     meta_request_bases: Mutex<Vec<(usize, MetaConsensusBase)>>,
     /// Positive test-only submission count that completes one metadata wave.
@@ -901,10 +904,12 @@ struct MgState {
 /// What a test MG answers to `GetVersion`.
 #[derive(Clone, Copy, Debug, Default)]
 enum TestMgVersion {
-    /// At the API version with guardian transfer v2.
+    /// At this build's API version.
     #[default]
     Current,
-    /// Answers, but below that API version.
+    /// At the API version with guardian transfer v2, before stats.
+    WithoutStats,
+    /// Answers, but below guardian transfer v2.
     WithoutTransfer,
     /// From before `GetVersion`.
     BeforeGetVersion,
@@ -1127,6 +1132,10 @@ impl ManifoldGuardianService for TestMg {
             .unwrap_or_default()
         {
             TestMgVersion::Current => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                api_version: MG_API_VERSION,
+            }),
+            TestMgVersion::WithoutStats => Ok(GetVersionResponse {
                 mg_version: "0.2.0".parse().expect("test version parses"),
                 api_version: GUARDIAN_TRANSFER_V2_API_VERSION,
             }),
@@ -1936,9 +1945,18 @@ impl ManifoldGuardianService for TestMg {
 
     async fn get_fedimint_stats(
         &self,
-        _request: SignedRequest<GetFedimintStatsRequest>,
+        request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse> {
-        Err(unsupported())
+        request.verify(Timestamp(test_now_secs()))?;
+        let stats = self
+            .state
+            .fedimint_stats
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+            .ok_or_else(unsupported)?;
+        Ok(GetFedimintStatsResponse { stats })
     }
 }
 
