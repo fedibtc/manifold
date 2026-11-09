@@ -344,7 +344,13 @@ async fn missing_invocation_target_is_retryable_with_same_idempotency_key() {
             .status,
         StatusCode::OK
     );
-    assert_unavailable_then_refreshes_once(&harness, &hook, "missing-target").await;
+    assert_unavailable_then_refreshes_once(
+        &harness,
+        &hook,
+        "missing-target",
+        "target_installation_unavailable",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -360,20 +366,230 @@ async fn disabled_invocation_target_is_retryable_with_same_idempotency_key() {
             .status,
         StatusCode::OK
     );
-    assert_unavailable_then_refreshes_once(&harness, &hook, "disabled-target").await;
+    assert_unavailable_then_refreshes_once(
+        &harness,
+        &hook,
+        "disabled-target",
+        "hook_target_inactive",
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn stale_invocation_target_is_retryable_with_same_idempotency_key() {
+async fn long_quiet_invocation_target_still_receives() {
     let harness = Harness::new().await;
     register_installation(&harness, "recipient").await;
     let hook = create_targeted_hook(&harness, "device-1").await;
     assert_eq!(hook.status, StatusCode::OK);
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 0")
+    make_registrations_quiet(&harness).await;
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let accepted = harness
+        .json("POST", url, json!({"idempotency_key": "quiet-target"}))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert_eq!(accepted.body["delivery_attempts"], 1);
+}
+
+async fn create_permanent_hook(harness: &Harness) -> Response {
+    let hook = harness
+        .exact_json("POST", "/v1/hooks", json!({"installation_id": "device-1"}))
+        .await;
+    assert_eq!(hook.status, StatusCode::OK);
+    hook
+}
+
+/// An app that has not called for longer than any refresh horizon, and whose
+/// token the gateway has not re-checked either.
+async fn make_registrations_quiet(harness: &Harness) {
+    sqlx::query("UPDATE push_registrations SET last_seen_at = 0, validated_at = 0")
         .execute(harness.state.database().pool())
         .await
         .unwrap();
-    assert_unavailable_then_refreshes_once(&harness, &hook, "stale-target").await;
+}
+
+async fn registration_rows(harness: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM push_registrations")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap()
+}
+
+async fn hooks_targeting_device_1(harness: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM notification_hooks WHERE installation_id = 'device-1'")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap()
+}
+
+/// Registration admission reclaims disabled rows as a side effect.
+async fn register_device_2(harness: &Harness) {
+    let response = harness
+        .json(
+            "POST",
+            "/registrations",
+            json!({
+                "installation_id": "device-2",
+                "fcm_token": "fcm-token-2",
+                "platform": "android"
+            }),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn permanent_hook_has_no_expiry_and_reaches_a_long_quiet_phone() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    let expires_at: Option<i64> = sqlx::query_scalar("SELECT expires_at FROM notification_hooks")
+        .fetch_one(harness.state.database().pool())
+        .await
+        .unwrap();
+    assert_eq!(expires_at, None);
+    make_registrations_quiet(&harness).await;
+
+    register_device_2(&harness).await;
+    assert_eq!(registration_rows(&harness).await, 2);
+
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let accepted = harness
+        .json("POST", url, json!({"idempotency_key": "quiet-month"}))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+    assert_eq!(accepted.body["delivery_attempts"], 1);
+}
+
+#[tokio::test]
+async fn permanent_hook_waits_for_a_rejected_phone_and_resumes_when_it_re_registers() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    // As a provider rejection on delivery or re-check leaves it.
+    sqlx::query("UPDATE push_registrations SET disabled_at = 1, disabled_reason = 'invalid_token'")
+        .execute(harness.state.database().pool())
+        .await
+        .unwrap();
+
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let inactive = harness
+        .json("POST", url, json!({"idempotency_key": "while-rejected"}))
+        .await;
+    assert_eq!(inactive.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(inactive.body["error"]["code"], "hook_target_inactive");
+
+    // Hook admission does not reclaim it while its installation waits.
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 1);
+
+    // The app comes back with the token the provider replaced the old one with.
+    let reregistered = harness
+        .json(
+            "POST",
+            "/registrations",
+            json!({
+                "installation_id": "device-1",
+                "fcm_token": "fcm-token-1-rotated",
+                "platform": "android"
+            }),
+        )
+        .await;
+    assert_eq!(reregistered.status, StatusCode::OK);
+    let resumed = harness
+        .json("POST", url, json!({"idempotency_key": "after-re-register"}))
+        .await;
+    assert_eq!(resumed.status, StatusCode::OK);
+    assert_eq!(resumed.body["delivery_attempts"], 1);
+}
+
+#[tokio::test]
+async fn permanent_hook_is_gone_once_its_installation_is_removed() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    assert_eq!(
+        harness
+            .empty("DELETE", "/registrations/device-1")
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    let gone = harness
+        .json("POST", url, json!({"idempotency_key": "after-removal"}))
+        .await;
+    // Not a retryable 503: nothing is left that could resume delivery.
+    assert_eq!(gone.status, StatusCode::GONE);
+    assert_eq!(gone.body["error"]["code"], "hook_target_gone");
+
+    // Hook admission reclaims terminal rows as a side effect.
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 0);
+}
+
+#[tokio::test]
+async fn a_hook_without_its_installation_no_longer_counts_toward_active_caps() {
+    let limits = RateLimitConfig {
+        hook_creations_per_recipient: 100,
+        max_active_hooks_per_recipient: 1,
+        ..RateLimitConfig::default()
+    };
+    let harness = Harness::new_with_limits(limits).await;
+    register_installation(&harness, "recipient").await;
+    let hook = create_permanent_hook(&harness).await;
+    let url = hook.body["invocation_url"].as_str().expect("hook URL");
+    // A retained event keeps the terminal hook row from being reclaimed.
+    assert_eq!(
+        harness
+            .json("POST", url, json!({"idempotency_key": "before-removal"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        harness
+            .empty("DELETE", "/registrations/device-1")
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // The replacement phone fits under the cap of one active hook.
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 1);
+}
+
+#[tokio::test]
+async fn hook_with_a_ttl_is_not_reclaimed_for_a_disabled_target() {
+    let harness = Harness::new().await;
+    register_installation(&harness, "recipient").await;
+    create_targeted_hook(&harness, "device-1").await;
+    assert_eq!(
+        harness
+            .empty("POST", "/registrations/device-1/disable")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    register_device_2(&harness).await;
+    assert_eq!(
+        create_targeted_hook(&harness, "device-2").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hooks_targeting_device_1(&harness).await, 1);
 }
 
 #[tokio::test]
@@ -433,23 +649,19 @@ async fn disabled_hook_target_is_rejected_without_persistence() {
 }
 
 #[tokio::test]
-async fn stale_hook_target_is_rejected_without_persistence() {
+async fn long_quiet_registration_is_still_a_hook_target() {
     let harness = Harness::new().await;
     register_installation(&harness, "recipient").await;
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 0")
-        .execute(harness.state.database().pool())
-        .await
-        .unwrap();
+    make_registrations_quiet(&harness).await;
     let create = create_targeted_hook(&harness, "device-1").await;
-    assert_eq!(create.status, StatusCode::NOT_FOUND);
-    assert_eq!(hook_row_count(&harness).await, 0);
+    assert_eq!(create.status, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn signed_refresh_restores_valid_hook_target_boundary() {
     let harness = Harness::new().await;
     register_installation(&harness, "recipient").await;
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 0")
+    sqlx::query("UPDATE push_registrations SET disabled_at = 0, disabled_reason = 'invalid_token'")
         .execute(harness.state.database().pool())
         .await
         .unwrap();
@@ -1422,14 +1634,14 @@ async fn hooks_require_owned_installation_and_finite_ttl_in_every_mode() {
             .with_open_self_registration_enabled(true)
     })
     .await;
-    assert_hook_target_and_ttl_are_required(&production).await;
+    assert_hook_target_is_required(&production).await;
     drop(production);
 
     let local = Harness::new().await;
-    assert_hook_target_and_ttl_are_required(&local).await;
+    assert_hook_target_is_required(&local).await;
 }
 
-async fn assert_hook_target_and_ttl_are_required(harness: &Harness) {
+async fn assert_hook_target_is_required(harness: &Harness) {
     register_installation(harness, "recipient").await;
 
     let missing_installation = harness
@@ -1441,12 +1653,6 @@ async fn assert_hook_target_and_ttl_are_required(harness: &Harness) {
         .await;
     assert_eq!(missing_installation.status, StatusCode::BAD_REQUEST);
     assert_eq!(missing_installation.body["error"]["code"], "invalid_json");
-
-    let missing_ttl = harness
-        .exact_json("POST", "/v1/hooks", json!({"installation_id": "device-1"}))
-        .await;
-    assert_eq!(missing_ttl.status, StatusCode::BAD_REQUEST);
-    assert_eq!(missing_ttl.body["error"]["code"], "ttl_seconds_required");
 }
 
 #[tokio::test]
@@ -2066,7 +2272,13 @@ async fn admission_reclaims_terminal_rows_without_restart_and_enforces_physical_
     };
     let harness = Harness::new_with_limits(limits).await;
     register_installation(&harness, "recipient").await;
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 0")
+    // The registration ran out its grace period after a rejection and was
+    // deleted; its token owner is left, as orphan GC expects.
+    sqlx::query("DELETE FROM push_registrations")
+        .execute(harness.state.database().pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE push_registration_token_owners SET updated_at = 0")
         .execute(harness.state.database().pool())
         .await
         .unwrap();
@@ -2289,10 +2501,7 @@ async fn readiness_and_registration_management_are_available() {
         )
         .await;
     assert_eq!(invoke.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        invoke.body["error"]["code"],
-        "target_installation_unavailable"
-    );
+    assert_eq!(invoke.body["error"]["code"], "hook_target_inactive");
 
     register_installation(&harness, "recipient").await;
     let retried = harness
@@ -2714,16 +2923,14 @@ async fn assert_unavailable_then_refreshes_once(
     harness: &Harness,
     hook: &Response,
     idempotency_key: &str,
+    expected_code: &str,
 ) {
     let url = hook.body["invocation_url"].as_str().expect("hook URL");
     let unavailable = harness
         .json("POST", url, json!({"idempotency_key": idempotency_key}))
         .await;
     assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        unavailable.body["error"]["code"],
-        "target_installation_unavailable"
-    );
+    assert_eq!(unavailable.body["error"]["code"], expected_code);
     let use_count: i64 = sqlx::query_scalar("SELECT SUM(use_count) FROM notification_hooks")
         .fetch_one(harness.state.database().pool())
         .await

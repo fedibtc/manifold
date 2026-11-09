@@ -17,12 +17,12 @@ async fn replacing_installation_token_leaves_one_registration() {
     };
 
     repository
-        .admit_installation(&recipient_id, &request, eligibility(), unlimited_limits())
+        .admit_installation(&recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("insert first registration");
     request.fcm_token = FcmRegistrationToken("token-2".to_owned());
     repository
-        .admit_installation(&recipient_id, &request, eligibility(), unlimited_limits())
+        .admit_installation(&recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("replace registration token");
 
@@ -55,11 +55,11 @@ async fn recipient_lookup_omits_disabled_and_delete_removes_registration() {
     };
 
     repository
-        .admit_installation(&recipient_id, &request, eligibility(), unlimited_limits())
+        .admit_installation(&recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("insert registration");
     let registrations = repository
-        .list_for_recipient(&recipient_id, eligibility())
+        .list_for_recipient(&recipient_id)
         .await
         .expect("list active registrations");
     assert_eq!(registrations.len(), 1);
@@ -77,7 +77,7 @@ async fn recipient_lookup_omits_disabled_and_delete_removes_registration() {
     );
     assert!(
         repository
-            .list_for_recipient(&recipient_id, eligibility())
+            .list_for_recipient(&recipient_id)
             .await
             .expect("list after disable")
             .is_empty()
@@ -104,33 +104,23 @@ async fn same_installation_id_can_exist_for_different_recipients() {
     };
 
     repository
-        .admit_installation(
-            &old_recipient_id,
-            &request,
-            eligibility(),
-            unlimited_limits(),
-        )
+        .admit_installation(&old_recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("insert old recipient registration");
     request.fcm_token = FcmRegistrationToken("new-token".to_owned());
     repository
-        .admit_installation(
-            &new_recipient_id,
-            &request,
-            eligibility(),
-            unlimited_limits(),
-        )
+        .admit_installation(&new_recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("insert same installation id for new recipient");
 
     let old_registrations = repository
-        .list_for_recipient(&old_recipient_id, eligibility())
+        .list_for_recipient(&old_recipient_id)
         .await
         .expect("list old recipient");
     assert_eq!(old_registrations.len(), 1);
     assert_eq!(old_registrations[0].fcm_token.0, "old-token");
     let registrations = repository
-        .list_for_recipient(&new_recipient_id, eligibility())
+        .list_for_recipient(&new_recipient_id)
         .await
         .expect("list new recipient");
     assert_eq!(registrations.len(), 1);
@@ -150,34 +140,24 @@ async fn fcm_token_reassigns_same_installation_across_recipients_without_logout_
     };
 
     repository
-        .admit_installation(
-            &old_recipient_id,
-            &request,
-            eligibility(),
-            unlimited_limits(),
-        )
+        .admit_installation(&old_recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("insert old recipient registration");
     let outcome = repository
-        .admit_installation(
-            &new_recipient_id,
-            &request,
-            eligibility(),
-            unlimited_limits(),
-        )
+        .admit_installation(&new_recipient_id, &request, 0, unlimited_limits())
         .await
         .expect("move installation route to new recipient");
     assert_eq!(outcome, RegistrationAdmissionOutcome::Registered);
 
     assert!(
         repository
-            .list_for_recipient(&old_recipient_id, eligibility())
+            .list_for_recipient(&old_recipient_id)
             .await
             .expect("list old recipient")
             .is_empty()
     );
     let new_registrations = repository
-        .list_for_recipient(&new_recipient_id, eligibility())
+        .list_for_recipient(&new_recipient_id)
         .await
         .expect("list new recipient");
     assert_eq!(new_registrations.len(), 1);
@@ -186,7 +166,7 @@ async fn fcm_token_reassigns_same_installation_across_recipients_without_logout_
 }
 
 #[tokio::test]
-async fn stale_gc_retains_same_installation_handoff_and_rejects_a_different_installation() {
+async fn reclaimed_disabled_registration_keeps_its_token_bound_to_its_installation() {
     let pool = test_pool().await;
     let repository = PushRegistrationRepository::new(pool.clone());
     let old_recipient = RecipientId("old-recipient".to_owned());
@@ -199,35 +179,17 @@ async fn stale_gc_retains_same_installation_handoff_and_rejects_a_different_inst
 
     assert_eq!(
         repository
-            .admit_installation(&old_recipient, &request, eligibility(), unlimited_limits(),)
+            .admit_installation(&old_recipient, &request, 0, unlimited_limits(),)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 1")
+    sqlx::query("UPDATE push_registrations SET disabled_at = 1, disabled_reason = 'invalid_token'")
         .execute(&pool)
         .await
         .unwrap();
-
-    let gc_request = RegisterInstallationRequest {
-        installation_id: DeviceInstallationId("gc-installation".to_owned()),
-        fcm_token: FcmRegistrationToken("gc-token".to_owned()),
-        platform: None,
-    };
-    assert_eq!(
-        repository
-            .admit_installation(
-                &new_recipient,
-                &gc_request,
-                RegistrationEligibility {
-                    cutoff_timestamp: 2,
-                },
-                unlimited_limits(),
-            )
-            .await
-            .unwrap(),
-        RegistrationAdmissionOutcome::Registered
-    );
+    assert_eq!(repository.purge_disabled_before(1).await.unwrap(), 0);
+    assert_eq!(repository.purge_disabled_before(2).await.unwrap(), 1);
 
     let hijack_request = RegisterInstallationRequest {
         installation_id: DeviceInstallationId("different-installation".to_owned()),
@@ -235,14 +197,7 @@ async fn stale_gc_retains_same_installation_handoff_and_rejects_a_different_inst
     };
     assert_eq!(
         repository
-            .admit_installation(
-                &new_recipient,
-                &hijack_request,
-                RegistrationEligibility {
-                    cutoff_timestamp: 2,
-                },
-                unlimited_limits(),
-            )
+            .admit_installation(&new_recipient, &hijack_request, 2, unlimited_limits(),)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::TokenBoundToDifferentInstallation
@@ -256,19 +211,12 @@ async fn stale_gc_retains_same_installation_handoff_and_rejects_a_different_inst
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(registrations, 1, "bounded GC reclaimed only the stale row");
-    assert_eq!(token_owners, 2, "handoff identity survives stale-row GC");
+    assert_eq!(registrations, 0);
+    assert_eq!(token_owners, 1, "handoff identity survives disabled-row GC");
 
     assert_eq!(
         repository
-            .admit_installation(
-                &new_recipient,
-                &request,
-                RegistrationEligibility {
-                    cutoff_timestamp: 2,
-                },
-                unlimited_limits(),
-            )
+            .admit_installation(&new_recipient, &request, 2, unlimited_limits(),)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
@@ -284,7 +232,7 @@ async fn stale_gc_retains_same_installation_handoff_and_rejects_a_different_inst
 }
 
 #[tokio::test]
-async fn stale_orphan_reclamation_recovers_saturated_physical_capacity() {
+async fn orphan_reclamation_after_disabled_row_purge_recovers_saturated_physical_capacity() {
     let pool = test_pool().await;
     let repository = PushRegistrationRepository::new(pool.clone());
     let recipient = RecipientId("recipient".to_owned());
@@ -301,15 +249,16 @@ async fn stale_orphan_reclamation_recovers_saturated_physical_capacity() {
     };
     assert_eq!(
         repository
-            .admit_installation(&recipient, &stale, eligibility(), limits)
+            .admit_installation(&recipient, &stale, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
-    sqlx::query("UPDATE push_registrations SET last_seen_at = 1")
+    sqlx::query("UPDATE push_registrations SET disabled_at = 1, disabled_reason = 'invalid_token'")
         .execute(&pool)
         .await
         .unwrap();
+    repository.purge_disabled_before(2).await.unwrap();
     sqlx::query("UPDATE push_registration_token_owners SET updated_at = 1")
         .execute(&pool)
         .await
@@ -322,24 +271,12 @@ async fn stale_orphan_reclamation_recovers_saturated_physical_capacity() {
     };
     assert_eq!(
         repository
-            .admit_installation(
-                &recipient,
-                &replacement,
-                RegistrationEligibility {
-                    cutoff_timestamp: 2,
-                },
-                limits,
-            )
+            .admit_installation(&recipient, &replacement, 2, limits,)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
-    let metrics = repository
-        .row_metrics(RegistrationEligibility {
-            cutoff_timestamp: 2,
-        })
-        .await
-        .unwrap();
+    let metrics = repository.row_metrics(2).await.unwrap();
     assert_eq!(metrics.total, 2);
     assert_eq!(metrics.registrations, 1);
     assert_eq!(metrics.token_owners, 1);
@@ -371,21 +308,21 @@ async fn cross_recipient_handoff_respects_new_recipient_active_capacity() {
 
     assert_eq!(
         repository
-            .admit_installation(&old_recipient, &moving, eligibility(), limits)
+            .admit_installation(&old_recipient, &moving, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
     assert_eq!(
         repository
-            .admit_installation(&new_recipient, &existing, eligibility(), limits)
+            .admit_installation(&new_recipient, &existing, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
     assert_eq!(
         repository
-            .admit_installation(&new_recipient, &moving, eligibility(), limits)
+            .admit_installation(&new_recipient, &moving, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::RecipientCapacityExceeded
@@ -410,7 +347,7 @@ async fn same_recipient_token_move_is_count_neutral_at_active_and_physical_caps(
     };
     assert_eq!(
         repository
-            .admit_installation(&recipient, &request, eligibility(), limits)
+            .admit_installation(&recipient, &request, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
@@ -418,15 +355,12 @@ async fn same_recipient_token_move_is_count_neutral_at_active_and_physical_caps(
     request.installation_id = DeviceInstallationId("new-installation".to_owned());
     assert_eq!(
         repository
-            .admit_installation(&recipient, &request, eligibility(), limits)
+            .admit_installation(&recipient, &request, 0, limits)
             .await
             .unwrap(),
         RegistrationAdmissionOutcome::Registered
     );
-    let registrations = repository
-        .list_for_recipient(&recipient, eligibility())
-        .await
-        .unwrap();
+    let registrations = repository.list_for_recipient(&recipient).await.unwrap();
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].installation_id.0, "new-installation");
 }
@@ -457,17 +391,11 @@ async fn count_increasing_registration_is_refused_at_exact_cap() {
         };
         assert_eq!(
             repository
-                .admit_installation(&recipient, &request, eligibility(), limits)
+                .admit_installation(&recipient, &request, 0, limits)
                 .await
                 .unwrap(),
             expected
         );
-    }
-}
-
-fn eligibility() -> RegistrationEligibility {
-    RegistrationEligibility {
-        cutoff_timestamp: 0,
     }
 }
 
@@ -496,6 +424,7 @@ async fn test_pool() -> AnyPool {
                 created_at BIGINT NOT NULL,
                 updated_at BIGINT NOT NULL,
                 last_seen_at BIGINT NOT NULL,
+                validated_at BIGINT NOT NULL,
                 disabled_at BIGINT,
                 disabled_reason TEXT,
                 PRIMARY KEY (recipient_id, installation_id)

@@ -435,9 +435,7 @@ mod tests {
                     fcm_token: crate::FcmRegistrationToken("token".to_owned()),
                     platform: None,
                 },
-                crate::RegistrationEligibility {
-                    cutoff_timestamp: 0,
-                },
+                0,
                 crate::RegistrationAdmissionLimits {
                     max_active_per_recipient: 0,
                     max_active_global: 0,

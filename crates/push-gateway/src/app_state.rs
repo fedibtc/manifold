@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_garbage_collects_stale_registrations_and_terminal_hooks() {
+    async fn connect_keeps_quiet_registrations_and_collects_orphans_and_terminal_hooks() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let database_url = format!(
             "sqlite://{}?mode=rwc",
@@ -345,11 +345,21 @@ mod tests {
             .pool()
             .execute(
                 "INSERT INTO push_registrations (
-                    recipient_id, installation_id, fcm_token, created_at, updated_at, last_seen_at
-                 ) VALUES ('recipient', 'stale', 'stale-token', 1, 1, 1)",
+                    recipient_id, installation_id, fcm_token, created_at, updated_at, last_seen_at,
+                    validated_at
+                 ) VALUES ('recipient', 'quiet', 'quiet-token', 1, 1, 1, 1)",
             )
             .await
-            .expect("insert stale registration");
+            .expect("insert long-quiet registration");
+        database
+            .pool()
+            .execute(
+                "INSERT INTO push_registration_token_owners (
+                    fcm_token, recipient_id, installation_id, updated_at
+                 ) VALUES ('orphan-token', 'recipient', 'gone', 1)",
+            )
+            .await
+            .expect("insert orphaned token owner");
         database
             .pool()
             .execute(
@@ -363,19 +373,27 @@ mod tests {
             .expect("insert expired hook");
         drop(database);
 
-        let config =
-            PushGatewayConfig::new(None, &database_url, None).with_registration_ttl_seconds(1);
+        let config = PushGatewayConfig::new(None, &database_url, None)
+            .with_registration_revalidation_seconds(1);
         let state = AppState::connect(config).await.expect("connect app state");
 
         let registrations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM push_registrations")
             .fetch_one(state.database().pool())
             .await
             .expect("count registrations");
+        let orphaned_owners: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM push_registration_token_owners WHERE fcm_token = 'orphan-token'",
+        )
+        .fetch_one(state.database().pool())
+        .await
+        .expect("count orphaned owners");
         let hooks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_hooks")
             .fetch_one(state.database().pool())
             .await
             .expect("count hooks");
-        assert_eq!(registrations, 0);
+        // Age alone no longer ends a registration; only the provider does.
+        assert_eq!(registrations, 1);
+        assert_eq!(orphaned_owners, 0);
         assert_eq!(hooks, 0);
     }
 }

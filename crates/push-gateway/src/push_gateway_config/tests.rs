@@ -888,7 +888,7 @@ fn retention_days_defaults_to_seven_days_and_is_configurable() {
     with_env(&[], || {
         let config = PushGatewayConfig::from_env().expect("default config");
         assert_eq!(config.retention_seconds(), 7 * 86_400);
-        assert_eq!(config.registration_ttl_seconds(), 30 * 86_400);
+        assert_eq!(config.registration_revalidation_seconds(), 30 * 86_400);
     });
 
     with_env(&[("PUSH_GATEWAY_RETENTION_DAYS", Some("3"))], || {
@@ -901,10 +901,11 @@ fn retention_days_defaults_to_seven_days_and_is_configurable() {
     let config = args.into_config().expect("cli config");
     assert_eq!(config.retention_seconds(), 14 * 86_400);
 
-    let args = PushGatewayArgs::try_parse_from(["push-gateway", "--registration-ttl-days=45"])
-        .expect("args");
+    let args =
+        PushGatewayArgs::try_parse_from(["push-gateway", "--registration-revalidation-days=45"])
+            .expect("args");
     let config = args.into_config().expect("cli config");
-    assert_eq!(config.registration_ttl_seconds(), 45 * 86_400);
+    assert_eq!(config.registration_revalidation_seconds(), 45 * 86_400);
 }
 
 #[test]
@@ -1057,7 +1058,7 @@ fn with_env(vars: &[(&str, Option<&str>)], test: impl FnOnce()) {
         "PUSH_GATEWAY_TRUSTED_PROXY_CIDRS",
         "PUSH_GATEWAY_ALLOW_INSECURE_PUBLIC_BASE_URL",
         "PUSH_GATEWAY_UNSAFE_ALLOW_ANY_APP_ID_FOR_TESTS",
-        "PUSH_GATEWAY_REGISTRATION_TTL_DAYS",
+        "PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS",
     ];
     let saved = CLEARED
         .iter()
