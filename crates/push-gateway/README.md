@@ -112,10 +112,11 @@ flowchart LR
 
 For a new public hook invocation, the HTTP handler returns success only after the
 hook secret and current policy checks pass and the notification event plus all
-target outbox rows are committed. A missing, disabled, or stale target returns
-retryable `503 target_installation_unavailable` before hook counters, events, or
-the idempotency key are mutated; a signed refresh allows the same key to retry
-and enqueue once. Duplicate `idempotency_key` replays for an accepted event still
+target outbox rows are committed. A disabled target returns retryable
+`503 hook_target_inactive`, and a missing one `503 target_installation_unavailable`
+(`410 hook_target_gone` for a hook with no expiry), before hook counters, events,
+or the idempotency key are mutated; a re-registration allows the same key to
+retry and enqueue once. Duplicate `idempotency_key` replays for an accepted event still
 verify the hook secret, then return the prior target count without re-checking
 mutable hook policy or enqueueing new rows. Compact accepted-key markers preserve
 that result after sensitive event/outbox rows are purged, through the hook
@@ -221,13 +222,13 @@ Endpoints:
     clone may register later and take ownership back, so ownership can oscillate
     until only one clone continues. Reusing the
     token under a different installation id returns `409`. A signed unregister
-    or rotation releases the pair while it is live; stale GC removes an orphaned
-    owner after the refresh cutoff.
-  - updates `last_seen_at` and re-enables the row if a disabled token is seen
-    again.
+    or rotation releases the pair while it is live; GC removes an orphaned
+    owner after the revalidation interval.
+  - updates `last_seen_at` and `validated_at` and re-enables the row if a
+    disabled token is seen again.
 - `DELETE /registrations/{installation_id}`
   - unregisters/deletes one installation mapping and releases token ownership,
-    including after stale-row GC has already reclaimed the refreshable mapping.
+    including after GC has already reclaimed a disabled mapping.
 - `POST /registrations/{installation_id}/disable?reason=...`
   - disables one installation without deleting the lifecycle row.
 
@@ -245,11 +246,17 @@ Basic flow:
 3. On logout, account removal, or explicit push disable, call `DELETE` to remove
    the mapping or `POST .../disable` to keep lifecycle state while excluding it
    from delivery lookups.
-4. Refresh the signed registration before `PUSH_GATEWAY_REGISTRATION_TTL_DAYS`
-   (30 days by default). Stale rows are excluded immediately and removed by
-   bounded on-admission garbage collection and the supplementary startup sweep.
-5. Later hook invocations snapshot only the active, non-disabled, non-stale
-   installation named by the hook.
+4. Register again whenever FCM issues a new token, and on app start when the
+   current token differs from the one last registered, so the gateway holds the
+   current one. A registration does not expire by age: once FCM last accepted
+   its token more than `PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS` ago (30 by
+   default), the gateway re-checks it with a validate-only send and disables it
+   if FCM rejects it. A disabled registration is kept for 30 days; its hooks
+   answer `503 hook_target_inactive` meanwhile, and registering the installation
+   again (with the token FCM replaced the old one with) resumes delivery. After
+   that the gateway deletes it.
+5. Later hook invocations snapshot only the enabled installation named by the
+   hook.
 
 #### Temporary trusted hook management caller
 
@@ -257,8 +264,10 @@ Endpoints:
 
 - `POST /v1/hooks`
   - management endpoint for creating hook records scoped to the authenticated recipient.
-  - every request must name an active owned `installation_id` and a positive
-    `policy.ttl_seconds`.
+  - every request must name an active owned `installation_id`.
+  - a positive `policy.ttl_seconds` sets the expiry, up to one year. Omitted, the
+    hook never expires; it ends when its installation is removed, by the app or
+    30 days after it was disabled.
   - requires Nostr HTTP auth.
   - stores only a hash of the generated hook secret.
   - returns the raw hook secret and full invocation URL once.
@@ -339,9 +348,9 @@ Basic flow:
 3. For a new event, the gateway rejects unknown hook ids or wrong hook secrets as
    `404 hook_not_found`, rejects expired or revoked hooks after the correct secret
    is presented, and returns `429` for max-use or rate-limit exhaustion. A
-   missing, disabled, or stale target returns retryable
-   `503 target_installation_unavailable` without consuming the key or hook
-   counters. A
+   disabled target returns retryable `503 hook_target_inactive`, and a missing
+   one `503 target_installation_unavailable` (`410 hook_target_gone` for a hook
+   with no expiry), without consuming the key or hook counters. A
    duplicate `idempotency_key` replay for an already accepted key verifies
    the secret and current revocation/expiry state, then returns the prior target
    count without enqueueing duplicate rows. Max-use or rate-limit exhaustion
@@ -477,10 +486,10 @@ variables. Command-line flags take precedence over environment variables; run
 - `--retention-days` / `PUSH_GATEWAY_RETENTION_DAYS`
   - retention horizon for sensitive terminal push data purged at startup.
   - defaults to `7`.
-- `--registration-ttl-days` / `PUSH_GATEWAY_REGISTRATION_TTL_DAYS`
-  - signed-refresh horizon for active installations; defaults to `30` days.
-    Stale registrations are not delivery targets and are purged by bounded
-    on-admission GC as well as the supplementary startup sweep.
+- `--registration-revalidation-days` / `PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS`
+  - how long after FCM last accepted a token the hourly background pass
+    re-checks it with a validate-only send; defaults to `30` days. A rejected
+    token disables its registration. Registrations do not expire by age.
 - In-memory production abuse controls (single-process only; reset on restart):
   - authenticated management events per source prefix before replay-cache
     insertion: `--auth-events-per-source-prefix` /
@@ -520,7 +529,7 @@ variables. Command-line flags take precedence over environment variables; run
     token-owner rows. Each
     admission transaction first reclaims up to
     `--admission-gc-batch-size` / `PUSH_GATEWAY_ADMISSION_GC_BATCH_SIZE`
-    terminal/stale rows (default `1000`) and fails closed with `503` if headroom
+    orphaned/terminal rows (default `1000`) and fails closed with `503` if headroom
     is still unavailable.
   - backlog caps: `--max-global-outbox-backlog` returns `503`, and
     `--max-recipient-outbox-backlog` returns `429`; `0` disables either cap.
@@ -630,14 +639,15 @@ Registration upsert behavior:
 - updates the token, platform, and updated timestamp for the same recipient and
   installation.
 - sets `last_seen_at` on every accepted registration and clears disabled state.
-- recipient lookup requires an explicit freshness cutoff and returns only active,
-  non-disabled, non-stale registrations.
+- sets `validated_at` on every accepted registration (FCM just accepted the
+  token) and on every successful periodic re-check.
+- recipient lookup returns only enabled registrations.
 - admission uses separate recipient/global net active deltas and the physical
   row delta for moves,
-  performs bounded stale-row GC, and enforces physical as well as active caps in
-  one transaction serialized by a database admission mutex. Durable token-owner
-  rows count toward the physical ceiling and are never removed merely because a
-  refreshable registration became stale.
+  performs bounded GC of orphaned owners, and enforces
+  physical as well as active caps in one transaction serialized by a database
+  admission mutex. Durable token-owner rows count toward the physical ceiling and
+  outlive their registration by the revalidation interval.
 
 SQLite is intentionally tuned for the current local/dev service: the pool is
 bounded, `busy_timeout` is set, foreign keys are enabled, and WAL/normal
@@ -680,9 +690,10 @@ The schema also creates `notification_events`, `delivery_outbox`, and compact
 - Terminal `notification_events` / `delivery_outbox` rows can contain serialized
   notification payloads and push-token snapshots. At startup the server applies
   the configured retention horizon (`--retention-days` /
-  `PUSH_GATEWAY_RETENTION_DAYS`, default 7 days) by deleting terminal outbox rows,
-  old disabled registration rows, and old notification events that no longer have
-  retained outbox rows. Pending/retrying/in-progress delivery state is not purged.
+  `PUSH_GATEWAY_RETENTION_DAYS`, default 7 days) by deleting terminal outbox rows
+  and old notification events that no longer have retained outbox rows. Disabled
+  registrations are deleted by the hourly revalidation task 30 days after they
+  were disabled. Pending/retrying/in-progress delivery state is not purged.
 - The portable schema enforces non-negative timestamps and counters, positive
   persisted rate-limit/max-use values where those policies are present, the known
   outbox status set, and one delivery row per `(event_id, recipient_id,

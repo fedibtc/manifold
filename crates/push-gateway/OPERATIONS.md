@@ -116,8 +116,10 @@ Admission incident switch procedure:
   requests. Defaults to `16`.
 - `--outbox-worker-concurrency` / `PUSH_GATEWAY_OUTBOX_WORKER_CONCURRENCY`: max
   concurrent outbox rows processed by the worker. Defaults to `4`.
-- `--registration-ttl-days` / `PUSH_GATEWAY_REGISTRATION_TTL_DAYS`: maximum
-  interval between signed registration refreshes. Defaults to 30 days.
+- `--registration-revalidation-days` /
+  `PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS`: how long after the provider last
+  accepted a token the gateway re-checks it with a validate-only send. Defaults
+  to 30 days. Registrations do not expire by age.
 - `--auth-events-per-source-prefix` /
   `PUSH_GATEWAY_AUTH_EVENTS_PER_SOURCE_PREFIX`: valid management auth events
   admitted per trusted-proxy-aware source prefix before replay-cache insertion;
@@ -129,7 +131,8 @@ Admission incident switch procedure:
   registration high-watermark includes refreshable registration rows plus
   durable FCM-token owner rows.
 - `--admission-gc-batch-size` / `PUSH_GATEWAY_ADMISSION_GC_BATCH_SIZE`: maximum
-  stale/terminal rows reclaimed by one storage-owned admission transaction;
+  orphaned/terminal rows reclaimed by one storage-owned admission
+  transaction;
   defaults to 1,000. Admission fails closed if bounded GC cannot restore
   physical headroom.
 
@@ -331,9 +334,8 @@ new hook invocation if a new best-effort provider delivery is appropriate.
 The server also performs automatic retention cleanup at startup. Configure the
 horizon with `--retention-days` / `PUSH_GATEWAY_RETENTION_DAYS`; the default is
 7 days. Cleanup deletes only sensitive terminal data older than the cutoff:
-terminal `delivery_outbox` rows (`succeeded`, `invalid_token`, `dead_letter`),
-old disabled registration rows, and old `notification_events` after no outbox
-rows remain for the event. Pending, retrying, and in-progress delivery state is
+terminal `delivery_outbox` rows (`succeeded`, `invalid_token`, `dead_letter`)
+and old `notification_events` after no outbox rows remain for the event. Pending, retrying, and in-progress delivery state is
 never purged by retention cleanup. Keyed accepted invocations also leave a compact
 `hook_idempotency_tombstones` marker (hook id, caller key, target count, accepted
 time, and deadline). The marker survives sensitive event/outbox cleanup through the hook's lifetime
@@ -341,15 +343,27 @@ and seven additional days while the hook remains usable. Revocation/expiry
 rejects replay, so terminal hook GC cascades the marker once retained events are
 gone.
 
-Admission lifecycle GC runs at the same startup boundary: registrations whose
-`last_seen_at` exceeds `PUSH_GATEWAY_REGISTRATION_TTL_DAYS` are deleted, and
+Admission lifecycle GC runs at the same startup boundary: orphaned token owners
+older than `PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS` are deleted, and
 expired/revoked hooks with no retained notification event are deleted together
-with their now-useless idempotency markers. Stale
-registrations are excluded from hook creation/invocation even before restart.
+with their now-useless idempotency markers. A hook with no expiry is terminal
+once its installation's registration row is gone.
+
+Registrations do not expire by age. An hourly background pass re-checks, with a
+validate-only FCM send, every enabled registration whose token FCM last accepted
+more than `PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS` ago. An `UNREGISTERED`
+(or other token-specific) answer disables it; an ambiguous answer is retried
+later. A pass walks every due row; after a batch with no definitive answer
+(FCM unavailable) it stops and the next pass continues after that batch. Hooks
+targeting a disabled registration answer `503 hook_target_inactive`; the app
+re-registering the installation resumes delivery. The same pass deletes
+registrations disabled more than 30 days ago, after which a hook with no expiry
+answers `410 hook_target_gone`. Each pass that changes anything logs
+`event=push_gateway_registration_revalidation validated=… disabled=… deferred=… purged=…`.
 Startup is not the only reclamation boundary: each registration or hook
 admission transaction deletes up to `PUSH_GATEWAY_ADMISSION_GC_BATCH_SIZE`
-eligible stale/terminal rows before checking its physical row ceiling. Watch
-`push_gateway_registration_rows{state="total|registrations|token_owners|orphaned_token_owners|stale|disabled"}` and
+eligible orphaned/terminal rows before checking its physical row ceiling. Watch
+`push_gateway_registration_rows{state="total|registrations|token_owners|orphaned_token_owners|awaiting_revalidation|disabled"}` and
 `push_gateway_hook_rows{state="total|terminal"}`. Repeated 503 row-capacity
 errors after bounded GC mean the operator must investigate retained references,
 TTL/retention policy, and database growth rather than raising caps blindly.

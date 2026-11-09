@@ -65,14 +65,18 @@ validation; it is not device or FA attestation. The FCM provider uses HTTP v1
 `validate_only` to check project/token acceptance without notification delivery.
 Registration attestation is not part of the current wire contract.
 
-Hooks in every mode bind to one active installation and expire. This is
-the initiating-installation boundary used by FA formation callbacks. Registration
-freshness also expires unless refreshed by another signed registration request.
-Storage-owned admission transactions use portable database mutex rows, perform
-bounded stale/terminal reclamation, and enforce physical-row high-watermarks in
-addition to active-resource caps; startup GC is supplementary, not the only
-reclamation path. Registration TTL cleanup removes orphaned token-owner rows at
-the same cutoff, so normal expiry cannot consume physical capacity forever.
+Hooks in every mode bind to one enabled installation and expire unless created
+without a TTL. This is the initiating-installation boundary used by FA formation
+callbacks. A registration does not expire by age; a background task in the server
+crate re-checks tokens FCM last accepted more than the revalidation interval ago
+with `validate_only` and disables the ones FCM rejects, and deletes registrations
+disabled more than 30 days ago (until then the app re-registering resumes
+delivery). Storage-owned admission transactions use portable database mutex rows,
+perform bounded orphaned/terminal reclamation, and enforce physical-row high-watermarks
+in addition to active-resource caps; startup GC is supplementary, not the only
+reclamation path. Orphaned token-owner rows are removed once they are older than
+the revalidation interval, so removed registrations cannot consume physical
+capacity forever.
 While live, the owner row binds the token to its stable installation id. Valid
 signed registrations for the exact token/installation pair use latest-serialized-
 registration-wins ownership across app-root recipients; another live clone can
@@ -81,8 +85,9 @@ unregister.
 
 Storage also owns compact accepted hook-idempotency markers. They retain only the
 hook/key pair, prior target count, and lifecycle timestamps after sensitive
-event/outbox cleanup, survive through the hook lifetime plus a seven-day cleanup
-margin while the hook remains usable. Revocation/expiry rejects replay, so
+event/outbox cleanup, survive through the hook lifetime (one year from
+acceptance for a hook with no expiry) plus a seven-day cleanup margin while the
+hook remains usable. Revocation/expiry rejects replay, so
 terminal hook GC can cascade markers once retained events are gone. Their table has an independent global
 ceiling tied to the configured physical hook-row ceiling; bounded reclamation and
 the capacity check occur in the invocation transaction before hook state changes.

@@ -78,18 +78,37 @@ configurations: the modes are XOR. Open mode is required for the FA pre-quote
 flow, but NIP-98 key control and FCM project membership are not an FA-attestation
 mechanism. The registration wire contract carries no attestation field.
 
-Registration eligibility expires after a configured signed-refresh horizon (30
-days by default). Stale rows do not count as active delivery targets. Bounded
-on-admission GC removes stale registrations, their orphaned owner rows, and
-terminal unreferenced hooks;
-startup GC also sweeps them. Token moves are atomic and use separate
-recipient/global active deltas plus their physical delta at saturation. Durable
-token-owner rows bind live tokens to stable installation ids and become stale-GC
-candidates once their registration is gone and their own refresh timestamp is
-older than the same cutoff. Both owner and
-registration rows count toward the registration physical-row high-watermark.
-Every hook must have a finite TTL and target an active installation owned by the
-authenticated recipient.
+A registration is eligible while it is enabled; it does not expire by age,
+because an app may rightly go months without opening (a phone linked for
+guardian alerts). The provider decides instead. A token is validated at
+registration, and a background task re-checks, with the same validate-only
+send, every enabled registration whose token the provider last accepted more
+than the configured revalidation interval ago (30 days by default). A
+definitive rejection disables the registration, as a rejected delivery does;
+an ambiguous answer leaves it for a later pass, and rows the provider keeps
+deferring do not hold back the rows behind them. Because a provider may reject
+a token it has just replaced before the app re-registers, a disabled
+registration keeps its hooks for a 30-day grace period, during which
+re-registering the installation resumes delivery; the same task then deletes
+it. Bounded on-admission GC removes orphaned owner rows and terminal
+unreferenced hooks; startup GC also sweeps them. Token moves
+are atomic and use separate recipient/global active deltas plus their physical
+delta at saturation. Durable token-owner rows bind live tokens to stable
+installation ids and become GC candidates once their registration is gone and
+their own update timestamp is older than the revalidation interval. Both owner
+and registration rows count toward the registration physical-row
+high-watermark. Every hook must target an enabled installation owned by the
+authenticated recipient. Its TTL is finite unless omitted: a hook with no TTL
+never expires, counts against the active-hook caps while its installation's
+registration exists, and ends once that registration is removed, so a rejected
+provider token frees its capacity after the grace period even when a retained
+event keeps the hook row.
+
+Validate-only sends cannot detect an uninstalled iOS app: APNs reports an
+unregistered token only on a real send. A quiet hook on an uninstalled iPhone
+therefore keeps its registration and hook, bounded by the per-recipient and
+global caps, until its first real notification, whose rejection starts the
+grace period.
 
 ## Source identity
 

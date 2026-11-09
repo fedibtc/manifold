@@ -31,7 +31,9 @@ are untrusted or semi-trusted, even if a user intentionally shared a hook URL
 with them.
 
 Hook URLs are bearer capabilities: possession of the full URL authorizes
-invocation until the hook expires or is revoked/deleted. Revocation and expiry
+invocation until the hook expires or is revoked/deleted, or, for a hook created
+with no TTL, until its installation is removed (by the app, or 30 days after
+the provider rejected its token). Revocation and expiry
 also reject retained idempotency-key replays. URL tokens must be
 unguessable, stored only as hashes at rest, and redacted from logs, errors,
 metrics, traces, and tests. Do not log raw hook URLs. Public hook URLs generated
@@ -87,9 +89,8 @@ production mode, hook creation rejects policies that are more permissive than 2
 accepted invocations per 3600-second window; there is no privileged per-hook
 high-rate exception flow.
 
-Registration storage tracks `last_seen_at`, `disabled_at`, and
-`disabled_reason`; recipient lookup returns only active, non-disabled, non-stale
-tokens, and
+Registration storage tracks `last_seen_at`, `validated_at`, `disabled_at`, and
+`disabled_reason`; recipient lookup returns only enabled tokens, and
 authenticated recipients can unregister/delete or disable their own installation.
 These endpoints derive recipient identity from Nostr auth and do not trust
 caller-supplied `recipient_id` or `app_id` fields.
@@ -196,17 +197,20 @@ returns `422`; provider/auth/network ambiguity returns `503` and is never treate
 as successful admission. The test/no-op providers accept validation only for local development.
 Registration attestation is not part of the current wire contract.
 
-Hook creation in every mode requires an active owned `installation_id` and a finite
-TTL. Invocation may enqueue only that installation, which prevents a formation
+Hook creation in every mode requires an active owned `installation_id`. Its TTL is
+finite unless omitted; a hook with no TTL never expires. Invocation may enqueue only that installation, which prevents a formation
 callback from notifying every installation that shares the recipient key.
-Registration freshness is also finite (30 days by default); signed refreshes
-advance `last_seen_at`, stale rows stop receiving new notifications, and bounded
-admission GC plus startup GC remove them. Admission transactions enforce
-physical-row ceilings and fail closed when bounded GC cannot restore headroom.
-Token moves use their recipient/global net row deltas. A durable owner row binds
-a live token to its stable installation id. Stale GC removes an orphaned owner
-after its registration disappears and the same refresh cutoff passes, preventing
-normal expiry from exhausting the physical-row ceiling.
+A registration does not expire by age. A background task re-checks, with a
+validate-only send, every token the provider last accepted more than the
+revalidation interval ago (30 days by default); a definitive rejection disables
+the registration, and the same task deletes it 30 days later unless the app
+re-registers the installation first. Admission
+transactions enforce physical-row ceilings and fail closed when bounded GC
+cannot restore headroom. Token moves use their recipient/global net row deltas.
+A durable owner row binds a live token to its stable installation id. GC removes
+an orphaned owner after its registration disappears and the revalidation
+interval passes, preventing removed registrations from exhausting the
+physical-row ceiling.
 Fedi retains that pair across account switches. Every valid signed registration
 for the exact pair is authoritative: serialized registration commits use
 latest-valid-wins ownership and atomically update both durable rows. Another
@@ -219,15 +223,15 @@ An account switch changes future target resolution only. An outbox row accepted
 before the switch already contains the old recipient's token and notification
 snapshot, so it may still reach the same physical installation within the
 five-minute delivery-resolution window.
-Missing, disabled, or stale invocation targets return retryable 503 before hook
-counters or events are mutated. Callback payloads remain generic, non-sensitive, and
+Disabled invocation targets return retryable 503, as do missing ones (410 for a
+hook with no expiry), before hook counters or events are mutated. Callback payloads remain generic, non-sensitive, and
 non-authoritative: receipt is only a reason for the app to reopen and reconcile
 durable formation state.
 
 Caller-provided idempotency keys are secret-adjacent correlation material and
 must not appear in logs or metrics. A compact accepted-key marker is retained
-after sensitive event/outbox cleanup through the hook's finite lifetime plus a
-seven-day cleanup margin while the hook remains usable. Revocation/expiry rejects
+after sensitive event/outbox cleanup through the hook's finite lifetime (one year from
+acceptance with no expiry) plus a seven-day cleanup margin while the hook remains usable. Revocation/expiry rejects
 replay, so terminal hook GC removes now-useless markers after retained events are
 gone. A marker contains no notification JSON or push token, but the table, database
 WAL, backups, and restored copies still require sensitive operational handling.

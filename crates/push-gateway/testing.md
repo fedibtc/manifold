@@ -43,12 +43,15 @@ per-hook test limits.
   at zero, active and physical row exhaustion, bounded no-restart reclamation,
   count-neutral same-recipient token moves, same-installation account handoff,
   new-recipient capacity accounting, different-installation token-theft refusal
-  even after stale-row GC, signed unregister release of the durable owner row,
+  even after disabled-row GC, signed unregister release of the durable owner row,
   rejection of undeclared attestation fields, and installation-scoped hook ownership across
-  absent, cross-owner, disabled, stale, and refreshed targets. Invocation tests
-  require missing/disabled/stale targets to return retryable 503 with no
+  absent, cross-owner, disabled, long-quiet, and refreshed targets. Invocation tests
+  require missing/disabled targets to return retryable 503 with no
   counter/event mutation, then accept the same idempotency key exactly once
-  after refresh. They also prove a 30-day formation hook remains idempotent after
+  after refresh. A hook with no expiry waits on a disabled target
+  (`hook_target_inactive`) and resumes when the app re-registers with a new
+  token, answers 410 once the installation is removed, and stops counting toward
+  active-hook caps then even while a retained event keeps its row. They also prove a 30-day formation hook remains idempotent after
   sensitive event/outbox retention cleanup, expired markers are reclaimed, and
   marker-cap exhaustion fails closed before hook state changes. Public hook invocation stays bearer
   hook-token URL auth.
@@ -108,9 +111,12 @@ sixty-second fallback poll.
 
 Installation-target tests register two devices under one recipient, create a
 hook for the initiating device, invoke it, and assert that exactly one outbox
-delivery targets that installation. Registration TTL/GC tests use bounded
-configured horizons and startup reconnects; they must not wait on wall-clock
-month-scale defaults.
+delivery targets that installation. Registration revalidation and GC tests
+backdate `validated_at`/`disabled_at` and use a scripted provider or startup
+reconnects; they must not wait on wall-clock month-scale defaults. They cover
+deferred checks that neither end a pass nor, when a whole batch defers, starve
+the rows behind them, and the 30-day grace boundary for disabled
+registrations.
 
 Outbox observability tests keep labels low-cardinality and secret-free:
 provider reason classes, rate-limit rejection counters, retry/dead-letter
