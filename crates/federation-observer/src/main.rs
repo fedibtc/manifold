@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use fedimint_api_client::api::DynGlobalApi;
+use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _};
 use fedimint_api_client::download_from_invite_code;
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::invite_code::InviteCode;
@@ -70,6 +70,11 @@ enum Command {
     /// Print the ecash outstanding, the wallet's bitcoin and the funds in
     /// open Lightning contracts, summed over every archived session.
     Balance,
+    /// Print what the config and the guardians say about a federation now.
+    Inspect {
+        #[arg(long)]
+        invite: String,
+    },
 }
 
 #[tokio::main]
@@ -147,6 +152,140 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Balance => print_balance(&archive)?,
+        Command::Inspect { invite } => inspect(&invite).await?,
+    }
+    Ok(())
+}
+
+async fn inspect(invite: &str) -> anyhow::Result<()> {
+    let invite = InviteCode::from_str(invite).context("malformed invite code")?;
+    let connectors = ConnectorRegistry::build_from_client_defaults()
+        .bind()
+        .await?;
+    let (config, api) = download_from_invite_code(&connectors, &invite)
+        .await
+        .context("download the federation config")?;
+    let info = FederationInfo::from_config(&config);
+    println!("id\t{}", info.federation_id);
+    println!("name\t{}", config.global.federation_name().unwrap_or("-"));
+    for (id, module) in &config.modules {
+        println!("module\t{id}\t{}\t{}", module.kind, module.version);
+    }
+    for (id, module) in &config.modules {
+        if module.kind.as_str() != "mintv2" {
+            continue;
+        }
+        let fedimint_core::encoding::DynRawFallback::Raw { raw, .. } = &module.config else {
+            anyhow::bail!("mintv2 config {id} is not raw");
+        };
+        let mint = <fedimint_mintv2_common::config::MintClientConfig as fedimint_core::encoding::Decodable>::consensus_decode_whole(
+            raw,
+            &ModuleDecoderRegistry::default(),
+        )
+        .context("decode mintv2 config")?;
+        // Per input and per output; the ppm field is private, so print the
+        // serialized schedule.
+        println!(
+            "mintv2_fee\t{}",
+            serde_json::to_string(&mint.fee_consensus)?
+        );
+        println!(
+            "mintv2_amount_unit\t{}",
+            serde_json::to_string(&mint.amount_unit)?
+        );
+        let denoms: Vec<String> = mint
+            .tbs_agg_pks
+            .keys()
+            .map(|d| format!("{}={}msat", d.0, d.amount().msats))
+            .collect();
+        println!(
+            "mintv2_denominations\t{}\t{}",
+            denoms.len(),
+            denoms.join(",")
+        );
+        let peers_per_denom: std::collections::BTreeSet<usize> =
+            mint.tbs_pks.values().map(|p| p.len()).collect();
+        println!("mintv2_pk_shares_per_denom\t{peers_per_denom:?}");
+    }
+    for (k, v) in &config.global.meta {
+        println!("meta\t{k}\t{v}");
+    }
+    let peers: Vec<_> = config.global.api_endpoints.keys().copied().collect();
+    let n = peers.len();
+    println!("guardians\t{n}\tthreshold\t{}", n - (n - 1) / 3);
+    let answers = futures::future::join_all(peers.iter().map(|peer| {
+        let api = api.clone();
+        async move {
+            let r =
+                tokio::time::timeout(Duration::from_secs(20), api.fedimintd_version(*peer)).await;
+            (*peer, r)
+        }
+    }))
+    .await;
+    for (peer, r) in answers {
+        let state = match r {
+            Ok(Ok(v)) => format!("up\t{v}"),
+            Ok(Err(e)) => format!("error\t{e}"),
+            Err(_) => "timeout".to_owned(),
+        };
+        println!(
+            "peer\t{peer}\t{}\t{state}",
+            config.global.api_endpoints[&peer].url
+        );
+    }
+    let count = tokio::time::timeout(Duration::from_secs(60), api.session_count()).await;
+    let count = match count {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => anyhow::bail!("session_count: {e}"),
+        Err(_) => anyhow::bail!("session_count timed out"),
+    };
+    println!("session_count\t{count}");
+    if let (Some(lnv2), Some(last)) = (info.lnv2_instance(), count.checked_sub(2)) {
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(60),
+            api.await_block(last, &info.decoders()),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(outcome)) => println!(
+                "last_session_lnv2_time\t{last}\t{}",
+                lnv2::session_events(last, &outcome, lnv2)
+                    .time
+                    .map_or("-".to_owned(), lnv2::format_utc)
+            ),
+            Ok(Err(e)) => println!("last_session\terror\t{e}"),
+            Err(_) => println!("last_session\ttimeout"),
+        }
+    }
+    if let Some(meta) = info.instance("meta") {
+        let value = tokio::time::timeout(
+            Duration::from_secs(60),
+            api.with_module(meta)
+                .request_current_consensus::<Option<fedimint_meta_common::MetaConsensusValue>>(
+                    fedimint_meta_common::endpoint::GET_CONSENSUS_ENDPOINT.to_owned(),
+                    fedimint_core::module::ApiRequestErased::new(
+                        fedimint_meta_common::endpoint::GetConsensusRequest(
+                            fedimint_meta_common::MetaKey(0),
+                        ),
+                    ),
+                ),
+        )
+        .await;
+        match value {
+            Ok(Ok(Some(v))) => println!(
+                "meta_module\trevision {}\t{}",
+                v.revision,
+                String::from_utf8_lossy(v.value.as_slice())
+            ),
+            Ok(Ok(None)) => println!("meta_module\tnone"),
+            Ok(Err(e)) => println!("meta_module\terror\t{e}"),
+            Err(_) => println!("meta_module\ttimeout"),
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    match tokio::time::timeout(Duration::from_secs(60), api.session_count()).await {
+        Ok(Ok(c)) => println!("session_count_after_60s\t{c}"),
+        other => println!("session_count_after_60s\tfailed\t{other:?}"),
     }
     Ok(())
 }

@@ -13,7 +13,9 @@ fedimint-connectors = { workspace = true }
 fedimint-core = { workspace = true }
 fedimint-ln-common = { workspace = true }
 fedimint-lnv2-common = { workspace = true }
+fedimint-meta-common = { workspace = true }
 fedimint-mint-common = { workspace = true }
+fedimint-mintv2-common = { workspace = true }
 fedimint-wallet-common = { workspace = true }
 futures = "0.3"
 serde = { workspace = true }
