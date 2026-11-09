@@ -100,20 +100,30 @@ impl QuoteSettings {
     }
 }
 
-/// An operator's price as the wire states it: the single plan this daemon
-/// serves, or an empty offer. The plan sells at the
-/// [payable price](locked_payments::denominations::payable_price_msats), the
-/// stored price rounded up to what every payment federation can fund, so
-/// the advertisement, the quote and the operator's view share one price
-/// however the operator set it.
+/// A stored price as the wire states it: the single plan this daemon
+/// serves, or an empty offer.
 pub(crate) fn offered_plans(price: Option<Msats>) -> Vec<Plan> {
     price
         .map(|price| Plan::InfiniteBestEffort {
-            price_msats: locked_payments::denominations::payable_price_msats(price.0)
-                .expect("a stored price fits i64, so its payable price fits u64"),
+            price_msats: price.0,
         })
         .into_iter()
         .collect()
+}
+
+/// The column value for an operator's price: the
+/// [payable price](locked_payments::denominations::payable_price_msats),
+/// rounded up to what every payment federation can fund. Every setter
+/// stores through this, and migration 0011 rounded prices stored before it,
+/// so the stored price is the advertised and quoted price.
+fn payable_price_column(price: Option<Msats>) -> Result<Option<i64>, DbError> {
+    price
+        .map(|Msats(price_msats)| {
+            locked_payments::denominations::payable_price_msats(price_msats)
+                .and_then(|payable| i64::try_from(payable).ok())
+                .ok_or(DbError::PriceOutOfRange { price_msats })
+        })
+        .transpose()
 }
 
 #[derive(Clone)]
@@ -405,7 +415,7 @@ impl Db {
         &self,
         price: Option<Msats>,
     ) -> Result<OfferEpoch, DbError> {
-        let price_msats = price.map(|price| price.0 as i64);
+        let price_msats = payable_price_column(price)?;
         let updated_at_ms = now_ms();
         let mut tx = self.begin_write().await?;
         let existing = sqlx::query_scalar::<_, Option<i64>>(
@@ -436,12 +446,13 @@ impl Db {
 
     /// Store the first complete operator offer and finish setup. Holder
     /// authorization has already been retained before this transition.
+    /// Returns the stored (payable) price.
     pub async fn configure_initial_offer(
         &self,
         price: Option<Msats>,
         max_seats: Option<u32>,
-    ) -> Result<(), DbError> {
-        let price_msats = price.map(|price| price.0 as i64);
+    ) -> Result<Option<Msats>, DbError> {
+        let price_msats = payable_price_column(price)?;
         let updated_at_ms = now_ms();
         let mut tx = self.begin_write().await?;
         let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
@@ -487,7 +498,7 @@ impl Db {
             });
         }
         tx.commit().await?;
-        Ok(())
+        Ok(price_msats.map(stored_price))
     }
 
     pub(crate) async fn max_seats(&self) -> Result<Option<u32>, DbError> {
@@ -994,6 +1005,8 @@ pub enum DbError {
         bound: String,
         selected: ManifoldEnvironment,
     },
+    #[error("price {price_msats} msat is too large to store")]
+    PriceOutOfRange { price_msats: u64 },
     #[error("cannot set max seats to {requested}; {active} seats are active")]
     SeatLimitBelowActive { requested: u32, active: u32 },
     #[error("onboarding operation requires {expected:?}, but the current stage is {actual:?}")]
