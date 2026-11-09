@@ -34,7 +34,8 @@ registered, enabled, and owned by the authenticated recipient. This scopes FA
 formation completion to the initiating installation. A registration stays a
 target however long ago the app last refreshed it, until the provider rejects
 its token ([SPEC-abuse-limits](./SPEC-abuse-limits.md)). `policy.ttl_seconds`
-is up to one year; omitted, the hook never expires (the MG guardian link).
+is up to one year; omitted, the hook never expires, as
+[SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md) relies on.
 
 If the named target is disabled, invocation returns retryable
 `503 hook_target_inactive`: the provider rejected its token, and the app must
