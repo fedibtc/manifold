@@ -255,6 +255,9 @@ pub fn check_refund_v2(
     paid: &[MintV2Denomination],
     refund: &[locked_payment_v2::IssuanceRequest],
 ) -> Result<(), locked_payment_v2::LockedPaymentV2Error> {
+    if refund.len() > crate::denominations::MAX_LOCKED_PAYMENT_NOTES {
+        return Err(locked_payment_v2::LockedPaymentV2Error::InvalidRefundAmount);
+    }
     let paid_msats = paid.iter().try_fold(0u64, |sum, denomination| {
         sum.checked_add(denomination.amount().msats)
     });
@@ -283,7 +286,7 @@ pub fn check_refund_v2(
         }
         _ => false,
     };
-    if refund.len() <= crate::denominations::MAX_LOCKED_PAYMENT_NOTES && balances {
+    if balances {
         Ok(())
     } else {
         Err(locked_payment_v2::LockedPaymentV2Error::InvalidRefundAmount)

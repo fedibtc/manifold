@@ -46,11 +46,14 @@ imports the push-gateway DTO and outbound HTTP/TLS features.
 
 The FA (payer) side of the key-locked payment protocol is not here at
 all: `fa-cli` carries it with its own wallet, and nothing outside the MG
-depends on `fedimint`. What both sides must compute identically — the
+depends on `fedimint`. What both sides must agree on — the
 per-generation cryptography, denomination selection, and the refund
-preparation the payee re-runs as its validation oracle — lives in the
-shared `locked-payments` crate (`crates/locked-payments`)
-so agreement rests on one definition rather than two copies.
+preparation and its validation — lives in the shared `locked-payments`
+crate (`crates/locked-payments`) so agreement rests on one definition
+rather than two copies. For mint-v1 the payee re-runs the payer's refund
+preparation and compares amounts. For mint-v2 it checks the refund by rule
+instead (at most 64 notes, less than 128 msat left over), so it does not
+repeat the payer's search.
 
 **A trait here is exactly a hole**: it exists when the implementor lives in a
 crate `core` cannot name, and for no other reason. The traffic that runs the

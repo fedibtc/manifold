@@ -39,7 +39,7 @@ use mg_core::wallet::{
     VerifiedLockedPayment,
 };
 
-use locked_payments::denominations::quote_denominations;
+use locked_payments::denominations::{MAX_LOCKED_PAYMENT_NOTES, quote_denominations};
 use locked_payments::locked_payment::{self, decode_blinded_signature, decode_issuance_request};
 use locked_payments::{locked_payment_v2, mint_v2_module, refund, standard_module_root_secret};
 
@@ -837,6 +837,11 @@ impl EcashWallet for Wallet {
                     && issuance
                         .iter()
                         .all(|r| decode_issuance_request(r.amount_msats, &r.blind_nonce).is_ok())
+            }
+            (PaymentTerms::MintV2 { .. }, RefundIssuance::MintV2 { issuance, .. })
+                if issuance.len() > MAX_LOCKED_PAYMENT_NOTES =>
+            {
+                false
             }
             (
                 PaymentTerms::MintV2 { issuance: paid, .. },
