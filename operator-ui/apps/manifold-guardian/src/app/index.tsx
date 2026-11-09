@@ -14,6 +14,7 @@ import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { PayoutsPage } from '@/pages/payouts/PayoutsPage';
+import { PhoneLinkPage } from '@/pages/phone-link/PhoneLinkPage';
 import { SeatDetailPage } from '@/pages/seat-detail/SeatDetailPage';
 import { SeatsPage } from '@/pages/seats/SeatsPage';
 import { SupportPage } from '@/pages/support/SupportPage';
@@ -49,7 +50,8 @@ const router = createBrowserRouter([
                   { path: 'backup', element: <BackupPage /> },
                   { path: 'backup/phrase', element: <BackupPhrasePage /> },
                   { path: 'health', element: <HealthPage /> },
-                  { path: 'support', element: <SupportPage /> }
+                  { path: 'support', element: <SupportPage /> },
+                  { path: 'phone-link', element: <PhoneLinkPage /> }
                 ]
               }
             ]
