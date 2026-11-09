@@ -228,10 +228,8 @@ async fn inspect(invite: &str) -> anyhow::Result<()> {
             Ok(Err(e)) => format!("error\t{e}"),
             Err(_) => "timeout".to_owned(),
         };
-        println!(
-            "peer\t{peer}\t{}\t{state}",
-            config.global.api_endpoints[&peer].url
-        );
+        let endpoint = &config.global.api_endpoints[&peer];
+        println!("peer\t{peer}\t{}\t{}\t{state}", endpoint.name, endpoint.url);
     }
     let count = tokio::time::timeout(Duration::from_secs(60), api.session_count()).await;
     let count = match count {
