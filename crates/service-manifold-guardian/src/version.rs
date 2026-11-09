@@ -19,6 +19,10 @@ pub struct MgApiVersion(pub u32);
 /// transfer and had no `GetVersion`.
 pub const GUARDIAN_TRANSFER_V2_API_VERSION: MgApiVersion = MgApiVersion(1);
 
+/// `GetFedimintStats` answers with FA Stats. Earlier MGs declared the verb
+/// but answered `UnsupportedVerb`.
+pub const FEDIMINT_STATS_API_VERSION: MgApiVersion = MgApiVersion(2);
+
 /// The API version this build serves: the latest version a method names.
 pub const MG_API_VERSION: MgApiVersion =
     latest(crate::ManifoldGuardianServiceClient::METHOD_API_VERSIONS);

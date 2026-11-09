@@ -1433,6 +1433,14 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     // The binary an upgrade starts from predates the verb.
     if upgrade_to.is_none() {
         assert_every_guardian_counts_deposit(state_dir, locators, 100_000_000).await?;
+        assert_fa_combines_guardian_stats(
+            fa_cli_bin,
+            state_dir,
+            &mg_endpoint_addrs(locators),
+            iroh_overrides,
+            100_000_000,
+        )
+        .await?;
     }
     run_fa_payment_wallet(
         fa_cli_bin,
@@ -2335,6 +2343,54 @@ async fn assert_every_guardian_counts_deposit(
         );
     }
     endpoint.close().await;
+    Ok(())
+}
+
+/// fa-cli combines the guardians' answers once every guardian counted the
+/// deposit: each figure rests on all of them and none is partial.
+async fn assert_fa_combines_guardian_stats(
+    fa_cli_bin: &Path,
+    state_dir: &Path,
+    mg_endpoints: &str,
+    iroh_overrides: &str,
+    deposit_msats: u64,
+) -> anyhow::Result<()> {
+    let mut command = Command::new(fa_cli_bin);
+    command
+        .arg("--state-dir")
+        .arg(state_dir)
+        .arg("--json")
+        .arg("stats")
+        .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
+    let output = run_expect_success(command, "fa-cli stats", Duration::from_secs(60)).await?;
+    let stats: serde_json::Value = serde_json::from_str(output.trim())?;
+    let guardians = u64::try_from(GUARDIAN_COUNT)?;
+    anyhow::ensure!(
+        stats["guardians"].as_u64() == Some(guardians),
+        "fa-cli stats counts every guardian: {stats}"
+    );
+    for figure in [
+        "custodiedMsats",
+        "activeWallets30d",
+        "volume7dMsats",
+        "volume30dMsats",
+    ] {
+        anyhow::ensure!(
+            stats[figure]["basedOn"].as_u64() == Some(guardians)
+                && stats[figure]["partial"] == false,
+            "{figure} rests on every guardian's complete answer: {stats}"
+        );
+    }
+    for figure in ["custodiedMsats", "volume7dMsats", "volume30dMsats"] {
+        anyhow::ensure!(
+            stats[figure]["value"]
+                .as_u64()
+                .is_some_and(|value| value >= deposit_msats),
+            "{figure} includes the deposit: {stats}"
+        );
+    }
     Ok(())
 }
 

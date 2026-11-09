@@ -53,7 +53,10 @@ fn methods_record_the_api_version_that_added_them() {
             .map(|(_, version)| *version)
     };
     assert_eq!(MG_API_VERSION, MgApiVersion(2));
-    assert_eq!(added_in("get_fedimint_stats"), Some(MgApiVersion(2)));
+    assert_eq!(
+        added_in("get_fedimint_stats"),
+        Some(FEDIMINT_STATS_API_VERSION)
+    );
     assert_eq!(added_in("get_availability"), Some(MgApiVersion(1)));
     assert_eq!(added_in("get_version"), Some(MgApiVersion(1)));
     assert_eq!(

@@ -40,11 +40,9 @@ now ship ([SPEC-fa-rpc](./specs/SPEC-fa-rpc.md)):
   ([SPEC-fa-metadata-maintenance](./specs/SPEC-fa-metadata-maintenance.md)).
   `fedi:fman_api_urls`, privacy-policy keys, and the guardian-fee recipient list
   remain deliberately absent; formation installs the fixed recipient policy.
-- **`GetFedimintStats` — shipped on the MG.** Each MG reports its own
-  guardian's custody, 30-day active wallets, and 7/30-day volume, with
-  per-figure window completeness. fa-client does not read it yet: it still
-  needs to take the median over complete answers, require f+1 of them, and
-  otherwise show the figure as partial. Federation telemetry now has the
+- **`GetFedimintStats` — shipped.** Each MG reports its own guardian's
+  custody, 30-day active wallets, and 7/30-day volume, with per-figure window
+  completeness; fa-client combines the answers. Federation telemetry now has the
   separate, raw, capability-scoped Iroh path in
   [SPEC-guardian-telemetry-proxy](./specs/SPEC-guardian-telemetry-proxy.md).
 - **Guardian-fee metadata.** Collection itself now exists: each seat's

@@ -125,6 +125,6 @@ pub use types::{
     WindowedFigure,
 };
 pub use version::{
-    GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest, GetVersionResponse, MG_API_VERSION,
-    MgApiVersion,
+    FEDIMINT_STATS_API_VERSION, GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest,
+    GetVersionResponse, MG_API_VERSION, MgApiVersion,
 };

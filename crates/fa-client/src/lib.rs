@@ -10,6 +10,7 @@ mod discovery;
 mod eligibility;
 mod error;
 mod federation_reader;
+mod federation_stats;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -51,6 +52,7 @@ pub use error::{
     MgCause, MgFailure, MgOperation, SelectionReauthorizationReason, UnsupportedTransferMg,
 };
 pub use federation_reader::ConnectorsConsensusReader;
+pub use federation_stats::{CombinedFigure, FederationStats};
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
