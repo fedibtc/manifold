@@ -941,6 +941,17 @@ impl Db {
         formed_federation_invite(&mut *self.pool().acquire().await?, seat_id).await
     }
 
+    /// When this install first held the seat's formed guardian: at DKG, at a
+    /// transfer import, or at a restore.
+    pub(crate) async fn formed_at_ms(&self, seat_id: &SeatId) -> Result<Option<i64>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT formed_at_ms FROM formed_seats WHERE quote_id = ?")
+                .bind(seat_id.as_bytes().as_slice())
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
     /// One seat's recovery-relevant lifecycle facts, read from one snapshot.
     ///
     /// Separate reads could straddle a commit — an import's acceptance lands

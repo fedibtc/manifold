@@ -179,8 +179,8 @@ behavior at this claim boundary.
    `get_status`, `get_invite_code`, and `get_peer_attestation` read that seat
    and return its status, invite, or signed binding. `set_meta_field` and
    `propose_guardian_fees` submit validated metadata through that seat's local
-   child API. `get_fedimint_stats` authorizes and then returns
-   `UnsupportedVerb`, producing no seat effect. The remaining signed method,
+   child API. `get_fedimint_stats` reads that seat's guardian
+   statistics and returns them, producing no seat effect. The remaining signed method,
    `create_seat`, verifies the MG-signed quote, quote coherence, and quote FA
    against the verified signer before presenting a verified payment to
    allocation, whose allowed contract is one durable acceptance or refusal and
@@ -201,7 +201,7 @@ behavior at this claim boundary.
    only a compiled [`mg_meta_fields`](../../meta-fields/src/lib.rs) key and its
    typed value domain; `propose_guardian_fees` bounds the rate and recipient
    list and requires the canonical proposal to pay this seat's derived account;
-   and stats is unsupported. [`SeatLoop`](../../core/src/seat.rs) enforces each
+   and stats is a read-only projection of the authorized seat's guardian. [`SeatLoop`](../../core/src/seat.rs) enforces each
    lifecycle gate in the same serialized command that performs the child or
    persistence effect. Thus the source roster cannot silently redefine a
    broader effect as contract-granted.
@@ -283,7 +283,7 @@ behavior at this claim boundary.
      respawn. `get_status`, `get_invite_code`, and `get_peer_attestation`
      serialize child probes/reads and return data only. `set_meta_field` and
      `propose_guardian_fees` submit validated metadata to the child API.
-     `get_fedimint_stats` has no post-authorization effect.
+     `get_fedimint_stats` serializes child reads and returns data only.
    - **Running Admin:** in [`admin::dispatch`](../../core/src/admin.rs),
      `ShowPlans`, `ListSeats`, `Onboarding`, and `ShowMnemonic` are local reads;
      `RefreshHolderAuthorizations` schedules the Nostr enrollment task;

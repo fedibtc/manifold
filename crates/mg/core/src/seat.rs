@@ -33,9 +33,9 @@ use fedi_decentralized_domain::{
     parse_protocol_peer_id, protocol_peer_id,
 };
 use fedi_decentralized_service_manifold_guardian::{
-    FEDERATION_METADATA_OBJECT_MAX_BYTES, FaId, FederationName, FormationSeatBinding, GuardianCode,
-    InviteCode, MetaConsensusBase, MetaFieldKey, MetaFieldValue, Plan, SeatHealth, SeatId,
-    ServiceStatus,
+    FEDERATION_METADATA_OBJECT_MAX_BYTES, FaId, FederationName, FedimintStats,
+    FormationSeatBinding, GuardianCode, InviteCode, MetaConsensusBase, MetaFieldKey,
+    MetaFieldValue, Plan, SeatHealth, SeatId, ServiceStatus,
 };
 use fedimint_core::base32::{self, FEDIMINT_PREFIX};
 use fedimint_core::config::ClientConfig;
@@ -53,6 +53,7 @@ use crate::backup_worker::BackupWorker;
 use crate::db::Db;
 use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
 use crate::fedimint_api::{FedimintApi, FedimintApiError};
+use crate::fedimint_stats::{GuardianReadings, fedimint_stats};
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
 use crate::push_callback::{CompletionHookWake, ValidatedDkgCompletionCallback};
@@ -492,6 +493,9 @@ enum SeatCommand {
         gateway_api: SafeUrl,
         reply: oneshot::Sender<Result<bool, SeatVerbError>>,
     },
+    FedimintStats {
+        reply: oneshot::Sender<Result<FedimintStats, SeatVerbError>>,
+    },
     GuardianFeePolicy {
         our_account_id: AccountId,
         guardian_verification_fee_account: Option<Account>,
@@ -886,6 +890,12 @@ impl Seat {
         gateway_api: SafeUrl,
     ) -> Result<bool, SeatVerbError> {
         self.verb_request(|reply| SeatCommand::RegisterGateway { gateway_api, reply })
+            .await
+    }
+
+    /// Read the FA Stats figures through this seat's own fedimintd.
+    pub(crate) async fn fedimint_stats(&self) -> Result<FedimintStats, SeatVerbError> {
+        self.verb_request(|reply| SeatCommand::FedimintStats { reply })
             .await
     }
 
@@ -1300,6 +1310,10 @@ impl SeatLoop {
                 }
                 SeatCommand::RegisterGateway { gateway_api, reply } => {
                     let result = self.register_gateway(gateway_api).await;
+                    let _ = reply.send(result);
+                }
+                SeatCommand::FedimintStats { reply } => {
+                    let result = self.fedimint_stats().await;
                     let _ = reply.send(result);
                 }
                 SeatCommand::GuardianFeePolicy {
@@ -2216,6 +2230,40 @@ impl SeatLoop {
             .map_err(SeatVerbError::child_needed)
     }
 
+    async fn fedimint_stats(&mut self) -> Result<FedimintStats, SeatVerbError> {
+        let (client, config) = self.running_client_config().await?;
+        let lnv2_id = module_id(&config, &fedimint_lnv2_common::KIND)?;
+        let walletv2_id = module_id(&config, &fedimint_walletv2_common::KIND)?;
+        let formed_at_ms = self
+            .db
+            .formed_at_ms(&self.facts.seat_id)
+            .await
+            .map_err(SeatVerbError::internal)?
+            .ok_or_else(|| SeatVerbError::internal(anyhow!("a running seat has no formed row")))?;
+        let readings = GuardianReadings {
+            audit: client.audit().await.map_err(SeatVerbError::child_needed)?,
+            backups: client
+                .backup_statistics()
+                .await
+                .map_err(SeatVerbError::child_needed)?,
+            lnv2_volume: client
+                .lnv2_volume_stats(lnv2_id)
+                .await
+                .map_err(SeatVerbError::child_needed)?,
+            walletv2_volume: client
+                .walletv2_volume_stats(walletv2_id)
+                .await
+                .map_err(SeatVerbError::child_needed)?,
+            federation_start_unix: client
+                .federation_start_unix_time(lnv2_id)
+                .await
+                .map_err(SeatVerbError::child_needed)?,
+            formed_at_ms,
+            now_ms: crate::db::now_ms(),
+        };
+        fedimint_stats(&readings).map_err(SeatVerbError::internal)
+    }
+
     /// Guarded read/merge/canonicalize/submit primitive for one FA field write.
     async fn submit_meta_patch(
         &mut self,
@@ -2548,6 +2596,17 @@ fn derive_federation_seats(config: &ClientConfig) -> Result<FederationSeats, Sea
     federation_seats(config).map_err(|err| {
         SeatVerbError::internal(anyhow!("seat's own federation config is unusable: {err}"))
     })
+}
+
+fn module_id(config: &ClientConfig, kind: &ModuleKind) -> Result<ModuleInstanceId, SeatVerbError> {
+    config
+        .modules
+        .iter()
+        .find(|(_, module)| &module.kind == kind)
+        .map(|(instance_id, _)| *instance_id)
+        .ok_or_else(|| {
+            SeatVerbError::internal(anyhow!("federation config carries no {kind} module"))
+        })
 }
 
 /// The instance id of the federation's `meta` module, if it has one.

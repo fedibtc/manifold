@@ -285,11 +285,21 @@ configured the MG cannot enroll a Holder authorization, so the verb
 answers `UnsupportedVerb` rather than an empty document, which would let a
 verifier read "not participating" as "participating but untrusted".
 
-The protocol also declares `GetFedimintStats`; this daemon profile returns
-`UnsupportedVerb` for it. For each signed seat-scoped verb it first verifies
-the envelope and checks seat ownership; a missing or wrong-owner seat
-therefore remains `UnknownSeat`, while an owned seat reaches
-`UnsupportedVerb`. Unsupported operations do not create an authentication
+`GetFedimintStats` (added in MG API version 2) is a read-only projection of
+the authorized seat's own guardian. It reports custodied value (the walletv2
+audit), wallets that uploaded a backup in the last 30 days, and Lightning plus
+on-chain volume over 7 and 30 days. Each windowed figure says whether this
+guardian observed the whole window: volume windows are complete once the
+module's counters started before the window's first day, and the backup window is
+complete when the seat was formed with the federation or has held the seat
+for 30 days, because client backups are guardian-local and do not move with a
+seat. The verb answers `WrongState` before consensus runs and after
+decommission. An MG reports only its own view; the FA combines guardians'
+answers, so no single MG's figures are federation truth.
+
+For each signed seat-scoped verb the daemon first verifies the envelope and
+checks seat ownership; a missing or wrong-owner seat therefore remains
+`UnknownSeat`. Unsupported operations do not create an authentication
 bypass, signature oracle, or seat-existence oracle.
 
 The signed commitment response roster is `GetQuote` and `CreateSeat`.

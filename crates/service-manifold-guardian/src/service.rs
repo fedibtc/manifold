@@ -139,8 +139,9 @@ pub trait ManifoldGuardianService {
         request: SignedRequest<RegisterGatewayRequest>,
     ) -> FmResult<RegisterGatewayResponse>;
 
-    /// Get this seat's `fedimintd` stats.
-    #[added_in(MgApiVersion(1))]
+    /// Get the FA Stats figures this seat's guardian reports. An MG below
+    /// API version 2 answers `UnsupportedVerb`.
+    #[added_in(MgApiVersion(2))]
     async fn get_fedimint_stats(
         &self,
         request: SignedRequest<GetFedimintStatsRequest>,

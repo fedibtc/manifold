@@ -122,6 +122,7 @@ pub use types::{
     FedimintdVersionCore, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
     MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
+    WindowedFigure,
 };
 pub use version::{
     GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest, GetVersionResponse, MG_API_VERSION,

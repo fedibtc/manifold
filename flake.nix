@@ -21,7 +21,7 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi22";
+    fedimint.url = "github:fedibtc/fedimint/3c34fbe6327ccfee1fb2f77bd83ca03c0b4e4dcf";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).

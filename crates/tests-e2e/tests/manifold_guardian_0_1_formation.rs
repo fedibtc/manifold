@@ -24,7 +24,7 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedi_decentralized_service_manifold_guardian::{
     FaId, FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, GUARDIAN_TELEMETRY_ALPN,
-    GatewayApiUrl, GuardianTelemetryApi as _, GuardianTelemetryApiClient,
+    GatewayApiUrl, GetFedimintStatsRequest, GuardianTelemetryApi as _, GuardianTelemetryApiClient,
     ListGuardianTelemetrySeatsRequest, ListSafeEventJournalsRequest, Locator,
     MANIFOLD_GUARDIAN_ALPN, ManifoldGuardianError, ManifoldGuardianServiceClient,
     RegisterGatewayRequest, RegisterGatewayResponse, SafeEventJournal,
@@ -1428,6 +1428,12 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         Duration::from_secs(190),
     )
     .await?;
+    // Every guardian counts the on-chain deposit as volume and holds it in
+    // custody, and a federation this young is entirely inside each window.
+    // The binary an upgrade starts from predates the verb.
+    if upgrade_to.is_none() {
+        assert_every_guardian_counts_deposit(state_dir, locators, 100_000_000).await?;
+    }
     run_fa_payment_wallet(
         fa_cli_bin,
         &wallet_dir,
@@ -2179,19 +2185,8 @@ async fn assert_guardian_fee_policy(
     Ok(())
 }
 
-async fn register_gateway_with_every_guardian(
-    state_dir: &Path,
-    mg_locators: &[String],
-) -> anyhow::Result<()> {
-    let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["formed"]["seats"]
-        .as_array()
-        .context("formed FA status carries seats")?;
-    anyhow::ensure!(
-        seats.len() == GUARDIAN_COUNT,
-        "formed FA retained every seat"
-    );
-
+/// The test FA's protocol key, derived as fa-cli derives it from its identity.
+fn test_fa_keypair(state_dir: &Path) -> anyhow::Result<(secp256k1::Keypair, FaId)> {
     let identity =
         std::fs::read(state_dir.join("fi-identity")).context("read the test FA identity")?;
     let fa_root = DerivableSecret::new_root(&identity, b"fedi-fi-cli/root/v1");
@@ -2202,16 +2197,28 @@ async fn register_gateway_with_every_guardian(
         .context("derive the test FA protocol identity")?;
     let keypair = secp256k1::Keypair::from_secret_key(&secp256k1::Secp256k1::new(), &fa_key);
     let fa_id = FaId(secp256k1::XOnlyPublicKey::from_keypair(&keypair).0);
-    let gateway_api = GatewayApiUrl::try_from("https://gateway.example/")
-        .context("construct canonical public gateway URL")?;
-    let endpoint = Endpoint::bind(presets::N0DisableRelay)
-        .await
-        .context("bind gateway-registration FA endpoint")?;
+    Ok((keypair, fa_id))
+}
 
+/// An RPC client and seat id for every seat of the FA's formed federation.
+async fn formed_seat_clients(
+    state_dir: &Path,
+    mg_locators: &[String],
+    endpoint: &Endpoint,
+) -> anyhow::Result<Vec<(SeatId, ManifoldGuardianServiceClient)>> {
+    let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
+    let seats = status["formed"]["seats"]
+        .as_array()
+        .context("formed FA status carries seats")?;
+    anyhow::ensure!(
+        seats.len() == GUARDIAN_COUNT,
+        "formed FA retained every seat"
+    );
     let mg_locators = mg_locators
         .iter()
         .map(|locator| serde_json::from_str::<Locator>(locator))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut clients = Vec::with_capacity(seats.len());
     for (index, seat) in seats.iter().enumerate() {
         // Seats record the advertised endpoint id only; dial the transport
         // address its MG printed, which changes when the MG restarts.
@@ -2229,8 +2236,25 @@ async fn register_gateway_with_every_guardian(
         let connection = endpoint
             .connect(locator.endpoint_addr, MANIFOLD_GUARDIAN_ALPN)
             .await
-            .with_context(|| format!("connect to guardian {index} for gateway registration"))?;
-        let client = ManifoldGuardianServiceClient::new(connection);
+            .with_context(|| format!("connect to guardian {index}"))?;
+        clients.push((seat_id, ManifoldGuardianServiceClient::new(connection)));
+    }
+    Ok(clients)
+}
+
+async fn register_gateway_with_every_guardian(
+    state_dir: &Path,
+    mg_locators: &[String],
+) -> anyhow::Result<()> {
+    let (keypair, fa_id) = test_fa_keypair(state_dir)?;
+    let gateway_api = GatewayApiUrl::try_from("https://gateway.example/")
+        .context("construct canonical public gateway URL")?;
+    let endpoint = Endpoint::bind(presets::N0DisableRelay)
+        .await
+        .context("bind gateway-registration FA endpoint")?;
+
+    let clients = formed_seat_clients(state_dir, mg_locators, &endpoint).await?;
+    for (index, (seat_id, client)) in clients.into_iter().enumerate() {
         let request = RegisterGatewayRequest {
             ts: Timestamp(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()),
             fa_id,
@@ -2255,6 +2279,59 @@ async fn register_gateway_with_every_guardian(
         anyhow::ensure!(
             !replay.was_added,
             "guardian {index} must report an idempotent gateway replay"
+        );
+    }
+    endpoint.close().await;
+    Ok(())
+}
+
+async fn assert_every_guardian_counts_deposit(
+    state_dir: &Path,
+    mg_locators: &[String],
+    deposit_msats: u64,
+) -> anyhow::Result<()> {
+    let (keypair, fa_id) = test_fa_keypair(state_dir)?;
+    let endpoint = Endpoint::bind(presets::N0DisableRelay)
+        .await
+        .context("bind fedimint-stats FA endpoint")?;
+    let clients = formed_seat_clients(state_dir, mg_locators, &endpoint).await?;
+    for (index, (seat_id, client)) in clients.into_iter().enumerate() {
+        let request = GetFedimintStatsRequest {
+            ts: Timestamp(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()),
+            fa_id,
+            seat_id,
+        };
+        // Each guardian processes the deposit in its own time.
+        let stats = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let stats = client
+                    .transport()
+                    .get_fedimint_stats(SignedRequest::create(&request, &keypair)?)
+                    .await
+                    .with_context(|| format!("guardian {index} stats: RPC transport"))?
+                    .with_context(|| format!("guardian {index} answers fedimint stats"))?
+                    .stats;
+                if stats.volume_7d_msats.value >= deposit_msats {
+                    return Ok::<_, anyhow::Error>(stats);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("guardian {index} never counted the deposit as volume"))??;
+        anyhow::ensure!(
+            stats.custodied_msats >= deposit_msats,
+            "guardian {index} custody must include the deposit: {stats:?}"
+        );
+        anyhow::ensure!(
+            stats.volume_7d_msats.complete
+                && stats.volume_30d_msats.complete
+                && stats.active_wallets_30d.complete,
+            "a guardian formed with its federation sees every window in full: {stats:?}"
+        );
+        anyhow::ensure!(
+            stats.volume_30d_msats.value == stats.volume_7d_msats.value,
+            "a federation younger than a week has equal 7- and 30-day volume: {stats:?}"
         );
     }
     endpoint.close().await;
