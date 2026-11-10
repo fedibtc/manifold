@@ -123,6 +123,13 @@ impl NostrRelayClient {
         }
         let output = client.try_connect(timeout).await;
         if output.success.is_empty() {
+            for (relay, reason) in &output.failed {
+                tracing::info!(
+                    relay = %relay,
+                    reason = %bounded_relay_text(reason),
+                    "Nostr relay connection failed"
+                );
+            }
             return Err(NostrClientError::Connect);
         }
         // `try_connect` schedules no retries for relays that failed just now.
@@ -884,13 +891,28 @@ fn subscription_notification(
             SubscriptionNotification::EndOfStoredEvents(relay_url)
         }
         RelayPoolNotification::Message {
-            message: RelayMessage::Closed {
-                subscription_id, ..
-            },
+            message:
+                RelayMessage::Closed {
+                    subscription_id,
+                    message,
+                },
             relay_url,
         } if subscription_id.as_ref() == expected_subscription_id => {
+            tracing::info!(
+                relay = %relay_url,
+                reason = %bounded_relay_text(&message),
+                "Nostr relay closed a subscription"
+            );
             SubscriptionNotification::Closed(relay_url)
         }
         _ => SubscriptionNotification::Ignore,
     }
+}
+
+/// Relay-supplied text, cut to a bounded length for logging.
+fn bounded_relay_text(text: &str) -> &str {
+    const MAX_CHARS: usize = 256;
+    text.char_indices()
+        .nth(MAX_CHARS)
+        .map_or(text, |(end, _)| &text[..end])
 }
