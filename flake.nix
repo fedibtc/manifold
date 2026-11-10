@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     dpc-public-skills = {
-      url = "git+https://radicle.dpc.pw/z2HR882B4c4mTdAgdt4SozpdeTuMf.git";
+      url = "git+https://radicle.dpc.pw/z2HR882B4c4mTdAgdt4SozpdeTuMf.git?rev=7aed5cbecd8214d5fa04d990e0a8957199dd1836";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     selfci = {
@@ -83,6 +83,16 @@
           "linked-specs-review"
           "linked-specs-claims"
           "linked-specs-claims-verification"
+        ];
+        retiredProjectSkillNames = [
+          "dpc-public-skills"
+          "dpc-general-multipart-review"
+          "dpc-review-coordination"
+          "dpc-review-architecture"
+          "dpc-review-judgment"
+          "dpc-review-maintainability"
+          "dpc-review-rust-style"
+          "dpc-review-reliability"
           "multipart-review"
           "multipart-review-coordination"
           "multipart-review-architecture"
@@ -90,6 +100,9 @@
           "multipart-review-maintainability"
           "multipart-review-rust-style"
           "multipart-review-reliability"
+          "multipart-review-javascript-typescript-style"
+          "multipart-review-prose"
+          "multipart-review-skills"
         ];
         linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
           set -eu
@@ -99,20 +112,19 @@
           source_dir="${dpc-public-skills.packages.${system}.skills}/share/agents/skills"
           ${pkgs.coreutils}/bin/mkdir -p "$skills_dir"
 
-          remove_old_link() {
+          remove_imported_link() {
             target="$skills_dir/$1"
             if [ -L "$target" ]; then
-              ${pkgs.coreutils}/bin/rm -f "$target"
-            elif [ -e "$target" ]; then
-              printf 'refusing to replace non-symlink: %s\n' "$target" >&2
-              exit 1
+              case "$(${pkgs.coreutils}/bin/readlink "$target")" in
+                /nix/store/*-dpc-public-skills/share/agents/skills|/nix/store/*-dpc-public-skills/share/agents/skills/*)
+                  ${pkgs.coreutils}/bin/rm -f "$target"
+                  ;;
+              esac
             fi
           }
 
-          remove_old_link dpc-public-skills
-          remove_old_link maan2003-skills
-          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability; do
-            remove_old_link "$name"
+          for name in ${pkgs.lib.escapeShellArgs retiredProjectSkillNames}; do
+            remove_imported_link "$name"
           done
 
           for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
@@ -136,8 +148,11 @@
 
             tmp_file="$(${pkgs.coreutils}/bin/mktemp "$exclude_file.XXXXXX")"
             ${pkgs.gnugrep}/bin/grep -Fvx \
-              -e '/.agents/skills/dpc-public-skills' \
-              -e '/.agents/skills/maan2003-skills' \
+              ${
+                pkgs.lib.concatMapStringsSep " " (
+                  name: "-e ${pkgs.lib.escapeShellArg "/.agents/skills/${name}"}"
+                ) retiredProjectSkillNames
+              } \
               "$exclude_file" >"$tmp_file" || true
             ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
 
