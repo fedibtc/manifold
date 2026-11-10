@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`f7ea4a46aefb4b88cead3bada0149d26fddda1e3` (tag `v0.12.0-fedi24`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi24.tsv`](./fedimint-metrics-v0.12.0-fedi24.tsv)
+`83972f49b2fd4a26974585d00e7f45fe5b2a203c` (tag `v0.12.0-fedi25`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi25.tsv`](./fedimint-metrics-v0.12.0-fedi25.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -24,7 +24,8 @@ is unreachable, quotes mintv2 fees without creating change notes, and checks
 LNv2 invoice expiry with the wasm clock. fedi22 adds the
 `reset_peer_availability` admin endpoint. fedi23 makes the mint client wait
 for transaction acceptance before polling output outcomes, and fedi24 moves
-Iroh 1.x to 1.4.1. None of these changes affects metric
+Iroh 1.x to 1.4.1. fedi25 stores each AlephBFT backup unit once and adds
+shareable session-timeout and outcome-download events. None of these changes affects metric
 registrations or their labels. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
@@ -38,7 +39,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi24`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi25`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
