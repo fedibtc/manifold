@@ -255,9 +255,10 @@ the same bytes. A reopen continues the newest segment; segments roll only by
 size. A record torn by a crash is terminated with a newline at the next open,
 which leaves one line that is not a JSON record. The MG's telemetry reader
 drops such lines before it serves a batch, so every served batch holds only
-complete JSON records. Power loss between a write and its sync can still lose
-a record a reader already saw and let later records reuse its offsets; this is
-an accepted residual risk.
+complete JSON records. It reads past a storage batch that holds only such
+lines within the same fetch, so they never hide the records after them. Power
+loss between a write and its sync can still lose a record a reader already saw
+and let later records reuse its offsets; this is an accepted residual risk.
 Incarnation identity uses full-value equality; embedded timestamp ordering is
 informational only.
 
