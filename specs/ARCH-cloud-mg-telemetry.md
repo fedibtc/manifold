@@ -249,8 +249,14 @@ Each source journal has a persisted UUIDv7 incarnation. The source keeps it
 across ordinary process restart and segment rotation and creates a new value
 when the journal storage is recreated or replaced. Keeping an incarnation also
 promises that segment numbers are durably reserved, monotone, and never reused.
-After any reopen or crash repair, the writer reserves and creates a fresh segment
-before writing; it never appends to a segment that existed before that reopen.
+The writer never rewrites or truncates bytes it wrote, so a cursor keeps naming
+the same bytes. A reopen continues the newest segment; segments roll only by
+size. A record torn by a crash is terminated with a newline at the next open,
+which leaves one line that is not a JSON record. The MG's telemetry reader
+drops such lines before it serves a batch, so every served batch holds only
+complete JSON records. Power loss between a write and its sync can still lose
+a record a reader already saw and let later records reuse its offsets; this is
+an accepted residual risk.
 Incarnation identity uses full-value equality; embedded timestamp ordering is
 informational only.
 

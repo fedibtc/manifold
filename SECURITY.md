@@ -321,7 +321,8 @@ thread owns the appender and all filesystem I/O. A full or disconnected queue,
 oversized event, or retention/write failure drops diagnostics rather than
 blocking guardian operation or growing without bound. Each journal is capped
 at two 2.5 MiB segments (5 MiB of record data); startup removes legacy segments
-over the current limit before a bounded crash-tail repair. Seat journals live
+over the current limit and continues the newest segment, terminating an
+incomplete crash tail with a newline rather than truncating it. Seat journals live
 outside the restart-wiped fedimintd data directory and remain retained across `RestartDKG`
 and terminal decommission. The marker remains an audited assertion, not a
 sanitizer: changes to marked events or formatted values require the
@@ -347,8 +348,11 @@ operations; regular entries with unexpected types or link counts fail closed.
 Deployment must provide these local-filesystem semantics. Syscall errors fail
 journal initialization, but the process cannot detect a network/FUSE filesystem
 that returns success without honoring them; behavior outside this envelope is
-not detectably safe. Existing segments become read-only at reopen, and a durably
-reserved fresh segment receives all new records.
+not detectably safe. Older segments become read-only at reopen, and the writer
+continues the newest segment. Written bytes are never rewritten or truncated, so
+a served cursor keeps naming the same bytes; the one exception is power loss
+between a write and its sync, which can drop a record a reader already saw and
+let later records reuse its offsets.
 
 Supported MG restore excludes these journals, or creates new incarnations
 before telemetry resumes. A complete persistent-volume snapshot rollback can
@@ -451,8 +455,9 @@ For safe journals, a changed persisted source incarnation is a continuity gap,
 not an order comparison or cursor continuation. A source-reported retention or
 cursor gap under the same incarnation is also durable continuity metadata. The
 source may preserve an incarnation only while it durably reserves monotone,
-non-reused segment numbers and starts a fresh segment after every reopen or crash
-repair rather than appending to an existing segment. Every journal operation must
+non-reused segment numbers and never rewrites or truncates written bytes: a
+reopen continues the newest segment, and a crash tail is terminated with a
+newline, not removed. Every journal operation must
 stay relative to one safely anchored directory descriptor, reject symbolic and
 multiply linked entries, and validate entry types. A supported restore excludes
 journals or forces new incarnations. An in-volume

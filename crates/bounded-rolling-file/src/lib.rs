@@ -28,6 +28,9 @@ use journal_incarnation::{open_incarnation_locked, read_incarnation};
 use segment_reservation::{open_next_segment, reserve_next_segment};
 
 /// Retention limits for one rolling journal.
+///
+/// Segments roll only by size, so a journal holds at most
+/// `max_files * max_file_bytes` bytes however often its writer restarts.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// Maximum size of one segment.
@@ -279,8 +282,13 @@ fn cursor_is_valid(file: &mut File, cursor: ReadCursor) -> io::Result<bool> {
 }
 
 impl RollingFileAppender {
-    /// Open or create a journal, repair and seal old segments, and prepare a
-    /// fresh durably reserved coordinate for the next append.
+    /// Open or create a journal and continue its newest segment.
+    ///
+    /// A restart does not start a segment; segments roll only by size. Bytes
+    /// already written are never rewritten or truncated, because a reader may
+    /// hold a cursor past them. A torn final record, left by a writer that
+    /// died mid-append, is terminated with a newline: readers then pass over
+    /// one malformed line instead of waiting at it.
     pub fn open(directory: impl Into<PathBuf>, config: Config) -> io::Result<Self> {
         validate_config(config)?;
         let directory = AnchoredDirectory::open(&directory.into())?;
@@ -293,12 +301,16 @@ impl RollingFileAppender {
         while segments.len() > config.max_files {
             remove_oldest(&directory, &mut segments)?;
         }
-        if let Some(name) = segments.last_key_value().map(|(_, name)| name) {
-            repair_tail(&directory, name, config.max_file_bytes)?;
+        let newest = segments.last_key_value().map(|(&number, _)| number);
+        for (&number, name) in &segments {
+            if Some(number) != newest {
+                seal_segment(&directory, name)?;
+            }
         }
-        for name in segments.values() {
-            seal_segment(&directory, name)?;
-        }
+        let active = match newest {
+            Some(number) => continue_segment(&directory, &mut segments, number, config)?,
+            None => None,
+        };
         directory.sync()?;
 
         Ok(Self {
@@ -306,10 +318,7 @@ impl RollingFileAppender {
             directory,
             config,
             segments,
-            // Never append after reopening. A newly reserved segment prevents
-            // crash rollback or repair from making an old coordinate valid for
-            // unrelated bytes.
-            active: None,
+            active,
             next_segment,
             poisoned: false,
         })
@@ -503,31 +512,50 @@ fn seal_segment(directory: &AnchoredDirectory, name: &str) -> io::Result<()> {
     file.sync_all()
 }
 
-fn repair_tail(directory: &AnchoredDirectory, name: &str, max_file_bytes: u64) -> io::Result<()> {
-    let mut file =
-        directory.open_file(name, rustix::fs::OFlags::RDONLY, rustix::fs::Mode::empty())?;
+/// Reopen the newest segment for appending, terminating a torn final record.
+///
+/// A torn tail is shorter than the record that tore it, so its newline fits
+/// the segment limit; a segment where it would not was never written by this
+/// appender and is removed like any other segment over the limit.
+fn continue_segment(
+    directory: &AnchoredDirectory,
+    segments: &mut BTreeMap<u64, String>,
+    number: u64,
+    config: Config,
+) -> io::Result<Option<ActiveFile>> {
+    let name = segments
+        .get(&number)
+        .expect("the newest segment came from this map")
+        .clone();
+    // Check the link count before changing anything; a sealed segment from an
+    // earlier release is read-only until it is made writable again here.
+    let mut readable = open_segment(directory, &name, false)?;
+    let mut bytes = readable.metadata()?.len();
+    let torn = bytes > 0 && {
+        readable.seek(io::SeekFrom::End(-1))?;
+        let mut last = [0];
+        readable.read_exact(&mut last)?;
+        last != *b"\n"
+    };
+    if torn && bytes >= config.max_file_bytes {
+        directory.unlink(&name)?;
+        directory.sync()?;
+        segments.remove(&number);
+        return Ok(None);
+    }
+    rustix::fs::fchmod(&readable, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)?;
+    let mut file = directory.open_file(
+        &name,
+        rustix::fs::OFlags::APPEND | rustix::fs::OFlags::WRONLY,
+        rustix::fs::Mode::empty(),
+    )?;
     validate_single_link(&file)?;
-    let mut bytes = Vec::new();
-    std::io::Read::take(&mut file, max_file_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_file_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "rolling segment grew beyond its configured limit during repair",
-        ));
+    if torn {
+        file.write_all(b"\n")?;
+        bytes += 1;
     }
-    let valid_len = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
-    if valid_len != bytes.len() {
-        drop(file);
-        let file =
-            directory.open_file(name, rustix::fs::OFlags::RDWR, rustix::fs::Mode::empty())?;
-        validate_single_link(&file)?;
-        file.set_len(valid_len as u64)?;
-        file.sync_data()?;
-    }
-    Ok(())
+    file.sync_all()?;
+    Ok(Some(ActiveFile { file, bytes }))
 }
 
 #[cfg(test)]
@@ -672,32 +700,119 @@ mod tests {
     }
 
     #[test]
-    fn repairs_an_incomplete_tail() {
+    fn reopening_continues_one_segment_and_loses_nothing() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join(segment_name(0)), b"complete\npartial").unwrap();
+        let config = Config {
+            max_file_bytes: 64,
+            max_files: 2,
+        };
+        for life in 0..10 {
+            let mut appender = RollingFileAppender::open(directory.path(), config).unwrap();
+            appender
+                .append_record(format!("r{life}\n").as_bytes())
+                .unwrap();
+        }
 
-        let mut appender = RollingFileAppender::open(
-            directory.path(),
-            Config {
-                max_file_bytes: 64,
-                max_files: 2,
-            },
-        )
-        .unwrap();
-        appender.append_record(b"next\n").unwrap();
-
+        let segments = test_segments(directory.path());
+        assert_eq!(segments.keys().copied().collect::<Vec<_>>(), [0]);
         assert_eq!(
-            std::fs::read(directory.path().join(segment_name(0))).unwrap(),
-            b"complete\n"
-        );
-        assert_eq!(
-            std::fs::read(directory.path().join(segment_name(1))).unwrap(),
-            b"next\n"
+            std::fs::read_to_string(&segments[&0]).unwrap(),
+            "r0\nr1\nr2\nr3\nr4\nr5\nr6\nr7\nr8\nr9\n"
         );
     }
 
     #[test]
-    fn removes_a_preexisting_oversized_segment_before_repair() {
+    fn a_torn_tail_becomes_one_line_and_a_reader_continues_past_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            max_file_bytes: 64,
+            max_files: 2,
+        };
+        std::fs::write(directory.path().join(segment_name(0)), b"complete\npart").unwrap();
+        let before = read_batch(directory.path(), None, 64, 64).unwrap();
+        assert_eq!(before.records, b"complete\n");
+
+        let mut appender = RollingFileAppender::open(directory.path(), config).unwrap();
+        appender.append_record(b"next\n").unwrap();
+        appender.append_record(b"last\n").unwrap();
+
+        assert_eq!(
+            std::fs::read(directory.path().join(segment_name(0))).unwrap(),
+            b"complete\npart\nnext\nlast\n"
+        );
+        assert_eq!(test_segments(directory.path()).len(), 1);
+        // The cursor stood before the torn bytes; it continues there, and
+        // every later coordinate lies after the bytes the reader already had.
+        let after = read_batch(directory.path(), before.next_cursor, 64, 64).unwrap();
+        assert_eq!(after.records, b"part\nnext\nlast\n");
+        assert!(!after.continuity_gap);
+        assert_eq!(
+            after.next_cursor,
+            Some(ReadCursor {
+                segment: 0,
+                offset: 24
+            })
+        );
+    }
+
+    #[test]
+    fn a_sealed_segment_from_an_earlier_release_is_continued() {
+        let directory = tempfile::tempdir().unwrap();
+        let segment = directory.path().join(segment_name(3));
+        std::fs::write(&segment, b"old\n").unwrap();
+        std::fs::set_permissions(&segment, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+        appender.append_record(b"new\n").unwrap();
+
+        assert_eq!(std::fs::read(&segment).unwrap(), b"old\nnew\n");
+        assert_eq!(
+            std::fs::metadata(&segment).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn a_torn_tail_at_the_limit_is_removed_like_an_oversized_segment() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join(segment_name(0)), b"one\n").unwrap();
+        std::fs::write(directory.path().join(segment_name(1)), b"12345678").unwrap();
+
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+        appender.append_record(b"two\n").unwrap();
+
+        let contents = test_segments(directory.path())
+            .into_iter()
+            .map(|(number, path)| (number, std::fs::read_to_string(path).unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(contents, [(0, "one\n".to_owned()), (2, "two\n".to_owned())]);
+    }
+
+    #[test]
+    fn restarts_keep_the_journal_within_its_segment_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut written = Vec::new();
+        for life in 0..50 {
+            let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+            let record = format!("{:03}\n", life);
+            appender.append_record(record.as_bytes()).unwrap();
+            written.push(record);
+        }
+
+        let segments = test_segments(directory.path());
+        let retained = segments
+            .values()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect::<String>();
+        let bound = config().max_files as u64 * config().max_file_bytes;
+        assert!(retained.len() as u64 <= bound);
+        assert!(segments.len() <= config().max_files);
+        // What is retained is the newest history, in order and complete.
+        assert_eq!(retained, written[written.len() - 4..].concat());
+    }
+
+    #[test]
+    fn removes_a_preexisting_oversized_segment_before_continuing() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join(segment_name(0)), b"oversized\n").unwrap();
 

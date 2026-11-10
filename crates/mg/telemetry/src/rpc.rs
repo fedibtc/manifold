@@ -13,7 +13,7 @@ use fedi_decentralized_service_manifold_guardian::{
     GuardianTelemetryApi, ListGuardianTelemetrySeatsRequest, ListGuardianTelemetrySeatsResponse,
     ListSafeEventJournalsRequest, ListSafeEventJournalsResponse, MAX_GUARDIAN_METRICS_BODY_BYTES,
     MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor, SafeEventJournal, SafeEventJournalInfo,
-    ScrapeGuardianMetricsRequest, ServiceError, ServiceErrorCode, TelemetryCapability,
+    ScrapeGuardianMetricsRequest, SeatId, ServiceError, ServiceErrorCode, TelemetryCapability,
     TelemetryResult,
 };
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
@@ -234,48 +234,110 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
                 "safe-event journal was not found",
             ));
         };
-        let batch =
-            tokio::task::spawn_blocking(move || fetch_journal_directory(directory, request))
-                .await
-                .map_err(|error| {
-                    tracing::error!(error = %error, "safe-event journal reader task failed");
-                    trace_journal_failure(&journal, "fetch", "reader_task_failed", None);
-                    ServiceError::with_code(
-                        ServiceErrorCode::Internal,
-                        "safe-event journal internal error",
-                    )
-                })?
-                .map_err(|error| {
-                    tracing::warn!(error = %error, "safe-event journal read failed");
-                    trace_journal_failure(&journal, "fetch", "read_failed", Some(error.kind()));
-                    map_journal_read_error()
-                })?;
-        Ok(match batch {
-            bounded_rolling_file::IncarnationReadBatch::Current { incarnation, batch } => {
-                let incarnation: fedi_decentralized_service_manifold_guardian::SafeEventJournalIncarnation = incarnation
+        let response = tokio::task::spawn_blocking({
+            let journal = journal.clone();
+            move || read_safe_event_journal(&journal, directory, request)
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(error = %error, "safe-event journal reader task failed");
+            trace_journal_failure(&journal, "fetch", "reader_task_failed", None);
+            ServiceError::with_code(
+                ServiceErrorCode::Internal,
+                "safe-event journal internal error",
+            )
+        })?
+        .map_err(|error| {
+            tracing::warn!(error = %error, "safe-event journal read failed");
+            trace_journal_failure(&journal, "fetch", "read_failed", Some(error.kind()));
+            map_journal_read_error()
+        })?;
+        Ok(response)
+    }
+}
+
+/// Read one fetch batch from a journal directory, as the telemetry RPC serves it.
+///
+/// A writer that died mid-append leaves one line that is not a JSON record
+/// (bounded-rolling-file terminates it at the next open). Such lines are
+/// dropped here so every served batch holds only complete records, which is
+/// what deployed collectors accept. A batch of nothing but dropped lines keeps
+/// the request cursor, because collectors reject an empty batch that moves;
+/// the next fetch passes over them once later records exist.
+pub fn read_safe_event_journal(
+    journal: &SafeEventJournal,
+    directory: std::path::PathBuf,
+    request: FetchSafeEventJournalRequest,
+) -> std::io::Result<FetchSafeEventJournalResponse> {
+    let request_cursor = request.cursor.clone();
+    Ok(match fetch_journal_directory(directory, request)? {
+        bounded_rolling_file::IncarnationReadBatch::Current { incarnation, batch } => {
+            let incarnation: fedi_decentralized_service_manifold_guardian::SafeEventJournalIncarnation = incarnation
+                .as_str()
+                .parse()
+                .expect("storage returns a validated UUIDv7");
+            let (jsonl, skipped_records) = drop_malformed_records(&batch.records);
+            let next_cursor = if jsonl.is_empty() && skipped_records > 0 && !batch.continuity_gap {
+                request_cursor
+            } else {
+                if skipped_records > 0 {
+                    trace_skipped_records(journal, skipped_records);
+                }
+                batch.next_cursor.map(|cursor| SafeEventCursor {
+                    incarnation: incarnation.clone(),
+                    segment: cursor.segment,
+                    offset: cursor.offset,
+                })
+            };
+            FetchSafeEventJournalResponse::Current {
+                incarnation,
+                jsonl,
+                next_cursor,
+                continuity_gap: batch.continuity_gap,
+            }
+        }
+        bounded_rolling_file::IncarnationReadBatch::IncarnationChanged { incarnation } => {
+            FetchSafeEventJournalResponse::IncarnationChanged {
+                incarnation: incarnation
                     .as_str()
                     .parse()
-                    .expect("storage returns a validated UUIDv7");
-                FetchSafeEventJournalResponse::Current {
-                    incarnation: incarnation.clone(),
-                    jsonl: batch.records,
-                    next_cursor: batch.next_cursor.map(|cursor| SafeEventCursor {
-                        incarnation,
-                        segment: cursor.segment,
-                        offset: cursor.offset,
-                    }),
-                    continuity_gap: batch.continuity_gap,
-                }
+                    .expect("storage returns a validated UUIDv7"),
             }
-            bounded_rolling_file::IncarnationReadBatch::IncarnationChanged { incarnation } => {
-                FetchSafeEventJournalResponse::IncarnationChanged {
-                    incarnation: incarnation
-                        .as_str()
-                        .parse()
-                        .expect("storage returns a validated UUIDv7"),
-                }
-            }
-        })
+        }
+    })
+}
+
+/// Keep the newline-terminated lines that are JSON objects; count the rest.
+fn drop_malformed_records(records: &[u8]) -> (Vec<u8>, usize) {
+    let mut kept = Vec::with_capacity(records.len());
+    let mut skipped = 0;
+    for record in records.split_inclusive(|byte| *byte == b'\n') {
+        let body = record.strip_suffix(b"\n").unwrap_or(record);
+        if serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(body).is_ok() {
+            kept.extend_from_slice(record);
+        } else {
+            skipped += 1;
+        }
+    }
+    (kept, skipped)
+}
+
+/// Journal the malformed lines a served batch passed over, by count only.
+fn trace_skipped_records(journal: &SafeEventJournal, skipped_records: usize) {
+    let (journal_kind, seat_id) = journal_fields(journal);
+    tracing::warn!(
+        safe_to_share = true,
+        journal_kind,
+        seat_id = seat_id.map(tracing::field::display),
+        skipped_records,
+        "telemetry safe-event journal skipped malformed records"
+    );
+}
+
+fn journal_fields(journal: &SafeEventJournal) -> (&'static str, Option<&SeatId>) {
+    match journal {
+        SafeEventJournal::Mg => ("mg", None),
+        SafeEventJournal::Seat { seat_id } => ("seat", Some(seat_id)),
     }
 }
 
@@ -322,10 +384,7 @@ fn trace_journal_failure(
     failure_kind: &'static str,
     io_error_kind: Option<std::io::ErrorKind>,
 ) {
-    let (journal_kind, seat_id) = match journal {
-        SafeEventJournal::Mg => ("mg", None),
-        SafeEventJournal::Seat { seat_id } => ("seat", Some(seat_id)),
-    };
+    let (journal_kind, seat_id) = journal_fields(journal);
     tracing::warn!(
         safe_to_share = true,
         journal_kind,
@@ -536,6 +595,67 @@ mod tests {
             incarnation,
             cursor,
         }
+    }
+
+    fn current(
+        response: FetchSafeEventJournalResponse,
+    ) -> (Vec<u8>, Option<SafeEventCursor>, bool) {
+        match response {
+            FetchSafeEventJournalResponse::Current {
+                jsonl,
+                next_cursor,
+                continuity_gap,
+                ..
+            } => (jsonl, next_cursor, continuity_gap),
+            FetchSafeEventJournalResponse::IncarnationChanged { .. } => {
+                panic!("journal incarnation must be current")
+            }
+        }
+    }
+
+    #[test]
+    fn a_torn_line_is_not_served_and_the_reader_passes_it_once_records_follow() {
+        let directory = tempfile::tempdir().unwrap();
+        let incarnation = incarnation(directory.path());
+        std::fs::write(
+            directory.path().join("events-0.jsonl"),
+            b"{\"a\":1}\n{\"b\":",
+        )
+        .unwrap();
+        let read = |cursor| {
+            current(
+                read_safe_event_journal(
+                    &SafeEventJournal::Mg,
+                    directory.path().to_owned(),
+                    journal_request(incarnation.clone(), cursor),
+                )
+                .unwrap(),
+            )
+        };
+        let (jsonl, first, _) = read(None);
+        assert_eq!(jsonl, b"{\"a\":1}\n");
+
+        // The next writer terminates the torn line. With nothing after it, the
+        // batch is empty and the cursor stays where it was.
+        let config = JournalConfig {
+            max_file_bytes: 1024,
+            max_files: 2,
+        };
+        drop(RollingFileAppender::open(directory.path(), config).unwrap());
+        let (jsonl, unchanged, gap) = read(first.clone());
+        assert!(jsonl.is_empty());
+        assert_eq!(unchanged, first);
+        assert!(!gap);
+
+        let mut writer = RollingFileAppender::open(directory.path(), config).unwrap();
+        writer.append_record(b"{\"c\":3}\n").unwrap();
+        let (jsonl, next, gap) = read(first);
+        assert_eq!(jsonl, b"{\"c\":3}\n");
+        assert!(!gap);
+        assert_eq!(
+            next.map(|cursor| (cursor.segment, cursor.offset)),
+            Some((0, 22))
+        );
     }
 
     #[test]
