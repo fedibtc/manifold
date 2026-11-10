@@ -8,7 +8,7 @@ use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedimint_core::runtime::{Instant, sleep};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
-use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
+use nostr_sdk::{Event, EventBuilder, Filter, Kind, PublicKey, RelayUrl, Tag, Timestamp};
 use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
@@ -20,7 +20,9 @@ use crate::{
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
-const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Candidate cap for one relay's answer to the restore lookup.
+pub(crate) const RESTORE_CANDIDATE_LIMIT: u16 = 16;
 
 #[derive(Clone)]
 struct Desired {
@@ -159,10 +161,7 @@ async fn deliver(relay: &RelayUrl, desired: &Desired) -> Result<(), FaError> {
     }
     let events = client
         .fetch_events_complete_capped(
-            Filter::new()
-                .author(desired.event.pubkey)
-                .kind(Kind::Custom(FA_BACKUP_EVENT_KIND))
-                .identifier(FA_BACKUP_D_TAG),
+            backup_filter(desired.event.pubkey),
             Instant::now() + RELAY_TIMEOUT,
             4,
         )
@@ -249,6 +248,14 @@ pub(crate) fn spawn_recovery(
     });
 }
 
+/// The relay query for one author's FA backup, shared by restore and probe.
+pub(crate) fn backup_filter(author: PublicKey) -> Filter {
+    Filter::new()
+        .author(author)
+        .kind(Kind::Custom(FA_BACKUP_EVENT_KIND))
+        .identifier(FA_BACKUP_D_TAG)
+}
+
 // Empty is admitted only after a majority completed. The remaining relays
 // are still queried until their deadlines to find a possible backup.
 fn no_backup_or_unavailable(
@@ -290,12 +297,9 @@ pub(crate) async fn restore_from_relays(
                 .ok()?;
             client
                 .fetch_events_complete_capped(
-                    Filter::new()
-                        .author(author)
-                        .kind(Kind::Custom(FA_BACKUP_EVENT_KIND))
-                        .identifier(FA_BACKUP_D_TAG),
+                    backup_filter(author),
                     Instant::now() + RELAY_TIMEOUT,
-                    16,
+                    RESTORE_CANDIDATE_LIMIT,
                 )
                 .await
                 .ok()

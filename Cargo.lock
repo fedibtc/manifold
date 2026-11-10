@@ -2478,6 +2478,7 @@ dependencies = [
  "stability-pool-common",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]

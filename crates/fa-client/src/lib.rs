@@ -3,6 +3,7 @@
 #![allow(async_fn_in_trait)]
 
 mod backup;
+mod backup_probe;
 mod backup_worker;
 mod db;
 mod decommission;
@@ -38,6 +39,7 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
+pub use backup_probe::probe_backup_relays;
 pub use decommission::DecommissionOutcome;
 pub use discovery::{
     AdvertisementRejection, EligibleMgCandidate, MG_ADVERTISEMENT_MAX_AGE,
