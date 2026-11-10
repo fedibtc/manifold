@@ -1515,3 +1515,101 @@ async fn seed_middle_journal_streams(
     transaction.commit().await.unwrap();
     connection.close().await.unwrap();
 }
+
+struct OneBrokenStreamSource {
+    incarnation: SafeEventJournalIncarnation,
+    seat_fetches: Arc<AtomicUsize>,
+}
+
+struct OneBrokenStreamSession {
+    incarnation: SafeEventJournalIncarnation,
+    seat_fetches: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl JournalSource for OneBrokenStreamSource {
+    async fn connect(&self, _target: &WorkTarget) -> Result<Box<dyn JournalSession>, PollError> {
+        Ok(Box::new(OneBrokenStreamSession {
+            incarnation: self.incarnation.clone(),
+            seat_fetches: self.seat_fetches.clone(),
+        }))
+    }
+}
+
+#[async_trait]
+impl JournalSession for OneBrokenStreamSession {
+    async fn list(&mut self) -> Result<ListSafeEventJournalsResponse, PollError> {
+        Ok(ListSafeEventJournalsResponse {
+            journals: vec![
+                SafeEventJournalInfo {
+                    journal: SafeEventJournal::Mg,
+                    incarnation: self.incarnation.clone(),
+                },
+                SafeEventJournalInfo {
+                    journal: SafeEventJournal::Seat {
+                        seat_id: SeatId::new("22".repeat(32)).unwrap(),
+                    },
+                    incarnation: self.incarnation.clone(),
+                },
+            ],
+        })
+    }
+
+    async fn fetch(
+        &mut self,
+        stream: &JournalStreamState,
+    ) -> Result<FetchSafeEventJournalResponse, PollError> {
+        if stream.journal == SafeEventJournal::Mg {
+            // A batch this collector rejects, the way an older MG serves a torn line.
+            return Ok(FetchSafeEventJournalResponse::Current {
+                incarnation: self.incarnation.clone(),
+                jsonl: b"{\"fields\":{\"safe\n".to_vec(),
+                next_cursor: Some(SafeEventCursor {
+                    incarnation: self.incarnation.clone(),
+                    segment: 0,
+                    offset: 18,
+                }),
+                continuity_gap: false,
+            });
+        }
+        let fetch = self.seat_fetches.fetch_add(1, Ordering::SeqCst) as u64;
+        let jsonl = if fetch == 0 {
+            b"{\"fields\":{\"safe_to_share\":true}}\n".to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(FetchSafeEventJournalResponse::Current {
+            incarnation: self.incarnation.clone(),
+            jsonl,
+            next_cursor: Some(SafeEventCursor {
+                incarnation: self.incarnation.clone(),
+                segment: 0,
+                offset: 34,
+            }),
+            continuity_gap: false,
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_failing_stream_does_not_stop_the_targets_other_streams() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let archive = JournalArchive::open(directory.path(), 1024 * 1024).unwrap();
+    let seat_fetches = Arc::new(AtomicUsize::new(0));
+    let poller = JournalPoller::with_source(
+        store.clone(),
+        archive,
+        Arc::new(OneBrokenStreamSource {
+            incarnation: incarnation(),
+            seat_fetches: seat_fetches.clone(),
+        }),
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroU16::new(30).unwrap(),
+    );
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+
+    assert!(!poller.poll_once(receiver).await.unwrap());
+    assert_eq!(seat_fetches.load(Ordering::SeqCst), 2);
+    assert_eq!(store.final_frame_boundaries().await.unwrap().len(), 1);
+}
