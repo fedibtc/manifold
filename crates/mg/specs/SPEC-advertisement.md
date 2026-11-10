@@ -163,6 +163,25 @@ advertisement without waiting for the next slot, and lowering or removing it
 reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
+Each run also requires that no seat this MG serves is behind its federation.
+A seat that has fallen behind can catch up only through outgoing requests to
+its peers, while its local API keeps answering, so watchdog health cannot show
+it. Each seat therefore tracks the session count its watchdog probe already
+reads; once that count has not advanced for 45 minutes of time the child was
+answering (summed across child respawns, so fedimintd's one-hour session
+timeout cannot hide it; sessions normally take 12 to 17 minutes and about 30
+on a slow federation), the seat asks its other peers for theirs, and again
+every 10 minutes while the stall lasts. The federation's count is the
+`max_evil + 1`-th highest answer, so faulty peers cannot invent a lag. Three or
+more sessions ahead makes the seat behind and closes the gate until its count
+advances. Peers level with it mean the federation itself is not advancing, and
+too few answers leave it unknown; neither is this MG's fault, so both are
+journaled but leave the gate open. A query that fails because the seat's own
+API cannot give its config, as while a respawned child starts, keeps the
+previous classification. Like the version check, a behind seat does
+not mark a slot down: the MG still serves its other seats. The daemon makes no
+peer requests for a seat that is advancing.
+
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
@@ -190,7 +209,7 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
+fixed code per check (`seats` since 0.1.13), the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

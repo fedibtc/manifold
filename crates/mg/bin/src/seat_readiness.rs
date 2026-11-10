@@ -118,6 +118,7 @@ impl SeatReadiness {
             bitcoin,
             version: Outcome::NotApplicable,
             uptime: Outcome::NotApplicable,
+            seats: Outcome::NotApplicable,
             uptime_comparison: None,
         }
     }

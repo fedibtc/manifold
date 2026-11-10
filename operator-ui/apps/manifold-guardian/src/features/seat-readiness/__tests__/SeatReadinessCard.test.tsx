@@ -13,6 +13,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   bitcoin: 'pass',
   version: 'not_applicable',
   uptime: 'pass',
+  seats: 'pass',
   uptime_comparison: null,
   ...overrides
 });
@@ -144,6 +145,32 @@ describe('SeatReadinessCard', () => {
     // Without figures the generic uptime check stays.
     expect(screen.getByText(labels.uptime)).toBeTruthy();
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
+  });
+
+  it('should say a running seat fell behind and what to check', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: false, report: report({ seats: 'seat_behind' }) }}
+      />
+    );
+
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText(labels.seats)).toBeTruthy();
+    expect(screen.getByText(outcomes.seat_behind)).toBeTruthy();
+    expect(screen.getByText(guidance.seats)).toBeTruthy();
+    expect(screen.queryByText(guidance.bitcoin)).toBeNull();
+  });
+
+  it('should leave out the seats check for a daemon that predates it', () => {
+    const { seats: _, ...older } = report();
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}
+      />
+    );
+
+    expect(screen.queryByText(labels.seats)).toBeNull();
+    expect(screen.getByText(labels.bitcoin)).toBeTruthy();
   });
 
   it('should take the verdict from the stored result before the first run after a restart', () => {

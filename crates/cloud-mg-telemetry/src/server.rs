@@ -1133,6 +1133,7 @@ mod tests {
                 "bitcoin": "not_applicable",
                 "version": null,
                 "uptime": null,
+                "seats": null,
                 "uptime_1d_pct": null,
                 "uptime_7d_pct": null,
                 "uptime_30d_pct": null,

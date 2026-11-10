@@ -72,6 +72,7 @@ const READY: MockState['seatReadiness'] = {
   bitcoin: 'pass',
   version: 'pass',
   uptime: 'pass',
+  seats: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
     minimums: { '1d': 700, '7d': 900, '30d': 930 },
@@ -458,6 +459,19 @@ const builders = {
       version: 'mg_version_too_old'
     }
   }),
+  // A running seat stopped advancing while its federation moved on.
+  'seat-behind': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      seats: 'seat_behind'
+    }
+  }),
   'uptime-low': () => ({
     ...base(),
     seats: [],
@@ -718,6 +732,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'version-too-old': {
     desc: 'Every prerequisite passes, but the setup-payment policy requires a newer release than this host runs, so the daemon has stopped advertising and quoting new seats until it is updated. Uptime is not affected.',
+    affects: ['overview', 'health']
+  },
+  'seat-behind': {
+    desc: 'Every prerequisite passes, but a running seat has stopped advancing while its federation moved on, so the daemon has stopped advertising and quoting new seats until the seat catches up. Uptime is not affected.',
     affects: ['overview', 'health']
   },
   'uptime-low': {

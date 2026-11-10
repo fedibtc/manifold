@@ -16,7 +16,9 @@
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
+mod exit_streak;
 mod import;
+mod progress;
 mod transfer;
 mod transfer_binding;
 
@@ -52,7 +54,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::backup_worker::BackupWorker;
 use crate::db::Db;
 use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
-use crate::fedimint_api::{FedimintApi, FedimintApiError};
+use crate::fedimint_api::{FedimintApi, FedimintApiError, PeerSessionCountUnknown};
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
 use crate::push_callback::{CompletionHookWake, ValidatedDkgCompletionCallback};
@@ -62,6 +64,8 @@ use crate::seat_process::{
     seat_data_dir,
 };
 use crate::transfer_state::TransferPhase;
+use exit_streak::ExitStreak;
+use progress::{SeatSync, SessionProgress};
 
 /// Content digest of one candidate whole-object metadata target.
 ///
@@ -287,6 +291,15 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
+    /// Session progress across child lives, from the watchdog's probes.
+    progress: SessionProgress,
+    /// The peers' answer about the session count it was asked at.
+    peer_query: Option<(
+        u64,
+        tokio::task::JoinHandle<Result<u64, PeerSessionCountUnknown>>,
+    )>,
+    /// The current run of exits with one status, for the exit-loop event.
+    exit_streak: Option<ExitStreak>,
 }
 
 enum ProcessSlot {
@@ -426,6 +439,8 @@ struct SeatRuntimeFacts {
     /// Transfer provenance or terminal fence, independent of formed state.
     transfer_phase: Option<TransferPhase>,
     health: SeatHealth,
+    /// Published from the loop's [`SessionProgress`].
+    sync: SeatSync,
 }
 
 enum SeatCommand {
@@ -588,6 +603,7 @@ impl Seat {
             decommissioned_at_ms,
             transfer_phase,
             health: SeatHealth::Unavailable,
+            sync: SeatSync::Progressing,
         });
         // Keep only the next lifecycle command queued behind the one in progress.
         let (commands, command_rx) = mpsc::channel(1);
@@ -617,6 +633,9 @@ impl Seat {
                 watchdog_at: None,
                 unresponsive_since: None,
                 backoff: policy.initial_backoff,
+                progress: SessionProgress::new(facts.seat_id.clone()),
+                peer_query: None,
+                exit_streak: None,
             };
             tokio::spawn(async move {
                 seat_loop.run(command_rx).await;
@@ -634,6 +653,12 @@ impl Seat {
             data_dir,
             state,
         })
+    }
+
+    /// Whether the seat is stalled while its federation is ahead of it
+    /// ([`progress`]).
+    pub(crate) fn is_behind(&self) -> bool {
+        matches!(self.state.borrow().sync, SeatSync::Behind { .. })
     }
 
     pub(crate) fn facts(&self) -> &SeatFacts {
@@ -1009,6 +1034,10 @@ impl SeatLoop {
 
     fn deschedule_watchdog(&mut self) {
         self.watchdog_at = None;
+        // A seat without a formed, local federation has no progress to watch.
+        self.progress = SessionProgress::new(self.facts.seat_id.clone());
+        self.peer_query = None;
+        self.publish_sync();
         self.state.send_if_modified(|state| {
             if state.health == SeatHealth::Unavailable {
                 return false;
@@ -1046,8 +1075,15 @@ impl SeatLoop {
         }
 
         let result = tokio::time::timeout(WATCHDOG_PROBE_TIMEOUT, self.client().probe()).await;
+        let now = tokio::time::Instant::now();
+        match &result {
+            Ok(Ok(Some(session_count))) => self.progress.observe(*session_count, now),
+            _ => self.progress.interrupt(),
+        }
+        self.start_peer_query(now);
+        self.publish_sync();
         let (health, failure_kind) = match result {
-            Ok(Ok(())) => (SeatHealth::Healthy, None),
+            Ok(Ok(_)) => (SeatHealth::Healthy, None),
             Err(_) => (SeatHealth::Unavailable, Some("timeout")),
             Ok(Err(FedimintApiError::Unreachable(_))) => {
                 (SeatHealth::Unavailable, Some("unreachable"))
@@ -1071,6 +1107,47 @@ impl SeatLoop {
         } else {
             self.restart_if_unresponsive(failure_kind).await;
         }
+    }
+
+    /// Ask the peers for the federation's session count when the seat's
+    /// progress calls for it and no query is in flight. The query runs off
+    /// the loop: it waits on remote peers.
+    fn start_peer_query(&mut self, now: tokio::time::Instant) {
+        if self.peer_query.is_some() {
+            return;
+        }
+        let Some(own) = self
+            .state
+            .borrow()
+            .formed_invite
+            .as_ref()
+            .and_then(|invite| FedimintInviteCode::from_str(&invite.0).ok())
+            .map(|invite| invite.peer())
+        else {
+            return;
+        };
+        let Some(asked_at) = self.progress.start_query(now) else {
+            return;
+        };
+        let client = self.client();
+        self.peer_query = Some((
+            asked_at,
+            tokio::spawn(async move { client.federation_session_count(own).await }),
+        ));
+    }
+
+    fn finish_peer_query(&mut self, asked_at: u64, answer: Result<u64, PeerSessionCountUnknown>) {
+        self.progress.peers_answered(asked_at, answer);
+        self.publish_sync();
+    }
+
+    fn publish_sync(&self) {
+        let sync = self.progress.sync();
+        self.state.send_if_modified(|state| {
+            let changed = state.sync != sync;
+            state.sync = sync;
+            changed
+        });
     }
 
     /// Kill and respawn a configured child whose local API has failed every
@@ -1199,6 +1276,14 @@ impl SeatLoop {
                 _ = async { tokio::time::sleep_until(self.watchdog_at.expect("watchdog deadline is present")).await }, if self.watchdog_at.is_some() => {
                     self.watchdog_at = None;
                     self.watchdog_tick().await;
+                    continue;
+                }
+                answer = async { (&mut self.peer_query.as_mut().expect("peer query is present").1).await }, if self.peer_query.is_some() => {
+                    let (asked_at, _) = self.peer_query.take().expect("peer query is present");
+                    match answer {
+                        Ok(answer) => self.finish_peer_query(asked_at, answer),
+                        Err(error) => tracing::warn!(seat_id = %self.facts.seat_id, %error, "seat peer session count query task failed"),
+                    }
                     continue;
                 }
                 command = commands.recv() => command,
@@ -1405,7 +1490,8 @@ impl SeatLoop {
                 }
             }
         }
-        let exit_code = match exit {
+        self.progress.interrupt();
+        let exit = match exit {
             Ok(exit) => {
                 tracing::warn!(
                     safe_to_share = true,
@@ -1414,15 +1500,21 @@ impl SeatLoop {
                     signal = ?exit.signal,
                     "seat fedimintd exited"
                 );
-                exit.status_code
+                Some(exit)
             }
             Err(err) => {
                 tracing::warn!(seat_id = %self.facts.seat_id, %err, "seat fedimintd wait failed");
                 None
             }
         };
-        if self.commit_session_boundary_exit(exit_code).await {
+        if self
+            .commit_session_boundary_exit(exit.as_ref().and_then(|exit| exit.status_code))
+            .await
+        {
             return;
+        }
+        if let Some(exit) = &exit {
+            self.record_exit(exit);
         }
         if self
             .child_started
@@ -1436,6 +1528,25 @@ impl SeatLoop {
 
     fn client(&self) -> FedimintApi {
         self.fedimint_api.clone()
+    }
+
+    /// Extend this seat's run of same-status exits by an unplanned `exit`,
+    /// and journal the run once it is a loop.
+    fn record_exit(&mut self, exit: &ObservedSeatExit) {
+        let now = tokio::time::Instant::now();
+        let streak = ExitStreak::record(self.exit_streak, exit, now);
+        self.exit_streak = Some(streak);
+        if streak.is_loop() {
+            tracing::warn!(
+                safe_to_share = true,
+                seat_id = %self.facts.seat_id,
+                exit_code = ?streak.status_code,
+                signal = ?streak.signal,
+                consecutive_exits = streak.exits,
+                streak_secs = now.saturating_duration_since(streak.first_at).as_secs(),
+                "seat fedimintd exiting repeatedly"
+            );
+        }
     }
 
     /// Publish the process slot's source phase alongside the independently

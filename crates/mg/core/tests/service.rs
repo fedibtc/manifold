@@ -108,6 +108,7 @@ async fn rpc_with_network(
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
             uptime: ReadinessOutcome::Pass,
+            seats: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })
         .await

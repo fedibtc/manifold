@@ -1330,6 +1330,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         },
         version: ReadinessOutcome::NotApplicable,
         uptime: ReadinessOutcome::Pass,
+        seats: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
 }

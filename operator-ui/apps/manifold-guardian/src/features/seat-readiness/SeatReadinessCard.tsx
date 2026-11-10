@@ -2,12 +2,12 @@ import { Banner } from '@operator-ui/common-ui';
 import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
 import {
-  CHECKS,
   describeOutcome,
   formatPermille,
   guidance,
   labels,
   passed,
+  reportedChecks,
   UPTIME_WINDOWS,
   updateGuidance,
   uptimeLabels
@@ -27,7 +27,9 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   // Absent from daemons that predate the figures, null when a run could not record them.
   const uptime = report?.uptime_comparison ?? null;
   // With figures, the uptime bars replace the generic uptime check.
-  const checks = uptime ? CHECKS.filter((check) => check !== 'uptime') : CHECKS;
+  const checks = (report ? reportedChecks(report) : []).filter(
+    (check) => !(uptime && check === 'uptime')
+  );
   const wait = uptime ? Math.max(...UPTIME_WINDOWS.map((window) => uptime.wait_secs[window])) : 0;
   return (
     <>
@@ -37,8 +39,8 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
         </Banner>
       ) : (
         <Banner variant="error" title="Not accepting new seats">
-          This host stopped advertising and quoting new seats until every check passes. Running
-          seats are not affected.
+          This host stopped advertising and quoting new seats until every check passes.
+          {report?.seats !== 'seat_behind' && ' Running seats are not affected.'}
           {report?.version === 'mg_version_too_old' && ` ${updateGuidance}`}
         </Banner>
       )}

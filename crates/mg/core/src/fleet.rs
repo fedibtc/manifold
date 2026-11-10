@@ -50,7 +50,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -886,6 +886,22 @@ impl Fleet {
             .await
             .expect("offer snapshot")
             .ready_for_new_seats
+    }
+
+    /// The seats check of a readiness run: whether a seat this MG already
+    /// serves is behind its federation, read from each seat's own progress.
+    pub fn seats_readiness(&self) -> ReadinessOutcome {
+        let behind = self
+            .seats
+            .read()
+            .expect("seat registry lock is never poisoned")
+            .values()
+            .any(|seat| seat.is_behind());
+        if behind {
+            ReadinessOutcome::SeatBehind
+        } else {
+            ReadinessOutcome::Pass
+        }
     }
 
     /// The latest readiness report since this process started; the verdict

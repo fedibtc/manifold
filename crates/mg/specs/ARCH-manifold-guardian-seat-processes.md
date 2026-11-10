@@ -91,7 +91,9 @@ than the blip.
 ## Consequences accepted with coupling
 
 - Formed-seat supervision has no give-up: respawn forever with capped backoff
-  (no `Failed` terminal health).
+  (no `Failed` terminal health). A run of unplanned exits with one status, each
+  within two hours of the last, is journaled as one growing loop from its
+  third exit, so an hourly fedimintd session-timeout loop reads as one signal.
 - A daemon crash-restart cycle is also a full fleet restart.
 
 ## Ordinary seat logging: per-child pipes, pumped into the daemon's stream
@@ -119,7 +121,9 @@ in MG and fedimintd process modes. Only an event with the event-local typed
 field `safe_to_share = true` enters this channel; span fields are excluded.
 `fa-client` is outside this channel and does not emit shareable events.
 Ordinary child output continues through the pipes above and is never parsed to
-infer shareability.
+infer shareability. The one line the daemon recognizes is a child's fixed
+report that its journal failed to open: the daemon then journals its own fixed
+event naming only the seat, because that child's own events are missing.
 
 Each process exclusively owns a `bounded-rolling-file` size-segmented JSONL
 journal: MG under

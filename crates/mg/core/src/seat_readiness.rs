@@ -47,6 +47,9 @@ pub enum ReadinessOutcome {
     /// The thirty-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_30d_low")]
     MonthUptimeLow,
+    /// A seat this MG serves has stopped advancing while its federation is
+    /// ahead of it.
+    SeatBehind,
 }
 
 impl ReadinessOutcome {
@@ -69,6 +72,7 @@ impl ReadinessOutcome {
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
+            Self::SeatBehind => "seat_behind",
         }
     }
 }
@@ -85,6 +89,9 @@ pub struct ReadinessReport {
     /// This MG's release against the setup-payment policy's minimum.
     pub version: ReadinessOutcome,
     pub uptime: ReadinessOutcome,
+    /// Whether the seats this MG already serves keep up with their
+    /// federations.
+    pub seats: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
     /// failed.
@@ -166,13 +173,17 @@ pub struct UptimeWaitSecs {
 
 impl ReadinessReport {
     pub fn ready(&self) -> bool {
-        self.prerequisites_passed() && self.version.passed() && self.uptime.passed()
+        self.prerequisites_passed()
+            && self.version.passed()
+            && self.uptime.passed()
+            && self.seats.passed()
     }
 
     /// Whether the probed prerequisites passed. These decide whether a
     /// slot counts as up, so the uptime gate cannot keep itself closed. The
-    /// version check is not one of them: an MG below the policy's minimum
-    /// release still serves its seats, so it is up.
+    /// version and seats checks are not among them: an MG below the
+    /// policy's minimum release still serves its seats, and one behind seat
+    /// does not mean the others are down, so the MG is up.
     pub fn prerequisites_passed(&self) -> bool {
         self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
     }
@@ -310,7 +321,7 @@ impl Uptime {
 
 /// This MG's own prerequisites for a new seat: relay, discovery and Bitcoin.
 /// The daemon probes them against its endpoint and backend; the run sets the
-/// version and uptime outcomes.
+/// version, uptime and seats outcomes.
 #[async_trait::async_trait]
 pub trait ReadinessProbe: Send {
     async fn probe(&mut self) -> ReadinessReport;
@@ -364,6 +375,7 @@ pub async fn run(
         };
         report.version = version;
         report.uptime = scores.outcome(min);
+        report.seats = fleet.seats_readiness();
         // The operator sees no figures rather than zeros it cannot trust.
         report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
         let ready = report.ready();
@@ -422,6 +434,7 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
         bitcoin = report.bitcoin.as_str(),
         version = report.version.as_str(),
         uptime = report.uptime.as_str(),
+        seats = report.seats.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
         uptime_30d_pct = pct(scores.month),
@@ -728,6 +741,7 @@ mod tests {
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
             uptime: ReadinessOutcome::WeekUptimeLow,
+            seats: ReadinessOutcome::Pass,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
                     day: 887,
@@ -751,6 +765,7 @@ mod tests {
                 "bitcoin": "pass",
                 "version": "not_applicable",
                 "uptime": "uptime_7d_low",
+                "seats": "pass",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
                     "minimums": { "1d": 700, "7d": 900, "30d": 930 },
@@ -769,6 +784,7 @@ mod tests {
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::WeekUptimeLow,
+            seats: ReadinessOutcome::Pass,
             uptime_comparison: None,
         };
         assert!(report.prerequisites_passed());
@@ -789,6 +805,16 @@ mod tests {
             }
             .ready()
         );
+        // A seat behind its federation closes the gate too, and likewise
+        // leaves the slot up: the MG still serves its other seats.
+        let behind = ReadinessReport {
+            version: ReadinessOutcome::Pass,
+            uptime: ReadinessOutcome::Pass,
+            seats: ReadinessOutcome::SeatBehind,
+            ..report
+        };
+        assert!(behind.prerequisites_passed());
+        assert!(!behind.ready());
     }
 
     /// Releases compare by SemVer precedence: 0.1.10 is newer than 0.1.9
@@ -839,6 +865,7 @@ mod tests {
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::MgVersionTooOld,
             uptime: ReadinessOutcome::WeekUptimeLow,
+            seats: ReadinessOutcome::SeatBehind,
             uptime_comparison: None,
         };
         let scores = UptimeScores {
@@ -878,6 +905,7 @@ mod tests {
                 bitcoin: "pass".into(),
                 version: Some("mg_version_too_old".into()),
                 uptime: Some("uptime_7d_low".into()),
+                seats: Some("seat_behind".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),
                 uptime_30d_pct: Some(95.0),

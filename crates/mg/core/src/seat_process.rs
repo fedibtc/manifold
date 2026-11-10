@@ -76,6 +76,12 @@ mod die_with_parent;
 /// Private parent-to-bundled-child path for the safe-event journal.
 pub const SAFE_EVENT_DIR_ENV: &str = "MG_SAFE_EVENT_DIR";
 
+/// How a process without its safe-event journal starts its one stderr line
+/// saying so. A bundled child's line is the daemon's only evidence that the
+/// child's own events are missing, so the daemon journals it.
+pub const SAFE_EVENT_JOURNAL_UNAVAILABLE: &str =
+    "safe-event journal unavailable; continuing without it";
+
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// `RunDkg` is a local control handshake, not a ceremony patience limit.
 pub(crate) const DKG_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -471,6 +477,17 @@ async fn pump_output(mut input: impl AsyncRead + Unpin, seat_id: SeatId, stream:
 fn emit_output(seat_id: &SeatId, stream: OutputStream, bytes: &[u8]) {
     let line = String::from_utf8_lossy(bytes);
     tracing::info!(target: "seat", seat_id = %seat_id, stream = stream.name(), "{line}");
+    if matches!(stream, OutputStream::Stderr)
+        && bytes.starts_with(SAFE_EVENT_JOURNAL_UNAVAILABLE.as_bytes())
+    {
+        // Fixed text only: the rest of the child's line is its own.
+        tracing::warn!(
+            target: "seat",
+            safe_to_share = true,
+            seat_id = %seat_id,
+            "seat fedimintd running without its safe-event journal"
+        );
+    }
 }
 
 impl OutputStream {

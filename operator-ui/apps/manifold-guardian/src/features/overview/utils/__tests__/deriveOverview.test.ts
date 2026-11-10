@@ -142,6 +142,7 @@ const failingReport = {
   bitcoin: 'bitcoin_no_fee_rate',
   version: 'mg_version_too_old',
   uptime: 'pass',
+  seats: 'seat_behind',
   uptime_comparison: null
 } as const;
 
@@ -156,7 +157,7 @@ it('should send the operator to Health when a readiness check fails, naming only
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
       detail:
-        'Failing: Guardian discovery, Bitcoin backend, Software version. Open Health for what to check.',
+        'Failing: Guardian discovery, Bitcoin backend, Running seats, Software version. Open Health for what to check.',
       path: '/health'
     }
   ]);
@@ -176,6 +177,7 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     bitcoin: 'pass',
     version: 'not_applicable',
     uptime: 'pass',
+    seats: 'pass',
     uptime_comparison: null
   } as const;
 

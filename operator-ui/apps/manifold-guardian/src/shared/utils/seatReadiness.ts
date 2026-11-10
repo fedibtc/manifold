@@ -1,12 +1,13 @@
 import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'uptime';
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'seats' | 'version' | 'uptime';
 
 export const CHECKS: readonly ReadinessCheck[] = [
   'relay',
   'discovery',
   'bitcoin',
+  'seats',
   'version',
   'uptime'
 ];
@@ -15,6 +16,7 @@ export const labels: Record<ReadinessCheck, string> = {
   relay: 'Relay connection',
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
+  seats: 'Running seats',
   version: 'Software version',
   uptime: 'Uptime'
 };
@@ -32,7 +34,8 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   mg_version_too_old: 'Update required.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
-  uptime_30d_low: 'This host was offline too much recently.'
+  uptime_30d_low: 'This host was offline too much recently.',
+  seat_behind: 'A running seat stopped advancing while its federation moved on.'
 };
 
 /** What a check that does not apply means for that check. */
@@ -53,6 +56,8 @@ export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
     'Check outbound DNS and HTTPS from this host. A new record can take a minute to publish after a relay change.',
   bitcoin:
     'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
+  seats:
+    'The seat cannot fetch the sessions it missed from its peers, while this host can reach them. Restart Manifold Guardian; if the seat still does not catch up, contact support.',
   uptime: 'Keep this host online.'
 };
 
@@ -62,8 +67,12 @@ export const updateGuidance =
 export const passed = (outcome: ReadinessOutcome): boolean =>
   outcome === 'pass' || outcome === 'not_applicable';
 
+/** The checks a report carries: a daemon older than a check does not report it. */
+export const reportedChecks = (report: ReadinessReport): ReadinessCheck[] =>
+  CHECKS.filter((check) => report[check] !== undefined);
+
 export const failedChecks = (report: ReadinessReport): ReadinessCheck[] =>
-  CHECKS.filter((check) => !passed(report[check]));
+  reportedChecks(report).filter((check) => !passed(report[check]));
 
 /** The uptime windows the gate compares, shortest first. */
 export const UPTIME_WINDOWS: readonly (keyof UptimePermille)[] = ['1d', '7d', '30d'];

@@ -345,6 +345,7 @@ const mgSeatReadinessMirror = {
     bitcoin: 'bitcoin_syncing',
     version: 'mg_version_too_old',
     uptime: 'uptime_7d_low',
+    seats: 'seat_behind',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },
       minimums: { '1d': 700, '7d': 900, '30d': 930 },
