@@ -12,7 +12,7 @@ use fedi_decentralized_service_manifold_guardian::{
     FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, GuardianMetricsResponse,
     GuardianTelemetryApi, ListGuardianTelemetrySeatsRequest, ListGuardianTelemetrySeatsResponse,
     ListSafeEventJournalsRequest, ListSafeEventJournalsResponse, MAX_GUARDIAN_METRICS_BODY_BYTES,
-    MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor, SafeEventJournalInfo,
+    MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor, SafeEventJournal, SafeEventJournalInfo,
     ScrapeGuardianMetricsRequest, ServiceError, ServiceErrorCode, TelemetryCapability,
     TelemetryResult,
 };
@@ -217,12 +217,6 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
                     ServiceErrorCode::Internal,
                     "safe-event journal internal error",
                 )
-            })?
-            .map_err(|_| {
-                ServiceError::with_code(
-                    ServiceErrorCode::Unavailable,
-                    "safe-event journals temporarily unavailable",
-                )
             })?;
         Ok(ListSafeEventJournalsResponse { journals })
     }
@@ -232,20 +226,20 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
         request: FetchSafeEventJournalRequest,
     ) -> TelemetryResult<FetchSafeEventJournalResponse> {
         authorize_telemetry(&self.fleet, &request.capability)?;
-        let directory = self
-            .fleet
-            .safe_event_journal_dir(&request.journal)
-            .ok_or_else(|| {
-                ServiceError::with_code(
-                    ServiceErrorCode::NotFound,
-                    "safe-event journal was not found",
-                )
-            })?;
+        let journal = request.journal.clone();
+        let Some(directory) = self.fleet.safe_event_journal_dir(&journal) else {
+            trace_journal_failure(&journal, "fetch", "journal_not_found", None);
+            return Err(ServiceError::with_code(
+                ServiceErrorCode::NotFound,
+                "safe-event journal was not found",
+            ));
+        };
         let batch =
             tokio::task::spawn_blocking(move || fetch_journal_directory(directory, request))
                 .await
                 .map_err(|error| {
                     tracing::error!(error = %error, "safe-event journal reader task failed");
+                    trace_journal_failure(&journal, "fetch", "reader_task_failed", None);
                     ServiceError::with_code(
                         ServiceErrorCode::Internal,
                         "safe-event journal internal error",
@@ -253,6 +247,7 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
                 })?
                 .map_err(|error| {
                     tracing::warn!(error = %error, "safe-event journal read failed");
+                    trace_journal_failure(&journal, "fetch", "read_failed", Some(error.kind()));
                     map_journal_read_error()
                 })?;
         Ok(match batch {
@@ -291,25 +286,55 @@ fn map_journal_read_error() -> ServiceError {
     )
 }
 
+/// The journals whose identity opens. A journal that does not is left out
+/// and journaled, so it cannot hide the others from the collector.
 fn open_journal_infos(
-    directories: Vec<(
-        fedi_decentralized_service_manifold_guardian::SafeEventJournal,
-        std::path::PathBuf,
-    )>,
-) -> std::io::Result<Vec<SafeEventJournalInfo>> {
+    directories: Vec<(SafeEventJournal, std::path::PathBuf)>,
+) -> Vec<SafeEventJournalInfo> {
     directories
         .into_iter()
-        .map(|(journal, directory)| {
-            let incarnation = bounded_rolling_file::open_incarnation(directory)?;
-            Ok(SafeEventJournalInfo {
-                journal,
-                incarnation: incarnation
-                    .as_str()
-                    .parse()
-                    .expect("storage returns a validated UUIDv7"),
-            })
+        .filter_map(|(journal, directory)| {
+            match bounded_rolling_file::open_incarnation(directory) {
+                Ok(incarnation) => Some(SafeEventJournalInfo {
+                    journal,
+                    incarnation: incarnation
+                        .as_str()
+                        .parse()
+                        .expect("storage returns a validated UUIDv7"),
+                }),
+                Err(error) => {
+                    tracing::warn!(error = %error, "safe-event journal identity failed to open");
+                    trace_journal_failure(&journal, "list", "read_failed", Some(error.kind()));
+                    None
+                }
+            }
         })
         .collect()
+}
+
+/// Journal an authorized telemetry request that could not read `journal`,
+/// with fixed codes only: never the error text, which can name paths.
+/// Unauthorized requests are not journaled, so an unauthenticated caller
+/// cannot fill the journal it would evict history from.
+fn trace_journal_failure(
+    journal: &SafeEventJournal,
+    operation: &'static str,
+    failure_kind: &'static str,
+    io_error_kind: Option<std::io::ErrorKind>,
+) {
+    let (journal_kind, seat_id) = match journal {
+        SafeEventJournal::Mg => ("mg", None),
+        SafeEventJournal::Seat { seat_id } => ("seat", Some(seat_id)),
+    };
+    tracing::warn!(
+        safe_to_share = true,
+        journal_kind,
+        seat_id = seat_id.map(tracing::field::display),
+        operation,
+        failure_kind,
+        io_error_kind = io_error_kind.map(tracing::field::debug),
+        "telemetry safe-event journal request failed"
+    );
 }
 
 fn fetch_journal_directory(
@@ -604,15 +629,14 @@ mod tests {
             .enumerate()
             .map(|(index, journal)| (journal, root.path().join(index.to_string())))
             .collect();
-        let first = open_journal_infos(directories).unwrap();
+        let first = open_journal_infos(directories);
         let second = open_journal_infos(
             first
                 .iter()
                 .enumerate()
                 .map(|(index, info)| (info.journal.clone(), root.path().join(index.to_string())))
                 .collect(),
-        )
-        .unwrap();
+        );
 
         assert_eq!(first, second);
         assert_eq!(
@@ -622,6 +646,34 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
             3
+        );
+    }
+
+    /// A seat journal whose identity is malformed is left out of the
+    /// listing; the others, the MG's own included, are still listed.
+    #[test]
+    fn one_unreadable_journal_does_not_hide_the_others() {
+        let root = tempfile::tempdir().unwrap();
+        let broken = SafeEventJournal::Seat {
+            seat_id: SeatId::from(QuoteId([1; 32])),
+        };
+        let healthy = SafeEventJournal::Seat {
+            seat_id: SeatId::from(QuoteId([2; 32])),
+        };
+        let broken_directory = root.path().join("broken");
+        bounded_rolling_file::open_incarnation(&broken_directory).unwrap();
+        std::fs::write(broken_directory.join("incarnation"), b"not a uuid\n").unwrap();
+        let listed = open_journal_infos(vec![
+            (SafeEventJournal::Mg, root.path().join("mg")),
+            (broken, broken_directory),
+            (healthy.clone(), root.path().join("healthy")),
+        ]);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|info| info.journal.clone())
+                .collect::<Vec<_>>(),
+            [SafeEventJournal::Mg, healthy]
         );
     }
 }
