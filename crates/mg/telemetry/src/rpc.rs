@@ -261,50 +261,67 @@ impl GuardianTelemetryApi for GuardianTelemetryRpc {
 /// A writer that died mid-append leaves one line that is not a JSON record
 /// (bounded-rolling-file terminates it at the next open). Such lines are
 /// dropped here so every served batch holds only complete records, which is
-/// what deployed collectors accept. A batch of nothing but dropped lines keeps
-/// the request cursor, because collectors reject an empty batch that moves;
-/// the next fetch passes over them once later records exist.
+/// what deployed collectors accept. Collectors also reject an empty batch that
+/// moves, so a storage batch of nothing but dropped lines is not served: the
+/// reader continues with the next storage batch until it finds a record, a
+/// continuity gap, or the end of the journal. The cursor only moves forward and
+/// the journal is bounded, so this ends. At the end, the request cursor is
+/// returned unchanged, and a later fetch passes the dropped lines once records
+/// follow them.
 pub fn read_safe_event_journal(
     journal: &SafeEventJournal,
     directory: std::path::PathBuf,
     request: FetchSafeEventJournalRequest,
 ) -> std::io::Result<FetchSafeEventJournalResponse> {
     let request_cursor = request.cursor.clone();
-    Ok(match fetch_journal_directory(directory, request)? {
-        bounded_rolling_file::IncarnationReadBatch::Current { incarnation, batch } => {
-            let incarnation: fedi_decentralized_service_manifold_guardian::SafeEventJournalIncarnation = incarnation
+    let mut request = request;
+    let mut skipped_records = 0;
+    loop {
+        let (incarnation, batch) =
+            match fetch_journal_directory(directory.clone(), request.clone())? {
+                bounded_rolling_file::IncarnationReadBatch::Current { incarnation, batch } => {
+                    (incarnation, batch)
+                }
+                bounded_rolling_file::IncarnationReadBatch::IncarnationChanged { incarnation } => {
+                    return Ok(FetchSafeEventJournalResponse::IncarnationChanged {
+                        incarnation: incarnation
+                            .as_str()
+                            .parse()
+                            .expect("storage returns a validated UUIDv7"),
+                    });
+                }
+            };
+        let incarnation: fedi_decentralized_service_manifold_guardian::SafeEventJournalIncarnation =
+            incarnation
                 .as_str()
                 .parse()
                 .expect("storage returns a validated UUIDv7");
-            let (jsonl, skipped_records) = drop_malformed_records(&batch.records);
-            let next_cursor = if jsonl.is_empty() && skipped_records > 0 && !batch.continuity_gap {
-                request_cursor
-            } else {
-                if skipped_records > 0 {
-                    trace_skipped_records(journal, skipped_records);
-                }
-                batch.next_cursor.map(|cursor| SafeEventCursor {
-                    incarnation: incarnation.clone(),
-                    segment: cursor.segment,
-                    offset: cursor.offset,
-                })
-            };
-            FetchSafeEventJournalResponse::Current {
-                incarnation,
-                jsonl,
-                next_cursor,
-                continuity_gap: batch.continuity_gap,
-            }
+        let (jsonl, skipped) = drop_malformed_records(&batch.records);
+        skipped_records += skipped;
+        let next_cursor = batch.next_cursor.map(|cursor| SafeEventCursor {
+            incarnation: incarnation.clone(),
+            segment: cursor.segment,
+            offset: cursor.offset,
+        });
+        if jsonl.is_empty() && skipped > 0 && !batch.continuity_gap {
+            request.cursor = next_cursor;
+            continue;
         }
-        bounded_rolling_file::IncarnationReadBatch::IncarnationChanged { incarnation } => {
-            FetchSafeEventJournalResponse::IncarnationChanged {
-                incarnation: incarnation
-                    .as_str()
-                    .parse()
-                    .expect("storage returns a validated UUIDv7"),
+        let next_cursor = if jsonl.is_empty() && !batch.continuity_gap {
+            request_cursor
+        } else {
+            if skipped_records > 0 {
+                trace_skipped_records(journal, skipped_records);
             }
-        }
-    })
+            next_cursor
+        };
+        return Ok(FetchSafeEventJournalResponse::Current {
+            incarnation,
+            jsonl,
+            next_cursor,
+            continuity_gap: batch.continuity_gap,
+        });
+    }
 }
 
 /// Keep the newline-terminated lines that are JSON objects; count the rest.
@@ -655,6 +672,41 @@ mod tests {
         assert_eq!(
             next.map(|cursor| (cursor.segment, cursor.offset)),
             Some((0, 22))
+        );
+    }
+
+    #[test]
+    fn malformed_lines_filling_a_whole_storage_batch_do_not_hide_later_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let incarnation = incarnation(directory.path());
+        // Each line is under the record limit, so storage serves it, but
+        // together they exceed one storage batch.
+        let malformed_line = [vec![b'x'; 60 * 1024 - 1], vec![b'\n']].concat();
+        let malformed_lines = MAX_SAFE_EVENT_BATCH_BYTES / malformed_line.len() + 2;
+        let later = b"{\"b\":2}\n";
+        let mut segment = Vec::new();
+        for _ in 0..malformed_lines {
+            segment.extend_from_slice(&malformed_line);
+        }
+        segment.extend_from_slice(later);
+        std::fs::write(directory.path().join("events-0.jsonl"), &segment).unwrap();
+        let read = |cursor| {
+            current(
+                read_safe_event_journal(
+                    &SafeEventJournal::Mg,
+                    directory.path().to_owned(),
+                    journal_request(incarnation.clone(), cursor),
+                )
+                .unwrap(),
+            )
+        };
+
+        let (jsonl, next, gap) = read(None);
+        assert_eq!(jsonl, later);
+        assert!(!gap);
+        assert_eq!(
+            next.map(|cursor| (cursor.segment, cursor.offset)),
+            Some((0, segment.len() as u64))
         );
     }
 
