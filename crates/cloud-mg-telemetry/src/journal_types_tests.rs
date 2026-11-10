@@ -71,6 +71,71 @@ fn rejects_unsafe_spanned_malformed_and_oversized_records() {
     );
 }
 
+/// A torn line, which an MG writer leaves when it dies mid-append, is never
+/// served: the batch the MG's own reader serves validates, while the raw lines
+/// it was read from would make this collector reject the batch.
+#[test]
+fn a_torn_journal_line_is_not_served_to_the_collector() {
+    use fedi_decentralized_service_manifold_guardian::{
+        FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, SafeEventJournal,
+        TelemetryCapability,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let incarnation: SafeEventJournalIncarnation =
+        bounded_rolling_file::open_incarnation(directory.path())
+            .unwrap()
+            .as_str()
+            .parse()
+            .unwrap();
+    let record = b"{\"fields\":{\"safe_to_share\":true},\"message\":\"ok\"}\n";
+    let segment = directory.path().join("events-0.jsonl");
+    std::fs::write(&segment, [&record[..], b"{\"fields\":{\"safe"].concat()).unwrap();
+    let mut writer = bounded_rolling_file::RollingFileAppender::open(
+        directory.path(),
+        bounded_rolling_file::Config {
+            max_file_bytes: 4096,
+            max_files: 2,
+        },
+    )
+    .unwrap();
+    writer.append_record(record).unwrap();
+    drop(writer);
+
+    let served = mg_telemetry::read_safe_event_journal(
+        &SafeEventJournal::Mg,
+        directory.path().to_owned(),
+        FetchSafeEventJournalRequest {
+            capability: TelemetryCapability::from_bytes([3; 32]),
+            journal: SafeEventJournal::Mg,
+            incarnation: incarnation.clone(),
+            cursor: None,
+        },
+    )
+    .unwrap();
+    let FetchSafeEventJournalResponse::Current {
+        incarnation: served_incarnation,
+        jsonl,
+        next_cursor,
+        continuity_gap,
+    } = served
+    else {
+        panic!("journal incarnation must be current");
+    };
+    let batch = ValidatedJournalBatch::new(
+        &incarnation,
+        None,
+        served_incarnation,
+        jsonl,
+        next_cursor,
+        continuity_gap,
+    )
+    .unwrap();
+    assert_eq!(batch.jsonl(), [&record[..], &record[..]].concat());
+
+    assert!(validate(std::fs::read(&segment).unwrap()).is_err());
+}
+
 #[test]
 fn civil_date_conversion_handles_rollover_and_range() {
     assert_eq!(

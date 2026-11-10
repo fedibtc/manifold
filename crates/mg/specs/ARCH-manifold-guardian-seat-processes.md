@@ -91,9 +91,7 @@ than the blip.
 ## Consequences accepted with coupling
 
 - Formed-seat supervision has no give-up: respawn forever with capped backoff
-  (no `Failed` terminal health). A run of unplanned exits with one status, each
-  within two hours of the last, is journaled as one growing loop from its
-  third exit, so an hourly fedimintd session-timeout loop reads as one signal.
+  (no `Failed` terminal health).
 - A daemon crash-restart cycle is also a full fleet restart.
 
 ## Ordinary seat logging: per-child pipes, pumped into the daemon's stream
@@ -121,15 +119,15 @@ in MG and fedimintd process modes. Only an event with the event-local typed
 field `safe_to_share = true` enters this channel; span fields are excluded.
 `fa-client` is outside this channel and does not emit shareable events.
 Ordinary child output continues through the pipes above and is never parsed to
-infer shareability. The one line the daemon recognizes is a child's fixed
-report that its journal failed to open: the daemon then journals its own fixed
-event naming only the seat, because that child's own events are missing.
+infer shareability.
 
 Each process exclusively owns a `bounded-rolling-file` size-segmented JSONL
 journal: MG under
 `safe-events/fman`, and a child under `seats/<seat-no>/safe-events`, outside the
 fedimintd `data/` directory. A journal retains at most two 2.5 MiB segments
-(5 MiB total record data) and rejects an event over 64 KiB. Segments use
+(5 MiB total record data) and rejects an event over 64 KiB. Segments roll only
+by size: a process start continues the newest segment, so a restart loop keeps
+as much history as its bytes allow. Segments use
 readable numeric names such as `events-42.jsonl`. After formatting and
 validation, the event emitter performs a nonblocking send into a fixed
 128-record queue. A dedicated OS thread owns the appender, all filesystem I/O,
@@ -137,9 +135,9 @@ and the nonblocking advisory writer lock for the layer's lifetime. A full or
 disconnected queue drops the event. Rotation removes the oldest complete
 segment before creating its replacement; a write failure disables the
 non-critical sink while its worker continues draining the bounded queue and
-retaining the lock. Startup removes segments over the current configured limit
-before reading at most that limit plus one byte to truncate an incomplete crash
-tail. The seat journal is retained across DKG restart and terminal
+retaining the lock. Startup removes segments over the current configured limit.
+It never truncates: an incomplete crash tail gets a newline, and the telemetry
+reader passes over the resulting malformed line (`ARCH-cloud-mg-telemetry`). The seat journal is retained across DKG restart and terminal
 decommission with the other on-disk seat data. The standard
 `tracing_subscriber` JSON formatter writes the event fields and its normal
 timestamp, level, and target metadata with current span and span-list output

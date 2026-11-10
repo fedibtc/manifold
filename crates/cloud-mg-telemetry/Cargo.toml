@@ -57,11 +57,13 @@ zstd = "0.13"
 
 [dev-dependencies]
 blind-rsa-signatures = "0.17"
+bounded-rolling-file = { path = "../bounded-rolling-file" }
 defe-api = { path = "../defe-api" }
 defe-client = { path = "../defe-client" }
 defe-portalloc = { path = "../defe-portalloc" }
 fedi-decentralized-nostr = { path = "../nostr" }
 libc = "0.2"
+mg-telemetry = { path = "../mg/telemetry" }
 nostr-sdk = "0.44"
 peerbadge-protocol.workspace = true
 prometheus-parse = "0.2"
