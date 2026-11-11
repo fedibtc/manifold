@@ -178,6 +178,21 @@
           };
           patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
         };
+        # AlephBFT marks a peer as a forker when it proves the peer signed two
+        # units for one round, but reports the fact only in an info-level log
+        # that fedimintd's filter hides, while fedimint's `status` still shows
+        # the forker as contributing. Emit a safe event when a forker is
+        # marked, so a federation stalled on too few honest creators is
+        # visible in seat telemetry.
+        alephBftPatched = pkgs.applyPatches {
+          name = "fedimint-aleph-bft-forker-safe-event";
+          src = pkgs.fetchCrate {
+            pname = "fedimint-aleph-bft";
+            version = "0.36.0";
+            hash = "sha256-cg3E1x+N55JOe+q6eJW7gzy/e+IhSJbcpihcKta1D8Q=";
+          };
+          patches = [ ./patches/fedimint-aleph-bft-forker-safe-event.patch ];
+        };
         # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
         # agree on the DKG consensus checksum. Votes still activate 2.2.
@@ -218,6 +233,7 @@
           link_dependency fedimint ${fedimintPatched}
           link_dependency fedi ${fediPatched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
+          link_dependency fedimint-aleph-bft ${alephBftPatched}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
