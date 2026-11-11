@@ -32,7 +32,7 @@ const DEFAULT_MAX_HOOK_ROWS_GLOBAL: u64 = 100_000;
 const DEFAULT_MAX_REGISTRATION_ROWS_GLOBAL: u64 = 200_000;
 const DEFAULT_ADMISSION_GC_BATCH_SIZE: u64 = 1_000;
 const DEFAULT_RETENTION_DAYS: u64 = 7;
-const DEFAULT_REGISTRATION_TTL_DAYS: u64 = 30;
+const DEFAULT_REGISTRATION_REVALIDATION_DAYS: u64 = 30;
 const SECONDS_PER_DAY: u64 = 86_400;
 
 /// Configured push-provider implementation.
@@ -61,7 +61,7 @@ pub struct PushGatewayConfig {
     legacy_notification_hook_enabled: bool,
     outbox_worker_concurrency: usize,
     retention_seconds: u64,
-    registration_ttl_seconds: u64,
+    registration_revalidation_seconds: u64,
     rate_limits: RateLimitConfig,
     telemetry: Option<TelemetryReceiverConfig>,
 }
@@ -149,7 +149,10 @@ impl std::fmt::Debug for PushGatewayConfig {
             )
             .field("outbox_worker_concurrency", &self.outbox_worker_concurrency)
             .field("retention_seconds", &self.retention_seconds)
-            .field("registration_ttl_seconds", &self.registration_ttl_seconds)
+            .field(
+                "registration_revalidation_seconds",
+                &self.registration_revalidation_seconds,
+            )
             .field("rate_limits", &self.rate_limits)
             .field("telemetry", &self.telemetry)
             .finish()
@@ -222,7 +225,7 @@ pub struct RateLimitConfig {
     pub max_hook_rows_global: u64,
     /// Physical registration and owner rows allowed together; zero disables the limit.
     pub max_registration_rows_global: u64,
-    /// Maximum stale or terminal rows reclaimed by one admission transaction.
+    /// Maximum orphaned or terminal rows reclaimed by one admission transaction.
     pub admission_gc_batch_size: u64,
     /// Active outbox rows allowed across the gateway; zero disables the limit.
     pub max_global_outbox_backlog: u64,
@@ -287,7 +290,8 @@ impl PushGatewayConfig {
             legacy_notification_hook_enabled: true,
             outbox_worker_concurrency: 4,
             retention_seconds: DEFAULT_RETENTION_DAYS * SECONDS_PER_DAY,
-            registration_ttl_seconds: DEFAULT_REGISTRATION_TTL_DAYS * SECONDS_PER_DAY,
+            registration_revalidation_seconds: DEFAULT_REGISTRATION_REVALIDATION_DAYS
+                * SECONDS_PER_DAY,
             rate_limits: RateLimitConfig::default(),
             telemetry: None,
         }
@@ -356,10 +360,13 @@ impl PushGatewayConfig {
         self
     }
 
-    /// Sets how long an installation may go without a signed refresh.
+    /// Sets how long after the provider last accepted a token it is re-checked.
     #[must_use]
-    pub fn with_registration_ttl_seconds(mut self, registration_ttl_seconds: u64) -> Self {
-        self.registration_ttl_seconds = registration_ttl_seconds.max(1);
+    pub fn with_registration_revalidation_seconds(
+        mut self,
+        registration_revalidation_seconds: u64,
+    ) -> Self {
+        self.registration_revalidation_seconds = registration_revalidation_seconds.max(1);
         self
     }
 
@@ -545,10 +552,10 @@ impl PushGatewayConfig {
         self.retention_seconds
     }
 
-    /// Returns how long a registration remains eligible without refresh.
+    /// Returns how long after the provider last accepted a token it is re-checked.
     #[must_use]
-    pub fn registration_ttl_seconds(&self) -> u64 {
-        self.registration_ttl_seconds
+    pub fn registration_revalidation_seconds(&self) -> u64 {
+        self.registration_revalidation_seconds
     }
 
     #[must_use]
@@ -933,14 +940,15 @@ struct PushGatewayConfigArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     retention_days: u64,
-    /// Signed registration refresh interval before an installation is stale.
+    /// Days since the provider last accepted a registration's token before the
+    /// gateway re-checks it with a validate-only send.
     #[arg(
         long,
-        env = "PUSH_GATEWAY_REGISTRATION_TTL_DAYS",
-        default_value_t = DEFAULT_REGISTRATION_TTL_DAYS,
+        env = "PUSH_GATEWAY_REGISTRATION_REVALIDATION_DAYS",
+        default_value_t = DEFAULT_REGISTRATION_REVALIDATION_DAYS,
         value_parser = clap::value_parser!(u64).range(1..)
     )]
-    registration_ttl_days: u64,
+    registration_revalidation_days: u64,
     /// Valid signed management requests accepted per source prefix before replay-cache insertion.
     #[arg(long, env = "PUSH_GATEWAY_AUTH_EVENTS_PER_SOURCE_PREFIX", default_value_t = DEFAULT_AUTH_EVENTS_PER_SOURCE_PREFIX)]
     auth_events_per_source_prefix: u64,
@@ -989,7 +997,7 @@ struct PushGatewayConfigArgs {
     /// Maximum physical registration rows across the gateway (0 disables this cap).
     #[arg(long, env = "PUSH_GATEWAY_MAX_REGISTRATION_ROWS_GLOBAL", default_value_t = DEFAULT_MAX_REGISTRATION_ROWS_GLOBAL)]
     max_registration_rows_global: u64,
-    /// Maximum stale/terminal rows reclaimed in one admission transaction.
+    /// Maximum orphaned/terminal rows reclaimed in one admission transaction.
     #[arg(long, env = "PUSH_GATEWAY_ADMISSION_GC_BATCH_SIZE", default_value_t = DEFAULT_ADMISSION_GC_BATCH_SIZE)]
     admission_gc_batch_size: u64,
     /// Maximum global active outbox backlog before public hooks return 503 (0 disables).
@@ -1088,7 +1096,10 @@ impl std::fmt::Debug for PushGatewayConfigArgs {
             .field("provider", &self.provider)
             .field("outbox_worker_concurrency", &self.outbox_worker_concurrency)
             .field("retention_days", &self.retention_days)
-            .field("registration_ttl_days", &self.registration_ttl_days)
+            .field(
+                "registration_revalidation_days",
+                &self.registration_revalidation_days,
+            )
             .field(
                 "auth_events_per_source_prefix",
                 &self.auth_events_per_source_prefix,
@@ -1208,7 +1219,9 @@ impl PushGatewayConfigArgs {
             .with_legacy_notification_hook_enabled(self.legacy_notification_hook_enabled)
             .with_outbox_worker_concurrency(parse_concurrency(&self.outbox_worker_concurrency)?)
             .with_retention_seconds(parse_retention_days(self.retention_days)?)
-            .with_registration_ttl_seconds(parse_registration_ttl_days(self.registration_ttl_days)?)
+            .with_registration_revalidation_seconds(parse_registration_revalidation_days(
+                self.registration_revalidation_days,
+            )?)
             .with_rate_limits(RateLimitConfig {
                 auth_events_per_source_prefix: self.auth_events_per_source_prefix,
                 auth_event_window_seconds: self.auth_event_window_seconds,
@@ -1306,8 +1319,8 @@ pub enum PushGatewayConfigError {
     InvalidConcurrency,
     /// Retention horizon was invalid.
     InvalidRetentionDays,
-    /// Registration freshness days overflow seconds.
-    InvalidRegistrationTtlDays,
+    /// Registration revalidation days overflow seconds.
+    InvalidRegistrationRevalidationDays,
     /// Provider mode was not recognized.
     UnknownProviderMode(String),
     /// Public base URL is not a production-safe HTTPS origin.
@@ -1333,8 +1346,8 @@ impl std::fmt::Display for PushGatewayConfigError {
             Self::InvalidFcmCredentials(err) => write!(formatter, "{err}"),
             Self::InvalidConcurrency => formatter.write_str("invalid concurrency limit"),
             Self::InvalidRetentionDays => formatter.write_str("invalid retention days"),
-            Self::InvalidRegistrationTtlDays => {
-                formatter.write_str("invalid registration TTL days")
+            Self::InvalidRegistrationRevalidationDays => {
+                formatter.write_str("invalid registration revalidation days")
             }
             Self::UnknownProviderMode(_) => formatter.write_str("unknown push provider mode"),
             Self::InvalidPublicBaseUrl => formatter.write_str(
@@ -1365,10 +1378,10 @@ fn parse_retention_days(value: u64) -> Result<u64, PushGatewayConfigError> {
         .ok_or(PushGatewayConfigError::InvalidRetentionDays)
 }
 
-fn parse_registration_ttl_days(value: u64) -> Result<u64, PushGatewayConfigError> {
+fn parse_registration_revalidation_days(value: u64) -> Result<u64, PushGatewayConfigError> {
     value
         .checked_mul(SECONDS_PER_DAY)
-        .ok_or(PushGatewayConfigError::InvalidRegistrationTtlDays)
+        .ok_or(PushGatewayConfigError::InvalidRegistrationRevalidationDays)
 }
 
 fn parse_allowed_recipients(

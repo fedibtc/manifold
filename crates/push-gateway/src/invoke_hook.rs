@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use serde_json::Value;
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
 use fedi_decentralized_push_gateway_storage::hook_record_from_row;
 use fedi_decentralized_push_gateway_types::random_url_token;
@@ -13,7 +13,6 @@ use crate::{
     ApiError, AppState, HookId, HookIdempotencyRepository, HookPrivacy, HookRecord, HookRepository,
     HookToken, HookUseOutcome, InvokeHookRequest, InvokeHookResponse, JsonPayload, Notification,
     NotificationId, NotificationKind, PushRegistrationRepository, RecipientId,
-    RegistrationEligibility,
     hook_management::internal_error,
     time::unix_timestamp,
     validation::{
@@ -61,7 +60,6 @@ pub(crate) async fn invoke_hook(
             max_idempotency_rows_global: limits.max_hook_rows_global,
             idempotency_reclamation_batch_size: limits.admission_gc_batch_size,
             production_mode: state.config().production_mode(),
-            registration_ttl: Duration::from_secs(state.config().registration_ttl_seconds()),
         },
     };
     let outcome = accept_invocation(&context, &hook_id, &hook_secret, request).await?;
@@ -100,7 +98,6 @@ struct InvocationPolicy {
     max_idempotency_rows_global: u64,
     idempotency_reclamation_batch_size: u64,
     production_mode: bool,
-    registration_ttl: Duration,
 }
 
 async fn accept_invocation(
@@ -110,11 +107,6 @@ async fn accept_invocation(
     request: InvokeHookRequest,
 ) -> Result<InvocationOutcome, ApiError> {
     let now = unix_timestamp();
-    let registration_eligibility = RegistrationEligibility {
-        cutoff_timestamp: now.saturating_sub(
-            i64::try_from(context.policy.registration_ttl.as_secs()).unwrap_or(i64::MAX),
-        ),
-    };
     let hook_secret_hash = hook_secret.hash_hex();
     let caller_idempotency_key = request.idempotency_key.clone();
     let mut transaction = context.pool.begin().await.map_err(internal_error)?;
@@ -174,25 +166,45 @@ async fn accept_invocation(
         return rejection_to_error(rejection, &context.observability);
     }
 
-    let registrations = PushRegistrationRepository::eligible_installation_in_transaction(
+    let installation = PushRegistrationRepository::installation_in_transaction(
         &mut transaction,
         &hook.recipient_id,
         &hook.installation_id,
-        registration_eligibility,
     )
     .await
-    .map_err(internal_error)?
-    .into_iter()
-    .collect::<Vec<_>>();
-    if registrations.is_empty() {
-        transaction.rollback().await.map_err(internal_error)?;
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "target_installation_unavailable",
-            "target installation is temporarily unavailable",
-        ));
-    }
-
+    .map_err(internal_error)?;
+    let registrations = match installation {
+        Some(registration) if registration.disabled_at.is_none() => vec![registration],
+        // The app removed the installation, or the grace period after the
+        // provider rejected its token ran out. A hook with no expiry has no
+        // deadline that would ever end a caller's retries, so it is over.
+        None if hook.policy.expires_at.is_none() => {
+            transaction.rollback().await.map_err(internal_error)?;
+            return Err(ApiError::new(
+                StatusCode::GONE,
+                "hook_target_gone",
+                "hook target installation is gone",
+            ));
+        }
+        // Disabled within its grace period: the app re-registering the
+        // installation with a new token resumes delivery.
+        Some(_) => {
+            transaction.rollback().await.map_err(internal_error)?;
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "hook_target_inactive",
+                "target installation must be reopened to receive notifications",
+            ));
+        }
+        None => {
+            transaction.rollback().await.map_err(internal_error)?;
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "target_installation_unavailable",
+                "target installation is temporarily unavailable",
+            ));
+        }
+    };
     if caller_idempotency_key.is_some()
         && !HookIdempotencyRepository::ensure_capacity_in_transaction(
             &mut transaction,

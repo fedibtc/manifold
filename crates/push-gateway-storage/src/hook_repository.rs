@@ -7,9 +7,8 @@ use fedi_decentralized_push_gateway_types::{
 };
 
 use crate::{
-    HookIdempotencyRepository, PushRegistrationRepository, RegistrationEligibility,
-    log_sanitizer::sanitize_log_value, push_registration_repository::acquire_admission_lock,
-    time::unix_timestamp,
+    HookIdempotencyRepository, PushRegistrationRepository, log_sanitizer::sanitize_log_value,
+    push_registration_repository::acquire_admission_lock, time::unix_timestamp,
 };
 
 /// Default fixed rate-limit window for newly created hooks.
@@ -39,7 +38,7 @@ pub struct HookAdmissionLimits {
 pub enum HookAdmissionOutcome {
     /// The hook and its one-time bearer token were created.
     Created(Box<CreatedHook>),
-    /// The named installation is absent, disabled, stale, or not owned by the signer.
+    /// The named installation is absent, disabled, or not owned by the signer.
     TargetUnavailable,
     /// The recipient's active-hook ceiling would be exceeded.
     RecipientCapacityExceeded,
@@ -65,7 +64,8 @@ pub struct HookRowMetrics {
     pub total: i64,
     /// Active non-terminal hook rows.
     pub active: i64,
-    /// Expired or revoked hook rows.
+    /// Revoked or expired hook rows, and hooks with no expiry whose
+    /// installation is gone.
     pub terminal: i64,
 }
 
@@ -88,7 +88,6 @@ impl HookRepository {
         &self,
         recipient_id: &RecipientId,
         request: &CreateHookRequest,
-        registration_eligibility: RegistrationEligibility,
         limits: HookAdmissionLimits,
     ) -> Result<HookAdmissionOutcome, sqlx::Error> {
         let now = unix_timestamp();
@@ -121,7 +120,6 @@ impl HookRepository {
             &mut transaction,
             recipient_id,
             &request.installation_id,
-            registration_eligibility,
         )
         .await?
         .is_none()
@@ -134,7 +132,12 @@ impl HookRepository {
             let active: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM notification_hooks
                  WHERE recipient_id = $1 AND revoked_at IS NULL
-                   AND (expires_at IS NULL OR $2 < expires_at)",
+                   AND ((expires_at IS NOT NULL AND $2 < expires_at)
+                        OR (expires_at IS NULL AND EXISTS (
+                            SELECT 1 FROM push_registrations registration
+                            WHERE registration.recipient_id = notification_hooks.recipient_id
+                              AND registration.installation_id = notification_hooks.installation_id
+                        )))",
             )
             .bind(&recipient_id.0)
             .bind(now)
@@ -148,7 +151,13 @@ impl HookRepository {
         if 0 < limits.max_active_global {
             let active: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM notification_hooks
-                 WHERE revoked_at IS NULL AND (expires_at IS NULL OR $1 < expires_at)",
+                 WHERE revoked_at IS NULL
+                   AND ((expires_at IS NOT NULL AND $1 < expires_at)
+                        OR (expires_at IS NULL AND EXISTS (
+                            SELECT 1 FROM push_registrations registration
+                            WHERE registration.recipient_id = notification_hooks.recipient_id
+                              AND registration.installation_id = notification_hooks.installation_id
+                        )))",
             )
             .bind(now)
             .fetch_one(&mut *transaction)
@@ -326,14 +335,23 @@ impl HookRepository {
         ))
     }
 
-    /// Deletes expired or revoked hooks after their retained events are gone.
+    /// Deletes terminal hooks (revoked, expired, or with no expiry and no
+    /// installation left) after their retained events are gone.
     pub async fn purge_terminal_unreferenced(
         &self,
         now_timestamp: i64,
     ) -> Result<u64, sqlx::Error> {
         Ok(sqlx::query(
             "DELETE FROM notification_hooks
-             WHERE (expires_at IS NOT NULL AND expires_at <= $1 OR revoked_at IS NOT NULL)
+             WHERE (revoked_at IS NOT NULL
+                    OR (expires_at IS NOT NULL AND expires_at <= $1)
+                    -- A hook with no expiry ends with its installation's row,
+                    -- which a disabled installation keeps for its grace period.
+                    OR (expires_at IS NULL AND NOT EXISTS (
+                        SELECT 1 FROM push_registrations registration
+                        WHERE registration.recipient_id = notification_hooks.recipient_id
+                          AND registration.installation_id = notification_hooks.installation_id
+                    )))
                 AND NOT EXISTS (
                     SELECT 1 FROM notification_events
                     WHERE notification_events.hook_id = notification_hooks.hook_id
@@ -349,9 +367,19 @@ impl HookRepository {
     pub async fn row_metrics(&self, now_timestamp: i64) -> Result<HookRowMetrics, sqlx::Error> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS total,
-                    COALESCE(SUM(CASE WHEN revoked_at IS NULL AND (expires_at IS NULL OR $1 < expires_at) THEN 1 ELSE 0 END), 0) AS active,
-                    COALESCE(SUM(CASE WHEN revoked_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= $1) THEN 1 ELSE 0 END), 0) AS terminal
-             FROM notification_hooks",
+                    COALESCE(SUM(CASE WHEN live = 1 THEN 1 ELSE 0 END), 0) AS active,
+                    COALESCE(SUM(CASE WHEN live = 0 THEN 1 ELSE 0 END), 0) AS terminal
+             FROM (
+                 SELECT CASE WHEN revoked_at IS NULL
+                              AND ((expires_at IS NOT NULL AND $1 < expires_at)
+                                   OR (expires_at IS NULL AND EXISTS (
+                                       SELECT 1 FROM push_registrations registration
+                                       WHERE registration.recipient_id = notification_hooks.recipient_id
+                                         AND registration.installation_id = notification_hooks.installation_id
+                                   )))
+                             THEN 1 ELSE 0 END AS live
+                 FROM notification_hooks
+             ) hooks",
         )
         .bind(now_timestamp)
         .fetch_one(&self.pool)
@@ -390,7 +418,15 @@ async fn purge_terminal_in_transaction(
         "DELETE FROM notification_hooks
          WHERE hook_id IN (
              SELECT hook_id FROM notification_hooks
-             WHERE (expires_at IS NOT NULL AND expires_at <= $1 OR revoked_at IS NOT NULL)
+             WHERE (revoked_at IS NOT NULL
+                    OR (expires_at IS NOT NULL AND expires_at <= $1)
+                    -- A hook with no expiry ends with its installation's row,
+                    -- which a disabled installation keeps for its grace period.
+                    OR (expires_at IS NULL AND NOT EXISTS (
+                        SELECT 1 FROM push_registrations registration
+                        WHERE registration.recipient_id = notification_hooks.recipient_id
+                          AND registration.installation_id = notification_hooks.installation_id
+                    )))
                 AND NOT EXISTS (
                     SELECT 1 FROM notification_events
                     WHERE notification_events.hook_id = notification_hooks.hook_id

@@ -7,13 +7,6 @@ use fedi_decentralized_push_gateway_types::{
 
 use crate::time::unix_timestamp;
 
-/// Storage-owned definition of an installation that may receive new work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RegistrationEligibility {
-    /// Registrations older than this timestamp are stale.
-    pub cutoff_timestamp: i64,
-}
-
 /// Durable admission ceilings applied in the registration transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegistrationAdmissionLimits {
@@ -23,7 +16,7 @@ pub struct RegistrationAdmissionLimits {
     pub max_active_global: u64,
     /// Maximum physical registration and token-ownership rows; zero disables the limit.
     pub max_total_rows: u64,
-    /// Maximum stale rows reclaimed by this admission attempt.
+    /// Maximum orphaned token owners reclaimed by this admission attempt.
     pub reclamation_batch_size: u64,
 }
 
@@ -53,12 +46,12 @@ pub struct RegistrationRowMetrics {
     pub token_owners: i64,
     /// Token owners whose refreshable registration row has been reclaimed.
     pub orphaned_token_owners: i64,
-    /// Active, non-stale rows at the supplied cutoff.
+    /// Enabled rows.
     pub active: i64,
     /// Disabled rows.
     pub disabled: i64,
-    /// Non-disabled rows older than the supplied cutoff.
-    pub stale: i64,
+    /// Enabled rows whose token is due for a provider re-check.
+    pub awaiting_revalidation: i64,
 }
 
 /// Persistence for push notification registrations.
@@ -74,8 +67,9 @@ impl PushRegistrationRepository {
         Self { pool }
     }
 
-    /// Atomically reclaims stale rows, checks ownership/net-delta ceilings, and
-    /// inserts or refreshes an installation.
+    /// Atomically reclaims disabled registrations and orphaned token owners,
+    /// checks ownership/net-delta ceilings, and inserts or refreshes an installation. The caller has just
+    /// validated the token with the provider, so the row counts as validated now.
     ///
     /// A globally unique FCM token may move between installation ids only when
     /// both rows belong to the same authenticated recipient. Because Fedi keeps
@@ -88,7 +82,7 @@ impl PushRegistrationRepository {
         &self,
         recipient_id: &RecipientId,
         request: &RegisterInstallationRequest,
-        eligibility: RegistrationEligibility,
+        orphaned_owner_cutoff: i64,
         limits: RegistrationAdmissionLimits,
     ) -> Result<RegistrationAdmissionOutcome, sqlx::Error> {
         let now = unix_timestamp();
@@ -96,9 +90,9 @@ impl PushRegistrationRepository {
 
         acquire_admission_lock(&mut transaction, "registration", now).await?;
 
-        purge_stale_in_transaction(
+        purge_orphaned_token_owners_in_transaction(
             &mut transaction,
-            eligibility.cutoff_timestamp,
+            orphaned_owner_cutoff,
             limits.reclamation_batch_size,
         )
         .await?;
@@ -139,16 +133,14 @@ impl PushRegistrationRepository {
         .bind(&request.installation_id.0)
         .fetch_optional(&mut *transaction)
         .await?;
-        let target_is_active = target
-            .as_ref()
-            .is_some_and(|row| registration_row_is_active(row, eligibility));
+        let target_is_active = target.as_ref().is_some_and(registration_row_is_active);
         let token_registration_is_other_route = token_registration.as_ref().is_some_and(|row| {
             row.get::<String, _>("recipient_id") != recipient_id.0
                 || row.get::<String, _>("installation_id") != request.installation_id.0
         });
         let token_registration_is_active = token_registration
             .as_ref()
-            .is_some_and(|row| registration_row_is_active(row, eligibility));
+            .is_some_and(registration_row_is_active);
         let token_registration_belongs_to_recipient = token_registration
             .as_ref()
             .is_some_and(|row| row.get::<String, _>("recipient_id") == recipient_id.0);
@@ -177,12 +169,7 @@ impl PushRegistrationRepository {
         };
 
         if 0 < limits.max_active_per_recipient {
-            let count = active_registration_count(
-                &mut transaction,
-                Some(recipient_id),
-                eligibility.cutoff_timestamp,
-            )
-            .await?;
+            let count = active_registration_count(&mut transaction, Some(recipient_id)).await?;
             let projected = count
                 .saturating_sub(removed_recipient_active)
                 .saturating_add(1);
@@ -192,9 +179,7 @@ impl PushRegistrationRepository {
             }
         }
         if 0 < limits.max_active_global {
-            let count =
-                active_registration_count(&mut transaction, None, eligibility.cutoff_timestamp)
-                    .await?;
+            let count = active_registration_count(&mut transaction, None).await?;
             let projected = count
                 .saturating_sub(removed_global_active)
                 .saturating_add(1);
@@ -240,13 +225,14 @@ impl PushRegistrationRepository {
         sqlx::query(
             "INSERT INTO push_registrations (
                  recipient_id, installation_id, fcm_token, platform, created_at,
-                 updated_at, last_seen_at, disabled_at, disabled_reason
-             ) VALUES ($1, $2, $3, $4, $5, $5, $5, NULL, NULL)
+                 updated_at, last_seen_at, validated_at, disabled_at, disabled_reason
+             ) VALUES ($1, $2, $3, $4, $5, $5, $5, $5, NULL, NULL)
              ON CONFLICT(recipient_id, installation_id) DO UPDATE SET
                  fcm_token = excluded.fcm_token,
                  platform = excluded.platform,
                  updated_at = excluded.updated_at,
                  last_seen_at = excluded.last_seen_at,
+                 validated_at = excluded.validated_at,
                  disabled_at = NULL,
                  disabled_reason = NULL",
         )
@@ -293,39 +279,35 @@ impl PushRegistrationRepository {
         Ok(RegistrationAdmissionOutcome::Registered)
     }
 
-    /// Returns active, non-stale registrations for one recipient.
+    /// Returns enabled registrations for one recipient.
     pub async fn list_for_recipient(
         &self,
         recipient_id: &RecipientId,
-        eligibility: RegistrationEligibility,
     ) -> Result<Vec<PushRegistration>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at
+             WHERE recipient_id = $1 AND disabled_at IS NULL
              ORDER BY installation_id",
         )
         .bind(&recipient_id.0)
-        .bind(eligibility.cutoff_timestamp)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_to_registration).collect())
     }
 
-    /// Returns one active, non-stale installation owned by the recipient.
+    /// Returns one enabled installation owned by the recipient.
     pub async fn eligible_installation(
         &self,
         recipient_id: &RecipientId,
         installation_id: &DeviceInstallationId,
-        eligibility: RegistrationEligibility,
     ) -> Result<Option<PushRegistration>, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
         let result = Self::eligible_installation_in_transaction(
             &mut transaction,
             recipient_id,
             installation_id,
-            eligibility,
         )
         .await?;
         transaction.commit().await?;
@@ -337,58 +319,73 @@ impl PushRegistrationRepository {
         transaction: &mut Transaction<'_, Any>,
         recipient_id: &RecipientId,
         installation_id: &DeviceInstallationId,
-        eligibility: RegistrationEligibility,
     ) -> Result<Option<PushRegistration>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
-             WHERE recipient_id = $1 AND installation_id = $2
-               AND disabled_at IS NULL AND $3 <= last_seen_at",
+             WHERE recipient_id = $1 AND installation_id = $2 AND disabled_at IS NULL",
         )
         .bind(&recipient_id.0)
         .bind(&installation_id.0)
-        .bind(eligibility.cutoff_timestamp)
         .fetch_optional(&mut **transaction)
         .await?;
         Ok(row.map(row_to_registration))
     }
 
-    /// Returns every active, non-stale installation for a recipient inside an
-    /// existing transaction. This exists only for readable legacy hook rows;
-    /// newly admitted FA hooks name exactly one installation.
+    /// Returns one installation owned by the recipient, enabled or not.
+    pub async fn installation_in_transaction(
+        transaction: &mut Transaction<'_, Any>,
+        recipient_id: &RecipientId,
+        installation_id: &DeviceInstallationId,
+    ) -> Result<Option<PushRegistration>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
+                    last_seen_at, disabled_at, disabled_reason
+             FROM push_registrations
+             WHERE recipient_id = $1 AND installation_id = $2",
+        )
+        .bind(&recipient_id.0)
+        .bind(&installation_id.0)
+        .fetch_optional(&mut **transaction)
+        .await?;
+        Ok(row.map(row_to_registration))
+    }
+
+    /// Returns every enabled installation for a recipient inside an existing
+    /// transaction. This exists only for readable legacy hook rows; newly
+    /// admitted FA hooks name exactly one installation.
     pub async fn eligible_installations_for_recipient_in_transaction(
         transaction: &mut Transaction<'_, Any>,
         recipient_id: &RecipientId,
-        eligibility: RegistrationEligibility,
     ) -> Result<Vec<PushRegistration>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
                     last_seen_at, disabled_at, disabled_reason
              FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at
+             WHERE recipient_id = $1 AND disabled_at IS NULL
              ORDER BY installation_id",
         )
         .bind(&recipient_id.0)
-        .bind(eligibility.cutoff_timestamp)
         .fetch_all(&mut **transaction)
         .await?;
         Ok(rows.into_iter().map(row_to_registration).collect())
     }
 
     /// Returns physical/eligible row counts for low-cardinality operator metrics.
+    /// Rows last validated before `revalidation_cutoff` are awaiting a re-check.
     pub async fn row_metrics(
         &self,
-        eligibility: RegistrationEligibility,
+        revalidation_cutoff: i64,
     ) -> Result<RegistrationRowMetrics, sqlx::Error> {
         let registration_row = sqlx::query(
             "SELECT COUNT(*) AS registrations,
-                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND $1 <= last_seen_at THEN 1 ELSE 0 END), 0) AS active,
+                    COALESCE(SUM(CASE WHEN disabled_at IS NULL THEN 1 ELSE 0 END), 0) AS active,
                     COALESCE(SUM(CASE WHEN disabled_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS disabled,
-                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND last_seen_at < $1 THEN 1 ELSE 0 END), 0) AS stale
+                    COALESCE(SUM(CASE WHEN disabled_at IS NULL AND validated_at < $1 THEN 1 ELSE 0 END), 0) AS awaiting_revalidation
              FROM push_registrations",
         )
-        .bind(eligibility.cutoff_timestamp)
+        .bind(revalidation_cutoff)
         .fetch_one(&self.pool)
         .await?;
         let ownership_row = sqlx::query(
@@ -410,7 +407,7 @@ impl PushRegistrationRepository {
             orphaned_token_owners: ownership_row.get("orphaned_token_owners"),
             active: registration_row.get("active"),
             disabled: registration_row.get("disabled"),
-            stale: registration_row.get("stale"),
+            awaiting_revalidation: registration_row.get("awaiting_revalidation"),
         })
     }
 
@@ -486,15 +483,14 @@ impl PushRegistrationRepository {
         Ok(0 < result.rows_affected())
     }
 
-    /// Deletes stale registrations and their now-orphaned token owners.
-    pub async fn purge_stale(&self, cutoff_timestamp: i64) -> Result<u64, sqlx::Error> {
+    /// Deletes token owners whose registration is gone and which were last
+    /// updated before the cutoff.
+    pub async fn purge_orphaned_token_owners(
+        &self,
+        cutoff_timestamp: i64,
+    ) -> Result<u64, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
         acquire_admission_lock(&mut transaction, "registration", unix_timestamp()).await?;
-        let registrations = sqlx::query("DELETE FROM push_registrations WHERE last_seen_at < $1")
-            .bind(cutoff_timestamp)
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected();
         let token_owners = purge_orphaned_token_owners_in_transaction(
             &mut transaction,
             cutoff_timestamp,
@@ -502,35 +498,91 @@ impl PushRegistrationRepository {
         )
         .await?;
         transaction.commit().await?;
-        Ok(registrations.saturating_add(token_owners))
+        Ok(token_owners)
     }
-}
 
-async fn purge_stale_in_transaction(
-    transaction: &mut Transaction<'_, Any>,
-    cutoff_timestamp: i64,
-    batch_size: u64,
-) -> Result<u64, sqlx::Error> {
-    if batch_size == 0 {
-        return Ok(0);
+    /// Returns up to `limit` enabled registrations last validated before the
+    /// cutoff, in key order, starting after the registration `after` when given.
+    pub async fn due_for_revalidation(
+        &self,
+        cutoff_timestamp: i64,
+        after: Option<&PushRegistration>,
+        limit: u64,
+    ) -> Result<Vec<PushRegistration>, sqlx::Error> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = match after {
+            None => {
+                sqlx::query(
+                    "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
+                            last_seen_at, disabled_at, disabled_reason
+                     FROM push_registrations
+                     WHERE disabled_at IS NULL AND validated_at < $1
+                     ORDER BY recipient_id, installation_id
+                     LIMIT $2",
+                )
+                .bind(cutoff_timestamp)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            Some(after) => {
+                sqlx::query(
+                    "SELECT recipient_id, installation_id, fcm_token, platform, created_at,
+                            last_seen_at, disabled_at, disabled_reason
+                     FROM push_registrations
+                     WHERE disabled_at IS NULL AND validated_at < $1
+                       AND (recipient_id, installation_id) > ($2, $3)
+                     ORDER BY recipient_id, installation_id
+                     LIMIT $4",
+                )
+                .bind(cutoff_timestamp)
+                .bind(&after.recipient_id.0)
+                .bind(&after.installation_id.0)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(rows.into_iter().map(row_to_registration).collect())
     }
-    let batch_size_i64 = i64::try_from(batch_size).unwrap_or(i64::MAX);
-    let registrations = sqlx::query(
-        "DELETE FROM push_registrations
-         WHERE (recipient_id, installation_id) IN (
-             SELECT recipient_id, installation_id FROM push_registrations
-             WHERE last_seen_at < $1 ORDER BY last_seen_at LIMIT $2
-         )",
-    )
-    .bind(cutoff_timestamp)
-    .bind(batch_size_i64)
-    .execute(&mut **transaction)
-    .await?
-    .rows_affected();
-    let token_owners =
-        purge_orphaned_token_owners_in_transaction(transaction, cutoff_timestamp, batch_size)
-            .await?;
-    Ok(registrations.saturating_add(token_owners))
+
+    /// Deletes registrations disabled before the cutoff. Until then a disabled
+    /// registration keeps its hooks, so the app re-registering the installation
+    /// with a new token resumes delivery; once it is gone, a hook with no expiry
+    /// targeting it is over. The token owner row outlives it, keeping the token
+    /// bound to its installation until orphan GC.
+    pub async fn purge_disabled_before(&self, cutoff_timestamp: i64) -> Result<u64, sqlx::Error> {
+        Ok(sqlx::query(
+            "DELETE FROM push_registrations
+             WHERE disabled_at IS NOT NULL AND disabled_at < $1",
+        )
+        .bind(cutoff_timestamp)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Records that the provider accepted this exact token now. A token the app
+    /// replaced meanwhile is left alone.
+    pub async fn mark_validated_if_token_matches(
+        &self,
+        recipient_id: &RecipientId,
+        installation_id: &DeviceInstallationId,
+        fcm_token: &FcmRegistrationToken,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE push_registrations SET validated_at = $4
+             WHERE recipient_id = $1 AND installation_id = $2 AND fcm_token = $3
+               AND disabled_at IS NULL",
+        )
+        .bind(&recipient_id.0)
+        .bind(&installation_id.0)
+        .bind(&fcm_token.0)
+        .bind(unix_timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(0 < result.rows_affected())
+    }
 }
 
 async fn purge_orphaned_token_owners_in_transaction(
@@ -566,25 +618,19 @@ async fn purge_orphaned_token_owners_in_transaction(
 async fn active_registration_count(
     transaction: &mut Transaction<'_, Any>,
     recipient_id: Option<&RecipientId>,
-    cutoff_timestamp: i64,
 ) -> Result<u64, sqlx::Error> {
     let count: i64 = if let Some(recipient_id) = recipient_id {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM push_registrations
-             WHERE recipient_id = $1 AND disabled_at IS NULL AND $2 <= last_seen_at",
+             WHERE recipient_id = $1 AND disabled_at IS NULL",
         )
         .bind(&recipient_id.0)
-        .bind(cutoff_timestamp)
         .fetch_one(&mut **transaction)
         .await?
     } else {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM push_registrations
-             WHERE disabled_at IS NULL AND $1 <= last_seen_at",
-        )
-        .bind(cutoff_timestamp)
-        .fetch_one(&mut **transaction)
-        .await?
+        sqlx::query_scalar("SELECT COUNT(*) FROM push_registrations WHERE disabled_at IS NULL")
+            .fetch_one(&mut **transaction)
+            .await?
     };
     Ok(u64::try_from(count).unwrap_or(u64::MAX))
 }
@@ -638,12 +684,8 @@ async fn token_owner_matches_installation(
     Ok(count == 1)
 }
 
-fn registration_row_is_active(
-    row: &sqlx::any::AnyRow,
-    eligibility: RegistrationEligibility,
-) -> bool {
+fn registration_row_is_active(row: &sqlx::any::AnyRow) -> bool {
     row.get::<Option<i64>, _>("disabled_at").is_none()
-        && eligibility.cutoff_timestamp <= row.get::<i64, _>("last_seen_at")
 }
 
 fn row_to_registration(row: sqlx::any::AnyRow) -> PushRegistration {

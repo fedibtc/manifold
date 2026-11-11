@@ -34,7 +34,7 @@ pub use hook_repository::{
 };
 pub use push_registration_repository::{
     PushRegistrationRepository, RegistrationAdmissionLimits, RegistrationAdmissionOutcome,
-    RegistrationEligibility, RegistrationRowMetrics,
+    RegistrationRowMetrics,
 };
 pub use telemetry_repository::{
     EncryptedTelemetryTarget, StoredTelemetryTarget, TelemetryRepository, TelemetryStorageMetrics,

@@ -44,7 +44,7 @@ pub(crate) async fn register_installation(
         .admit_installation(
             &recipient_id,
             &request,
-            state.registration_eligibility(),
+            state.registration_revalidation_cutoff(),
             RegistrationAdmissionLimits {
                 max_active_per_recipient: limits.max_active_installations_per_recipient,
                 max_active_global: limits.max_active_installations_global,

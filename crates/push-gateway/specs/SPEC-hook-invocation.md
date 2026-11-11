@@ -22,22 +22,31 @@ outbox relations; current logging and metrics do not carry hook ids at all
 ## Accepted after durable enqueue
 
 A new non-idempotent invocation verifies the hook secret and current policy,
-then transactionally requires and snapshots at least one active non-stale target
+then transactionally requires and snapshots at least one enabled target
 before consuming any hook use/rate-limit counters or creating an event,
 writes a `notification_events` row, and writes one `delivery_outbox` row per
 target in one database transaction before returning `accepted` to the
 caller. Provider delivery is never required for the HTTP response to
 succeed.
 
-Hook creation in every mode requires both a finite `policy.ttl_seconds` and an
-`installation_id` that is currently registered, active, non-stale, and owned by
-the authenticated recipient. This scopes FA formation completion to the
-initiating installation.
+Hook creation in every mode requires an `installation_id` that is currently
+registered, enabled, and owned by the authenticated recipient. This scopes FA
+formation completion to the initiating installation. A registration stays a
+target however long ago the app last refreshed it, until the provider rejects
+its token ([SPEC-abuse-limits](./SPEC-abuse-limits.md)). `policy.ttl_seconds`
+is up to one year; omitted, the hook never expires (the MG guardian link).
 
-If the named target is missing, disabled, or stale, invocation returns retryable
-`503 target_installation_unavailable` without consuming hook counters, creating
-an event, or pinning the caller's idempotency key. After signed refresh or
-re-registration, retrying the same key may enqueue exactly once. An already
+If the named target is disabled, invocation returns retryable
+`503 hook_target_inactive`: the provider rejected its token, and the app must
+reopen and re-register before delivery resumes. A missing target returns
+retryable `503 target_installation_unavailable`. Neither consumes hook counters,
+creates an event, or pins the caller's idempotency key; after re-registration,
+retrying the same key may enqueue exactly once. A hook with no expiry whose
+target is missing instead answers `410 hook_target_gone`: with no deadline to
+end the caller's retries, the caller should stop. Its target goes missing when
+the app removes the installation or 30 days after it was disabled. If the same
+installation registers again before the hook row is reclaimed, the hook works
+again; a caller that saw the `410` has already stopped. An already
 accepted retained event still replays its recorded target count even if the
 installation later becomes ineligible.
 
@@ -88,7 +97,8 @@ not consume hook counters or create additional outbox rows, even if sensitive
 event/outbox retention cleanup has run or max-use/rate-limit state has since
 changed. Revocation or expiry terminates the bearer capability before replay
 lookup, so a retained key does not authorize any response after either transition.
-Markers remain through the finite hook lifetime plus a seven-day cleanup margin.
+Markers remain through the finite hook lifetime, or one year from acceptance for a
+hook with no expiry, plus a seven-day cleanup margin.
 A new idempotency key is evaluated against current TTL, revocation,
 max-use, rate-limit, and marker-capacity state. Calls without `idempotency_key`
 are never deduplicated. FA formation creates its installation-scoped hook with an

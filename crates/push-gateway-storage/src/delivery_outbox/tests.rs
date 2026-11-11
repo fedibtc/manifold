@@ -268,7 +268,6 @@ async fn retention_purge_deletes_only_old_terminal_sensitive_data() {
         counts,
         RetentionPurgeCounts {
             delivery_outbox_rows: 3,
-            disabled_registration_rows: 1,
             notification_event_rows: 2,
             idempotency_tombstone_rows: 1,
         }
@@ -306,6 +305,7 @@ async fn retention_purge_deletes_only_old_terminal_sensitive_data() {
         count_rows(&outbox, "notification_events", "event_id = 'orphan-event'").await,
         0
     );
+    // A disabled registration waits out its own grace period instead.
     assert_eq!(
         count_rows(
             &outbox,
@@ -313,7 +313,7 @@ async fn retention_purge_deletes_only_old_terminal_sensitive_data() {
             "installation_id = 'disabled-old'"
         )
         .await,
-        0
+        1
     );
     assert_eq!(
         count_rows(

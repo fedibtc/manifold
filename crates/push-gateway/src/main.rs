@@ -25,6 +25,7 @@ async fn serve(args: PushGatewayArgs) -> Result<(), Box<dyn Error>> {
     let operator_bind_addr = config.operator_bind();
     let state = AppState::connect(config).await?;
     let worker = state.start_delivery_worker();
+    let revalidation = state.start_registration_revalidation();
     let listener = TcpListener::bind(bind_addr).await?;
     let operator_listener = match operator_bind_addr {
         Some(operator_bind_addr) => Some(TcpListener::bind(operator_bind_addr).await?),
@@ -47,6 +48,7 @@ async fn serve(args: PushGatewayArgs) -> Result<(), Box<dyn Error>> {
     } else {
         public_server.await?;
     }
+    revalidation.shutdown().await;
     worker.shutdown().await;
     Ok(())
 }
