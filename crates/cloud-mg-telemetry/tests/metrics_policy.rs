@@ -772,7 +772,7 @@ fn captured_policy() -> MetricsPolicy {
 
 /// Families carrying the given disposition in the reviewed source inventory.
 fn inventoried(disposition: &str) -> std::collections::BTreeSet<&'static str> {
-    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi26.tsv")
+    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi27.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
