@@ -52,7 +52,8 @@ use mg_core::push_callback::{
     DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL, PushGatewayOrigin, PushGatewayOriginPolicy,
 };
 use mg_core::seat_process::{
-    BitcoinBackend, BitcoindConfig, RespawnPolicy, SeatProcessConfig, SeatProcessSpawner,
+    BitcoinBackend, BitcoindConfig, RespawnPolicy, SAFE_EVENT_JOURNAL_UNAVAILABLE,
+    SeatProcessConfig, SeatProcessSpawner,
 };
 use mg_core::service::ManifoldGuardianRpc;
 use mg_telemetry::GuardianTelemetryRpc;
@@ -205,7 +206,7 @@ async fn run() -> anyhow::Result<()> {
                 |directory| match safe_tracing::layer(PathBuf::from(directory)) {
                     Ok(layer) => Some(layer),
                     Err(error) => {
-                        eprintln!("safe-event journal unavailable; continuing without it: {error}");
+                        eprintln!("{SAFE_EVENT_JOURNAL_UNAVAILABLE}: {error}");
                         None
                     }
                 },
@@ -763,7 +764,7 @@ fn init_daemon_logging(directory: PathBuf) -> anyhow::Result<()> {
     let safe_events = match safe_tracing::layer(directory) {
         Ok(layer) => Some(layer),
         Err(error) => {
-            eprintln!("safe-event journal unavailable; continuing without it: {error}");
+            eprintln!("{SAFE_EVENT_JOURNAL_UNAVAILABLE}: {error}");
             None
         }
     };

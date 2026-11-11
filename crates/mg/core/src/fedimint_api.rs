@@ -1,9 +1,12 @@
-//! Native Fedimint API adapter for one seat's local `fedimintd`.
+//! Native Fedimint API adapter for one seat's local `fedimintd`, and for the
+//! one public read the daemon makes of that seat's federation peers
+//! ([`FedimintApi::federation_session_count`]).
 //!
 //! The seat lifecycle owns state interpretation and error policy; request
 //! encoding, endpoint routing, authentication envelopes, and transports are
 //! delegated to Fedimint's `DynGlobalApi` and module API extension traits.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::Duration;
 
@@ -12,11 +15,12 @@ use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::endpoint_constants::{
-    CLIENT_CONFIG_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+    CLIENT_CONFIG_ENDPOINT, SESSION_COUNT_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::peer_availability::ResetPeerAvailabilityRequest;
 use fedimint_core::util::SafeUrl;
+use fedimint_core::{NumPeersExt as _, PeerId};
 use fedimint_lnv2_common::endpoint_constants::ADD_GATEWAY_ENDPOINT;
 use fedimint_meta_client::api::MetaFederationApi as _;
 use fedimint_meta_common::{MetaConsensusValue, MetaKey, MetaValue};
@@ -40,22 +44,58 @@ pub enum FedimintApiError {
     InvalidResponse { method: String, detail: String },
 }
 
+/// Why the federation's session count could not be learned from its peers;
+/// a fixed code, never peer text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerQueryFailure {
+    /// The seat's own config could not be read to find its peers.
+    LocalConfig,
+    /// Most peers that did not answer timed out.
+    Timeout,
+    /// Most peers that did not answer could not be connected to.
+    Unreachable,
+    /// Most peers that did not answer refused the request or answered
+    /// something that is not a session count.
+    Rejected,
+}
+
+impl PeerQueryFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalConfig => "local_config",
+            Self::Timeout => "timeout",
+            Self::Unreachable => "unreachable",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+/// Fewer peers answered than the count needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeerSessionCountUnknown {
+    pub failure: PeerQueryFailure,
+    pub answered: usize,
+    pub required: usize,
+}
+
 /// Native-client adapter for one local fedimintd, carrying its durable setup auth.
 #[derive(Clone)]
 pub struct FedimintApi {
     api: DynGlobalApi,
     auth: ApiAuth,
+    connectors: ConnectorRegistry,
 }
 
 impl FedimintApi {
     pub fn new(connectors: ConnectorRegistry, api_port: u16, api_auth: &str) -> Self {
         let url = SafeUrl::parse(&format!("ws://127.0.0.1:{api_port}"))
             .expect("a loopback URL with a u16 port is valid");
-        let api = DynGlobalApi::new_admin_setup(connectors, url)
+        let api = DynGlobalApi::new_admin_setup(connectors.clone(), url)
             .expect("the local setup API endpoint is valid");
         Self {
             api,
             auth: ApiAuth::new(api_auth.to_owned()),
+            connectors,
         }
     }
 
@@ -70,10 +110,11 @@ impl FedimintApi {
             .map_err(map_federation_error)
     }
 
-    /// Confirm that the formed federation's consensus API is serving.
-    pub async fn probe(&self) -> Result<(), FedimintApiError> {
+    /// Confirm that the formed federation's consensus API is serving, and
+    /// return the seat's own session count once consensus runs.
+    pub async fn probe(&self) -> Result<Option<u64>, FedimintApiError> {
         match tokio::time::timeout(REQUEST_TIMEOUT, self.api.clone().status()).await {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(status)) => Ok(status.federation.map(|federation| federation.session_count)),
             Ok(Err(error)) => Err(map_federation_error(error)),
             Err(_) => Err(FedimintApiError::Unreachable(
                 "status request timed out".to_owned(),
@@ -178,6 +219,105 @@ impl FedimintApi {
     }
 }
 
+impl FedimintApi {
+    /// The federation's session count as its other peers report it: the
+    /// `max_evil + 1`-th highest answer, so at least one honest peer has
+    /// reached it and up to `max_evil` peers cannot inflate it. Peers come
+    /// from the seat's own client config; `own` is left out.
+    pub async fn federation_session_count(
+        &self,
+        own: PeerId,
+    ) -> Result<u64, PeerSessionCountUnknown> {
+        let config = self
+            .client_config()
+            .await
+            .map_err(|_| PeerSessionCountUnknown {
+                failure: PeerQueryFailure::LocalConfig,
+                answered: 0,
+                required: 1,
+            })?;
+        let endpoints = &config.global.api_endpoints;
+        let required = endpoints.to_num_peers().max_evil() + 1;
+        let peers = endpoints
+            .iter()
+            .filter(|(peer, _)| **peer != own)
+            .map(|(peer, url)| (*peer, url.url.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let unknown = |failure| PeerSessionCountUnknown {
+            failure,
+            answered: 0,
+            required,
+        };
+        let api = DynGlobalApi::new(self.connectors.clone(), peers.clone(), None)
+            .map_err(|_| unknown(PeerQueryFailure::LocalConfig))?;
+        let mut queries = tokio::task::JoinSet::new();
+        for peer in peers.into_keys() {
+            let api = api.clone();
+            queries.spawn(async move {
+                match tokio::time::timeout(
+                    REQUEST_TIMEOUT,
+                    api.request_single_peer::<u64>(
+                        SESSION_COUNT_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                        peer,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(count)) => Ok(count),
+                    Err(_) => Err(PeerQueryFailure::Timeout),
+                    Ok(Err(
+                        ServerError::Connection(_)
+                        | ServerError::Transport(_)
+                        | ServerError::InternalClientError(_),
+                    )) => Err(PeerQueryFailure::Unreachable),
+                    Ok(Err(_)) => Err(PeerQueryFailure::Rejected),
+                }
+            });
+        }
+        // Each query ends within its timeout, so this ends within one.
+        let answers = queries.join_all().await;
+        quorum_session_count(&answers, required)
+    }
+}
+
+/// The `required`-th highest of the peers' answers, or why too few answered:
+/// the failure most peers hit, the first in [`PeerQueryFailure`] order on a
+/// tie.
+fn quorum_session_count(
+    answers: &[Result<u64, PeerQueryFailure>],
+    required: usize,
+) -> Result<u64, PeerSessionCountUnknown> {
+    let mut counts = answers
+        .iter()
+        .filter_map(|answer| answer.ok())
+        .collect::<Vec<_>>();
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    if let Some(count) = counts.get(required - 1) {
+        return Ok(*count);
+    }
+    let failure = [
+        PeerQueryFailure::Timeout,
+        PeerQueryFailure::Unreachable,
+        PeerQueryFailure::Rejected,
+    ]
+    .into_iter()
+    .max_by_key(|failure| {
+        let hits = answers
+            .iter()
+            .filter(|answer| answer.err() == Some(*failure))
+            .count();
+        // `max_by_key` keeps the last maximum; rank earlier kinds higher on a tie.
+        (hits, std::cmp::Reverse(*failure as u8))
+    })
+    .expect("the list is not empty");
+    Err(PeerSessionCountUnknown {
+        failure,
+        answered: counts.len(),
+        required,
+    })
+}
+
 fn map_federation_error(error: FederationError) -> FedimintApiError {
     let method = error.method.clone();
     if let Some((
@@ -218,4 +358,56 @@ fn map_federation_error(error: FederationError) -> FedimintApiError {
         .or_else(|| error.get_general_error().map(ToString::to_string))
         .unwrap_or_else(|| "request failed".to_owned());
     FedimintApiError::Rejected { method, message }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TIMEOUT: Result<u64, PeerQueryFailure> = Err(PeerQueryFailure::Timeout);
+    const UNREACHABLE: Result<u64, PeerQueryFailure> = Err(PeerQueryFailure::Unreachable);
+    const REJECTED: Result<u64, PeerQueryFailure> = Err(PeerQueryFailure::Rejected);
+
+    /// With four guardians one may lie, so the count is the second highest
+    /// of the other three: a single inflated answer cannot fake a lag.
+    #[test]
+    fn one_inflated_peer_cannot_raise_the_federation_count() {
+        assert_eq!(quorum_session_count(&[Ok(1000), Ok(90), Ok(91)], 2), Ok(91));
+        assert_eq!(
+            quorum_session_count(&[Ok(91), Ok(1000), TIMEOUT], 2),
+            Ok(91)
+        );
+        // Seven guardians tolerate two liars: the third highest.
+        assert_eq!(
+            quorum_session_count(&[Ok(9), Ok(9), Ok(5), Ok(4), Ok(3), Ok(2)], 3),
+            Ok(5)
+        );
+    }
+
+    #[test]
+    fn too_few_answers_name_the_failure_most_peers_hit() {
+        assert_eq!(
+            quorum_session_count(&[Ok(90), UNREACHABLE, UNREACHABLE], 2),
+            Err(PeerSessionCountUnknown {
+                failure: PeerQueryFailure::Unreachable,
+                answered: 1,
+                required: 2,
+            })
+        );
+        assert_eq!(
+            quorum_session_count(&[REJECTED, TIMEOUT, REJECTED], 2),
+            Err(PeerSessionCountUnknown {
+                failure: PeerQueryFailure::Rejected,
+                answered: 0,
+                required: 2,
+            })
+        );
+        assert_eq!(
+            quorum_session_count(&[REJECTED, TIMEOUT, Ok(3)], 2)
+                .unwrap_err()
+                .failure,
+            PeerQueryFailure::Timeout,
+            "a tie names the earlier kind"
+        );
+    }
 }

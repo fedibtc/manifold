@@ -196,3 +196,52 @@ async fn iroh_carrying_ports_bind_all_interfaces_others_loopback() {
     assert_eq!(bind("--bind-ui"), "127.0.0.1:31002");
     assert_eq!(bind("--bind-metrics"), "127.0.0.1:31003");
 }
+
+/// A child's journal-unavailable line becomes one fixed safe event naming
+/// only the seat, while the line itself and other children's text stay out
+/// of the journal; the same text on stdout, or later in a line, is not it.
+#[tokio::test]
+async fn a_child_without_its_journal_is_journaled_by_the_daemon() {
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let subscriber =
+        tracing_subscriber::registry().with(safe_tracing::layer(directory.path()).unwrap());
+    let seat_id = SeatId::new("ef".repeat(32)).unwrap();
+    let stderr = format!(
+        "starting\n{SAFE_EVENT_JOURNAL_UNAVAILABLE}: Resource temporarily unavailable\n\
+         note: {SAFE_EVENT_JOURNAL_UNAVAILABLE}\n"
+    );
+    let stdout = format!("{SAFE_EVENT_JOURNAL_UNAVAILABLE}: on stdout\n");
+    async {
+        pump_output(stderr.as_bytes(), seat_id.clone(), OutputStream::Stderr).await;
+        pump_output(stdout.as_bytes(), seat_id.clone(), OutputStream::Stdout).await;
+    }
+    .with_subscriber(subscriber)
+    .await;
+
+    let mut records = Vec::new();
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
+            for line in std::fs::read_to_string(path).unwrap().lines() {
+                records.push(serde_json::from_str::<serde_json::Value>(line).unwrap());
+            }
+        }
+    }
+    let [record] = records.as_slice() else {
+        panic!("expected one journaled event, got {records:?}");
+    };
+    assert_eq!(
+        record["fields"],
+        serde_json::json!({
+            "safe_to_share": true,
+            "seat_id": seat_id.to_string(),
+            "message": "seat fedimintd running without its safe-event journal",
+        })
+    );
+}
