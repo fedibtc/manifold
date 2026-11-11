@@ -436,13 +436,23 @@ impl JournalPoller {
                     self.clock.clone(),
                     deadline,
                 );
-                let commit = collector
-                    .collect_journals()
-                    .await
-                    .map_err(|error| match error.downcast_ref::<PollError>() {
-                        Some(error) => *error,
-                        None => PollError::Fatal("journal collection failed"),
-                    })?;
+                let commit = match collector.collect_journals().await {
+                    Ok(commit) => commit,
+                    Err(error) => match error.downcast_ref::<PollError>() {
+                        // One journal that cannot be fetched or validated right
+                        // now must not stop the target's other journals; it is
+                        // retried at the next cadence.
+                        Some(PollError::Transient) => {
+                            tracing::warn!(
+                                "safe-journal stream temporarily unavailable; continuing with the target's other streams"
+                            );
+                            finished[index] = true;
+                            continue;
+                        }
+                        Some(error) => return Err(*error),
+                        None => return Err(PollError::Fatal("journal collection failed")),
+                    },
+                };
                 let stop = commit.ends_current_drain();
                 let outcome = self
                     .catalog

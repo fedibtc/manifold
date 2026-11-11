@@ -125,7 +125,9 @@ Each process exclusively owns a `bounded-rolling-file` size-segmented JSONL
 journal: MG under
 `safe-events/fman`, and a child under `seats/<seat-no>/safe-events`, outside the
 fedimintd `data/` directory. A journal retains at most two 2.5 MiB segments
-(5 MiB total record data) and rejects an event over 64 KiB. Segments use
+(5 MiB total record data) and rejects an event over 64 KiB. Segments roll only
+by size: a process start continues the newest segment, so a restart loop keeps
+as much history as its bytes allow. Segments use
 readable numeric names such as `events-42.jsonl`. After formatting and
 validation, the event emitter performs a nonblocking send into a fixed
 128-record queue. A dedicated OS thread owns the appender, all filesystem I/O,
@@ -133,9 +135,9 @@ and the nonblocking advisory writer lock for the layer's lifetime. A full or
 disconnected queue drops the event. Rotation removes the oldest complete
 segment before creating its replacement; a write failure disables the
 non-critical sink while its worker continues draining the bounded queue and
-retaining the lock. Startup removes segments over the current configured limit
-before reading at most that limit plus one byte to truncate an incomplete crash
-tail. The seat journal is retained across DKG restart and terminal
+retaining the lock. Startup removes segments over the current configured limit.
+It never truncates: an incomplete crash tail gets a newline, and the telemetry
+reader passes over the resulting malformed line (`ARCH-cloud-mg-telemetry`). The seat journal is retained across DKG restart and terminal
 decommission with the other on-disk seat data. The standard
 `tracing_subscriber` JSON formatter writes the event fields and its normal
 timestamp, level, and target metadata with current span and span-list output
