@@ -3861,6 +3861,7 @@ impl FaStore {
             open.as_ref()
                 .is_some_and(|open| open.transfer_id == transfer.transfer_id)
         };
+        let previous_phase = open.as_ref().map(|open| open.public_phase());
         let published = match &write {
             GuardianTransferWrite::Begin(transfer)
             | GuardianTransferWrite::Update(transfer)
@@ -3917,6 +3918,15 @@ impl FaStore {
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("persisting the guardian transfer failed".to_owned()))?;
+        let phase = published.as_ref().map(|transfer| transfer.phase);
+        if phase != previous_phase {
+            tracing::info!(
+                safe_to_share = true,
+                from = ?previous_phase,
+                to = ?phase,
+                "guardian transfer step changed"
+            );
+        }
         self.guardian_transfer.send_replace(published);
         #[cfg(test)]
         {
