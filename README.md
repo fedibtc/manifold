@@ -140,7 +140,7 @@ liquidity-manager, cloud MG telemetry and push gateway images to GHCR on
 every push to `master`, and on manual `workflow_dispatch`. Publishing remains
 separate from SelfCI so a fork pull request can never obtain registry
 credentials or write to the registry. Its build phase uses one
-system-qualified `release-container-images` Nix target containing all four
+`release-container-images` Nix target per architecture, each containing all four
 release-profile images. SelfCI uses the same image constructors and embedded
 UI with CI-profile daemons; publishing is where the optimized Rust graph is
 first built, loaded, tagged, and pushed.
@@ -154,17 +154,17 @@ it re-reads the registry afterwards to assert the published list serves exactly
 the expected platforms. The registry credential is the workflow's own
 `GITHUB_TOKEN`; no long-lived keys are stored.
 
-Both `amd64` and `arm64` are built. amd64 runs on the usual `[self-hosted,
-linux]` runner; arm64 runs on `linux-arm64-8core`, the same aarch64 runner
-`fedibtc/fedi` uses. That runner has no Nix preinstalled (the workflow installs
-it). Each publish pushes the built image closures to the public `fedibtc`
-Cachix cache, so once those accumulate an unchanged build substitutes instead
-of compiling; a cold arm64 leg still compiles the native tree from source and
-is budgeted hours rather than minutes.
+Both `amd64` and `arm64` are built, each on the usual `[self-hosted, linux]`
+x86_64 runner. amd64 builds `packages.x86_64-linux.release-container-images`.
+arm64 builds `packages.x86_64-linux.release-container-images-aarch64-linux`,
+which cross-compiles the daemons with the flakebox `aarch64-linux` toolchain and
+takes the image base packages from `pkgsCross.aarch64-multiplatform`. The
+runner's Nix store keeps both dependency graphs warm between runs. Each publish
+also pushes the built image closures to the public `fedibtc` Cachix cache.
 
 A manual `workflow_dispatch` run takes two inputs: `architectures` (`both`,
-`amd64`, or `arm64` — useful for a quick publish that skips the long arm64
-leg) and an optional `extra_tag` published alongside `<git-sha>`.
+`amd64`, or `arm64`, for a quick single-architecture publish) and an optional
+`extra_tag` published alongside `<git-sha>`.
 
 The images are published to the `ghcr.io/fedibtc/manifold-fman`,
 `manifold-flip`, `manifold-cloud-fman-telemetry` and `manifold-push-gateway`

@@ -310,7 +310,25 @@
             );
         };
 
-        multiBuild = (flakeboxLib.craneMultiBuild { }) (
+        # flakebox's `aarch64-linux` cell runs bindgen with clang 18's libclang
+        # against the clang 21 headers of the nixpkgs cross toolchain, and
+        # without the target glibc headers. aws-lc-sys, pulled in by
+        # fedimint-core with its `bindgen` feature, then fails to generate
+        # bindings. Point bindgen at the cross toolchain's own libclang and at
+        # the aarch64 glibc headers.
+        multiBuildArgsFor =
+          { toolchainName, ... }:
+          pkgs.lib.optionalAttrs (toolchainName == "aarch64-linux") (
+            let
+              cross = pkgs.pkgsCross.aarch64-multiplatform;
+            in
+            {
+              LIBCLANG_PATH = "${cross.buildPackages.llvmPackages.clang-unwrapped.lib}/lib";
+              BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu = "-isystem ${cross.stdenv.cc.libc.dev}/include";
+            }
+          );
+
+        multiBuild = (flakeboxLib.craneMultiBuild { argsFor = multiBuildArgsFor; }) (
           craneLib':
           let
             craneLib = craneLib'.overrideArgs {
@@ -616,14 +634,14 @@
         # the UI-enabled CI-profile build so it exercises the embedded dashboard
         # without compiling a second Cargo profile.
         mkLiquidityManagerDockerImage =
-          liquidityManagerDaemon:
-          pkgs.dockerTools.buildLayeredImage {
+          imagePkgs: liquidityManagerDaemon:
+          imagePkgs.dockerTools.buildLayeredImage {
             name = "flip-liquidity-manager";
             tag = pushGatewayVersion;
             contents = [
               liquidityManagerDaemon
               cacert
-              pkgs.curl
+              imagePkgs.curl
             ];
             config = {
               Entrypoint = [
@@ -654,7 +672,7 @@
               Healthcheck = {
                 Test = [
                   "CMD"
-                  "${pkgs.curl}/bin/curl"
+                  "${imagePkgs.curl}/bin/curl"
                   "-fsS"
                   "http://127.0.0.1:8173/health"
                 ];
@@ -674,21 +692,21 @@
               };
             };
           };
-        liquidityManagerDockerImage = mkLiquidityManagerDockerImage multiBuild.liquidityManagerDaemon;
-        liquidityManagerCiDockerImage = mkLiquidityManagerDockerImage ciRuntimeBins;
+        liquidityManagerDockerImage = releaseImages.liquidityManager;
+        liquidityManagerCiDockerImage = mkLiquidityManagerDockerImage pkgs ciRuntimeBins;
 
         # The collector is cloud infrastructure rather than an edge package. Its
         # image is published to ECR, but unlike the Umbrel-consumed images it has
         # no GHCR mirror.
         mkCloudFmanTelemetryContainerImage =
-          cloudFmanTelemetry:
-          pkgs.dockerTools.buildLayeredImage {
+          imagePkgs: cloudFmanTelemetry:
+          imagePkgs.dockerTools.buildLayeredImage {
             name = "cloud-fman-telemetry";
             tag = pushGatewayVersion;
             contents = [
               cloudFmanTelemetry
               cacert
-              pkgs.curl
+              imagePkgs.curl
             ];
             # Preserve the service identity on an image-local path and on Docker
             # named-volume initialization. Kubernetes and host-path mounts replace
@@ -723,7 +741,7 @@
               Healthcheck = {
                 Test = [
                   "CMD"
-                  "${pkgs.curl}/bin/curl"
+                  "${imagePkgs.curl}/bin/curl"
                   "-fsS"
                   "http://127.0.0.1:8176/health"
                 ];
@@ -743,8 +761,8 @@
               };
             };
           };
-        cloudFmanTelemetryContainerImage = mkCloudFmanTelemetryContainerImage multiBuild.cloudFmanTelemetry;
-        cloudFmanTelemetryCiContainerImage = mkCloudFmanTelemetryContainerImage ciRuntimeBins;
+        cloudFmanTelemetryContainerImage = releaseImages.cloudFmanTelemetry;
+        cloudFmanTelemetryCiContainerImage = mkCloudFmanTelemetryContainerImage pkgs ciRuntimeBins;
 
         cloudFmanTelemetryContainerImageCheck =
           pkgs.runCommand "cloud-fman-telemetry-oci-image-check"
@@ -993,14 +1011,13 @@
         # Reuse the package's runtime contract script as the image entrypoint,
         # resolving `fleet-manager` from the Nix store.
         mkFleetManagerEntrypoint =
-          fleetManager:
-          pkgs.writeShellApplication {
+          imagePkgs: fleetManager:
+          imagePkgs.writeShellApplication {
             name = "fleet-manager-entrypoint";
             runtimeInputs = [ fleetManager ];
             text = builtins.readFile ./packages/fleet-manager/entrypoint.sh;
           };
-        fleetManagerEntrypoint = mkFleetManagerEntrypoint multiBuild.fleetManager;
-        fleetManagerCiEntrypoint = mkFleetManagerEntrypoint ciRuntimeBins;
+        fleetManagerCiEntrypoint = mkFleetManagerEntrypoint pkgs ciRuntimeBins;
 
         # Stable, store-hash-independent entrypoint path. StartOS pins the
         # container entrypoint by path in its manifest, so expose the wrapper at
@@ -1013,12 +1030,11 @@
             ln -s ${entrypoint}/bin/fleet-manager-entrypoint \
               "$out${fleetManagerEntrypointPath}"
           '';
-        fleetManagerEntrypointStable = mkFleetManagerEntrypointStable fleetManagerEntrypoint;
         fleetManagerCiEntrypointStable = mkFleetManagerEntrypointStable fleetManagerCiEntrypoint;
 
         mkFleetManagerContainerImage =
-          fleetManager: entrypoint: entrypointStable:
-          pkgs.dockerTools.buildLayeredImage {
+          imagePkgs: fleetManager: entrypoint: entrypointStable:
+          imagePkgs.dockerTools.buildLayeredImage {
             name = "fleet-manager";
             tag = pushGatewayVersion;
             contents = [
@@ -1047,11 +1063,9 @@
               };
             };
           };
-        fleetManagerContainerImage =
-          mkFleetManagerContainerImage multiBuild.fleetManager fleetManagerEntrypoint
-            fleetManagerEntrypointStable;
+        fleetManagerContainerImage = releaseImages.fleetManager;
         fleetManagerCiContainerImage =
-          mkFleetManagerContainerImage ciRuntimeBins fleetManagerCiEntrypoint
+          mkFleetManagerContainerImage pkgs ciRuntimeBins fleetManagerCiEntrypoint
             fleetManagerCiEntrypointStable;
 
         fleetManagerContainerLoad = pkgs.writeShellScriptBin "fleet-manager-container-load" ''
@@ -1506,14 +1520,14 @@
             '';
 
         mkPushGatewayContainerImage =
-          pushGateway:
-          pkgs.dockerTools.buildLayeredImage {
+          imagePkgs: pushGateway:
+          imagePkgs.dockerTools.buildLayeredImage {
             name = "fedi-decentralized-push-gateway";
             tag = pushGatewayVersion;
             contents = [
               pushGateway
               cacert
-              pkgs.fakeNss
+              imagePkgs.fakeNss
             ];
             fakeRootCommands = ''
               mkdir -p var/lib/push-gateway run/secrets
@@ -1550,8 +1564,8 @@
               };
             };
           };
-        pushGatewayContainerImage = mkPushGatewayContainerImage multiBuild.pushGateway;
-        pushGatewayCiContainerImage = mkPushGatewayContainerImage ciRuntimeBins;
+        pushGatewayContainerImage = releaseImages.pushGateway;
+        pushGatewayCiContainerImage = mkPushGatewayContainerImage pkgs ciRuntimeBins;
 
         pushGatewayContainerLoad = pkgs.writeShellScriptBin "push-gateway-container-load" ''
           set -euo pipefail
@@ -1663,30 +1677,60 @@
           '';
         };
 
-        # One release-artifact target for publishing. Keeping every named image
-        # link in one aggregate prevents the workflow's MG, FLIP, cloud
-        # collector and push gateway package selections from drifting apart.
-        # Required CI uses the same image constructors with UI-enabled CI-profile
-        # daemons above.
-        releaseContainerImages = pkgs.linkFarm "release-container-images" [
+        # The release images for one target platform. `imagePkgs` is the package
+        # set whose host platform is the target: `pkgs` for the native images,
+        # or a `pkgsCross` set when the images are cross-built. `bins` holds
+        # release-profile daemons compiled for the same target.
+        releaseImagesFor =
+          imagePkgs: bins:
+          let
+            fleetManagerEntrypoint = mkFleetManagerEntrypoint imagePkgs bins.fleetManager;
+          in
           {
-            name = "fleet-manager-image";
-            path = fleetManagerContainerImage;
-          }
-          {
-            name = "liquidity-manager-image";
-            path = liquidityManagerDockerImage;
-          }
-          {
-            name = "cloud-fman-telemetry-image";
-            path = cloudFmanTelemetryContainerImage;
-          }
-          {
-            name = "push-gateway-image";
-            path = pushGatewayContainerImage;
-          }
-        ];
+            fleetManager = mkFleetManagerContainerImage imagePkgs bins.fleetManager fleetManagerEntrypoint (
+              mkFleetManagerEntrypointStable fleetManagerEntrypoint
+            );
+            liquidityManager = mkLiquidityManagerDockerImage imagePkgs bins.liquidityManagerDaemon;
+            cloudFmanTelemetry = mkCloudFmanTelemetryContainerImage imagePkgs bins.cloudFmanTelemetry;
+            pushGateway = mkPushGatewayContainerImage imagePkgs bins.pushGateway;
+          };
+        releaseImages = releaseImagesFor pkgs multiBuild;
 
+        # One release-artifact target per platform for publishing. Keeping every
+        # named image link in one aggregate prevents the workflow's MG, FLIP,
+        # cloud collector and push gateway package selections from drifting
+        # apart. Required CI uses the same image constructors with UI-enabled
+        # CI-profile daemons above.
+        mkReleaseContainerImages =
+          images:
+          pkgs.linkFarm "release-container-images" [
+            {
+              name = "fleet-manager-image";
+              path = images.fleetManager;
+            }
+            {
+              name = "liquidity-manager-image";
+              path = images.liquidityManager;
+            }
+            {
+              name = "cloud-fman-telemetry-image";
+              path = images.cloudFmanTelemetry;
+            }
+            {
+              name = "push-gateway-image";
+              path = images.pushGateway;
+            }
+          ];
+        releaseContainerImages = mkReleaseContainerImages releaseImages;
+
+        # The arm64 release images, cross-compiled on an x86_64 builder. The
+        # flakebox `aarch64-linux` cell and `pkgsCross.aarch64-multiplatform`
+        # share one nixpkgs, so the daemons and the image base packages link
+        # the same target glibc. Publishing builds these on the warm self-hosted
+        # x86_64 runner instead of a cold native arm64 runner.
+        releaseContainerImagesAarch64Linux = mkReleaseContainerImages (
+          releaseImagesFor pkgs.pkgsCross.aarch64-multiplatform multiBuild.aarch64-linux.release
+        );
       in
       {
         packages = {
@@ -1717,6 +1761,9 @@
           # `nix flake show` / darwin evaluation does not offer an unbuildable
           # attribute.
           inherit liquidityManagerDockerImage;
+        }
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          release-container-images-aarch64-linux = releaseContainerImagesAarch64Linux;
         };
 
         apps = {
