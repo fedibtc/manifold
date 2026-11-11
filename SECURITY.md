@@ -497,7 +497,7 @@ database and should be encrypted and access-controlled.
 
 Push-gateway public hook invocation currently enforces per-hook fixed-window
 rate limits in the configured database together with TTL, revocation, max-use,
-body-size, and payload-field checks. New hooks default to 2 accepted invocations
+body-size, and payload-field checks. New hooks default to 6 accepted invocations
 per hour; any higher configured limit should be an explicit test/dev setting or
 reviewed production exception. The gateway also has in-memory single-process
 abuse and backlog guardrails (source-prefix, per-hook, hook creation,

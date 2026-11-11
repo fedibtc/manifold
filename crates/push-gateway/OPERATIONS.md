@@ -177,11 +177,11 @@ PostgreSQL lock waits, slow-query plans, connection saturation, and server logs;
 do not raise this timeout without reassessing the durable-delivery deadline and
 worker recovery latency.
 
-New hooks default to a production-conservative fixed-window rate limit of 2
+New hooks default to a production-conservative fixed-window rate limit of 6
 accepted invocations per hour. Management callers can set validated per-hook
 limits at creation time for explicit test/dev deployments. When
 `--production-mode` is enabled, hook creation rejects policies that are more
-permissive than 2 accepted invocations per 3600-second window; there is no
+permissive than 6 accepted invocations per 3600-second window; there is no
 privileged high-rate exception flow. Production invocation also applies the
 conservative effective cap to any pre-existing or manually edited permissive
 persisted hook rows. There is no distributed rate-limit backend.

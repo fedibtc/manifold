@@ -1504,7 +1504,7 @@ async fn default_rate_limit_is_applied_to_new_hooks() {
     );
     assert_eq!(
         create.body["hook"]["policy"]["rate_limit"]["max_requests"],
-        2
+        6
     );
 }
 
@@ -1538,7 +1538,7 @@ async fn production_mode_rejects_per_hook_high_rate_exceptions() {
             "/v1/hooks",
             json!({
                 "installation_id": "device-1",
-                "policy": { "ttl_seconds": 3600, "rate_limit": { "window_seconds": 3600, "max_requests": 3 } }
+                "policy": { "ttl_seconds": 3600, "rate_limit": { "window_seconds": 3600, "max_requests": 7 } }
             }),
         )
         .await;
@@ -1588,7 +1588,7 @@ async fn production_mode_rejects_per_hook_high_rate_exceptions() {
     );
     assert_eq!(
         default_rate.body["hook"]["policy"]["rate_limit"]["max_requests"],
-        2
+        6
     );
 
     let invocation_url = default_rate.body["invocation_url"].as_str().expect("url");
@@ -1605,22 +1605,21 @@ async fn production_mode_rejects_per_hook_high_rate_exceptions() {
     .execute(harness.state.database().pool())
     .await
     .expect("simulate pre-existing high-rate hook");
-    assert_eq!(
-        harness
-            .json("POST", invocation_url, json!({"idempotency_key": "first"}))
-            .await
-            .status,
-        StatusCode::OK
-    );
-    assert_eq!(
-        harness
-            .json("POST", invocation_url, json!({"idempotency_key": "second"}))
-            .await
-            .status,
-        StatusCode::OK
-    );
+    for attempt in 0..6 {
+        assert_eq!(
+            harness
+                .json(
+                    "POST",
+                    invocation_url,
+                    json!({"idempotency_key": format!("accepted-{attempt}")})
+                )
+                .await
+                .status,
+            StatusCode::OK
+        );
+    }
     let capped = harness
-        .json("POST", invocation_url, json!({"idempotency_key": "third"}))
+        .json("POST", invocation_url, json!({"idempotency_key": "capped"}))
         .await;
     assert_eq!(capped.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(capped.body["error"]["code"], "hook_rate_limited");

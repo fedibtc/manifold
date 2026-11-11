@@ -745,13 +745,13 @@ The migrated schema contains a `notification_hooks` table:
 
 ### Hook abuse controls
 
-New hooks default to a production-conservative fixed-window rate limit of **2
-accepted invocations per hour** (`max_requests = 2`,
+New hooks default to a production-conservative fixed-window rate limit of **6
+accepted invocations per hour** (`max_requests = 6`,
 `window_seconds = 3600`). Management callers may set
 `policy.rate_limit.window_seconds` and `policy.rate_limit.max_requests` when creating a hook;
 values must be in the accepted local/dev ranges of 1–86,400 seconds and
 1–10,000 requests. In production mode, hook creation rejects policies that are
-more permissive than 2 accepted invocations per 3600-second window; there is no
+more permissive than 6 accepted invocations per 3600-second window; there is no
 privileged per-hook high-rate exception flow. Production invocation also applies
 the conservative effective cap to any pre-existing or manually edited permissive
 persisted hook rows. The limiter is

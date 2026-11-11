@@ -14,7 +14,7 @@ use crate::{
 /// Default fixed rate-limit window for newly created hooks.
 pub const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: i64 = 3_600;
 /// Default maximum accepted invocations per rate-limit window for new hooks.
-pub const DEFAULT_RATE_LIMIT_MAX_REQUESTS: i64 = 2;
+pub const DEFAULT_RATE_LIMIT_MAX_REQUESTS: i64 = 6;
 /// Maximum accepted fixed rate-limit window duration.
 pub const MAX_RATE_LIMIT_WINDOW_SECONDS: i64 = 86_400;
 /// Maximum accepted invocation count per fixed rate-limit window.
