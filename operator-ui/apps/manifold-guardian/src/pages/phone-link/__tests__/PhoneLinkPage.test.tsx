@@ -188,15 +188,14 @@ it('should announce a stopped phone replaced by a new scan', async () => {
 });
 
 it.each([
-  ['delivered', 'Test alert sent. Check your phone.'],
-  ['retryable', 'Test alert could not be sent. Try again.'],
-  ['terminal', 'Notifications stopped. Reconnect your phone.']
-] as const)('should show the %s test alert outcome inline', async (outcome, message) => {
+  ['delivered', null, 'Test alert sent. Check your phone.'],
+  ['retryable', 'network', 'Test alert could not be sent. Try again.'],
+  ['retryable', 'rate_limited', "You've used this hour's test alerts. Try again later."],
+  ['terminal', 'hook_not_found', 'Notifications stopped. Reconnect your phone.']
+] as const)('should show the %s %s test alert outcome', async (outcome, reason, message) => {
   const adminCall = renderPage(linked);
   adminCall.mockImplementation(async (request) =>
-    request === 'TestGuardianLinkNotification'
-      ? ({ outcome, reason: null } as never)
-      : (linked as never)
+    request === 'TestGuardianLinkNotification' ? ({ outcome, reason } as never) : (linked as never)
   );
   fireEvent.click(await screen.findByRole('button', { name: 'Send a test alert' }));
   expect(await screen.findByRole('status')).toHaveTextContent(message);

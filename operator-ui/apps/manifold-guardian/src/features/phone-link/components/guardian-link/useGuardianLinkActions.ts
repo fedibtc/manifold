@@ -8,6 +8,7 @@ const TEST_MESSAGES = {
   delivered: 'Test alert sent. Check your phone.',
   retryable: 'Test alert could not be sent. Try again.',
   inactive: 'Test alert did not reach your phone. Open the Fedi app on it.',
+  rateLimited: "You've used this hour's test alerts. Try again later.",
   terminal: 'Notifications stopped. Reconnect your phone.'
 };
 
@@ -50,7 +51,9 @@ export const useGuardianLinkActions = (linkedAt: number | undefined, terminal: b
       test.data && test.variables === linkedAt && (!terminal || test.data.outcome === 'terminal')
         ? test.data.reason === 'target_inactive'
           ? TEST_MESSAGES.inactive
-          : TEST_MESSAGES[test.data.outcome]
+          : test.data.reason === 'rate_limited'
+            ? TEST_MESSAGES.rateLimited
+            : TEST_MESSAGES[test.data.outcome]
         : null
   };
 };
