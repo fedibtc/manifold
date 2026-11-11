@@ -1884,7 +1884,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"83972f49b2fd4a26974585d00e7f45fe5b2a203c\"")
+                && line.contains("version_hash=\"ac483468780d2d78e360ba976f2fa9aa00871908\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
@@ -1910,6 +1910,22 @@ async fn exercise_guardian_telemetry(
                 .lines()
                 .any(|line| line.starts_with(&format!("fm_{family}"))),
             "the exact bundled fedi18 guardian must expose fm_{family}"
+        );
+    }
+    // fedi26 publishes the per-peer transport statistics with the 10 s
+    // connection metadata refresh, so they appear once peers have connected.
+    for family in [
+        "peer_transport_bytes_total",
+        "peer_transport_lost_packets_total",
+        "peer_transport_congestion_events_total",
+        "peer_transport_congestion_window_bytes",
+        "peer_transport_rtt_seconds",
+    ] {
+        anyhow::ensure!(
+            metrics_body
+                .lines()
+                .any(|line| line.starts_with(&format!("fm_{family}{{"))),
+            "the exact bundled fedi26 guardian must expose fm_{family}"
         );
     }
     let missing_seat = SeatId::new("ff".repeat(32))?;

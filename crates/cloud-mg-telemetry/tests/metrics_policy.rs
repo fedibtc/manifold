@@ -280,6 +280,85 @@ fn v2_module_metrics_have_exact_reviewed_shapes() {
 }
 
 #[test]
+fn peer_transport_metrics_have_exact_reviewed_shapes() {
+    // As fedimintd's Prometheus encoder writes them: sorted labels, a
+    // fractional RTT, and HELP/TYPE comments.
+    let transport = "# HELP fm_peer_transport_bytes_total UDP bytes on the connection to the peer\n\
+         # TYPE fm_peer_transport_bytes_total counter\n\
+         fm_peer_transport_bytes_total{direction=\"incoming\",peer_id=\"0\",self_id=\"3\"} 300\n\
+         fm_peer_transport_bytes_total{direction=\"outgoing\",peer_id=\"0\",self_id=\"3\"} 1500\n\
+         fm_peer_transport_lost_packets_total{peer_id=\"0\",self_id=\"3\"} 2\n\
+         fm_peer_transport_congestion_events_total{peer_id=\"0\",self_id=\"3\"} 4\n\
+         # TYPE fm_peer_transport_congestion_window_bytes gauge\n\
+         fm_peer_transport_congestion_window_bytes{peer_id=\"0\",self_id=\"3\"} 12000\n\
+         # TYPE fm_peer_transport_rtt_seconds gauge\n\
+         fm_peer_transport_rtt_seconds{peer_id=\"0\",self_id=\"3\"} 0.042\n";
+    let body = format!("{}{transport}", release_marker());
+    let admitted = policy()
+        .admit_until(body.as_bytes(), identity(), None)
+        .expect("peer transport metrics have their registered shapes");
+    assert!(!admitted.discarded_invalid_admitted && !admitted.discarded_unknown);
+    // Identity labels are merged in sorted order, so check the family, its
+    // own labels and the value separately.
+    for (family, label, value) in [
+        (
+            "peer_transport_bytes_total",
+            "direction=\"outgoing\"",
+            "1500",
+        ),
+        (
+            "peer_transport_bytes_total",
+            "direction=\"incoming\"",
+            "300",
+        ),
+        ("peer_transport_lost_packets_total", "peer_id=\"0\"", "2"),
+        (
+            "peer_transport_congestion_events_total",
+            "self_id=\"3\"",
+            "4",
+        ),
+        (
+            "peer_transport_congestion_window_bytes",
+            "peer_id=\"0\"",
+            "12000",
+        ),
+        ("peer_transport_rtt_seconds", "peer_id=\"0\"", "0.042"),
+    ] {
+        assert!(
+            admitted.samples.iter().any(|sample| {
+                sample.starts_with(&format!("fm_{family}{{"))
+                    && sample.contains(label)
+                    && sample.ends_with(&format!("}} {value}"))
+            }),
+            "fm_{family} with {label} and value {value} should be admitted: {:?}",
+            admitted.samples
+        );
+    }
+
+    // The byte counter needs its direction; without it only that family goes.
+    let body = format!(
+        "{}{transport}fm_peer_transport_bytes_total{{peer_id=\"1\",self_id=\"3\"}} 9\n",
+        release_marker()
+    );
+    let admitted = policy()
+        .admit_until(body.as_bytes(), identity(), None)
+        .unwrap();
+    assert!(admitted.discarded_invalid_admitted);
+    assert!(
+        !admitted
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("fm_peer_transport_bytes_total"))
+    );
+    assert!(
+        admitted
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("fm_peer_transport_rtt_seconds"))
+    );
+}
+
+#[test]
 fn release_labels_are_bounded_and_peer_dimensions_are_finite_u16_values() {
     let valid = "fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
                  fm_backup_counts{timeframe=\"3m\"} 1\n\
@@ -693,7 +772,7 @@ fn captured_policy() -> MetricsPolicy {
 
 /// Families carrying the given disposition in the reviewed source inventory.
 fn inventoried(disposition: &str) -> std::collections::BTreeSet<&'static str> {
-    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi25.tsv")
+    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi26.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');

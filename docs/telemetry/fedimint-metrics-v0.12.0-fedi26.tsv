@@ -11,12 +11,12 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.12.0-fedi25
-producer	fedimint	fedibtc/fedimint	v0.12.0-fedi25	83972f49b2fd4a26974585d00e7f45fe5b2a203c
+release_tag	0.12.0-fedi26
+producer	fedimint	fedibtc/fedimint	v0.12.0-fedi26	ac483468780d2d78e360ba976f2fa9aa00871908
 producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	83972f49b2fd4a26974585d00e7f45fe5b2a203c
+revision	ac483468780d2d78e360ba976f2fa9aa00871908
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
@@ -66,6 +66,11 @@ metric	admit	mintv2_redeemed_ecash_sats	fedimint
 metric	admit	peer_connect_total	fedimint
 metric	admit	peer_disconnect_total	fedimint
 metric	admit	peer_messages_total	fedimint
+metric	admit	peer_transport_bytes_total	fedimint
+metric	admit	peer_transport_congestion_events_total	fedimint
+metric	admit	peer_transport_congestion_window_bytes	fedimint
+metric	admit	peer_transport_lost_packets_total	fedimint
+metric	admit	peer_transport_rtt_seconds	fedimint
 metric	admit	server_bitcoin_rpc_request_duration_seconds	fedimint
 metric	admit	server_bitcoin_rpc_requests_total	fedimint
 metric	admit	stored_backups_count	fedimint
