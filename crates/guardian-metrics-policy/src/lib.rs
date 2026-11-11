@@ -297,7 +297,7 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi25.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi27.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -356,6 +356,11 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "peer_connect_total",
     "peer_disconnect_total",
     "peer_messages_total",
+    "peer_transport_bytes_total",
+    "peer_transport_congestion_events_total",
+    "peer_transport_congestion_window_bytes",
+    "peer_transport_lost_packets_total",
+    "peer_transport_rtt_seconds",
     "server_bitcoin_rpc_request_duration_seconds",
     "server_bitcoin_rpc_requests_total",
     "stored_backups_count",
@@ -484,6 +489,11 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
             "consensus_peer_contribution_session_idx",
             &["self_id", "peer_id"],
         ),
+        (
+            "peer_transport_congestion_window_bytes",
+            &["self_id", "peer_id"],
+        ),
+        ("peer_transport_rtt_seconds", &["self_id", "peer_id"]),
         ("iroh_api_connections_active", &[]),
         ("wallet_block_count", &[]),
         ("walletv2_block_count", &[]),
@@ -493,6 +503,15 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("peer_connect_total", &["self_id", "peer_id", "direction"]),
         ("peer_messages_total", &["self_id", "peer_id", "direction"]),
         ("peer_disconnect_total", &["self_id", "peer_id"]),
+        (
+            "peer_transport_bytes_total",
+            &["self_id", "peer_id", "direction"],
+        ),
+        ("peer_transport_lost_packets_total", &["self_id", "peer_id"]),
+        (
+            "peer_transport_congestion_events_total",
+            &["self_id", "peer_id"],
+        ),
         ("ln_incoming_offer_total", &[]),
         ("ln_canceled_outgoing_contract_total", &[]),
         ("lnv2_outgoing_contract_settled_total", &["outcome"]),

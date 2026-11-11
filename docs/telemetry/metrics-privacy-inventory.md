@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`83972f49b2fd4a26974585d00e7f45fe5b2a203c` (tag `v0.12.0-fedi25`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi25.tsv`](./fedimint-metrics-v0.12.0-fedi25.tsv)
+`5e0757eb775c037df9cdfe2abda7d2d7ea70b784` (tag `v0.12.0-fedi27`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi27.tsv`](./fedimint-metrics-v0.12.0-fedi27.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -26,7 +26,10 @@ LNv2 invoice expiry with the wasm clock. fedi22 adds the
 for transaction acceptance before polling output outcomes, and fedi24 moves
 Iroh 1.x to 1.4.1. fedi25 stores each AlephBFT backup unit once and adds
 shareable session-timeout and outcome-download events. None of these changes affects metric
-registrations or their labels. The existing
+registrations or their labels, except fedi26: it registers the five
+`peer_transport_*` families below, read from the QUIC statistics of each
+peer connection. fedi27 counts congestion events on every path of a
+connection, so a path migration no longer undercounts them. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
@@ -39,7 +42,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi25`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi27`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
@@ -64,6 +67,9 @@ All names below receive the registry's `fm_` prefix.
 | consensus | `consensus_peer_contribution_session_idx` | gauge | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
 | peer transport | `peer_connect_total`, `peer_messages_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership; `direction` is exactly `incoming` or `outgoing` |
 | peer transport | `peer_disconnect_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
+| peer transport | `peer_transport_bytes_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership; `direction` is exactly `incoming` or `outgoing`. UDP bytes of the peer connection: a traffic volume between guardians that already know each other, not payload |
+| peer transport | `peer_transport_lost_packets_total`, `peer_transport_congestion_events_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership. Transport health counts of the peer connection |
+| peer transport | `peer_transport_congestion_window_bytes`, `peer_transport_rtt_seconds` | gauge | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership. Current congestion window and round-trip estimate of a connected peer; the series disappears on disconnect. RTT reflects network distance between guardians, which the guardians already observe |
 | APIs | `iroh_api_connections_active` | gauge | none |
 | APIs | `iroh_api_connection_duration_seconds` | histogram | none |
 | APIs | `iroh_api_connection_idle_timeout_total` | counter | denied: aggregate idle-timeout count remains outside the current minimum telemetry surface |
