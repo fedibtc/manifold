@@ -43,10 +43,14 @@ pub(crate) fn spawn(role: Role) {
         tokio::time::sleep(FIRST_SAMPLE_DELAY).await;
         loop {
             let Some(memory) = read("/proc/self/status", ProcessMemory::parse) else {
-                // Non-Linux development hosts have no procfs.
+                // A sandbox can hide procfs.
                 return;
             };
-            let cpu = read("/proc/self/schedstat", ProcessCpu::parse);
+            let cpu_us = clock_ticks_per_second().and_then(|ticks| {
+                read("/proc/self/stat", |stat| {
+                    ProcessCpu::parse(stat)?.micros(ticks)
+                })
+            });
             let io = read("/proc/self/io", ProcessIo::parse);
             tracing::info!(
                 safe_to_share = true,
@@ -55,8 +59,7 @@ pub(crate) fn spawn(role: Role) {
                 anon_bytes = memory.anon_bytes,
                 peak_rss_bytes = memory.peak_rss_bytes,
                 threads = memory.threads,
-                cpu_us = cpu.as_ref().map(|cpu| cpu.run_ns / 1000),
-                cpu_wait_us = cpu.as_ref().map(|cpu| cpu.wait_ns / 1000),
+                cpu_us,
                 io_read_bytes = io.as_ref().map(|io| io.read_bytes),
                 io_write_bytes = io.as_ref().map(|io| io.write_bytes),
                 "process resource sample"
@@ -134,24 +137,38 @@ impl ProcessMemory {
     }
 }
 
-/// Scheduler time of all threads of this process.
+/// CPU time of all threads of this process, including threads that have
+/// exited, in clock ticks.
 #[derive(Debug, PartialEq, Eq)]
 struct ProcessCpu {
-    run_ns: u64,
-    /// Time runnable but waiting for a CPU. It grows when the host or the
-    /// cgroup quota has too little CPU for the process.
-    wait_ns: u64,
+    user_ticks: u64,
+    system_ticks: u64,
 }
 
 impl ProcessCpu {
-    /// Parse `/proc/<pid>/schedstat`: run time, wait time and timeslices.
-    fn parse(schedstat: &str) -> Option<Self> {
-        let mut fields = schedstat.split_ascii_whitespace();
+    /// Parse `utime` and `stime` from `/proc/<pid>/stat`. They are the 14th
+    /// and 15th fields. The 2nd field is the command name in parentheses,
+    /// which can itself hold spaces and parentheses, so count from its end.
+    fn parse(stat: &str) -> Option<Self> {
+        let (_, after_name) = stat.rsplit_once(')')?;
+        let mut fields = after_name.split_ascii_whitespace().skip(11);
         Some(Self {
-            run_ns: fields.next()?.parse().ok()?,
-            wait_ns: fields.next()?.parse().ok()?,
+            user_ticks: fields.next()?.parse().ok()?,
+            system_ticks: fields.next()?.parse().ok()?,
         })
     }
+
+    fn micros(&self, ticks_per_second: u64) -> Option<u64> {
+        let ticks = u128::from(self.user_ticks) + u128::from(self.system_ticks);
+        u64::try_from(ticks * 1_000_000 / u128::from(ticks_per_second)).ok()
+    }
+}
+
+/// The unit of the CPU times in `/proc/<pid>/stat`.
+fn clock_ticks_per_second() -> Option<u64> {
+    // SAFETY: `sysconf` only reads a system configuration value.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    u64::try_from(ticks).ok().filter(|ticks| *ticks > 0)
 }
 
 /// Bytes this process caused to be read from or written to storage.
@@ -260,15 +277,52 @@ mod tests {
     }
 
     #[test]
-    fn parses_run_and_wait_time_in_order() {
+    fn parses_cpu_ticks_after_a_command_name_with_spaces_and_parentheses() {
+        // pid (comm) state ppid pgrp session tty tpgid flags minflt cminflt
+        // majflt cmajflt utime stime cutime cstime ...
+        let stat = "4242 (fedimintd (seat) 1) S 1 4242 4242 0 -1 4194560 \
+            900 0 3 0 1234 567 89 10 20 0 13 0\n";
+        let cpu = ProcessCpu::parse(stat).expect("valid stat line");
         assert_eq!(
-            ProcessCpu::parse("8123456789 2500000 4711\n"),
-            Some(ProcessCpu {
-                run_ns: 8_123_456_789,
-                wait_ns: 2_500_000,
-            })
+            cpu,
+            ProcessCpu {
+                user_ticks: 1234,
+                system_ticks: 567,
+            }
         );
-        assert_eq!(ProcessCpu::parse("8123456789\n"), None);
+        assert_eq!(cpu.micros(100), Some(18_010_000));
+        assert_eq!(ProcessCpu::parse("4242 (short) S 1 2 3\n"), None);
+    }
+
+    #[test]
+    fn counts_cpu_time_of_every_thread() {
+        let ticks = super::clock_ticks_per_second().expect("Linux has a clock tick rate");
+        let cpu_us = || {
+            let stat = std::fs::read_to_string("/proc/self/stat").expect("procfs");
+            ProcessCpu::parse(&stat)
+                .and_then(|cpu| cpu.micros(ticks))
+                .expect("valid stat")
+        };
+        let before = cpu_us();
+        // Burn CPU only on threads that exit before the second sample. A
+        // reading of the main thread alone would not grow.
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < std::time::Duration::from_millis(300) {
+                        std::hint::black_box(0u64);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("worker thread");
+        }
+        assert!(
+            cpu_us() - before >= 100_000,
+            "two exited threads burned up to 600 ms of CPU"
+        );
     }
 
     #[test]

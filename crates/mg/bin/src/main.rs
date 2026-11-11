@@ -17,6 +17,7 @@ mod huge_pages;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
+#[cfg(target_os = "linux")]
 mod resource_report;
 mod seat_readiness;
 mod transfer_source;
@@ -210,6 +211,7 @@ async fn run() -> anyhow::Result<()> {
                     }
                 },
             );
+        #[cfg(target_os = "linux")]
         resource_report::spawn(resource_report::Role::Fedimintd);
         let never = run_bundled_fedimintd(safe_event_layer).await?;
         match never {}
@@ -336,6 +338,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
+    #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon);
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
