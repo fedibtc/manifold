@@ -51,8 +51,7 @@ env:
 jobs:
   # Resolves what this run publishes, so the build matrix and the manifest job
   # cannot disagree about which architectures exist. A `push` always does both;
-  # a manual run may pick one, which matters because the arm64 leg is hours
-  # long and a quick amd64-only publish is often what is actually wanted.
+  # a manual run may pick one, for a quick single-architecture publish.
   setup:
     name: Resolve publish plan
     runs-on: [self-hosted, linux]
@@ -73,13 +72,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          amd64='{"arch":"amd64","runs-on":["self-hosted","linux"],"nix-system":"x86_64-linux","install-nix":false,"timeout":90}'
-          # `linux-arm64-8core` is the same aarch64 runner fedibtc/fedi builds
-          # its arm64 containers on. It does not ship Nix, and until the pushed
-          # closures accumulate in the `fedibtc` Cachix cache this leg compiles
-          # the native tree -- rocksdb, jemalloc, aws-lc -- from source. Hence
-          # the much larger budget.
-          arm64='{"arch":"arm64","runs-on":["linux-arm64-8core"],"nix-system":"aarch64-linux","install-nix":true,"timeout":240}'
+          # Both legs build on the self-hosted x86_64 runner, whose Nix store
+          # keeps the Cargo dependency graph warm between runs. arm64 is
+          # cross-compiled there. A fresh native arm64 runner rebuilt the whole
+          # graph on every run.
+          amd64='{"arch":"amd64","package":"packages.x86_64-linux.release-container-images"}'
+          arm64='{"arch":"arm64","package":"packages.x86_64-linux.release-container-images-aarch64-linux"}'
 
           case "${REQUESTED:-both}" in
             amd64) matrix="[$amd64]"; arches="amd64" ;;
@@ -103,8 +101,8 @@ jobs:
   build:
     name: Build and push (${{ matrix.arch }})
     needs: setup
-    runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: ${{ matrix.timeout }}
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 90
     strategy:
       # One architecture failing should not hide whether the other one builds.
       fail-fast: false
@@ -119,15 +117,6 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-
-      # The aarch64 runner does not ship Nix; the x86_64 one does, and SelfCI
-      # already depends on that.
-      - uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
-        if: matrix.install-nix
-        with:
-          extra_nix_config: |
-            connect-timeout = 15
-            stalled-download-timeout = 15
 
       - name: Verify Nix installation
         run: nix --version
@@ -150,7 +139,7 @@ jobs:
           skipPush: true
         continue-on-error: true
 
-      # One system-qualified aggregate owns every release image so the FMan,
+      # One per-platform aggregate owns every release image so the FMan,
       # FLIP, cloud collector and push gateway package selections cannot drift
       # between separate workflow steps. SelfCI checks the same image
       # constructors and embedded UI with CI-profile daemons, avoiding a second
@@ -158,7 +147,7 @@ jobs:
       - name: Build release images
         run: |
           nix build --accept-flake-config -L \
-            ".#packages.${{ matrix.nix-system }}.release-container-images" \
+            ".#${{ matrix.package }}" \
             -o result-release-images
 
       # This workflow only runs on master pushes and manual dispatch, never on
