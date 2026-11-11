@@ -83,9 +83,9 @@ token, FCM token, and Firebase credential debug output, returns stable
 sanitized JSON error envelopes to HTTP clients, limits request bodies, validates
 small registration/hook/invocation fields, and enforces hook TTL, revocation, and
 optional max-use counts. New hooks also have a per-hook fixed-window rate limit
-by default, currently 2 accepted invocations per hour unless the temporary
+by default, currently 6 accepted invocations per hour unless the temporary
 management caller supplies a different validated policy at creation time. In
-production mode, hook creation rejects policies that are more permissive than 2
+production mode, hook creation rejects policies that are more permissive than 6
 accepted invocations per 3600-second window; there is no privileged per-hook
 high-rate exception flow.
 

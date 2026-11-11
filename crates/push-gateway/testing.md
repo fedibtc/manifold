@@ -8,7 +8,7 @@ repository-level tests over isolated temporary SQLite databases, so hook
 secrets, TTL/revocation/max-use checks, rate limits, registration lifecycle,
 and sanitized error envelopes are exercised deterministically without real
 credentials, tokens, or network exposure. Tests that need more than the
-production default of 2 accepted hook invocations per hour
+production default of 6 accepted hook invocations per hour
 ([SPEC-abuse-limits](./specs/SPEC-abuse-limits.md)) must set explicit
 per-hook test limits.
 

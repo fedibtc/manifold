@@ -20,7 +20,7 @@ one family cannot reset another.
 
 ## Hook rate-limit default and override boundary
 
-New hooks default to a production-conservative fixed-window policy of 2
+New hooks default to a production-conservative fixed-window policy of 6
 accepted invocations per 3600-second window; omitting
 `policy.rate_limit.window_seconds` or `.max_requests` uses this policy
 rather than disabling limiting. Tests and local demos that need faster
@@ -29,7 +29,7 @@ repetition must set an explicit per-hook policy.
 The management API accepts explicit per-hook policies in the broad validated
 ranges 1–86,400 seconds and 1–10,000 requests for local/dev ergonomics.
 Production mode has no privileged high-rate exception flow: hook creation
-rejects policies more permissive than the 2-per-3600-seconds default, and
+rejects policies more permissive than the 6-per-3600-seconds default, and
 hook invocation applies the same conservative effective cap to any permissive
 persisted hook row.
 
