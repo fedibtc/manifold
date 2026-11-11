@@ -287,6 +287,9 @@ fedimint-wallet-common = { path = ".nix-deps/fedimint/modules/fedimint-wallet-co
 fedimint-walletv2-client = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-client" }
 fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-common" }
 librocksdb-sys = { path = ".nix-deps/librocksdb-sys" }
+# Emits a safe event when AlephBFT marks a forker; see `alephBftPatched` in
+# flake.nix.
+fedimint-aleph-bft = { path = ".nix-deps/fedimint-aleph-bft" }
 # netwatch 0.5 uses socket2 APIs gated behind its "all" feature on macOS.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
 # iroh 0.35 (Fedimint p2p) with a fix for a send livelock that pins every
