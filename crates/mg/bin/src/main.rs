@@ -346,8 +346,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon);
-    #[cfg(target_os = "linux")]
-    heap_profile::spawn(args.data_dir.join("heap-profile.heap"));
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
         "selected Manifold environment profile"
@@ -394,6 +392,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // including restored guardian children.
     tokio::fs::create_dir_all(&args.data_dir).await?;
     let db = mg_core::db::Db::open(&args.data_dir).await?;
+    // After the data-root lock, so one daemon at a time writes the dump file.
+    #[cfg(target_os = "linux")]
+    heap_profile::spawn(args.data_dir.join("heap-profile.heap"));
     db.bind_manifold_environment(manifold_environment.environment())
         .await?;
     // Operator surfaces bind once, before the fleet exists, and serve every
