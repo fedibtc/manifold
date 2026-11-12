@@ -79,6 +79,9 @@ type Site = Vec<String>;
 #[derive(Debug, Default)]
 struct Profile {
     sites: HashMap<Site, Live>,
+    /// What this report itself holds, mostly the symbolizer's copy of the
+    /// symbol table. It is reported apart, so it does not take a site slot.
+    profiler: Live,
 }
 
 impl Profile {
@@ -110,6 +113,7 @@ fn report(profile: &Profile, previous: &HashMap<Site, Live>) {
         estimated_bytes = total.bytes as u64,
         estimated_objects = total.objects as u64,
         sites = profile.sites.len() as u64,
+        profiler_bytes = profile.profiler.bytes as u64,
         "heap profile"
     );
     for (rank, (site, live)) in profile.top(TOP_SITES).into_iter().enumerate() {
@@ -155,17 +159,25 @@ fn read_profile(path: &Path) -> Result<Profile, DumpFailure> {
     let mut names = HashMap::new();
     let mut profile = Profile::default();
     for stack in stacks {
-        let frames = stack.addresses.iter().map(|&address| {
-            names
-                .entry(address)
-                .or_insert_with(|| symbol(address))
-                .clone()
-        });
-        profile
-            .sites
-            .entry(site(frames))
-            .or_default()
-            .add(stack.live);
+        let frames: Vec<String> = stack
+            .addresses
+            .iter()
+            .map(|&address| {
+                names
+                    .entry(address)
+                    .or_insert_with(|| symbol(address))
+                    .clone()
+            })
+            .collect();
+        if frames.iter().any(|name| is_profiler_frame(name)) {
+            profile.profiler.add(stack.live);
+        } else {
+            profile
+                .sites
+                .entry(site(frames.into_iter()))
+                .or_default()
+                .add(stack.live);
+        }
     }
     Ok(profile)
 }
@@ -179,11 +191,54 @@ fn symbol(return_address: usize) -> String {
             name = symbol.name().map(|name| format!("{name:#}"));
         }
     });
-    let mut name = name.unwrap_or_else(|| "?".to_owned());
+    let mut name = name.map_or_else(|| "?".to_owned(), |name| elide_generic_arguments(&name));
     if let Some((end, _)) = name.char_indices().nth(MAX_FRAME_CHARS) {
         name.truncate(end);
     }
     name
+}
+
+/// Replace the generic arguments of each path segment with `…`, so that
+/// `<Core<T, S>>::poll` keeps its function name within [`MAX_FRAME_CHARS`].
+/// The brackets of a qualified path, `<Type as Trait>`, stay.
+fn elide_generic_arguments(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    // For each open bracket: whether it opens generic arguments.
+    let mut brackets: Vec<bool> = Vec::new();
+    let mut previous = None;
+    for c in name.chars() {
+        let inside_arguments = brackets.contains(&true);
+        match c {
+            '<' => {
+                let arguments =
+                    previous.is_some_and(|p: char| p.is_alphanumeric() || p == '_' || p == ':');
+                if arguments && !inside_arguments {
+                    out.push_str("<…");
+                } else if !inside_arguments {
+                    out.push(c);
+                }
+                brackets.push(arguments);
+            }
+            '>' if previous != Some('-') => {
+                let arguments = brackets.pop().unwrap_or(false);
+                if !brackets.contains(&true) && (arguments || !inside_arguments) {
+                    out.push(c);
+                }
+            }
+            _ if !inside_arguments => out.push(c),
+            _ => {}
+        }
+        previous = Some(c);
+    }
+    out
+}
+
+/// Frames of the report itself: a stack through them is memory the report
+/// holds, such as the symbolizer's cache.
+fn is_profiler_frame(name: &str) -> bool {
+    const READ: &str = concat!(module_path!(), "::read_profile");
+    const SYMBOL: &str = concat!(module_path!(), "::symbol");
+    name.starts_with(READ) || name.starts_with(SYMBOL)
 }
 
 /// The first [`SITE_FRAMES`] frames outside the allocator and the standard
@@ -237,13 +292,25 @@ fn is_standard_path(path: &str) -> bool {
         "f32",
         "f64",
     ];
-    const SYMBOLS: &[&str] = &["_rjem_", "je_", "prof_", "__rust_", "__rdl_", "__rg_"];
+    // jemalloc internals, Rust's allocator shims, and C++ `operator new`.
+    const SYMBOLS: &[&str] = &[
+        "_rjem_", "je_", "prof_", "__rust_", "__rdl_", "__rg_", "_Znw", "_Zna",
+    ];
+    // C allocation entry points, jemalloc's own, and SQLite's wrappers.
     const FUNCTIONS: &[&str] = &[
         "malloc",
         "calloc",
         "realloc",
         "posix_memalign",
         "aligned_alloc",
+        "mallocx",
+        "rallocx",
+        "do_rallocx",
+        "sqlite3Malloc",
+        "sqlite3MemMalloc",
+        "sqlite3Realloc",
+        "sqlite3MemRealloc",
+        "mallocWithAlarm",
     ];
     let path = path.trim_start_matches(['&', '*', '[', '(', ' ']);
     let path = ["mut ", "const ", "dyn "]
@@ -359,7 +426,10 @@ fn dump(path: &Path) -> Result<(), i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Live, is_allocator_frame, parse_dump, read_profile, set_sampling, site, unsample};
+    use super::{
+        Live, elide_generic_arguments, is_allocator_frame, is_profiler_frame, parse_dump,
+        read_profile, set_sampling, site, unsample,
+    };
 
     #[test]
     fn parses_stacks_and_scales_samples() {
@@ -431,10 +501,57 @@ mod tests {
             ]
         );
         assert!(!is_allocator_frame("mg_core::alloc_seat"));
+        for c_frame in [
+            "do_rallocx",
+            "mallocx",
+            "_Znwm",
+            "sqlite3MemMalloc",
+            "mallocWithAlarm",
+        ] {
+            assert!(is_allocator_frame(c_frame), "{c_frame}");
+        }
+        assert!(!is_allocator_frame("_ZN7rocksdb5Arena16AllocateNewBlockEm"));
         assert!(
             !is_allocator_frame("core_affinity::get"),
             "a crate named like core"
         );
+    }
+
+    #[test]
+    fn elides_generic_arguments_but_keeps_qualified_paths() {
+        assert_eq!(
+            elide_generic_arguments(
+                "<tokio::runtime::task::core::Core<mg::Task<Vec<u8>>, Arc<Handle>>>::poll"
+            ),
+            "<tokio::runtime::task::core::Core<…>>::poll"
+        );
+        assert_eq!(
+            elide_generic_arguments("<alloc::vec::Vec<T> as core::clone::Clone>::clone"),
+            "<alloc::vec::Vec<…> as core::clone::Clone>::clone"
+        );
+        assert_eq!(
+            elide_generic_arguments("<u8 as SpecFromElem>::from_elem::<alloc::alloc::Global>"),
+            "<u8 as SpecFromElem>::from_elem::<…>"
+        );
+        assert_eq!(
+            elide_generic_arguments("mg::run::{closure#0}::<impl Fn() -> u8>"),
+            "mg::run::{closure#0}::<…>"
+        );
+        assert_eq!(
+            elide_generic_arguments("mg_core::seat::Seat::start"),
+            "mg_core::seat::Seat::start"
+        );
+    }
+
+    #[test]
+    fn the_reports_own_frames_are_set_apart() {
+        assert!(is_profiler_frame("fleet_manager::heap_profile::symbol"));
+        assert!(is_profiler_frame(
+            "fleet_manager::heap_profile::read_profile"
+        ));
+        assert!(!is_profiler_frame(
+            "fleet_manager::heap_profile::tests::hold_blocks_for_heap_profile_test"
+        ));
     }
 
     /// Holds 64 MiB in 1 MiB blocks, from a frame the profile must name. It
