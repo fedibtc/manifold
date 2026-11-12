@@ -77,7 +77,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tikv-jemallocator = { version = "0.6", features = ["profiling"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+backtrace = "0.3"
 libc = "0.2"
+tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 
 [build-dependencies]
 fedimint-build = { workspace = true }
