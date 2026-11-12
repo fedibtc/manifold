@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`5e0757eb775c037df9cdfe2abda7d2d7ea70b784` (tag `v0.12.0-fedi27`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi27.tsv`](./fedimint-metrics-v0.12.0-fedi27.tsv)
+`5bdb75485c4aaaeead4ab655fff6c62852de80b0` (tag `v0.12.0-fedi28`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi28.tsv`](./fedimint-metrics-v0.12.0-fedi28.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -29,7 +29,10 @@ shareable session-timeout and outcome-download events. None of these changes aff
 registrations or their labels, except fedi26: it registers the five
 `peer_transport_*` families below, read from the QUIC statistics of each
 peer connection. fedi27 counts congestion events on every path of a
-connection, so a path migration no longer undercounts them. The existing
+connection, so a path migration no longer undercounts them. fedi28 registers
+four consensus health families below: messages dropped on a full peer queue,
+the duration of each peer send, completed sessions by how the signed outcome
+was obtained, and the database commit time of each consensus item. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
@@ -42,7 +45,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi27`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi28`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
@@ -64,9 +67,13 @@ All names below receive the registry's `fm_` prefix.
 | consensus | `consensus_items_processed_total` | counter | `peer_id`, an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimension, not collector-verified config membership |
 | consensus | `consensus_item_processing_duration_seconds` | histogram | `peer_id`, an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimension, not collector-verified config membership |
 | consensus | `consensus_item_processing_module_audit_duration_seconds` | histogram | `module_id` is exactly `65535`; `module_kind` is exactly one of `lnv2`, `meta`, `mintv2`, `walletv2`, `multi_sig_stability_pool` |
+| consensus | `consensus_item_commit_duration_seconds` | histogram | none; database commit time of one consensus item, buckets 10 µs to 1 s |
+| consensus | `consensus_sessions_completed_total` | counter | `path` is exactly `own_signatures`, `peer_outcome_after_signing` or `peer_outcome_while_ordering`: whether this guardian completed the session with its own threshold of signatures or adopted a peer's signed outcome, after or before it finished ordering |
 | consensus | `consensus_peer_contribution_session_idx` | gauge | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
 | peer transport | `peer_connect_total`, `peer_messages_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership; `direction` is exactly `incoming` or `outgoing` |
 | peer transport | `peer_disconnect_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
+| peer transport | `peer_messages_dropped_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership; `direction` is exactly `incoming` or `outgoing`. Messages dropped because the outgoing queue to the peer, or the incoming queue from it, was full; a count, not payload |
+| peer transport | `peer_send_duration_seconds` | histogram | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership. Time one message to the peer took to send, buckets 1 ms to 60 s (the send timeout) |
 | peer transport | `peer_transport_bytes_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership; `direction` is exactly `incoming` or `outgoing`. UDP bytes of the peer connection: a traffic volume between guardians that already know each other, not payload |
 | peer transport | `peer_transport_lost_packets_total`, `peer_transport_congestion_events_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership. Transport health counts of the peer connection |
 | peer transport | `peer_transport_congestion_window_bytes`, `peer_transport_rtt_seconds` | gauge | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership. Current congestion window and round-trip estimate of a connected peer; the series disappears on disconnect. RTT reflects network distance between guardians, which the guardians already observe |
