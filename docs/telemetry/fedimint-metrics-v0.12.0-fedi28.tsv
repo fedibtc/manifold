@@ -11,12 +11,12 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.12.0-fedi27
-producer	fedimint	fedibtc/fedimint	v0.12.0-fedi27	5e0757eb775c037df9cdfe2abda7d2d7ea70b784
+release_tag	0.12.0-fedi28
+producer	fedimint	fedibtc/fedimint	v0.12.0-fedi28	5bdb75485c4aaaeead4ab655fff6c62852de80b0
 producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	5e0757eb775c037df9cdfe2abda7d2d7ea70b784
+revision	5bdb75485c4aaaeead4ab655fff6c62852de80b0
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
@@ -27,12 +27,14 @@ metric	deny	client_api_request_duration_seconds	fedimint
 metric	deny	client_api_requests_total	fedimint
 metric	deny	connector_connection_attempts_total	fedimint
 metric	deny	connector_connection_duration_seconds	fedimint
+metric	admit	consensus_item_commit_duration_seconds	fedimint
 metric	admit	consensus_item_processing_duration_seconds	fedimint
 metric	admit	consensus_item_processing_module_audit_duration_seconds	fedimint
 metric	admit	consensus_items_processed_total	fedimint
 metric	admit	consensus_ordering_latency_seconds	fedimint
 metric	admit	consensus_peer_contribution_session_idx	fedimint
 metric	admit	consensus_session_count	fedimint
+metric	admit	consensus_sessions_completed_total	fedimint
 metric	admit	consensus_tx_processed_inputs	fedimint
 metric	admit	consensus_tx_processed_outputs	fedimint
 metric	deny	gateway_htlc_handling_duration_seconds	fedimint
@@ -65,7 +67,9 @@ metric	admit	mintv2_redeemed_ecash_fees_sats	fedimint
 metric	admit	mintv2_redeemed_ecash_sats	fedimint
 metric	admit	peer_connect_total	fedimint
 metric	admit	peer_disconnect_total	fedimint
+metric	admit	peer_messages_dropped_total	fedimint
 metric	admit	peer_messages_total	fedimint
+metric	admit	peer_send_duration_seconds	fedimint
 metric	admit	peer_transport_bytes_total	fedimint
 metric	admit	peer_transport_congestion_events_total	fedimint
 metric	admit	peer_transport_congestion_window_bytes	fedimint

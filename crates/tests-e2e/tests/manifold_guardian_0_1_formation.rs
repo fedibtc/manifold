@@ -1884,7 +1884,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"5e0757eb775c037df9cdfe2abda7d2d7ea70b784\"")
+                && line.contains("version_hash=\"5bdb75485c4aaaeead4ab655fff6c62852de80b0\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
@@ -1926,6 +1926,22 @@ async fn exercise_guardian_telemetry(
                 .lines()
                 .any(|line| line.starts_with(&format!("fm_{family}{{"))),
             "the exact bundled fedi27 guardian must expose fm_{family}"
+        );
+    }
+    // Since fedi28, fedimintd starts its drop and session-path counters at zero
+    // and times every peer send, so all four appear once consensus runs.
+    for family in [
+        "peer_messages_dropped_total",
+        "peer_send_duration_seconds_count",
+        "consensus_sessions_completed_total",
+        "consensus_item_commit_duration_seconds_count",
+    ] {
+        anyhow::ensure!(
+            metrics_body
+                .lines()
+                .any(|line| line.starts_with(&format!("fm_{family}{{"))
+                    || line.starts_with(&format!("fm_{family} "))),
+            "the exact bundled fedi28 guardian must expose fm_{family}"
         );
     }
     let missing_seat = SeatId::new("ff".repeat(32))?;

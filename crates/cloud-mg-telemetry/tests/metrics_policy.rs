@@ -359,6 +359,136 @@ fn peer_transport_metrics_have_exact_reviewed_shapes() {
 }
 
 #[test]
+fn consensus_health_metrics_have_exact_reviewed_shapes() {
+    // As fedimintd's Prometheus encoder writes the fedi28 families: sorted
+    // labels, the explicit buckets, and HELP/TYPE comments.
+    let mut health = String::from(
+        "# TYPE fm_peer_messages_dropped_total counter\n\
+         fm_peer_messages_dropped_total{direction=\"incoming\",peer_id=\"0\",self_id=\"3\"} 0\n\
+         fm_peer_messages_dropped_total{direction=\"outgoing\",peer_id=\"0\",self_id=\"3\"} 17\n\
+         # TYPE fm_consensus_sessions_completed_total counter\n\
+         fm_consensus_sessions_completed_total{path=\"own_signatures\"} 4\n\
+         fm_consensus_sessions_completed_total{path=\"peer_outcome_after_signing\"} 1\n\
+         fm_consensus_sessions_completed_total{path=\"peer_outcome_while_ordering\"} 9\n\
+         # TYPE fm_peer_send_duration_seconds histogram\n",
+    );
+    for (le, count) in [
+        ("0.001", 5),
+        ("0.01", 6),
+        ("0.1", 6),
+        ("1", 7),
+        ("10", 7),
+        ("60", 7),
+        ("+Inf", 7),
+    ] {
+        health.push_str(&format!(
+            "fm_peer_send_duration_seconds_bucket{{peer_id=\"0\",self_id=\"3\",le=\"{le}\"}} {count}\n"
+        ));
+    }
+    health.push_str(
+        "fm_peer_send_duration_seconds_sum{peer_id=\"0\",self_id=\"3\"} 0.75\n\
+         fm_peer_send_duration_seconds_count{peer_id=\"0\",self_id=\"3\"} 7\n\
+         # TYPE fm_consensus_item_commit_duration_seconds histogram\n",
+    );
+    for (le, count) in [
+        ("0.00001", 0),
+        ("0.00003", 2),
+        ("0.0001", 8),
+        ("0.0003", 9),
+        ("0.001", 10),
+        ("0.003", 10),
+        ("0.01", 10),
+        ("0.1", 10),
+        ("1", 10),
+        ("+Inf", 10),
+    ] {
+        health.push_str(&format!(
+            "fm_consensus_item_commit_duration_seconds_bucket{{le=\"{le}\"}} {count}\n"
+        ));
+    }
+    health.push_str(
+        "fm_consensus_item_commit_duration_seconds_sum 0.0007\n\
+         fm_consensus_item_commit_duration_seconds_count 10\n",
+    );
+    let body = format!("{}{health}", release_marker());
+    let admitted = policy()
+        .admit_until(body.as_bytes(), identity(), None)
+        .expect("consensus health metrics have their registered shapes");
+    assert!(!admitted.discarded_invalid_admitted && !admitted.discarded_unknown);
+    for (prefix, label, value) in [
+        (
+            "fm_peer_messages_dropped_total{",
+            "direction=\"outgoing\"",
+            "17",
+        ),
+        (
+            "fm_consensus_sessions_completed_total{",
+            "path=\"peer_outcome_while_ordering\"",
+            "9",
+        ),
+        ("fm_peer_send_duration_seconds_bucket{", "le=\"60\"", "7"),
+        (
+            "fm_peer_send_duration_seconds_sum{",
+            "peer_id=\"0\"",
+            "0.75",
+        ),
+        (
+            "fm_consensus_item_commit_duration_seconds_bucket{",
+            "le=\"0.00003\"",
+            "2",
+        ),
+        (
+            "fm_consensus_item_commit_duration_seconds_count{",
+            "federation_id=",
+            "10",
+        ),
+    ] {
+        assert!(
+            admitted.samples.iter().any(|sample| {
+                sample.starts_with(prefix)
+                    && sample.contains(label)
+                    && sample.ends_with(&format!("}} {value}"))
+            }),
+            "{prefix} with {label} and value {value} should be admitted: {:?}",
+            admitted.samples
+        );
+    }
+
+    // An unknown session path, or a bucket the source does not register,
+    // discards only that family.
+    for (bad, family) in [
+        (
+            "fm_consensus_sessions_completed_total{path=\"elsewhere\"} 1\n",
+            "fm_consensus_sessions_completed_total",
+        ),
+        (
+            "fm_peer_send_duration_seconds_bucket{peer_id=\"1\",self_id=\"3\",le=\"0.5\"} 1\n",
+            "fm_peer_send_duration_seconds",
+        ),
+    ] {
+        let body = format!("{}{health}{bad}", release_marker());
+        let admitted = policy()
+            .admit_until(body.as_bytes(), identity(), None)
+            .unwrap();
+        assert!(admitted.discarded_invalid_admitted, "{bad}");
+        assert!(
+            !admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with(family)),
+            "{bad}"
+        );
+        assert!(
+            admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with("fm_peer_messages_dropped_total")),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn release_labels_are_bounded_and_peer_dimensions_are_finite_u16_values() {
     let valid = "fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
                  fm_backup_counts{timeframe=\"3m\"} 1\n\
@@ -772,7 +902,7 @@ fn captured_policy() -> MetricsPolicy {
 
 /// Families carrying the given disposition in the reviewed source inventory.
 fn inventoried(disposition: &str) -> std::collections::BTreeSet<&'static str> {
-    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi27.tsv")
+    include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi28.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');

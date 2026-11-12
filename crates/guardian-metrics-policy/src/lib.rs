@@ -297,7 +297,7 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi27.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi28.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -323,12 +323,14 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "app_start_ts",
     "backup_counts",
     "backup_write_size_bytes",
+    "consensus_item_commit_duration_seconds",
     "consensus_item_processing_duration_seconds",
     "consensus_item_processing_module_audit_duration_seconds",
     "consensus_items_processed_total",
     "consensus_ordering_latency_seconds",
     "consensus_peer_contribution_session_idx",
     "consensus_session_count",
+    "consensus_sessions_completed_total",
     "consensus_tx_processed_inputs",
     "consensus_tx_processed_outputs",
     "iroh_api_connection_duration_seconds",
@@ -355,7 +357,9 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "mintv2_redeemed_ecash_sats",
     "peer_connect_total",
     "peer_disconnect_total",
+    "peer_messages_dropped_total",
     "peer_messages_total",
+    "peer_send_duration_seconds",
     "peer_transport_bytes_total",
     "peer_transport_congestion_events_total",
     "peer_transport_congestion_window_bytes",
@@ -502,7 +506,12 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("consensus_items_processed_total", &["peer_id"]),
         ("peer_connect_total", &["self_id", "peer_id", "direction"]),
         ("peer_messages_total", &["self_id", "peer_id", "direction"]),
+        (
+            "peer_messages_dropped_total",
+            &["self_id", "peer_id", "direction"],
+        ),
         ("peer_disconnect_total", &["self_id", "peer_id"]),
+        ("consensus_sessions_completed_total", &["path"]),
         (
             "peer_transport_bytes_total",
             &["self_id", "peer_id", "direction"],
@@ -526,6 +535,8 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("consensus_tx_processed_outputs", &[]),
         ("consensus_ordering_latency_seconds", &[]),
         ("consensus_item_processing_duration_seconds", &["peer_id"]),
+        ("consensus_item_commit_duration_seconds", &[]),
+        ("peer_send_duration_seconds", &["self_id", "peer_id"]),
         (
             "consensus_item_processing_module_audit_duration_seconds",
             &["module_id", "module_kind"],
@@ -638,6 +649,10 @@ fn validate_labels(
             "timeframe" => matches!(value.as_str(), "1d" | "1w" | "1m" | "3m" | "all_time"),
             "direction" => matches!(value.as_str(), "incoming" | "outgoing"),
             "outcome" => matches!(value.as_str(), "claim" | "refund" | "cancel"),
+            "path" => matches!(
+                value.as_str(),
+                "own_signatures" | "peer_outcome_after_signing" | "peer_outcome_while_ordering"
+            ),
             "module_id" => value == "65535",
             // `meta` is the bundled `fedimint-meta-server` module. It is
             // registered by the pinned source and loaded by real federations,
@@ -766,7 +781,17 @@ fn bucket_set(family: &str) -> &'static [&'static str] {
     const DURATION: &[&str] = &[
         "0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "+Inf",
     ];
-    if family == "backup_write_size_bytes" {
+    // Explicit buckets of the fedi28 consensus health histograms, as the
+    // Prometheus encoder writes them.
+    const ITEM_COMMIT: &[&str] = &[
+        "0.00001", "0.00003", "0.0001", "0.0003", "0.001", "0.003", "0.01", "0.1", "1", "+Inf",
+    ];
+    const PEER_SEND: &[&str] = &["0.001", "0.01", "0.1", "1", "10", "60", "+Inf"];
+    if family == "consensus_item_commit_duration_seconds" {
+        ITEM_COMMIT
+    } else if family == "peer_send_duration_seconds" {
+        PEER_SEND
+    } else if family == "backup_write_size_bytes" {
         BACKUP
     } else if matches!(
         family,
