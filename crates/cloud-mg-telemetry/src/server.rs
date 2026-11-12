@@ -10,7 +10,7 @@ use std::{
 use axum::{
     Json, Router,
     body::to_bytes,
-    extract::{ConnectInfo, Request, State},
+    extract::{ConnectInfo, Query, Request, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -36,7 +36,7 @@ use crate::{
     metrics_observability::MetricsObservability,
     metrics_policy::MetricsPolicy,
     metrics_poller::MetricsPoller,
-    metrics_snapshot::render_metrics,
+    metrics_snapshot::{render_metric_history, render_metrics},
     mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
     store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
     store_binding::store_binding_label,
@@ -79,6 +79,7 @@ pub async fn registration_router_for_test(
         },
         metrics_scrape: Arc::new(tokio::sync::Semaphore::new(1)),
         metrics_generation: Arc::new(tokio::sync::Semaphore::new(1)),
+        metrics_history: Arc::new(tokio::sync::Semaphore::new(1)),
         metrics_cache: Arc::new(tokio::sync::Mutex::new(None)),
         metrics_observability: MetricsObservability::default(),
     };
@@ -102,6 +103,8 @@ struct AppState {
     metrics: MetricsRuntimeConfig,
     metrics_scrape: Arc<tokio::sync::Semaphore>,
     metrics_generation: Arc<tokio::sync::Semaphore>,
+    /// Admits one seat history render at a time, apart from `/metrics`.
+    metrics_history: Arc<tokio::sync::Semaphore>,
     metrics_cache: Arc<tokio::sync::Mutex<Option<MetricsCacheEntry>>>,
     metrics_observability: MetricsObservability,
 }
@@ -215,6 +218,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
         metrics: metrics_runtime,
         metrics_scrape: Arc::new(tokio::sync::Semaphore::new(1)),
         metrics_generation: Arc::new(tokio::sync::Semaphore::new(1)),
+        metrics_history: Arc::new(tokio::sync::Semaphore::new(1)),
         metrics_cache: Arc::new(tokio::sync::Mutex::new(None)),
         metrics_observability,
     };
@@ -335,6 +339,7 @@ fn private_router(state: AppState) -> Router {
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route(METRIC_HISTORY_PATH, get(metric_history))
         .route(FEDERATIONS_EXPORT_PATH, get(federations))
         .route(SEAT_CAPACITY_EXPORT_PATH, get(seat_capacity))
         .route(SEAT_READINESS_EXPORT_PATH, get(seat_readiness))
@@ -765,6 +770,65 @@ async fn metrics_at(state: AppState, now_ms: i64) -> Response {
     }
 }
 
+/// Private route rendering one seat's retained observations.
+const METRIC_HISTORY_PATH: &str = "/metrics/history";
+
+#[derive(serde::Deserialize)]
+struct MetricHistoryQuery {
+    fman_id: String,
+    guardian_seat_id: String,
+    /// Only observations before this Unix millisecond time, to page back.
+    before_ms: Option<i64>,
+}
+
+async fn metric_history(
+    State(state): State<AppState>,
+    Query(query): Query<MetricHistoryQuery>,
+) -> Response {
+    metric_history_at(state, query, unix_millis()).await
+}
+
+async fn metric_history_at(state: AppState, query: MetricHistoryQuery, now_ms: i64) -> Response {
+    let Ok(_permit) = state.metrics_history.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    let policy = MetricsPolicy;
+    let Ok(history) = state
+        .store
+        .metric_history(
+            &policy,
+            &query.fman_id,
+            &query.guardian_seat_id,
+            query.before_ms.unwrap_or(i64::MAX),
+            now_ms,
+        )
+        .await
+    else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if history.snapshots.is_empty() && history.rejected == 0 {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match render_metric_history(
+        history.snapshots,
+        history.rejected,
+        policy.method_source_ready(),
+    ) {
+        Ok(body) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                ),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -919,6 +983,7 @@ mod tests {
             },
             metrics_scrape: Arc::new(tokio::sync::Semaphore::new(1)),
             metrics_generation: Arc::new(tokio::sync::Semaphore::new(1)),
+            metrics_history: Arc::new(tokio::sync::Semaphore::new(1)),
             metrics_cache: Arc::new(tokio::sync::Mutex::new(None)),
             metrics_observability: MetricsObservability::default(),
         }
@@ -1068,6 +1133,143 @@ mod tests {
                 "127.0.0.1:1234".parse::<SocketAddr>().unwrap(),
             )))
             .oneshot(get())
+            .await
+            .unwrap();
+        assert_eq!(public.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn seat_history_is_served_only_on_the_private_listener() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state_with_lease(&directory, 3600).await;
+        let now_secs = now();
+        let mg_id = "11".repeat(32);
+        let auth = crate::auth::VerifiedHttpAuth {
+            signer: mg_id.clone(),
+            event_id: "metrics-history".into(),
+            created_at: now_secs,
+        };
+        state.store.reserve_auth(&auth, now_secs).await.unwrap();
+        state
+            .store
+            .admit(
+                &auth,
+                TargetMaterial {
+                    mg_pubkey: &mg_id,
+                    mg_name: "same-display",
+                    endpoint_id: "endpoint",
+                    capability: &[7; 32],
+                    generation: 1,
+                },
+                now_secs,
+            )
+            .await
+            .unwrap();
+        let scheduled = state
+            .store
+            .due_metric_targets(now_secs)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = state
+            .store
+            .begin_metric_work(&scheduled, now_secs, 900)
+            .await
+            .unwrap()
+            .unwrap();
+        let federation_id = "0".repeat(64);
+        let observed = |observed_at_ms: i64, value: u64| crate::metrics_types::SeatObservation {
+            guardian_seat_id: "aa".to_owned(),
+            federation_id: federation_id.clone(),
+            invite_code: None,
+            observed_at_ms,
+            samples: MetricsPolicy
+                .admit_until(
+                    format!("fm_consensus_session_count {value}").as_bytes(),
+                    crate::metrics_policy::MetricsIdentity {
+                        mg_id: &mg_id,
+                        mg_name: "same-display",
+                        guardian_seat_id: "aa",
+                        federation_id: &federation_id,
+                    },
+                    None,
+                )
+                .unwrap()
+                .samples,
+        };
+        let earlier_ms = (now_secs - 3600) * 1000;
+        let later_ms = (now_secs - 60) * 1000;
+        for (observed_at_ms, value) in [(earlier_ms, 4), (later_ms, 5)] {
+            state
+                .store
+                .commit_metrics(
+                    &work,
+                    crate::metrics_types::MetricsCommit {
+                        listed_seats: Some(["aa".to_owned()].into()),
+                        snapshots: vec![observed(observed_at_ms, value)],
+                        complete: true,
+                    },
+                    now_secs,
+                )
+                .await
+                .unwrap();
+        }
+        let get = |query: &str| {
+            Request::builder()
+                .uri(format!("{METRIC_HISTORY_PATH}{query}"))
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let seat_query = format!("?fman_id={mg_id}&guardian_seat_id=aa");
+        let response = private_router(state.clone())
+            .oneshot(get(&seat_query))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        let samples: Vec<&str> = body
+            .lines()
+            .filter(|line| line.starts_with("fm_consensus_session_count{"))
+            .map(|line| line.split_once("} ").unwrap().1)
+            .collect();
+        assert_eq!(
+            samples,
+            [format!("4 {earlier_ms}"), format!("5 {later_ms}")]
+        );
+
+        let paged = private_router(state.clone())
+            .oneshot(get(&format!("{seat_query}&before_ms={later_ms}")))
+            .await
+            .unwrap();
+        let paged = to_bytes(paged.into_body(), 1024 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&paged).contains(&format!(" 4 {earlier_ms}\n")));
+        assert!(!String::from_utf8_lossy(&paged).contains(&format!("{later_ms}")));
+
+        for (query, status) in [
+            (
+                format!("?fman_id={mg_id}&guardian_seat_id=bb"),
+                StatusCode::NOT_FOUND,
+            ),
+            ("?guardian_seat_id=aa".to_owned(), StatusCode::BAD_REQUEST),
+            (
+                format!("{seat_query}&before_ms=soon"),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let response = private_router(state.clone())
+                .oneshot(get(&query))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{query}");
+        }
+
+        let public = public_router(state)
+            .layer(axum::Extension(ConnectInfo(
+                "127.0.0.1:1234".parse::<SocketAddr>().unwrap(),
+            )))
+            .oneshot(get(&seat_query))
             .await
             .unwrap();
         assert_eq!(public.status(), StatusCode::NOT_FOUND);

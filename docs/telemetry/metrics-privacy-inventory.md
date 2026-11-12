@@ -213,8 +213,10 @@ only the affected family when that local validation fails. Invalid UTF-8 or an
 unisolatable family boundary, and global line, sample, family, output, or
 deadline exhaustion reject the complete response because a safe bounded
 projection cannot be established. A release-marker failure remains family-local.
-Durable state across all active targets is capped at 64 MiB and
+Latest snapshots across all active targets are capped at 64 MiB and
 200,000 samples, and the private listener admits one aggregate scrape at a time.
-Changing the inventory revision atomically clears incompatible latest snapshots
-and durable attempt deadlines. Quarantine and expiry suppress and delete
-snapshots; renewal after expiry cannot resurrect them.
+Seven days of each seat's earlier observations, one per 15 minutes, are kept
+compressed within 1 GiB and 1,000,000 rows in all.
+Changing the inventory revision atomically clears incompatible snapshots, their
+history and durable attempt deadlines. Quarantine and expiry suppress and delete
+snapshots and history; renewal after expiry cannot resurrect them.

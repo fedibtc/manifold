@@ -123,8 +123,9 @@ wildcard.
 
 The private listener is a deployment trust boundary, not an Internet-facing
 API. Operators must place it on loopback or an access-controlled private
-network; it carries health, readiness, `/metrics`, the federation export, and
-the seat report exports, while the separate public listener carries only
+network; it carries health, readiness, `/metrics`, the seat metric history,
+the federation export, and the seat report exports, while the separate public
+listener carries only
 authenticated registration. The collector fails closed
 when configured with a non-loopback private address unless the operator
 explicitly asserts that deployment isolation exists. That assertion makes the
@@ -178,12 +179,46 @@ and lease expiry suppress snapshots from every scrape ordered after that
 lifecycle transition. A scrape that overlaps the transition may finish with its
 coherent pre-transition body; it never combines lifecycle states from opposite
 sides of the transition. Renewal after expiry starts without the previous
-snapshot. The collector bounds all persisted metric state to 64 MiB and 200,000
-samples. A commit that would exceed the bound stores the snapshots that fit.
+snapshot. The collector bounds the seats' latest snapshots to 64 MiB of samples
+JSON and 200,000 samples. A commit that would exceed the bound stores the snapshots that fit.
 Within one commit it applies replacements of already stored seats before new
 seats, so new seats do not take capacity ahead of them. A snapshot that does not
 fit, new or replacement, is skipped, and its seat keeps its old observation
-time. The collector admits one aggregate scrape at a time. It retains latest snapshots only; Prometheus retains metrics history.
+time. The collector admits one aggregate scrape at a time.
+
+## Seat metric history
+
+The collector keeps each seat's admitted observations for seven days, so a
+reader can follow a seat's trend without a Prometheus backend. A seat's
+observations are one SQLite table keyed by target, seat and observation time;
+its latest snapshot is its newest row, derived by a view, not a second copy.
+A seat keeps at most one observation per 15-minute UTC bucket, the last one
+committed. A new observation also replaces any of the seat's rows dated after
+it, as a wall-clock step back leaves them, so the latest snapshot is always the
+latest committed poll. Only the latest row keeps the seat invite. History
+shares the latest snapshot's lifecycle: an unlisted seat, a quarantined or
+expired target and a metrics policy change delete it all.
+
+Each commit prunes the observations that are not a seat's latest once they
+are older than seven days. Samples JSON is stored zstd-compressed. All
+observations together are bounded to 1 GiB compressed and 1,000,000 rows;
+past either bound a commit prunes the oldest observations that are not a
+seat's latest. Latest snapshots have their own smaller bounds, so they always
+fit, and a full history never stops new observations. At the 15-minute
+cadence a seat holds at most 673 rows.
+
+The private listener serves
+`GET /metrics/history?fman_id=<MG key>&guardian_seat_id=<seat>[&before_ms=<ms>]`.
+It renders one active, unexpired target's seat as Prometheus text: the same
+forwarded families as `/metrics`, each sample at its own observation time,
+each series' samples contiguous and in time order, and none of the collector's
+own families. Every row passes the same persisted-row revalidation as
+`/metrics`. One response holds at most 128 MiB of sample text and keeps the
+newest observations that fit; when it omits any, its first line is a comment
+naming the `before_ms` that continues further back. An unknown seat answers
+404, and one history render runs at a time, apart from `/metrics`; a second
+gets HTTP 429. This route serves people and agents reading a trend, not
+Prometheus: Prometheus keeps scraping `/metrics`.
 
 ## Seat reports from safe journals
 
