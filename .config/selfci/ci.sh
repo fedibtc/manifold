@@ -13,12 +13,6 @@ function job_lint() {
   if ! nix build --accept-flake-config -L .#treefmt ; then
     selfci step fail
   fi
-
-  selfci step start "publish image loader"
-  if ! .github/scripts/test-load-single-docker-image ; then
-    selfci step fail
-  fi
-
 }
 
 function job_cargo() {

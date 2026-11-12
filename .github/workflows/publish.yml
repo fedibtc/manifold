@@ -106,13 +106,6 @@ jobs:
     strategy:
       # One architecture failing should not hide whether the other one builds.
       fail-fast: false
-      # Both legs run on self-hosted x86_64 runners that share one Docker
-      # daemon, and both load images under the same local `name:version`
-      # tags. Run in parallel, one leg's `docker load` can retag the other
-      # leg's image before that leg pushes it, so an `-arm64` tag gets the
-      # amd64 image or the reverse. The manifest job then fails its platform
-      # check.
-      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
@@ -181,29 +174,21 @@ jobs:
           fi
           cachix push fedibtc "$(readlink -f result-release-images)"
 
-      # `docker load` prints "Loaded image: <name>:<tag>"; capture that rather
-      # than reconstructing the name, so a flake-side rename cannot silently
-      # push a stale or wrong image.
-      - name: Load images into the local Docker store
-        run: |
-          set -euo pipefail
-          fman_tag=$(.github/scripts/load-single-docker-image result-release-images/fleet-manager-image)
-          flip_tag=$(.github/scripts/load-single-docker-image result-release-images/liquidity-manager-image)
-          cloud_fman_telemetry_tag=$(.github/scripts/load-single-docker-image result-release-images/cloud-fman-telemetry-image)
-          push_gateway_tag=$(.github/scripts/load-single-docker-image result-release-images/push-gateway-image)
-          {
-            echo "fleet_manager_nix_tag=$fman_tag"
-            echo "liquidity_manager_nix_tag=$flip_tag"
-            echo "cloud_fman_telemetry_nix_tag=$cloud_fman_telemetry_tag"
-            echo "push_gateway_nix_tag=$push_gateway_tag"
-          } >> "$GITHUB_ENV"
-
+      # The images go from the Nix-built archives straight to the registry
+      # with skopeo, without the runner's Docker daemon. The legs run in
+      # parallel on runners that share that daemon and its config, and every
+      # leg's images carry the same local `name:version` tags, so loading
+      # them there let one leg push the other leg's image. The credential
+      # lives in this job's own auth file, not the shared Docker config.
       - name: Log in to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           printf '%s' "$GHCR_TOKEN" \
-            | docker login "$GHCR_REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+            | nix shell --inputs-from . nixpkgs#skopeo -c \
+              skopeo login --authfile "$RUNNER_TEMP/publish-registry-auth.json" \
+                --username "$GITHUB_ACTOR" --password-stdin "$GHCR_REGISTRY"
 
       # The packages were recreated from post-scrub source and flipped public
       # at the repo cutover. Assert they stay public: an accidental flip back
@@ -263,24 +248,28 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # `--insecure-policy` skips only the signature policy for images
+          # skopeo reads, which the runner has no policy file for. The only
+          # source here is the local archive this job built.
           push_one() {
-            local nix_tag="$1" dest_repo="$2"
-            local dest="$dest_repo:$SHA-$ARCH"
-            docker tag "$nix_tag" "$dest"
-            docker push "$dest"
+            local archive="result-release-images/$1" dest_repo="$2"
+            nix shell --inputs-from . nixpkgs#skopeo -c \
+              skopeo --insecure-policy copy \
+                --dest-authfile "$RUNNER_TEMP/publish-registry-auth.json" \
+                "docker-archive:$archive" "docker://$dest_repo:$SHA-$ARCH"
           }
-          push_one "$fleet_manager_nix_tag" "$GHCR_REPO_FLEET_MANAGER"
-          push_one "$liquidity_manager_nix_tag" "$GHCR_REPO_LIQUIDITY_MANAGER"
-          push_one "$cloud_fman_telemetry_nix_tag" "$GHCR_REPO_CLOUD_FMAN_TELEMETRY"
-          push_one "$push_gateway_nix_tag" "$GHCR_REPO_PUSH_GATEWAY"
+          push_one fleet-manager-image "$GHCR_REPO_FLEET_MANAGER"
+          push_one liquidity-manager-image "$GHCR_REPO_LIQUIDITY_MANAGER"
+          push_one cloud-fman-telemetry-image "$GHCR_REPO_CLOUD_FMAN_TELEMETRY"
+          push_one push-gateway-image "$GHCR_REPO_PUSH_GATEWAY"
 
-      # The runners are long-lived, so nothing here may outlive the job:
-      # `docker login` credentials persist in the runner's Docker config, and
-      # `nix build -o` leaves indirect GC roots pinning the image closures.
+      # The runners are long-lived, so nothing here may outlive the job: the
+      # registry credential is in the auth file, and `nix build -o` leaves
+      # indirect GC roots pinning the image closures.
       - name: Clean up credentials and build roots
         if: always()
         run: |
-          docker logout "$GHCR_REGISTRY" || true
+          rm -f "$RUNNER_TEMP/publish-registry-auth.json"
           rm -f result-release-images
           rm -rf "$RUNNER_TEMP/publish-nix-roots" "$RUNNER_TEMP/publish-flake-archive.json"
 

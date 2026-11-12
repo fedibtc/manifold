@@ -3,7 +3,6 @@
 ## Scope and model
 
 Scope: `flake.nix`, `flake.lock`, `.github/workflows/publish.yml`,
-`.github/scripts/load-single-docker-image`,
 `.config/selfci/{ci.sh,ci.yaml}`,
 `crates/cloud-mg-telemetry/{Cargo.toml,src/**}`,
 `docs/telemetry/cloud-collector-testing.md`, and this claim and proof.
@@ -41,11 +40,10 @@ delivery, network policy, and deployment selection are outside the claim.
    cadence, and `SSL_CERT_FILE`. No other
    environment entry or application-secret value can satisfy the equality.
 5. **[code] Configured publication route.** The publish workflow builds the
-   release aggregate and passes its cloud-collector member to
-   `load-single-docker-image`. That helper loads the passed archive, discovers
-   and returns the sole tag reported for that loaded member. The workflow
-   pushes the returned architecture tag to the collector ECR repository and
-   includes it in the configured manifest. This establishes source
+   release aggregate and copies its cloud-collector member, the archive at
+   `result-release-images/cloud-fman-telemetry-image`, with `skopeo copy
+   docker-archive:` to the architecture tag of the collector repository. It
+   includes that tag in the configured manifest. This establishes source
    correspondence only.
 6. **[enum] Invocation boundary.** The check is exported on Linux but the
    required SelfCI script schedules neither collector contract derivation.

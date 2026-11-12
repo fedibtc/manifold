@@ -9,8 +9,8 @@ ports, one data volume, healthcheck, OCI labels, and exactly seven checked
 non-secret environment defaults. Its final root filesystem contains executable,
 non-escaping entrypoint and healthcheck binaries and a real mode-`0700` image
 data directory whose final-layer entry is owned by UID/GID 10001. The
-configured publication workflow builds that aggregate and routes its loaded
-collector member to the configured ECR repository; this is source-level wiring,
+configured publication workflow builds that aggregate and pushes its collector
+member's archive to the configured ECR repository; this is source-level wiring,
 not evidence that publication ran or that a registry or deployment selected
 the archive.
 
