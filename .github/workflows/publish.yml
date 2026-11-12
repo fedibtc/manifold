@@ -106,6 +106,13 @@ jobs:
     strategy:
       # One architecture failing should not hide whether the other one builds.
       fail-fast: false
+      # Both legs run on self-hosted x86_64 runners that share one Docker
+      # daemon, and both load images under the same local `name:version`
+      # tags. Run in parallel, one leg's `docker load` can retag the other
+      # leg's image before that leg pushes it, so an `-arm64` tag gets the
+      # amd64 image or the reverse. The manifest job then fails its platform
+      # check.
+      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
