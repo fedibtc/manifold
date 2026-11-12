@@ -13,6 +13,8 @@ mod duplicate_instance;
 mod file_limit;
 mod guardian_config;
 #[cfg(target_os = "linux")]
+mod heap_profile;
+#[cfg(target_os = "linux")]
 mod huge_pages;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
@@ -80,7 +82,9 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// same binary). A background thread returns freed pages within about a
 /// second, instead of on a later allocation in the same arena. Under a
 /// 30-minute federation workload this lowered `fedimintd` anonymous memory by
-/// about 8% and peak RSS by about 4%. `MALLOC_CONF` overrides these per option.
+/// about 8% and peak RSS by about 4%. Heap profiling is on but not sampling,
+/// which costs nothing until the daemon switches sampling on for itself
+/// ([`heap_profile`]). `MALLOC_CONF` overrides these per option.
 ///
 /// jemalloc reads this symbol by name. On Linux the
 /// `unprefixed_malloc_on_supported_platforms` feature of `tikv-jemalloc-sys`
@@ -88,8 +92,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(target_os = "linux")]
 #[used]
 #[unsafe(export_name = "malloc_conf")]
-static MALLOC_CONF: Option<&std::ffi::c_char> =
-    Some(unsafe { &*c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0".as_ptr() });
+static MALLOC_CONF: Option<&std::ffi::c_char> = Some(unsafe {
+    &*c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0,prof:true,prof_active:false"
+        .as_ptr()
+});
 
 // No `Debug`: `Serve` carries the bitcoind password.
 #[derive(Parser)]
@@ -386,6 +392,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // including restored guardian children.
     tokio::fs::create_dir_all(&args.data_dir).await?;
     let db = mg_core::db::Db::open(&args.data_dir).await?;
+    // After the data-root lock, so one daemon at a time writes the dump file.
+    #[cfg(target_os = "linux")]
+    heap_profile::spawn(args.data_dir.join("heap-profile.heap"));
     db.bind_manifold_environment(manifold_environment.environment())
         .await?;
     // Operator surfaces bind once, before the fleet exists, and serve every
