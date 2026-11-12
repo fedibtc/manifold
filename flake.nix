@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
     flakebox = {
-      url = "git+https://radicle.dpc.pw/z3fAWfQ8mDt5eVELtCN9iMFKr8cYb.git?rev=7214849891debfbcd7f2fcce9de16cad608c9377";
+      url = "github:dpc/flakebox?rev=52e287e576e92644d04d43def75307f85b226a52";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     dpc-public-skills = {
@@ -326,25 +326,7 @@
             );
         };
 
-        # flakebox's `aarch64-linux` cell runs bindgen with clang 18's libclang
-        # against the clang 21 headers of the nixpkgs cross toolchain, and
-        # without the target glibc headers. aws-lc-sys, pulled in by
-        # fedimint-core with its `bindgen` feature, then fails to generate
-        # bindings. Point bindgen at the cross toolchain's own libclang and at
-        # the aarch64 glibc headers.
-        multiBuildArgsFor =
-          { toolchainName, ... }:
-          pkgs.lib.optionalAttrs (toolchainName == "aarch64-linux") (
-            let
-              cross = pkgs.pkgsCross.aarch64-multiplatform;
-            in
-            {
-              LIBCLANG_PATH = "${cross.buildPackages.llvmPackages.clang-unwrapped.lib}/lib";
-              BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu = "-isystem ${cross.stdenv.cc.libc.dev}/include";
-            }
-          );
-
-        multiBuild = (flakeboxLib.craneMultiBuild { argsFor = multiBuildArgsFor; }) (
+        multiBuild = (flakeboxLib.craneMultiBuild { }) (
           craneLib':
           let
             craneLib = craneLib'.overrideArgs {
