@@ -12,9 +12,14 @@ export const readOfferPriceMsat = (plans: Plan[]): number | null => {
   return paid ? paid.InfiniteBestEffort.price_msats : null;
 };
 
+/** The stored price in whole sats. The daemon stores the stated price rounded
+ *  up to its 128 msat grid, which adds less than one sat, so rounding down gives
+ *  back the whole number of sats the operator typed. */
+const wholeSats = (priceMsat: number): number => Math.floor(priceMsat / MSATS_PER_SAT);
+
 /** What the price field shows for a stored price: sats, or blank when not selling. */
 export const formatPriceField = (priceMsat: number | null): string =>
-  priceMsat === null ? '' : String(priceMsat / MSATS_PER_SAT);
+  priceMsat === null ? '' : String(wholeSats(priceMsat));
 
 export type ParsedPrice = { ok: true; priceMsat: number | null } | { ok: false; error: string };
 
@@ -54,5 +59,5 @@ export const parsePriceField = (input: string): ParsedPrice => {
 export const describeOffer = (priceMsat: number | null): string => {
   if (priceMsat === null) return 'Not selling seats';
   if (priceMsat === 0) return 'Free';
-  return `${(priceMsat / MSATS_PER_SAT).toLocaleString('en-US')} sats per seat`;
+  return `${wholeSats(priceMsat).toLocaleString('en-US')} sats per seat`;
 };
