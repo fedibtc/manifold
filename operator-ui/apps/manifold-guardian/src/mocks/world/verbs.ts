@@ -90,12 +90,23 @@ const plansForPrice = (price: number | null): Plan[] =>
 
 const showPlans: Verb<'ShowPlans'> = () => ({ plans: plansForPrice(getState().price) });
 
+// The daemon stores the stated price rounded up to a multiple of 128 msat, the
+// finest price a mint-v2 payer can fund (`payable_price_msats`), and echoes the
+// rounded value. The mock does the same, so the dashboard is shown the prices a
+// real daemon reports rather than only whole sats.
+const MIN_ECONOMICAL_MINT_V2_NOTE_MSATS = 128;
+const payablePrice = (price: number | null): number | null =>
+  price === null
+    ? null
+    : Math.ceil(price / MIN_ECONOMICAL_MINT_V2_NOTE_MSATS) * MIN_ECONOMICAL_MINT_V2_NOTE_MSATS;
+
 const setPrice: Verb<'SetPrice'> = ({ price_msats }) => {
   if (price_msats !== null && (!Number.isInteger(price_msats) || price_msats < 0)) {
     throw new Error('price must be a whole number of millisatoshis');
   }
-  getState().price = price_msats;
-  return { plans: plansForPrice(price_msats) };
+  const price = payablePrice(price_msats);
+  getState().price = price;
+  return { plans: plansForPrice(price) };
 };
 
 const listPaymentFederations: Verb<'ListPaymentFederations'> = () => ({
@@ -410,7 +421,8 @@ const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({
   if (max_seats !== null && max_seats < active) {
     throw new Error(`cannot set max seats to ${max_seats}; ${active} seats are active`);
   }
-  state.price = price_msats;
+  const price = payablePrice(price_msats);
+  state.price = price;
   state.maxSeats = max_seats;
   state.monthlyDataBudget = budget;
   // The final stage is durable, but the daemon reports `starting` until its
@@ -421,7 +433,7 @@ const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({
     onboarding: 'complete',
     max_seats,
     monthly_data_budget: budget,
-    plans: price_msats === null ? [] : [{ InfiniteBestEffort: { price_msats } }]
+    plans: plansForPrice(price)
   };
 };
 
