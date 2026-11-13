@@ -165,14 +165,18 @@ entry per active, unexpired MG that has a stored report:
   `accepting_seats`, `max_seats`, `memory_max_seats`, `policy_max_seats` and
   `mg_version`.
 - `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
-  `discovery`, `bitcoin`, `version`, `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
+  `discovery`, `bitcoin`, `version`, `load`, `host_load_pct`,
+  `max_host_load_pct`, `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
   `uptime_30d_pct`, `min_uptime_1d_pct`, `min_uptime_7d_pct` and
   `min_uptime_30d_pct`.
 
 Times are RFC 3339 UTC. A field that the MG's release does not journal is
 `null`: releases before 0.1.4 journal only `available_seats`,
 `accepting_seats` and `max_seats`, and no readiness uptime fields, and
-releases before 0.1.9 no readiness `version`.
+releases before 0.1.9 no readiness `version`, and releases before 0.1.16 no
+`load`, `host_load_pct` or `max_host_load_pct`. `host_load_pct` is also
+`null` where the MG cannot read its load, and `max_host_load_pct` without a
+policy limit.
 `max_seats` is also `null` while the operator limit is automatic. A store
 failure answers 503. Only `policy_max_seats` is capped, at the setup-payment
 maximum of 256 seats per MG; before 0.1.4 the operator limit is the only one

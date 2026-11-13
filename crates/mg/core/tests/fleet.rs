@@ -1329,6 +1329,9 @@ fn readiness(ready: bool) -> ReadinessReport {
             ReadinessOutcome::BitcoinSyncing
         },
         version: ReadinessOutcome::NotApplicable,
+        load: ReadinessOutcome::NotApplicable,
+        host_load_percent: None,
+        max_host_load_percent: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -1529,12 +1532,13 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     fleet.shutdown().await;
 }
 
-/// The readiness worker follows the setup-payment policy's minimum release:
-/// raising it above this release stops discovery and quoting at the next
-/// run, and lowering or removing it restores them. The MG still serves its
+/// The readiness worker follows the setup-payment policy's minimum release
+/// and host load limit: raising the minimum above this release, or lowering
+/// the limit below the host's average load, stops discovery and quoting at
+/// the next run, and undoing either restores them. The MG still serves its
 /// seats meanwhile, so every one of those runs records an up uptime slot.
 #[tokio::test]
-async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
+async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::seat_readiness::{ReadinessProbe, run};
@@ -1575,10 +1579,13 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
     );
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
 
-    let policy = |min_mg_version: Option<&str>| {
-        let field = min_mg_version
+    let policy = |min_mg_version: Option<&str>, max_host_load_percent: Option<u16>| {
+        let mut field = min_mg_version
             .map(|version| format!(r#","min_mg_version":"{version}""#))
             .unwrap_or_default();
+        if let Some(percent) = max_host_load_percent {
+            field.push_str(&format!(r#","max_host_load_percent":{percent}"#));
+        }
         AdmittedSetupPaymentFederations::parse(
             format!(
                 r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
@@ -1606,25 +1613,32 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         fleet.clone(),
         policies,
         clock,
+        // Half a task per CPU on every sample, so the average stays at 50%.
+        || Ok(0.5),
     ));
 
     let this = env!("CARGO_PKG_VERSION");
     let mut previous_day_score = None;
-    for (run_index, (min_mg_version, advertised)) in [
-        (None, true),
-        (Some("999.0.0"), false),
-        (Some(this), true),
-        (Some("999.0.0"), false),
-        (Some("0.0.1"), true),
-        (Some("999.0.0"), false),
-        (None, true),
+    for (run_index, (min_mg_version, max_load, advertised)) in [
+        (None, None, true),
+        (Some("999.0.0"), None, false),
+        (Some(this), None, true),
+        (Some("999.0.0"), None, false),
+        (Some("0.0.1"), None, true),
+        (Some("999.0.0"), None, false),
+        (None, None, true),
+        (None, Some(49), false),
+        // A load equal to the limit is still within it.
+        (None, Some(50), true),
+        (None, Some(49), false),
+        (None, None, true),
     ]
     .into_iter()
     .enumerate()
     {
         // Each policy ends the worker's wait, and the step lets one run go.
         if run_index > 0 {
-            publish.send_replace(Some(policy(min_mg_version)));
+            publish.send_replace(Some(policy(min_mg_version, max_load)));
         }
         step.send(()).await.unwrap();
         let checked = first_slot + run_index as u64 + 1;
@@ -1641,9 +1655,16 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         .unwrap_or_else(|_| panic!("{min_mg_version:?}: the run's verdict was not applied"));
         let report = fleet.seat_readiness().unwrap();
         assert_eq!(
-            report.version == ReadinessOutcome::MgVersionTooOld,
+            report.version == ReadinessOutcome::MgVersionTooOld
+                || report.load == ReadinessOutcome::HostLoadHigh,
             !advertised,
-            "{min_mg_version:?}"
+            "{min_mg_version:?} {max_load:?}"
+        );
+        assert_eq!(report.host_load_percent, Some(50));
+        assert_eq!(report.max_host_load_percent, max_load);
+        assert_eq!(
+            report.load == ReadinessOutcome::NotApplicable,
+            max_load.is_none()
         );
         assert_eq!(
             host.advertisement().await.is_some(),

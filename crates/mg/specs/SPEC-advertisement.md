@@ -163,6 +163,19 @@ advertisement without waiting for the next slot, and lowering or removing it
 reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
+Each run also requires the host's average load to be at most the
+setup-payment policy's `max_host_load_percent`; without one the check does
+not apply. The average is an exponential moving average, with a 6-hour time
+constant over wall-clock time, of the kernel's 15-minute load average per
+online CPU, sampled once per run. Load counts tasks running or waiting for a
+CPU or for disk, on the whole host, so other services on it count too: it
+bounds the CPU and IO pressure the memory seat limit cannot see. The average
+lives in memory, so a restart starts it again from the current 15-minute
+figure. Where the load cannot be read, the check does not apply. Like the
+version check, an MG above the limit stops selling new seats but still
+serves its seats, so the load check is not a prerequisite and never marks a
+slot down.
+
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
@@ -190,7 +203,8 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
+fixed code per check, the three uptime scores, the minimums they were held to,
+and the host load average and its limit for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

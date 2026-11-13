@@ -53,6 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
+        max_host_load_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
+            max_host_load_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
             min_mg_version: None,
@@ -464,6 +466,39 @@ fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
             raw(&(SETUP_PAYMENT_MAX_SEATS_PER_MG + 1).to_string()).as_bytes()
         ),
         Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
+    );
+}
+
+#[test]
+fn max_host_load_is_absent_by_default_and_bounded() {
+    let raw = |percent: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","max_host_load_percent":{percent}}}"#
+        )
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.max_host_load_percent(), None);
+    assert!(
+        !String::from_utf8(content(vec![]))
+            .unwrap()
+            .contains("max_host_load_percent")
+    );
+    for percent in [1, 70, 1_000] {
+        let admitted = AdmittedSetupPaymentFederations::parse(raw(&percent.to_string()).as_bytes())
+            .expect("an in-range limit is admitted");
+        assert_eq!(admitted.max_host_load_percent(), Some(percent));
+    }
+    // Zero would close every MG; a negative or oversized value is a
+    // publisher mistake.
+    for percent in ["0", "1001", "-1", "65536"] {
+        assert!(
+            AdmittedSetupPaymentFederations::parse(raw(percent).as_bytes()).is_err(),
+            "{percent} must be refused"
+        );
+    }
+    assert_eq!(
+        AdmittedSetupPaymentFederations::parse(raw("1001").as_bytes()),
+        Err(SetupPaymentFederationsContentError::MaxHostLoadOutOfRange)
     );
 }
 

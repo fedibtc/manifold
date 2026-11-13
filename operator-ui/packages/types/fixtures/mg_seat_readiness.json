@@ -4,6 +4,9 @@
     "bitcoin": "bitcoin_syncing",
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
+    "host_load_percent": 85,
+    "load": "host_load_high",
+    "max_host_load_percent": 70,
     "relay": "pass",
     "uptime": "uptime_7d_low",
     "uptime_comparison": {

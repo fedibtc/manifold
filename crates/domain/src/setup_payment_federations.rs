@@ -51,6 +51,11 @@ pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
 /// Largest per-MG seat limit a publication may set.
 pub const SETUP_PAYMENT_MAX_SEATS_PER_MG: u32 = 256;
 
+/// Smallest and largest host load limit a publication may set, in percent of
+/// one load unit per online CPU. Zero would close every MG, and above ten
+/// waiting tasks per CPU a host is unusable long before the limit binds.
+pub const SETUP_PAYMENT_MAX_HOST_LOAD_PERCENT_RANGE: std::ops::RangeInclusive<u16> = 1..=1_000;
+
 fn default_min_fee_ppm() -> u64 {
     DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM
 }
@@ -198,6 +203,12 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
 
+    /// Host load above which an MG stops accepting new seats: its 6-hour
+    /// average system load per online CPU, in percent. Optional on the wire:
+    /// absent means no load limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_host_load_percent: Option<u16>,
+
     /// Whether MGs start new direct-proof guardian transfers. Optional on the wire:
     /// absent, the Manifold environment's default applies (on in development
     /// and staging, off in production). Transfers an MG already stored run to
@@ -247,6 +258,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
+    max_host_load_percent: Option<u16>,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
@@ -289,6 +301,12 @@ impl AdmittedSetupPaymentFederations {
             .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
         {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
+        }
+        if content
+            .max_host_load_percent
+            .is_some_and(|percent| !SETUP_PAYMENT_MAX_HOST_LOAD_PERCENT_RANGE.contains(&percent))
+        {
+            return Err(SetupPaymentFederationsContentError::MaxHostLoadOutOfRange);
         }
         let max_guardian_offline_secs = content
             .max_guardian_offline_secs
@@ -365,6 +383,7 @@ impl AdmittedSetupPaymentFederations {
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
+            max_host_load_percent: content.max_host_load_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
@@ -448,6 +467,14 @@ impl AdmittedSetupPaymentFederations {
         self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
     }
 
+    /// Return the 6-hour average host load per online CPU, in percent, above
+    /// which an MG stops accepting new seats, or `None` when the event sets
+    /// no limit.
+    #[must_use]
+    pub fn max_host_load_percent(&self) -> Option<u16> {
+        self.max_host_load_percent
+    }
+
     /// Return the published direct-proof guardian-transfer flag. `None` when the event
     /// omits it; the Manifold environment then supplies the default
     /// (`ManifoldEnvironment::guardian_transfer_v2`).
@@ -517,6 +544,9 @@ pub enum SetupPaymentFederationsContentError {
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
 
+    /// The published host load limit is outside the admitted range.
+    MaxHostLoadOutOfRange,
+
     /// A published minimum uptime is above 100%, which no MG can reach.
     MinUptimeTooHigh,
 
@@ -554,6 +584,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"
+            }
+            Self::MaxHostLoadOutOfRange => {
+                "setup-payment federation set sets a host load limit outside the admitted range"
             }
             Self::ZeroOfflineDuration => "guardian absence limit must be positive",
             Self::MinUptimeTooHigh => {

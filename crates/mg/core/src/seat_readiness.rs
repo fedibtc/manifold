@@ -38,6 +38,8 @@ pub enum ReadinessOutcome {
     BitcoinNoFeeRate,
     /// This MG's release is older than the setup-payment policy's minimum.
     MgVersionTooOld,
+    /// The host's average load is above the setup-payment policy's limit.
+    HostLoadHigh,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -66,6 +68,7 @@ impl ReadinessOutcome {
             Self::BitcoinSyncing => "bitcoin_syncing",
             Self::BitcoinNoFeeRate => "bitcoin_no_fee_rate",
             Self::MgVersionTooOld => "mg_version_too_old",
+            Self::HostLoadHigh => "host_load_high",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -84,6 +87,13 @@ pub struct ReadinessReport {
     pub bitcoin: ReadinessOutcome,
     /// This MG's release against the setup-payment policy's minimum.
     pub version: ReadinessOutcome,
+    /// The host's average load against the setup-payment policy's limit.
+    pub load: ReadinessOutcome,
+    /// The host load this run compared: its [`HostLoad`] average, in percent
+    /// of one load unit per online CPU. `None` where the load cannot be read.
+    pub host_load_percent: Option<u16>,
+    /// The setup-payment policy's host load limit; `None` without one.
+    pub max_host_load_percent: Option<u16>,
     pub uptime: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
@@ -166,13 +176,17 @@ pub struct UptimeWaitSecs {
 
 impl ReadinessReport {
     pub fn ready(&self) -> bool {
-        self.prerequisites_passed() && self.version.passed() && self.uptime.passed()
+        self.prerequisites_passed()
+            && self.version.passed()
+            && self.load.passed()
+            && self.uptime.passed()
     }
 
     /// Whether the probed prerequisites passed. These decide whether a
     /// slot counts as up, so the uptime gate cannot keep itself closed. The
-    /// version check is not one of them: an MG below the policy's minimum
-    /// release still serves its seats, so it is up.
+    /// version and load checks are not among them: an MG below the policy's
+    /// minimum release, or too loaded for more seats, still serves its seats,
+    /// so it is up.
     pub fn prerequisites_passed(&self) -> bool {
         self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
     }
@@ -193,6 +207,95 @@ pub fn this_mg_version() -> MgVersion {
     env!("CARGO_PKG_VERSION")
         .parse()
         .expect("the workspace version is SemVer")
+}
+
+/// The time constant of [`HostLoad`]: long enough that a DKG, a chain scan
+/// or a backup does not close the MG, short enough to follow lasting load.
+pub const HOST_LOAD_TIME_CONSTANT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How loaded the host has been lately: an exponential moving average, with
+/// a [`HOST_LOAD_TIME_CONSTANT`] time constant, of the kernel's 15-minute
+/// load average per online CPU. Load counts tasks running and waiting for a
+/// CPU or for disk, so it covers what the memory seat limit does not.
+///
+/// Kept in memory: a restart starts the average again from the 15-minute
+/// figure, which a loaded host still shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostLoad {
+    /// Load per online CPU; 1.0 is one runnable or waiting task per CPU.
+    pub average: f64,
+    sampled_at: SystemTime,
+}
+
+impl HostLoad {
+    /// Fold `sample`, taken at `at`, into the average. The weight of a sample
+    /// grows with the time since the previous one, so runs every minute while
+    /// failing and every slot while ready average the same way. A clock set
+    /// back adds no weight.
+    pub fn record(previous: Option<Self>, sample: f64, at: SystemTime) -> Self {
+        let Some(previous) = previous else {
+            return Self {
+                average: sample,
+                sampled_at: at,
+            };
+        };
+        let elapsed = at
+            .duration_since(previous.sampled_at)
+            .unwrap_or(Duration::ZERO);
+        let weight = 1.0 - (-elapsed.as_secs_f64() / HOST_LOAD_TIME_CONSTANT.as_secs_f64()).exp();
+        Self {
+            average: previous.average + weight * (sample - previous.average),
+            sampled_at: at.max(previous.sampled_at),
+        }
+    }
+
+    /// The average in whole percent, as the policy limit states it.
+    pub fn percent(self) -> u16 {
+        // Saturating float-to-int conversion; load is never negative.
+        (self.average * 100.0).round() as u16
+    }
+}
+
+/// The load check: the host's average load against the policy's limit.
+/// Without a limit, or where the load cannot be read, the check does not
+/// apply.
+pub fn load_outcome(load: Option<HostLoad>, max_percent: Option<u16>) -> ReadinessOutcome {
+    match (load, max_percent) {
+        (Some(load), Some(max)) if load.percent() > max => ReadinessOutcome::HostLoadHigh,
+        (Some(_), Some(_)) => ReadinessOutcome::Pass,
+        _ => ReadinessOutcome::NotApplicable,
+    }
+}
+
+/// The kernel's 15-minute load average per online CPU. Both figures are the
+/// whole host's, also inside a container, so other services on the host
+/// count, as they compete with the seats.
+pub fn host_load_per_cpu() -> anyhow::Result<f64> {
+    use anyhow::Context as _;
+    let loadavg = std::fs::read_to_string("/proc/loadavg").context("read /proc/loadavg")?;
+    let stat = std::fs::read_to_string("/proc/stat").context("read /proc/stat")?;
+    load_per_cpu(&loadavg, &stat)
+}
+
+fn load_per_cpu(proc_loadavg: &str, proc_stat: &str) -> anyhow::Result<f64> {
+    use anyhow::Context as _;
+    let load: f64 = proc_loadavg
+        .split_whitespace()
+        .nth(2)
+        .context("/proc/loadavg has no 15-minute figure")?
+        .parse()
+        .context("the 15-minute load is not a number")?;
+    // `/proc/stat` has one `cpuN` line per online CPU besides the `cpu` total.
+    let cpus = proc_stat
+        .lines()
+        .filter(|line| {
+            line.strip_prefix("cpu")
+                .and_then(|rest| rest.split(char::is_whitespace).next())
+                .is_some_and(|id| id.bytes().all(|byte| byte.is_ascii_digit()) && !id.is_empty())
+        })
+        .count();
+    anyhow::ensure!(cpus > 0, "/proc/stat lists no online CPU");
+    Ok(load / cpus as f64)
 }
 
 /// How much of the recent past this MG was up: exponential moving averages
@@ -321,14 +424,18 @@ const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 /// Run until aborted: probe, record this uptime slot, apply the verdict to
 /// `fleet`, journal it, and wait for the next slot while ready or a minute
 /// while failing, or until the setup-payment policy changes. `clock` is the
-/// wall clock slots are counted in.
+/// wall clock slots are counted in, and `sample_host_load` reads the load
+/// per online CPU that [`HostLoad`] averages ([`host_load_per_cpu`]).
 pub async fn run(
     mut probe: impl ReadinessProbe,
     fleet: Arc<Fleet>,
     mut setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     clock: impl Fn() -> SystemTime + Send,
+    sample_host_load: impl Fn() -> anyhow::Result<f64> + Send,
 ) {
     let this_release = this_mg_version();
+    let mut host_load = None;
+    let mut warned_host_load = false;
     loop {
         let mut report = probe.probe().await;
         // Recording this slot also accounts for every slot since the last
@@ -349,7 +456,15 @@ pub async fn run(
             week: 0.0,
             month: 0.0,
         });
-        let (min, version) = {
+        match sample_host_load() {
+            Ok(sample) => host_load = Some(HostLoad::record(host_load, sample, recorded_at)),
+            Err(error) if !warned_host_load => {
+                warned_host_load = true;
+                tracing::warn!(%error, "cannot read the host load; the load check does not apply");
+            }
+            Err(_) => {}
+        }
+        let (min, version, max_host_load_percent) = {
             let policy = setup_payment_policy.borrow_and_update();
             let policy = policy.as_ref();
             (
@@ -360,9 +475,13 @@ pub async fn run(
                     &this_release,
                     policy.and_then(AdmittedSetupPaymentFederations::min_mg_version),
                 ),
+                policy.and_then(AdmittedSetupPaymentFederations::max_host_load_percent),
             )
         };
         report.version = version;
+        report.load = load_outcome(host_load, max_host_load_percent);
+        report.host_load_percent = host_load.map(HostLoad::percent);
+        report.max_host_load_percent = max_host_load_percent;
         report.uptime = scores.outcome(min);
         // The operator sees no figures rather than zeros it cannot trust.
         report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
@@ -421,6 +540,9 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
         discovery = report.discovery.as_str(),
         bitcoin = report.bitcoin.as_str(),
         version = report.version.as_str(),
+        load = report.load.as_str(),
+        host_load_pct = report.host_load_percent,
+        max_host_load_pct = report.max_host_load_percent,
         uptime = report.uptime.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
@@ -727,6 +849,9 @@ mod tests {
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
+            load: ReadinessOutcome::NotApplicable,
+            host_load_percent: None,
+            max_host_load_percent: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
@@ -750,6 +875,9 @@ mod tests {
                 "discovery": "pass",
                 "bitcoin": "pass",
                 "version": "not_applicable",
+                "load": "not_applicable",
+                "host_load_percent": null,
+                "max_host_load_percent": null,
                 "uptime": "uptime_7d_low",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
@@ -768,6 +896,9 @@ mod tests {
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::Pass,
+            load: ReadinessOutcome::NotApplicable,
+            host_load_percent: None,
+            max_host_load_percent: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -777,6 +908,9 @@ mod tests {
         // still serves its seats, so its slots stay up.
         let too_old = ReadinessReport {
             version: ReadinessOutcome::MgVersionTooOld,
+            load: ReadinessOutcome::NotApplicable,
+            host_load_percent: None,
+            max_host_load_percent: None,
             uptime: ReadinessOutcome::Pass,
             ..report
         };
@@ -823,6 +957,91 @@ mod tests {
         assert_eq!(this_mg_version().to_string(), env!("CARGO_PKG_VERSION"));
     }
 
+    /// The average starts at the first sample and then moves towards new
+    /// samples by the share of the time constant that passed: after one time
+    /// constant of a constant sample, 1 - 1/e of the gap is closed, however
+    /// often the samples came.
+    #[test]
+    fn host_load_averages_over_the_time_constant() {
+        let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(1_000_000 + secs);
+        let first = HostLoad::record(None, 0.2, at(0));
+        assert_eq!(first.average, 0.2);
+        let tau = HOST_LOAD_TIME_CONSTANT.as_secs();
+        let expected = 0.2 + (1.0 - (-1.0f64).exp()) * (1.0 - 0.2);
+        let once = HostLoad::record(Some(first), 1.0, at(tau));
+        assert!((once.average - expected).abs() < 1e-9, "{}", once.average);
+        // Every minute, as while failing, or every 10-minute slot.
+        for step in [60, 600] {
+            let mut load = first;
+            for n in 1..=tau / step {
+                load = HostLoad::record(Some(load), 1.0, at(n * step));
+            }
+            assert!(
+                (load.average - expected).abs() < 1e-9,
+                "{step}: {}",
+                load.average
+            );
+        }
+        // A short burst barely moves a quiet host's average.
+        let burst = HostLoad::record(Some(first), 8.0, at(600));
+        assert!(burst.average < 0.5, "{}", burst.average);
+        // A clock set back adds no weight and does not move the next sample's
+        // start back.
+        let back = HostLoad::record(Some(once), 5.0, at(0));
+        assert_eq!(back.average, once.average);
+        assert_eq!(
+            HostLoad::record(Some(back), 1.0, at(tau)).average,
+            once.average
+        );
+    }
+
+    #[test]
+    fn the_load_check_fails_only_above_a_set_limit() {
+        let load = |average: f64| {
+            Some(HostLoad {
+                average,
+                sampled_at: UNIX_EPOCH,
+            })
+        };
+        assert_eq!(load_outcome(load(0.7), Some(70)), ReadinessOutcome::Pass);
+        // 70.4% rounds to the limit; 70.5% rounds above it.
+        assert_eq!(load_outcome(load(0.704), Some(70)), ReadinessOutcome::Pass);
+        assert_eq!(
+            load_outcome(load(0.705), Some(70)),
+            ReadinessOutcome::HostLoadHigh
+        );
+        assert_eq!(
+            load_outcome(load(12.0), Some(1_000)),
+            ReadinessOutcome::HostLoadHigh
+        );
+        assert_eq!(
+            load_outcome(load(12.0), None),
+            ReadinessOutcome::NotApplicable
+        );
+        assert_eq!(load_outcome(None, Some(1)), ReadinessOutcome::NotApplicable);
+        assert_eq!(load(1.234).unwrap().percent(), 123);
+        // An overloaded host saturates rather than wrapping below a limit.
+        assert_eq!(load(1e9).unwrap().percent(), u16::MAX);
+    }
+
+    #[test]
+    fn host_load_is_the_15_minute_figure_per_online_cpu() {
+        let stat = "cpu  10 0 10 100 0 0 0 0 0 0\n\
+                    cpu0 5 0 5 50 0 0 0 0 0 0\n\
+                    cpu1 5 0 5 50 0 0 0 0 0 0\n\
+                    cpu12 5 0 5 50 0 0 0 0 0 0\n\
+                    cpu3 5 0 5 50 0 0 0 0 0 0\n\
+                    intr 1 2 3\nctxt 4\ncpufreq 1\n";
+        // Four online CPUs: the total line and other `cpu`-prefixed keys do
+        // not count.
+        assert_eq!(
+            load_per_cpu("0.50 9.00 3.00 2/345 6789\n", stat).unwrap(),
+            0.75
+        );
+        assert!(load_per_cpu("0.50 9.00\n", stat).is_err());
+        assert!(load_per_cpu("0.50 9.00 3.00 2/345 6789\n", "cpu  1 2 3\n").is_err());
+    }
+
     /// The journaled run decodes as the telemetry collector reads it.
     #[test]
     fn a_journaled_run_decodes_as_the_shared_readiness_event() {
@@ -838,6 +1057,9 @@ mod tests {
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::MgVersionTooOld,
+            load: ReadinessOutcome::HostLoadHigh,
+            host_load_percent: Some(85),
+            max_host_load_percent: Some(70),
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -877,6 +1099,9 @@ mod tests {
                 discovery: "not_applicable".into(),
                 bitcoin: "pass".into(),
                 version: Some("mg_version_too_old".into()),
+                load: Some("host_load_high".into()),
+                host_load_pct: Some(85),
+                max_host_load_pct: Some(70),
                 uptime: Some("uptime_7d_low".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),

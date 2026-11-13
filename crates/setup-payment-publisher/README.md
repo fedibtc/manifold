@@ -79,6 +79,13 @@ understand the minimum, set
 Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
 
+To stop MGs whose host is persistently busy from taking more seats, set
+`"max_host_load_percent": 70` (1 to 1,000). An MG whose 6-hour average load
+per online CPU is above it stops advertising and quoting new seats, keeps
+running its seats, and its uptime is not affected. Omitted, there is no load
+limit. MGs journal their average either way, so choose the value from the
+seat readiness telemetry.
+
 To ask operators below a release to update without stopping their sales, set
 `"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).
 An MG below it sends its linked phone one notification. Omitted, nothing is

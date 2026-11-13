@@ -136,6 +136,9 @@ fn readiness(failing: &[&str]) -> ReadinessReport {
         discovery: outcome("discovery", ReadinessOutcome::DiscoveryRecordMissing),
         bitcoin: outcome("bitcoin", ReadinessOutcome::BitcoinSyncing),
         version: outcome("version", ReadinessOutcome::MgVersionTooOld),
+        load: ReadinessOutcome::NotApplicable,
+        host_load_percent: None,
+        max_host_load_percent: None,
         uptime: outcome("uptime", ReadinessOutcome::DayUptimeLow),
         uptime_comparison: None,
     }

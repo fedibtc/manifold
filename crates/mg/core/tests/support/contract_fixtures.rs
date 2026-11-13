@@ -120,6 +120,9 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     version: ReadinessOutcome::MgVersionTooOld,
+                    load: ReadinessOutcome::HostLoadHigh,
+                    host_load_percent: Some(85),
+                    max_host_load_percent: Some(70),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {

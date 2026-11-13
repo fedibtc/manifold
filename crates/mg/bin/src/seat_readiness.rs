@@ -85,6 +85,7 @@ impl SeatReadiness {
             fleet,
             setup_payment_policy,
             SystemTime::now,
+            seat_readiness::host_load_per_cpu,
         ))
     }
 
@@ -117,6 +118,9 @@ impl SeatReadiness {
             discovery,
             bitcoin,
             version: Outcome::NotApplicable,
+            load: Outcome::NotApplicable,
+            host_load_percent: None,
+            max_host_load_percent: None,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }
