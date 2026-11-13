@@ -50,6 +50,7 @@ use mg_core::onboarding::{FetchedHolderAuthorization, HolderAuthorizationFetcher
 use nostr_sdk::{Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
 use serde_json::Value;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 pub use support::{
     MAX_SUPPORT_MESSAGE_CHARS, support_chat_json, support_message_json, support_read_json,
@@ -70,7 +71,9 @@ const LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// enough headroom for a relay serving stale duplicates alongside it.
 const SETUP_PAYMENT_FETCH_LIMIT: u16 = 64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// Leave room for durable publication within the operator UI's 15-second request budget.
+/// One Holder authorization read, connections included. It leaves room for
+/// durable publication within the operator UI's 15-second request budget: a
+/// request the UI abandons is dropped, check and all.
 const AUTHORIZATION_REFRESH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// One bounded, operator-driven Holder enrollment read usable before a Fleet
@@ -110,18 +113,8 @@ impl HolderAuthorizationFetcher for NostrHolderAuthorizationFetcher {
         identity: &RootMnemonic,
     ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
         let keys = identity.derive_service_nostr_keys();
-        // The authorization may sit on any profile relay: the Holder
-        // publishes to every relay it knows, so one reachable relay is
-        // enough to find it.
-        let nostr = NostrRelayClient::connect_pool(
-            self.manifold_environment.nostr_relays().as_urls(),
-            keys.clone(),
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .context("connect to the configured Nostr relays")?;
         let authorization =
-            fetch_newest_holder_authorization(&keys, &nostr, &self.manifold_environment)
+            fetch_newest_holder_authorization(keys.public_key(), &self.manifold_environment)
                 .await?
                 .map(|candidate| FetchedHolderAuthorization {
                     authorization_issued_at: candidate.authorization_issued_at,
@@ -400,19 +393,11 @@ impl mg_core::directory::HolderAuthorizationRefresher for ManifoldGuardianNostr 
                 .authorization_refresh
                 .try_lock()
                 .context("an authorization refresh is already in progress")?;
-            let fetched = tokio::time::timeout(AUTHORIZATION_REFRESH_TIMEOUT, async {
-                let nostr = NostrRelayClient::connect_pool(
-                    inner.manifold_environment.nostr_relays().as_urls(),
-                    inner.keys.clone(),
-                    REQUEST_TIMEOUT,
-                )
-                .await
-                .context("connect to the configured Nostr relays")?;
-                fetch_newest_holder_authorization(&inner.keys, &nostr, &inner.manifold_environment)
-                    .await
-            })
-            .await
-            .context("authorization refresh timed out")??;
+            let fetched = fetch_newest_holder_authorization(
+                inner.keys.public_key(),
+                &inner.manifold_environment,
+            )
+            .await?;
             inner.retain_authorization(fetched).await
         })
         .await?
@@ -692,11 +677,18 @@ fn verified_holder_authorization_event(
 /// The valid candidate with the greatest signed issue time whose badge a
 /// trusted issuer of this environment issued to its holder; the MG presents
 /// only that one. Revocation and trust level remain the relying FA's checks.
+///
+/// Each relay is read on its own, the way FA backup restore reads them, and
+/// every read ends at one deadline within [`AUTHORIZATION_REFRESH_TIMEOUT`].
+/// The Holder publishes to every relay it knows, so one complete read that
+/// holds the authorization is enough, and a relay that never ends the query
+/// costs only its own read. Reporting none needs complete reads from a majority
+/// of the relays; fewer is an incomplete lookup, not an absent authorization.
 async fn fetch_newest_holder_authorization(
-    keys: &Keys,
-    nostr: &NostrRelayClient,
+    holder: PublicKey,
     manifold_environment: &ManifoldEnvironmentProfile,
 ) -> anyhow::Result<Option<VerifiedHolderAuthorizationEvent>> {
+    let deadline = Instant::now() + AUTHORIZATION_REFRESH_TIMEOUT;
     let issuers = PeerBadgeVerifier::try_from_profile(manifold_environment)
         .context("resolve this environment's trusted PeerBadge issuers")?;
     let max_issued_at = holder_authorization_max_issued_at(now_secs())?;
@@ -704,19 +696,59 @@ async fn fetch_newest_holder_authorization(
         .kind(Kind::Custom(
             fedi_decentralized_nostr::mg::HOLDER_AUTHORIZATION_EVENT_KIND,
         ))
-        .pubkey(keys.public_key())
+        .pubkey(holder)
         .hashtag(fedi_decentralized_nostr::mg::MG_AUTHORIZATION_HASHTAG)
         .limit(64);
-    let candidates = nostr
-        .fetch_events_capped(filter, REQUEST_TIMEOUT, 64)
+    let relays = manifold_environment.nostr_relays().as_urls();
+    let reads = relays.iter().map(|relay| {
+        let filter = filter.clone();
+        async move {
+            let client = NostrRelayClient::connect_without_signer(
+                relay,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await
+            .ok()?;
+            client
+                .fetch_events_complete_capped(filter, deadline, 64)
+                .await
+                .ok()
+        }
+    });
+    let complete: Vec<Vec<Event>> = futures_util::future::join_all(reads)
         .await
-        .map_err(|err| anyhow::anyhow!("fetch holder authorizations: {err}"))?;
-    Ok(newest_issued_candidate(
-        candidates,
-        &keys.public_key(),
+        .into_iter()
+        .flatten()
+        .collect();
+    let complete_reads = complete.len();
+    let newest = newest_issued_candidate(
+        complete.into_iter().flatten(),
+        &holder,
         &issuers,
         max_issued_at,
-    ))
+    );
+    found_or_absent_by_quorum(
+        newest,
+        complete_reads,
+        manifold_environment.empty_read_quorum(),
+        relays.len(),
+    )
+}
+
+/// A found authorization stands on the one read that returned it. None is
+/// admitted only once a majority of relays completed their reads.
+fn found_or_absent_by_quorum<T>(
+    found: Option<T>,
+    complete_reads: usize,
+    quorum: usize,
+    relays: usize,
+) -> anyhow::Result<Option<T>> {
+    if found.is_none() && complete_reads < quorum {
+        anyhow::bail!(
+            "only {complete_reads} of {relays} relays answered the authorization lookup; {quorum} must answer before it can report none"
+        );
+    }
+    Ok(found)
 }
 
 fn newest_issued_candidate(

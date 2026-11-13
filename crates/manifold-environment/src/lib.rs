@@ -391,10 +391,11 @@ impl ManifoldEnvironmentProfile {
         &self.nostr_relays
     }
 
-    /// Complete relay reads required to report that no FA backup was found.
-    /// A development relay override uses the same majority rule.
+    /// Complete relay reads required to report that a lookup found nothing,
+    /// such as no FA backup or no Holder authorization for an MG. A
+    /// development relay override uses the same majority rule.
     #[must_use]
-    pub fn fa_backup_empty_read_quorum(&self) -> usize {
+    pub fn empty_read_quorum(&self) -> usize {
         self.nostr_relays.as_urls().len() / 2 + 1
     }
 

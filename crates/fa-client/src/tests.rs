@@ -3802,7 +3802,7 @@ async fn empty_backup_recovery_completion_survives_reopen_and_is_environment_sco
             &client.inner.ports.identity.scoped_root(),
             TestIdentity::fa_id(),
             profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
+            profile.empty_read_quorum(),
             &completed,
         )
         .await
@@ -3883,7 +3883,7 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             &restored.inner.ports.identity.scoped_root(),
             fa_id,
             profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
+            profile.empty_read_quorum(),
             &crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Production),
         )
         .await
