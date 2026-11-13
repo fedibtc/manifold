@@ -22,7 +22,6 @@ const STAGING_ESPLORA_URL: &str = "https://mutinynet.com/api/";
 const PRODUCTION_NOSTR_RELAYS: &[&str] = &[
     "wss://relay.dev.fedibtc.com",
     "wss://relay.primal.net",
-    "wss://relay.damus.io/",
 ];
 const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 
