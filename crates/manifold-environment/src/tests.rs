@@ -160,6 +160,7 @@ fn production_profile_uses_fedi_app_production_relays() {
         &[
             "wss://relay.dev.fedibtc.com",
             "wss://relay.primal.net",
+            "wss://relay.nostr.net",
         ]
     );
     assert_eq!(

@@ -61,8 +61,8 @@ verifier constructed by push-gateway and the cloud MG telemetry collector
 expose it to embedding diagnostics.
 
 Development and staging use `wss://relay-staging.dev.fedibtc.com`.
-Production uses, in order, `wss://relay.dev.fedibtc.com` and
-`wss://relay.primal.net`.
+Production uses, in order, `wss://relay.dev.fedibtc.com`,
+`wss://relay.primal.net`, and `wss://relay.nostr.net`.
 Development and staging have distinct unsafe test issuer identities despite
 sharing relay routing. Each commits its issuer's complete secret — identity
 and PBRSA issuance key — and the authority document signed with it as
