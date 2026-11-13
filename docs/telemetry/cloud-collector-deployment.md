@@ -191,6 +191,36 @@ does not know. To roll back, restore the coupled backup taken before the
 upgrade, or stop the collector, drop `mg_reports` and delete the version 6 row
 from `_sqlx_migrations`.
 
+### Seat metric history
+
+Port 8176 also serves
+`GET /metrics/history?fman_id=<MG key>&guardian_seat_id=<seat>`. It returns
+one seat's observations from the last seven days, at most one per 15 minutes,
+as Prometheus text with each sample at its own observation time. It is for
+reading a trend by hand or by an agent; Prometheus keeps scraping `/metrics`.
+A response holds at most 128 MiB of samples and keeps the newest; when it
+omits older ones its first line is a comment with the `before_ms` value that
+continues further back. An unknown seat answers 404, and a request while
+another history render runs answers 429.
+
+The history lives in the SQLite database, compressed, and is bounded to 1 GiB
+of compressed samples and 1,000,000 rows. A seat of a local seven-guardian
+federation running the bundled Fedimint 0.12 admits 605 samples: 216,641
+bytes of samples JSON with 64-character MG, seat and federation ids, and
+3,907 bytes compressed. For 177 such seats at the 15-minute cadence that is
+119,121 rows and about 475 MB of compressed samples, which SQLite lays out in
+about 580 MB of database file; the 30-minute cadence halves it. Reserve that
+headroom beside the archive quota; at the bounds the file stays below about
+2 GB. A week of such a seat renders to about 147 MB of text, so reading all of it
+takes two history responses.
+
+Migration `0008` moves each seat's latest snapshot into the history table,
+compressed, at the first start of the new image; nothing else is lost. An
+older collector image does not start on a migrated database, and the
+compressed rows cannot be moved back by SQL. To roll back, stop the collector
+and restore the coupled backup taken before the upgrade; telemetry received
+after that backup is lost, as with any restore.
+
 Prometheus must preserve the collector's observation timestamps:
 
 ```yaml

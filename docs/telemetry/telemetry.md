@@ -152,9 +152,11 @@ honor_timestamps: true
 track_timestamps_staleness: true
 ```
 
-Prometheus owns metrics history and remote-write state. Changing the inventory
-revision or static method allowlist atomically clears incompatible latest
-snapshots and poll deadlines before serving. Source release metadata never
+Prometheus owns long-term metrics history and remote-write state. The
+collector also keeps seven days of each seat's observations at 15-minute
+resolution, served by `GET /metrics/history`. Changing the inventory
+revision or static method allowlist atomically clears incompatible
+snapshots, their history and poll deadlines before serving. Source release metadata never
 authorizes a target or enables a metric family.
 6. **Non-Fedi-verified MGs** — explicitly out of scope (blind spot
    acknowledged), since telemetry rides on the verification relationship.
