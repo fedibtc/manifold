@@ -13,7 +13,7 @@ use mg_core::push_callback::{
 use serde_json::{Map, Value};
 
 const CALLBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const RATE_LIMIT_RESPONSE_MAX_BYTES: usize = 4 * 1024;
+const GATEWAY_ERROR_RESPONSE_MAX_BYTES: usize = 4 * 1024;
 
 /// The no-proxy, no-redirect callback adapter supplied to `mg-core`.
 ///
@@ -82,7 +82,9 @@ impl CompletionCallbackInvoker for PushGatewayCallbackInvoker {
             }
         };
         let status = response.status();
-        let gateway_error_code = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let gateway_error_code = if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
             bounded_gateway_error_code(response).await
         } else {
             None
@@ -97,7 +99,7 @@ async fn bounded_gateway_error_code(mut response: reqwest::Response) -> Option<S
         let Some(chunk) = response.chunk().await.ok()? else {
             break;
         };
-        if RATE_LIMIT_RESPONSE_MAX_BYTES.saturating_sub(body.len()) < chunk.len() {
+        if GATEWAY_ERROR_RESPONSE_MAX_BYTES.saturating_sub(body.len()) < chunk.len() {
             return None;
         }
         body.extend_from_slice(&chunk);
@@ -122,6 +124,11 @@ fn classify_response(
         } else {
             CallbackAttemptOutcome::Retryable(CompletionCallbackReason::RateLimited)
         };
+    }
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        && gateway_error_code == Some("hook_target_inactive")
+    {
+        return CallbackAttemptOutcome::Retryable(CompletionCallbackReason::TargetInactive);
     }
     if status == reqwest::StatusCode::REQUEST_TIMEOUT || status.is_server_error() {
         return CallbackAttemptOutcome::Retryable(CompletionCallbackReason::GatewayUnavailable);

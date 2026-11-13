@@ -54,6 +54,10 @@ transfers. If you omit the flag, each environment's default applies: on in
 development and staging, off in production. MGs continue transfers they
 already stored regardless of the flag.
 
+To turn on the MG's phone link, set `"guardian_link": true` in the policy
+file; set `false` to hide it again. If you omit the flag, each environment's
+default applies: on in development and staging, off in production.
+
 The retired `guardian_transfer` field must never be set to `true` in production.
 MG 0.1.9 and older FA transfer readers use it to enable the incompatible old
 `TransferSeat` shape; they ignore the new flag and stay off in production
@@ -74,6 +78,11 @@ understand the minimum, set
 `"min_mg_version": "0.1.9"` (a SemVer release no newer than `fman_version`).
 Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
+
+To ask operators below a release to update without stopping their sales, set
+`"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).
+An MG below it sends its linked phone one notification. Omitted, nothing is
+recommended.
 
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or

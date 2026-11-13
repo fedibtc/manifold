@@ -42,7 +42,11 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   wins ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
   Current readers ignore the retired `guardian_transfer` field. Publishers
   must never set it to `true` in production: older readers use it to enable
-  the incompatible old `TransferSeat` shape.
+  the incompatible old `TransferSeat` shape; and
+- whether MGs offer phone link when the setup-payment policy omits the flag
+  (`ManifoldEnvironment::guardian_link`): on in development and staging, off
+  in production. A published `guardian_link` flag always wins
+  ([SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md#enabling-phone-link)).
 
 The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);

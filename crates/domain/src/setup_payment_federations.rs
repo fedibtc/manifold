@@ -209,11 +209,27 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_transfer_v2: Option<bool>,
 
+    /// Whether MGs offer the guardian link: the dashboard's Phone link page
+    /// and notifications to a linked phone. Optional on the wire: absent, the
+    /// Manifold environment's default applies (on in development and staging,
+    /// off in production)
+    /// ([`SPEC-guardian-link`](../../mg/specs/SPEC-guardian-link.md)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_link: Option<bool>,
+
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
     /// running its seats but stops selling new ones until it is updated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_mg_version: Option<MgVersion>,
+
+    /// Oldest Manifold Guardian release Fedi recommends. Optional on the
+    /// wire: absent means no recommendation. An MG below it tells its
+    /// operator to update by notifying the linked phone once
+    /// ([`SPEC-guardian-link`](../../mg/specs/SPEC-guardian-link.md)) and
+    /// otherwise runs as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_min_mg_version: Option<MgVersion>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -232,7 +248,9 @@ pub struct AdmittedSetupPaymentFederations {
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
     guardian_transfer_v2: Option<bool>,
+    guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
+    recommended_min_mg_version: Option<MgVersion>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -245,8 +263,8 @@ impl AdmittedSetupPaymentFederations {
     /// Returns an error for oversized or malformed content, excessive entries,
     /// invalid, oversized, or secret-bearing invites, duplicate derived
     /// federation IDs, a minimum fee rate above the payer's send-rate
-    /// ceiling, a minimum uptime above 100%, or a minimum MG release above
-    /// the latest one.
+    /// ceiling, a minimum uptime above 100%, or a minimum or recommended
+    /// MG release above the latest one.
     pub fn parse(raw_content: &[u8]) -> Result<Self, SetupPaymentFederationsContentError> {
         if raw_content.len() > SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES {
             return Err(SetupPaymentFederationsContentError::ContentTooLarge);
@@ -310,6 +328,13 @@ impl AdmittedSetupPaymentFederations {
         {
             return Err(SetupPaymentFederationsContentError::MinMgVersionAboveLatest);
         }
+        if content
+            .recommended_min_mg_version
+            .as_ref()
+            .is_some_and(|recommended| mg_version.is_older_than(recommended))
+        {
+            return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
+        }
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
             if invite_code.0.is_empty() {
@@ -341,7 +366,9 @@ impl AdmittedSetupPaymentFederations {
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
             guardian_transfer_v2: content.guardian_transfer_v2,
+            guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
+            recommended_min_mg_version: content.recommended_min_mg_version,
         })
     }
 
@@ -429,11 +456,26 @@ impl AdmittedSetupPaymentFederations {
         self.guardian_transfer_v2
     }
 
+    /// Return the published guardian-link flag. `None` when the event omits
+    /// it; the Manifold environment then supplies the default
+    /// (`ManifoldEnvironment::guardian_link`).
+    #[must_use]
+    pub fn guardian_link(&self) -> Option<bool> {
+        self.guardian_link
+    }
+
     /// Return the oldest MG release that may advertise new seats, or `None`
     /// when the event sets no minimum.
     #[must_use]
     pub fn min_mg_version(&self) -> Option<&MgVersion> {
         self.min_mg_version.as_ref()
+    }
+
+    /// Return the oldest MG release Fedi recommends, or `None` when the
+    /// event recommends none.
+    #[must_use]
+    pub fn recommended_min_mg_version(&self) -> Option<&MgVersion> {
+        self.recommended_min_mg_version.as_ref()
     }
 }
 
@@ -481,6 +523,10 @@ pub enum SetupPaymentFederationsContentError {
     /// The published minimum MG release is above the latest release the
     /// same event names, which no MG can run.
     MinMgVersionAboveLatest,
+
+    /// The published recommended MG release is above the latest release the
+    /// same event names, which no MG can update to.
+    RecommendedMinMgVersionAboveLatest,
     /// An absence limit must allow a positive amount of time.
     ZeroOfflineDuration,
 }
@@ -515,6 +561,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MinMgVersionAboveLatest => {
                 "setup-payment federation set sets a minimum MG release above the latest one"
+            }
+            Self::RecommendedMinMgVersionAboveLatest => {
+                "setup-payment federation set sets a recommended MG release above the latest one"
             }
         };
         formatter.write_str(message)

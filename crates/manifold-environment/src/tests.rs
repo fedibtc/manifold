@@ -514,3 +514,18 @@ fn a_published_guardian_transfer_v2_flag_wins_over_the_environment_default() {
     assert!(ManifoldEnvironment::Staging.guardian_transfer_v2(None));
     assert!(!ManifoldEnvironment::Production.guardian_transfer_v2(None));
 }
+
+#[test]
+fn a_published_guardian_link_flag_wins_over_the_environment_default() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        assert!(environment.guardian_link(Some(true)));
+        assert!(!environment.guardian_link(Some(false)));
+    }
+    assert!(ManifoldEnvironment::Development.guardian_link(None));
+    assert!(ManifoldEnvironment::Staging.guardian_link(None));
+    assert!(!ManifoldEnvironment::Production.guardian_link(None));
+}

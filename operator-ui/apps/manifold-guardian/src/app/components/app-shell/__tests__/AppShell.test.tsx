@@ -8,6 +8,9 @@ import { AppShell } from '../AppShell';
 
 vi.mock('@/shared/api/hooks/use-onboarding/useOnboarding');
 vi.mock('@/features/support/api/hooks/use-support-chat/useSupportChat');
+vi.mock('@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink', () => ({
+  useGuardianLink: () => ({ data: { availability: 'ready', link: null, offer: null } })
+}));
 
 const useOnboardingMock = vi.mocked(useOnboarding);
 

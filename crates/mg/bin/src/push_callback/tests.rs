@@ -60,6 +60,20 @@ fn gateway_statuses_have_explicit_retry_and_terminal_classes() {
         CallbackAttemptOutcome::Retryable(CompletionCallbackReason::GatewayUnavailable)
     );
     assert_eq!(
+        classify_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("target_installation_unavailable")
+        ),
+        CallbackAttemptOutcome::Retryable(CompletionCallbackReason::GatewayUnavailable)
+    );
+    assert_eq!(
+        classify_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("hook_target_inactive")
+        ),
+        CallbackAttemptOutcome::Retryable(CompletionCallbackReason::TargetInactive)
+    );
+    assert_eq!(
         classify_response(StatusCode::TOO_MANY_REQUESTS, None),
         CallbackAttemptOutcome::Retryable(CompletionCallbackReason::RateLimited)
     );
@@ -95,7 +109,7 @@ async fn request_has_exact_shape_and_response_body_is_bounded() {
         *seen.0.lock().unwrap() = Some(request);
         (
             StatusCode::TOO_MANY_REQUESTS,
-            vec![b'x'; RATE_LIMIT_RESPONSE_MAX_BYTES + 1],
+            vec![b'x'; GATEWAY_ERROR_RESPONSE_MAX_BYTES + 1],
         )
     }
 
@@ -126,5 +140,39 @@ async fn request_has_exact_shape_and_response_body_is_bounded() {
         Some("formation-dkg-complete")
     );
     assert!(request.data.is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn an_inactive_phone_is_read_from_the_gateway_error_body() {
+    async fn receive() -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": {
+                    "code": "hook_target_inactive",
+                    "message": "target installation must be reopened to receive notifications"
+                }
+            })),
+        )
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/hooks/{hook_id}/{hook_secret}", post(receive)),
+        )
+        .await
+        .unwrap();
+    });
+    let callback = callback(format!("http://{address}/hooks/id/bearer"));
+    assert_eq!(
+        PushGatewayCallbackInvoker::loopback()
+            .invoke(&callback)
+            .await,
+        CallbackAttemptOutcome::Retryable(CompletionCallbackReason::TargetInactive)
+    );
     server.abort();
 }

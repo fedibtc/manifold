@@ -172,6 +172,22 @@ impl ManifoldEnvironment {
         })
     }
 
+    /// Whether MGs in this environment offer the guardian link (phone
+    /// notifications), given the `guardian_link` flag of the admitted
+    /// setup-payment policy, if any.
+    ///
+    /// A published flag always wins. Without one, development and staging
+    /// offer it and production does not, so a production host does not see
+    /// the feature until Fedi publishes the flag
+    /// ([`SPEC-guardian-link`](../../mg/specs/SPEC-guardian-link.md)).
+    #[must_use]
+    pub fn guardian_link(self, published: Option<bool>) -> bool {
+        published.unwrap_or(match self {
+            Self::Development | Self::Staging => true,
+            Self::Production => false,
+        })
+    }
+
     /// Resolve this environment's public configuration, applying the
     /// development-only override environment variables.
     ///

@@ -361,6 +361,12 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// The operator's linked phone: offer and evaluator memory
+    /// ([`crate::guardian_link`]).
+    pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
+    /// This daemon's Iroh endpoint id, bound once the router exists; the link
+    /// offer names it so the phone can dial back.
+    iroh_endpoint_id: std::sync::OnceLock<String>,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -568,6 +574,8 @@ impl Fleet {
             advertisement_changed,
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
+            guardian_link: Default::default(),
+            iroh_endpoint_id: std::sync::OnceLock::new(),
         };
         Ok(fleet)
     }
@@ -706,6 +714,20 @@ impl Fleet {
         &self.config
     }
 
+    pub(crate) fn db(&self) -> &Db {
+        &self.db
+    }
+
+    /// Record the Iroh endpoint id the daemon serves on. Set once; a second
+    /// call with the same id is a no-op.
+    pub fn bind_iroh_endpoint_id(&self, id: String) {
+        let _ = self.iroh_endpoint_id.set(id);
+    }
+
+    pub(crate) fn iroh_endpoint_id(&self) -> Option<String> {
+        self.iroh_endpoint_id.get().cloned()
+    }
+
     /// Stop every supervised child. Used by the daemon before process exit and
     /// by embedders before dropping the runtime; `Drop` remains best-effort.
     pub async fn shutdown(&self) {
@@ -827,6 +849,8 @@ impl Fleet {
             .seat_readiness
             .lock()
             .expect("readiness lock is never poisoned") = Some(report);
+        // A failing check is something to tell the linked phone.
+        self.guardian_link.changed.notify_one();
         let ready = report.ready();
         let update = SeatsConfigUpdate {
             ready_for_new_seats: Some(ready),

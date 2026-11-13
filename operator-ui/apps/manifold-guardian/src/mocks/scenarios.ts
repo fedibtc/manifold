@@ -166,6 +166,7 @@ const base = (): Pick<
   | 'maxSeats'
   | 'readyForNewSeats'
   | 'seatReadiness'
+  | 'guardianLink'
   | 'supportAvailable'
   | 'supportMessages'
   | 'supportReadIds'
@@ -175,6 +176,7 @@ const base = (): Pick<
   maxSeats: 3,
   readyForNewSeats: true,
   seatReadiness: READY,
+  guardianLink: { availability: 'ready', link: null, offer: null },
   supportAvailable: true,
   supportMessages: [],
   supportReadIds: [],
@@ -192,9 +194,59 @@ const base = (): Pick<
   onboardingTransport: 'normal'
 });
 
-// `satisfies` rather than a type annotation: it keeps the keys literal, so
-// `notes` below can be required to cover exactly this set.
+const fediAppWorld = (guardianLink: MockState['guardianLink']): MockState => ({
+  ...base(),
+  seats: [],
+  paymentFederations: [],
+  price: null,
+  onboarding: authorized,
+  guardianLink
+});
+
+const mockPhone = (): NonNullable<MockState['guardianLink']['link']> => {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    device_label: 'Pixel 8',
+    linked_at: now - 86_400,
+    last_notified_at: now - 600,
+    notified_reasons: ['uptime_check_failed', 'support_message'],
+    delivery: { state: 'active', reason: null }
+  };
+};
+
+// Deliberately not a real offer or secret; only the mock phone can consume it.
+export const mockGuardianLinkOffer = () => ({
+  uri: 'manifold:guardian-link?v=1&fman=mock-fman&node=mock-node&env=development&secret=mock-only',
+  expires_at: Math.floor(Date.now() / 1000) + 600
+});
+
+// `satisfies` keeps the keys literal, so notes must cover exactly this set.
 const builders = {
+  'fedi-app-disabled': () => fediAppWorld({ availability: 'disabled', link: null, offer: null }),
+  'fedi-app-unavailable': () =>
+    fediAppWorld({ availability: 'no_push_gateway', link: null, offer: null }),
+  'fedi-app-unlinked': () => fediAppWorld({ availability: 'ready', link: null, offer: null }),
+  'fedi-app-offer': () =>
+    fediAppWorld({ availability: 'ready', link: null, offer: mockGuardianLinkOffer() }),
+  'fedi-app-active': () => fediAppWorld({ availability: 'ready', link: mockPhone(), offer: null }),
+  'fedi-app-inactive': () =>
+    fediAppWorld({
+      availability: 'ready',
+      link: { ...mockPhone(), delivery: { state: 'inactive', reason: null } },
+      offer: null
+    }),
+  'fedi-app-terminal': () =>
+    fediAppWorld({
+      availability: 'ready',
+      link: { ...mockPhone(), delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
+      offer: null
+    }),
+  'fedi-app-relinking': () =>
+    fediAppWorld({
+      availability: 'ready',
+      link: { ...mockPhone(), delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
+      offer: mockGuardianLinkOffer()
+    }),
   'fresh-fleet': () => ({
     ...base(),
     seats: [],
@@ -622,6 +674,35 @@ export type ScenarioName = keyof typeof builders;
 // Keyed off `builders`, so adding a scenario without documenting it is a type
 // error rather than a control panel that silently drifts out of date.
 const notes: Record<ScenarioName, ScenarioNote> = {
+  'fedi-app-disabled': {
+    desc: 'The setup-payment policy keeps phone link off; the nav item and page are hidden.',
+    affects: ['phone-link']
+  },
+  'fedi-app-unavailable': {
+    desc: 'No push gateway configured; linking is unavailable.',
+    affects: ['phone-link']
+  },
+  'fedi-app-unlinked': { desc: 'No linked phone or open offer.', affects: ['phone-link'] },
+  'fedi-app-offer': {
+    desc: 'An open, mock-only QR offer, expiring in ten minutes.',
+    affects: ['phone-link']
+  },
+  'fedi-app-active': {
+    desc: 'A linked Pixel 8 receiving notifications.',
+    affects: ['phone-link']
+  },
+  'fedi-app-inactive': {
+    desc: 'The gateway holds the phone until the Fedi app is opened; alerts are retried.',
+    affects: ['phone-link']
+  },
+  'fedi-app-terminal': {
+    desc: 'The gateway rejected the phone hook; linking again is required.',
+    affects: ['phone-link']
+  },
+  'fedi-app-relinking': {
+    desc: 'A stopped link and an open replacement offer coexist.',
+    affects: ['phone-link']
+  },
   'fresh-fleet': {
     desc: 'Default. Onboarded and authorized, but nothing sold yet: no seats, no payment federations, no price.',
     affects: ['overview', 'seats', 'offer']

@@ -154,7 +154,22 @@ replacement ordering as the new shared high-water mark.
   a SemVer string, or one newer than `fman_version`, rejects the publication like any
   other invalid field, so consumers keep the policy they hold; the publisher
   refuses to sign it. MG and FA releases from 0.1.1 on admit unknown fields
-  and ignore it, so a 0.1.8 MG keeps advertising; and
+  and ignore it, so a 0.1.8 MG keeps advertising;
+- `recommended_min_mg_version`, the oldest Manifold Guardian release Fedi
+  recommends, as a SemVer string no newer than `fman_version` by SemVer
+  precedence. Optional: absent or `null` means no recommendation. An MG whose
+  release has lower precedence tells its operator once, through the linked
+  phone ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md)), and
+  otherwise runs and sells seats as before; `min_mg_version` is the field
+  that stops new seats. A value that is neither `null` nor a SemVer string,
+  or one newer than `fman_version`, rejects the publication like any other
+  invalid field. MG and FA releases from 0.1.1 on admit unknown fields and
+  ignore it;
+- `guardian_link`, a boolean that turns on the MG's phone link
+  ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-phone-link)).
+  Optional: absent means the Manifold environment's default, on in
+  development and staging and off in production. Older MGs and FAs that
+  admit unknown fields ignore it; and
 - `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
   guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
@@ -217,7 +232,7 @@ Admission performs all of these checks before the set influences policy:
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could
-    run.
+    run; and the same for `recommended_min_mg_version`.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
