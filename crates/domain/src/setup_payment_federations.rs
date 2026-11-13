@@ -209,6 +209,14 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_transfer_v2: Option<bool>,
 
+    /// Whether MGs offer the guardian link: the dashboard's Phone link page
+    /// and notifications to a linked phone. Optional on the wire: absent, the
+    /// Manifold environment's default applies (on in development and staging,
+    /// off in production)
+    /// ([`SPEC-guardian-link`](../../mg/specs/SPEC-guardian-link.md)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_link: Option<bool>,
+
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
     /// running its seats but stops selling new ones until it is updated.
@@ -240,6 +248,7 @@ pub struct AdmittedSetupPaymentFederations {
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
     guardian_transfer_v2: Option<bool>,
+    guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
 }
@@ -357,6 +366,7 @@ impl AdmittedSetupPaymentFederations {
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
             guardian_transfer_v2: content.guardian_transfer_v2,
+            guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
         })
@@ -444,6 +454,14 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn guardian_transfer_v2(&self) -> Option<bool> {
         self.guardian_transfer_v2
+    }
+
+    /// Return the published guardian-link flag. `None` when the event omits
+    /// it; the Manifold environment then supplies the default
+    /// (`ManifoldEnvironment::guardian_link`).
+    #[must_use]
+    pub fn guardian_link(&self) -> Option<bool> {
+        self.guardian_link
     }
 
     /// Return the oldest MG release that may advertise new seats, or `None`

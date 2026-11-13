@@ -54,6 +54,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
         guardian_transfer_v2: None,
+        guardian_link: None,
         min_mg_version: None,
         recommended_min_mg_version: None,
     })
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
             guardian_transfer_v2: None,
+            guardian_link: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
         })
@@ -581,6 +583,33 @@ fn guardian_transfer_v2_is_absent_unless_the_policy_sets_it() {
     );
     assert_eq!(
         admitted(r#","guardian_transfer_v2":"yes""#),
+        Err(SetupPaymentFederationsContentError::MalformedContent)
+    );
+}
+
+#[test]
+fn guardian_link_is_absent_unless_the_policy_sets_it() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    assert_eq!(admitted("").unwrap().guardian_link(), None);
+    assert_eq!(
+        admitted(r#","guardian_link":false"#)
+            .unwrap()
+            .guardian_link(),
+        Some(false)
+    );
+    assert_eq!(
+        admitted(r#","guardian_link":true"#)
+            .unwrap()
+            .guardian_link(),
+        Some(true)
+    );
+    assert_eq!(
+        admitted(r#","guardian_link":"yes""#),
         Err(SetupPaymentFederationsContentError::MalformedContent)
     );
 }

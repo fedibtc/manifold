@@ -26,7 +26,7 @@ const renderItems = () => {
 
 beforeEach(() => {
   unread(undefined);
-  phoneStatus({ available: true, link: activePhone, offer: null });
+  phoneStatus({ availability: 'ready', link: activePhone, offer: null });
 });
 
 it('should render a link for every configured nav item', () => {
@@ -57,7 +57,7 @@ it('should show no dot once everything is read', () => {
 
 it('should flag Phone link when notifications stopped', () => {
   phoneStatus({
-    available: true,
+    availability: 'ready',
     link: { ...activePhone, delivery: { state: 'terminal', reason: 'hook_not_found' } },
     offer: null
   });
@@ -70,7 +70,7 @@ it('should flag Phone link when notifications stopped', () => {
 
 it('should flag Phone link while the phone is not reached', () => {
   phoneStatus({
-    available: true,
+    availability: 'ready',
     link: { ...activePhone, delivery: { state: 'inactive', reason: null } },
     offer: null
   });
@@ -80,14 +80,24 @@ it('should flag Phone link while the phone is not reached', () => {
 });
 
 it.each([
-  ['a phone is active', { available: true, link: activePhone, offer: null }],
-  ['no phone was ever linked', { available: true, link: null, offer: null }],
-  ['this host cannot notify at all', { available: false, link: null, offer: null }],
-  ['the status has not loaded', undefined]
+  ['a phone is active', { availability: 'ready', link: activePhone, offer: null }],
+  ['no phone was ever linked', { availability: 'ready', link: null, offer: null }],
+  ['this host cannot notify at all', { availability: 'no_push_gateway', link: null, offer: null }]
 ])('should not flag Phone link when %s', (_name, data) => {
   phoneStatus(data);
   renderItems();
 
   expect(screen.getByRole('link', { name: 'Phone link' })).toBeInTheDocument();
   expect(document.querySelector('a [aria-hidden="true"]')).toBeNull();
+});
+
+it.each([
+  ['the policy keeps it off', { availability: 'disabled', link: null, offer: null }],
+  ['the status has not loaded', undefined]
+])('should hide Phone link when %s', (_name, data) => {
+  phoneStatus(data);
+  renderItems();
+
+  expect(screen.queryByRole('link', { name: /Phone link/ })).toBeNull();
+  expect(screen.getByRole('link', { name: 'Support' })).toBeInTheDocument();
 });

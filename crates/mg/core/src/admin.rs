@@ -668,7 +668,7 @@ pub fn guardian_link_json(status: crate::guardian_link::GuardianLinkStatus) -> V
     let offer = status
         .offer
         .map(|offer| json!({ "uri": offer.uri, "expires_at": offer.expires_at }));
-    json!({ "available": status.available, "link": link, "offer": offer })
+    json!({ "availability": status.availability.as_str(), "link": link, "offer": offer })
 }
 
 /// `TestGuardianLinkNotification` reports the one attempt it made.

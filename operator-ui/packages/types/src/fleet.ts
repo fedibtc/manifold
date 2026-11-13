@@ -395,7 +395,8 @@ export interface SupportChatResponse {
 }
 // Guardian-link timestamps are Unix seconds. The offer URI contains a one-time secret.
 export interface GuardianLinkResponse {
-  available: boolean;
+  // `disabled`: the setup-payment policy keeps phone link off; the dashboard hides it.
+  availability: 'disabled' | 'no_push_gateway' | 'ready';
   link: {
     device_label: string;
     linked_at: number;

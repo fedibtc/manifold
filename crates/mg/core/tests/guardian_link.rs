@@ -16,6 +16,7 @@ use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig, Seat
 use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
 use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 
 const ORIGIN: &str = "https://push.example.com";
 
@@ -61,6 +62,10 @@ struct Harness {
 }
 
 async fn harness(origin: Option<&str>) -> Harness {
+    harness_in(ManifoldEnvironment::Development, origin).await
+}
+
+async fn harness_in(environment: ManifoldEnvironment, origin: Option<&str>) -> Harness {
     let temp = TempDir::new().unwrap();
     let db = Db::open(temp.path()).await.unwrap();
     crate::onboarding::onboard_as_new(&db).await.unwrap();
@@ -77,8 +82,7 @@ async fn harness(origin: Option<&str>) -> Harness {
             process_spawner: SeatProcessSpawner::Fake(Arc::new(
                 crate::seat_process::fake::FakeSeatProcessSpawner::default(),
             )),
-            manifold_environment:
-                fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+            manifold_environment: environment,
             first_port_base: PortBase::new(30_000).unwrap(),
             setup_payments_configured: true,
             guardian_verification_fee_account: None,
@@ -142,6 +146,15 @@ fn policy(recommended: Option<&str>) -> AdmittedSetupPaymentFederations {
     let field = recommended
         .map(|version| format!(r#","recommended_min_mg_version":"{version}""#))
         .unwrap_or_default();
+    policy_with(&field)
+}
+
+/// A setup-payment policy that publishes the `guardian_link` flag.
+fn flagged(enabled: bool) -> AdmittedSetupPaymentFederations {
+    policy_with(&format!(r#","guardian_link":{enabled}"#))
+}
+
+fn policy_with(field: &str) -> AdmittedSetupPaymentFederations {
     AdmittedSetupPaymentFederations::parse(
         format!(
             r#"{{"version":1,"fman_version":"99.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
@@ -474,10 +487,77 @@ async fn link_needs_the_open_offer_and_a_hook_under_the_gateway() {
 }
 
 #[tokio::test]
+async fn production_keeps_phone_link_off_until_the_policy_turns_it_on() {
+    let h = harness_in(ManifoldEnvironment::Production, Some(ORIGIN)).await;
+    let (publish, policies) = watch::channel(None);
+    h.fleet.bind_guardian_link_policy(policies);
+    assert_eq!(
+        h.fleet.guardian_link_status().await.unwrap().availability,
+        GuardianLinkAvailability::Disabled
+    );
+    assert!(h.fleet.create_guardian_link_offer().is_err());
+    publish.send_replace(Some(policy(None)));
+    assert!(h.fleet.create_guardian_link_offer().is_err());
+    publish.send_replace(Some(flagged(true)));
+    assert_eq!(
+        h.fleet.guardian_link_status().await.unwrap().availability,
+        GuardianLinkAvailability::Ready
+    );
+    link(&h).await;
+    h.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_policy_that_turns_phone_link_off_stops_linking_and_alerts() {
+    let h = harness(Some(ORIGIN)).await;
+    let (publish, policies) = watch::channel(None);
+    h.fleet.bind_guardian_link_policy(policies);
+    let rpc = link(&h).await;
+    let invite = h.fleet.create_guardian_link_offer().unwrap();
+    support_message(&h.fleet, '1').await;
+    let off = flagged(false);
+    publish.send_replace(Some(off.clone()));
+    assert_eq!(
+        h.fleet.guardian_link_status().await.unwrap().availability,
+        GuardianLinkAvailability::Disabled
+    );
+    // An offer handed out while on is refused once off.
+    assert_eq!(
+        rpc.link_device(LinkDeviceRequest {
+            version: ProtocolV1,
+            secret: invite.secret,
+            device_label: "Other".to_owned(),
+            callback: hook("h2/s2"),
+        })
+        .await
+        .unwrap_err(),
+        GuardianLinkError::InvalidInvite
+    );
+    assert!(h.fleet.test_guardian_link_notification().await.is_err());
+    let mut backoff = None;
+    assert!(!tick(&h.fleet, Some(&off), &mut backoff).await.unwrap());
+    assert!(h.invoker.calls().is_empty());
+    let link = h.fleet.db().guardian_link().await.unwrap().unwrap();
+    assert_eq!(link.device_label, "Pixel");
+    assert!(link.notified_reasons.is_empty());
+    // Turned back on, the next tick tells what is current.
+    assert!(
+        tick(&h.fleet, Some(&flagged(true)), &mut backoff)
+            .await
+            .unwrap()
+    );
+    assert_eq!(h.invoker.calls().len(), 1);
+    h.fleet.shutdown().await;
+}
+
+#[tokio::test]
 async fn offers_need_a_gateway_and_expire() {
     let h = harness(None).await;
     assert!(h.fleet.create_guardian_link_offer().is_err());
-    assert!(!h.fleet.guardian_link_status().await.unwrap().available);
+    assert_eq!(
+        h.fleet.guardian_link_status().await.unwrap().availability,
+        GuardianLinkAvailability::NoPushGateway
+    );
     h.fleet.shutdown().await;
 
     let h = harness(Some(ORIGIN)).await;

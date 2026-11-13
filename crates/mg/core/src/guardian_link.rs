@@ -24,7 +24,7 @@
 //!   app when it creates the hook, and the dashboard shows why.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, ProtocolV1};
@@ -75,20 +75,44 @@ pub(crate) struct LinkOffer {
     expires_at_ms: i64,
 }
 
-/// Per-fleet guardian-link runtime state: the open offer and the notifier's
-/// wake.
+/// Per-fleet guardian-link runtime state: the open offer, the setup-payment
+/// policy that switches the feature on, and the notifier's wake.
 #[derive(Default)]
 pub(crate) struct GuardianLinkState {
     offer: Mutex<Option<LinkOffer>>,
+    /// The admitted setup-payment policy, bound once by the daemon when its
+    /// Nostr boundary exists. Unbound reads as no policy admitted yet.
+    policy: OnceLock<watch::Receiver<Option<AdmittedSetupPaymentFederations>>>,
     /// Wakes the notifier after a link, a revoke, or a new readiness report.
     pub(crate) changed: tokio::sync::Notify,
+}
+
+/// Whether the guardian link can be used on this MG.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardianLinkAvailability {
+    /// The setup-payment policy's `guardian_link` flag, or the Manifold
+    /// environment's default without one, turns the feature off: the
+    /// dashboard hides it, and nothing links or notifies.
+    Disabled,
+    /// On, but this deployment has no push gateway, so it cannot notify.
+    NoPushGateway,
+    Ready,
+}
+
+impl GuardianLinkAvailability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NoPushGateway => "no_push_gateway",
+            Self::Ready => "ready",
+        }
+    }
 }
 
 /// The operator-facing projection of the link (admin `GuardianLink`).
 #[derive(Clone, Debug)]
 pub struct GuardianLinkStatus {
-    /// Whether this deployment can invoke hooks at all.
-    pub available: bool,
+    pub availability: GuardianLinkAvailability,
     pub link: Option<GuardianLinkRecord>,
     pub offer: Option<LinkOfferStatus>,
 }
@@ -100,13 +124,53 @@ pub struct LinkOfferStatus {
 }
 
 impl Fleet {
+    /// Supply the admitted setup-payment policy whose `guardian_link` flag
+    /// switches the feature. Set once; a second call is ignored.
+    pub fn bind_guardian_link_policy(
+        &self,
+        policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    ) {
+        let _ = self.guardian_link.policy.set(policy);
+    }
+
+    /// The `guardian_link` flag of the setup-payment policy this MG holds,
+    /// or, without one, its Manifold environment's default
+    /// ([`SPEC-guardian-link`](../../specs/SPEC-guardian-link.md)).
+    fn guardian_link_enabled(&self) -> bool {
+        match self.guardian_link.policy.get() {
+            Some(policy) => self.guardian_link_enabled_by(policy.borrow().as_ref()),
+            None => self.guardian_link_enabled_by(None),
+        }
+    }
+
+    fn guardian_link_enabled_by(&self, policy: Option<&AdmittedSetupPaymentFederations>) -> bool {
+        self.config()
+            .manifold_environment
+            .guardian_link(policy.and_then(AdmittedSetupPaymentFederations::guardian_link))
+    }
+
+    pub fn guardian_link_availability(&self) -> GuardianLinkAvailability {
+        if !self.guardian_link_enabled() {
+            GuardianLinkAvailability::Disabled
+        } else if self.config().push_gateway_origin.is_none() {
+            GuardianLinkAvailability::NoPushGateway
+        } else {
+            GuardianLinkAvailability::Ready
+        }
+    }
+
     /// Hand out a fresh link offer, replacing any open one. Needs the Iroh
     /// endpoint id the daemon binds once its router is up.
     pub fn create_guardian_link_offer(&self) -> anyhow::Result<GuardianLinkInvite> {
-        anyhow::ensure!(
-            self.config().push_gateway_origin.is_some(),
-            "this host has no push gateway configured, so it cannot notify a phone"
-        );
+        match self.guardian_link_availability() {
+            GuardianLinkAvailability::Disabled => {
+                anyhow::bail!("phone link is not enabled on this network")
+            }
+            GuardianLinkAvailability::NoPushGateway => anyhow::bail!(
+                "this host has no push gateway configured, so it cannot notify a phone"
+            ),
+            GuardianLinkAvailability::Ready => {}
+        }
         let iroh_endpoint_id = self
             .iroh_endpoint_id()
             .ok_or_else(|| anyhow::anyhow!("the daemon is still starting"))?;
@@ -169,7 +233,7 @@ impl Fleet {
                 })
         };
         Ok(GuardianLinkStatus {
-            available: self.config().push_gateway_origin.is_some(),
+            availability: self.guardian_link_availability(),
             link,
             offer,
         })
@@ -277,6 +341,10 @@ impl Fleet {
     /// The host's test: notify the linked device now. Consumes one of the
     /// gateway's hourly invocations and tells it nothing new.
     pub async fn test_guardian_link_notification(&self) -> anyhow::Result<CallbackAttemptOutcome> {
+        anyhow::ensure!(
+            self.guardian_link_enabled(),
+            "phone link is not enabled on this network"
+        );
         let link = self
             .db()
             .guardian_link()
@@ -424,6 +492,12 @@ async fn tick(
     policy: Option<&AdmittedSetupPaymentFederations>,
     backoff: &mut Backoff,
 ) -> anyhow::Result<bool> {
+    // Off, nothing is told and nothing is recorded as told: when the policy
+    // turns it on, the next tick tells what is current then.
+    if !fleet.guardian_link_enabled_by(policy) {
+        *backoff = None;
+        return Ok(false);
+    }
     let Some(link) = fleet.db().guardian_link().await? else {
         *backoff = None;
         return Ok(false);
@@ -517,6 +591,9 @@ impl GuardianLinkService for GuardianLinkRpc {
         &self,
         request: LinkDeviceRequest,
     ) -> GuardianLinkResult<LinkDeviceResponse> {
+        if !self.fleet.guardian_link_enabled() {
+            return Err(GuardianLinkError::InvalidInvite);
+        }
         validate_device_label(&request.device_label)?;
         self.fleet
             .validate_guardian_link_callback(&request.callback)?;

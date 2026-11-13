@@ -569,6 +569,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         holder_authorization_store,
         db,
     );
+    fleet.bind_guardian_link_policy(nostr.subscribe_setup_payment_federations());
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
     let rpc = ManifoldGuardianRpc::new(fleet.clone(), nostr.subscribe_setup_payment_federations());

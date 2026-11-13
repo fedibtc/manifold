@@ -231,7 +231,7 @@ describe('guardian link', () => {
     expect(getState().guardianLink.link?.device_label).toBe('Pixel 8');
     expect(getState().guardianLink.offer?.uri).toContain('secret=mock-only');
     expect(dispatch('RevokeGuardianLink')).toEqual({
-      Ok: { available: true, link: null, offer: null }
+      Ok: { availability: 'ready', link: null, offer: null }
     });
   });
 
@@ -249,6 +249,14 @@ describe('guardian link', () => {
       'uptime_check_failed',
       'support_message'
     ]);
+  });
+
+  it('should not create an offer where the policy keeps phone link off', () => {
+    resetState('fedi-app-disabled');
+    expect(dispatch('CreateGuardianLinkOffer')).toEqual({
+      Err: { kind: 'other', message: 'phone link is not enabled' }
+    });
+    expect(getState().guardianLink.offer).toBeNull();
   });
 
   it('should not create an offer without a push gateway', () => {

@@ -762,7 +762,7 @@ describe('committed fixtures match their type-checked mirrors', () => {
 });
 
 const guardianLinkMirror = {
-  available: true,
+  availability: 'ready',
   link: {
     delivery: { reason: 'hook_expired_or_revoked', state: 'terminal' },
     device_label: 'Pixel 8',
@@ -777,7 +777,7 @@ const guardianLinkMirror = {
   }
 } satisfies GuardianLinkResponse;
 const guardianLinkUnlinkedMirror = {
-  available: false,
+  availability: 'no_push_gateway',
   link: null,
   offer: null
 } satisfies GuardianLinkResponse;

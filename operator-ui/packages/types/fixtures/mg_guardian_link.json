@@ -1,5 +1,5 @@
 {
-  "available": true,
+  "availability": "ready",
   "link": {
     "delivery": {
       "reason": "hook_expired_or_revoked",

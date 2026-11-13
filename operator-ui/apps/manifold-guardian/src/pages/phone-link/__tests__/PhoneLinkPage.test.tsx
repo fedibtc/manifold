@@ -1,11 +1,12 @@
 import type { GuardianLinkResponse } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PhoneLinkPage } from '@/pages/phone-link/PhoneLinkPage';
 import * as adminCallModule from '@/shared/api/adminCall';
 
-const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };
+const unlinked: GuardianLinkResponse = { availability: 'ready', link: null, offer: null };
 const phone: NonNullable<GuardianLinkResponse['link']> = {
   device_label: 'Pixel 8',
   linked_at: 1700000000,
@@ -42,8 +43,31 @@ const terminalLink: NonNullable<GuardianLinkResponse['link']> = {
   delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' }
 };
 
+it('should send the host away and mint nothing where the policy keeps phone link off', async () => {
+  const adminCall = vi
+    .spyOn(adminCallModule, 'adminCall')
+    .mockResolvedValue({ availability: 'disabled', link: null, offer: null });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter(
+    [
+      { path: '/', element: <p>Overview</p> },
+      { path: '/phone-link', element: <PhoneLinkPage /> }
+    ],
+    { initialEntries: ['/phone-link'] }
+  );
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  );
+  expect(await screen.findByText('Overview')).toBeInTheDocument();
+  expect(router.state.location.pathname).toBe('/');
+  expect(screen.queryByText('Stay connected to your guardian')).not.toBeInTheDocument();
+  expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
+});
+
 it('should name the setting when no push gateway is configured, without minting a code', async () => {
-  const adminCall = renderPage({ ...unlinked, available: false });
+  const adminCall = renderPage({ ...unlinked, availability: 'no_push_gateway' });
   expect(await screen.findByText('Phone alerts are off on this host')).toBeInTheDocument();
   expect(screen.getByText('FLEET_MANAGER_PUSH_GATEWAY_ORIGIN')).toBeInTheDocument();
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');

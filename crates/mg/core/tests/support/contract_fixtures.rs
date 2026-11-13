@@ -38,7 +38,9 @@ use mg_core::guardian_fee::{
     Collected, CollectionFailure, CollectionFailurePhase, FederationFeeStatus, FeePolicy,
     Remittance,
 };
-use mg_core::guardian_link::{AttentionReason, GuardianLinkStatus, LinkOfferStatus};
+use mg_core::guardian_link::{
+    AttentionReason, GuardianLinkAvailability, GuardianLinkStatus, LinkOfferStatus,
+};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
@@ -760,7 +762,7 @@ pub fn guardian_link_fixture() -> Value {
     })
     .unwrap();
     admin::guardian_link_json(GuardianLinkStatus {
-        available: true,
+        availability: GuardianLinkAvailability::Ready,
         link: Some(GuardianLinkRecord {
             device_label: "Pixel 8".to_owned(),
             callback: Some(callback),
@@ -791,7 +793,7 @@ pub fn guardian_link_fixture() -> Value {
 /// A host with no push gateway configured: nothing linked, no offer possible.
 pub fn guardian_link_unlinked_fixture() -> Value {
     admin::guardian_link_json(GuardianLinkStatus {
-        available: false,
+        availability: GuardianLinkAvailability::NoPushGateway,
         link: None,
         offer: None,
     })

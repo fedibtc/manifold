@@ -115,7 +115,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   // With no phone the code is simply there. A stopped phone gets one when the
   // host presses Reconnect. It is minted again after it expires; a failed mint
   // waits for the next poll.
-  const wantsOffer = status.data?.available === true && !link && !offer;
+  const wantsOffer = status.data?.availability === 'ready' && !link && !offer;
   useEffect(() => {
     if (wantsOffer && !creating && !createFailed) handleCreate();
   }, [wantsOffer, creating, createFailed, handleCreate]);
@@ -123,7 +123,7 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
   return (
     <QuerySurface disposition={disposition} onRetry={retry}>
       {status.data &&
-        (status.data.available ? (
+        (status.data.availability === 'ready' ? (
           <div className={styles.root}>
             {link && justLinked && !terminal && (
               <div role="status">

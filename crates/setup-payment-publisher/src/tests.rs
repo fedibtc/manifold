@@ -132,6 +132,17 @@ fn manifest_keeps_the_guardian_transfer_v2_flag() {
     }
 }
 
+#[test]
+fn manifest_keeps_the_guardian_link_flag() {
+    let temp = TempDir::new().unwrap();
+    for enabled in [true, false] {
+        let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+        content["guardian_link"] = serde_json::json!(enabled);
+        let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
+        assert_eq!(read_content(&path).unwrap().guardian_link, Some(enabled));
+    }
+}
+
 /// A partial uptime minimum is published with the defaults filled in, while a
 /// misspelled or future window is refused rather than signed as a default.
 #[test]

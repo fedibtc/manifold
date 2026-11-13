@@ -430,7 +430,8 @@ const guardianLink: Verb<'GuardianLink'> = () => {
 
 const createGuardianLinkOffer: Verb<'CreateGuardianLinkOffer'> = () => {
   const status = getState().guardianLink;
-  if (!status.available) throw new Error('no push gateway configured');
+  if (status.availability === 'disabled') throw new Error('phone link is not enabled');
+  if (status.availability === 'no_push_gateway') throw new Error('no push gateway configured');
   status.offer = mockGuardianLinkOffer();
   return guardianLink(undefined);
 };

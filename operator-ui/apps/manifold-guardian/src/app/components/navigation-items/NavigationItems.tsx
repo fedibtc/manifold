@@ -9,7 +9,9 @@ export const NavigationItems = () => {
   const phone = useGuardianLink(GUARDIAN_LINK_NAV_POLL_MS).data;
   const phoneState = phone?.link?.delivery.state;
   const phoneNeedsAttention = phoneState === 'inactive' || phoneState === 'terminal';
-  return NAV_ITEMS.map((item) => (
+  // Phone link stays out of sight until the MG says the policy turns it on.
+  const phoneLinkShown = phone !== undefined && phone.availability !== 'disabled';
+  return NAV_ITEMS.filter((item) => item.key !== 'phone-link' || phoneLinkShown).map((item) => (
     <NavigationItem
       key={item.key}
       item={item}

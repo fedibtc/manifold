@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { GuardianLink } from '@/features/phone-link/components/guardian-link/GuardianLink';
 import * as adminCallModule from '@/shared/api/adminCall';
 
-const unlinked: GuardianLinkResponse = { available: true, link: null, offer: null };
+const unlinked: GuardianLinkResponse = { availability: 'ready', link: null, offer: null };
 const offer = { uri: 'manifold:guardian-link?secret=mock-only', expires_at: 1700004200 };
 
 const renderLink = () => {
@@ -19,7 +19,7 @@ const renderLink = () => {
 };
 
 const linkedPhone = (state: 'active' | 'inactive' | 'terminal'): GuardianLinkResponse => ({
-  available: true,
+  availability: 'ready',
   link: {
     device_label: 'Pixel 8',
     linked_at: 1700003900,

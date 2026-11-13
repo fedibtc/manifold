@@ -54,6 +54,10 @@ transfers. If you omit the flag, each environment's default applies: on in
 development and staging, off in production. MGs continue transfers they
 already stored regardless of the flag.
 
+To turn on the MG's phone link, set `"guardian_link": true` in the policy
+file; set `false` to hide it again. If you omit the flag, each environment's
+default applies: on in development and staging, off in production.
+
 The retired `guardian_transfer` field must never be set to `true` in production.
 MG 0.1.9 and older FA transfer readers use it to enable the incompatible old
 `TransferSeat` shape; they ignore the new flag and stay off in production

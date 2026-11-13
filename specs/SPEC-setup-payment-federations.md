@@ -164,7 +164,12 @@ replacement ordering as the new shared high-water mark.
   that stops new seats. A value that is neither `null` nor a SemVer string,
   or one newer than `fman_version`, rejects the publication like any other
   invalid field. MG and FA releases from 0.1.1 on admit unknown fields and
-  ignore it; and
+  ignore it;
+- `guardian_link`, a boolean that turns on the MG's phone link
+  ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-phone-link)).
+  Optional: absent means the Manifold environment's default, on in
+  development and staging and off in production. Older MGs and FAs that
+  admit unknown fields ignore it; and
 - `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
   guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).

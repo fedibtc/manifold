@@ -103,6 +103,29 @@ app created, exactly as it invokes an FI's DKG completion hook.
   unlink of its own; when it links to another MG it revokes its previous
   hook at the gateway.
 
+## Enabling phone link
+
+The setup-payment policy
+([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
+carries an optional `guardian_link` flag. Phone link is on only while the
+latest policy the MG admitted sets it to `true`, or, without an admitted
+policy or a flag in it, its Manifold environment's default is on.
+Development and staging default to on and production to off
+([SPEC-manifold-environment](../../manifold-environment/specs/SPEC-manifold-environment.md)),
+so test deployments need no publication and production waits for Fedi to
+publish `true`. A published `false` turns it off in any environment.
+
+While it is off, `GuardianLink` reports `availability: "disabled"` and the
+dashboard shows neither the Phone link page nor its navigation item, so a
+host does not learn the feature exists. `CreateGuardianLinkOffer` and
+`TestGuardianLinkNotification` fail, `link_device` answers `InvalidInvite`
+even for an offer made while it was on, and the notifier sends nothing and
+records nothing as told. A link stored while it was on is kept; when the flag
+turns it on again, the next notifier pass tells the reasons current then.
+`RevokeGuardianLink` works either way. When on, `availability` is
+`no_push_gateway` for a deployment without a push-gateway origin, else
+`ready`.
+
 The link is one row (`guardian_link`) in the daemon's database; the open offer
 is memory only and does not survive a restart. The admin verbs `GuardianLink`,
 `CreateGuardianLinkOffer`, `RevokeGuardianLink`, and

@@ -176,7 +176,7 @@ const base = (): Pick<
   maxSeats: 3,
   readyForNewSeats: true,
   seatReadiness: READY,
-  guardianLink: { available: true, link: null, offer: null },
+  guardianLink: { availability: 'ready', link: null, offer: null },
   supportAvailable: true,
   supportMessages: [],
   supportReadIds: [],
@@ -222,26 +222,28 @@ export const mockGuardianLinkOffer = () => ({
 
 // `satisfies` keeps the keys literal, so notes must cover exactly this set.
 const builders = {
-  'fedi-app-unavailable': () => fediAppWorld({ available: false, link: null, offer: null }),
-  'fedi-app-unlinked': () => fediAppWorld({ available: true, link: null, offer: null }),
+  'fedi-app-disabled': () => fediAppWorld({ availability: 'disabled', link: null, offer: null }),
+  'fedi-app-unavailable': () =>
+    fediAppWorld({ availability: 'no_push_gateway', link: null, offer: null }),
+  'fedi-app-unlinked': () => fediAppWorld({ availability: 'ready', link: null, offer: null }),
   'fedi-app-offer': () =>
-    fediAppWorld({ available: true, link: null, offer: mockGuardianLinkOffer() }),
-  'fedi-app-active': () => fediAppWorld({ available: true, link: mockPhone(), offer: null }),
+    fediAppWorld({ availability: 'ready', link: null, offer: mockGuardianLinkOffer() }),
+  'fedi-app-active': () => fediAppWorld({ availability: 'ready', link: mockPhone(), offer: null }),
   'fedi-app-inactive': () =>
     fediAppWorld({
-      available: true,
+      availability: 'ready',
       link: { ...mockPhone(), delivery: { state: 'inactive', reason: null } },
       offer: null
     }),
   'fedi-app-terminal': () =>
     fediAppWorld({
-      available: true,
+      availability: 'ready',
       link: { ...mockPhone(), delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
       offer: null
     }),
   'fedi-app-relinking': () =>
     fediAppWorld({
-      available: true,
+      availability: 'ready',
       link: { ...mockPhone(), delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' } },
       offer: mockGuardianLinkOffer()
     }),
@@ -672,6 +674,10 @@ export type ScenarioName = keyof typeof builders;
 // Keyed off `builders`, so adding a scenario without documenting it is a type
 // error rather than a control panel that silently drifts out of date.
 const notes: Record<ScenarioName, ScenarioNote> = {
+  'fedi-app-disabled': {
+    desc: 'The setup-payment policy keeps phone link off; the nav item and page are hidden.',
+    affects: ['phone-link']
+  },
   'fedi-app-unavailable': {
     desc: 'No push gateway configured; linking is unavailable.',
     affects: ['phone-link']
