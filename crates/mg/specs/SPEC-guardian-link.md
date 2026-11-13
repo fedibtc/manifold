@@ -26,8 +26,11 @@ app created, exactly as it invokes an FI's DKG completion hook.
   secret is one coarse `InvalidInvite`. The operator may link only through
   the dashboard; nothing on the FI RPC surface creates an offer.
 - **Transport.** The app dials the MG's Iroh endpoint with ALPN
-  `fedi/fman/guardian-link/1`, the `node` of the URI, and checks that the
-  `fman` key is the one the dashboard showed. `link_device` is the app's only
+  `fedi/fman/guardian-link/1`, the `node` of the URI; Iroh authenticates that
+  endpoint. The app takes the `fman` key from the URI as given, to name the
+  guardian: nothing binds it to `node`, because the URI comes from the host's
+  own dashboard and a wrong name can only mislabel the link, which then
+  carries only the fixed alert. `link_device` is the app's only
   call; it carries no device key, since nothing after it needs one. One
   device is linked at a time: `link_device` replaces the previous device.
 - **Hook.** `link_device` carries a hook URL under the deployment's
