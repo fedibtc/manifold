@@ -214,7 +214,7 @@ pub(crate) fn spawn_recovery(
                 &root,
                 fa_id,
                 profile.nostr_relays().as_urls(),
-                profile.fa_backup_empty_read_quorum(),
+                profile.empty_read_quorum(),
                 &key,
             )
             .await;
