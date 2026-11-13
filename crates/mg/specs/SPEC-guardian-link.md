@@ -37,9 +37,10 @@ app created, exactly as it invokes an FI's DKG completion hook.
   `data`: nothing about the host's seats, federations, amounts, messages, or
   reasons leaves it. The delivered push still holds the gateway's own `pg.*`
   fields, taken from the hook the app created; the app recognizes the push by
-  `pg.workflow`, not by an empty payload. The gateway's production cap is two
-  accepted invocations per hook per hour, and that is the cadence this design
-  accepts: every notification is one generic "look at your dashboard". The
+  `pg.workflow`, not by an empty payload. The gateway's production cap is six
+  accepted invocations per hook per hour
+  ([SPEC-abuse-limits](../../push-gateway/specs/SPEC-abuse-limits.md)), and
+  that is the cadence this design accepts: every notification is one generic "look at your dashboard". The
   app shows no guardian status of its own; the dashboard is where the host
   sees why.
 - **Reasons.** One per failing check of the latest readiness report, the
