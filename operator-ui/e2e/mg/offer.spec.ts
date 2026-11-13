@@ -32,6 +32,11 @@ test('should show price and seat capacity and let the operator change the price'
 
   await page.goto('/');
   await expect(page.getByText('25,000 sats per seat')).toBeVisible();
+
+  // The daemon stored 25,000,064 msat, the next step of its 128 msat grid. The
+  // field offers back the whole sats the operator typed, which saves as is.
+  await page.getByRole('link', { name: 'Change price and seats' }).click();
+  await expect(price).toHaveValue('25000');
 });
 
 test('should offer seats free at a price of zero rather than stopping the sale', async ({

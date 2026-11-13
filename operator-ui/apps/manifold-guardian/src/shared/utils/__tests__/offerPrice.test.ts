@@ -30,6 +30,14 @@ it('should show the stored price in sats', () => {
   expect(formatPriceField(50_000_000)).toBe('50000');
 });
 
+// 2,500 sats is stored as 2,500,096 msat, the next multiple of the daemon's
+// 128 msat grid. The field must offer back what the operator typed: a fraction
+// there is refused on save.
+it('should show a stored price rounded onto the msat grid as the sats the operator typed', () => {
+  expect(formatPriceField(2_500_096)).toBe('2500');
+  expect(parsePriceField(formatPriceField(2_500_096))).toEqual({ ok: true, priceMsat: 2_500_000 });
+});
+
 it('should parse a blank field as not selling', () => {
   expect(parsePriceField('   ')).toEqual({ ok: true, priceMsat: null });
 });
@@ -113,4 +121,8 @@ it('should describe a zero price as free', () => {
 
 it('should describe a price per seat in grouped sats', () => {
   expect(describeOffer(50_000_000)).toBe('50,000 sats per seat');
+});
+
+it('should describe a stored price rounded onto the msat grid in whole sats', () => {
+  expect(describeOffer(2_500_096)).toBe('2,500 sats per seat');
 });
