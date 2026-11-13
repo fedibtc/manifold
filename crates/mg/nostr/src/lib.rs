@@ -71,9 +71,10 @@ const LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// enough headroom for a relay serving stale duplicates alongside it.
 const SETUP_PAYMENT_FETCH_LIMIT: u16 = 64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// One Holder authorization read, connections included. It leaves room for
-/// durable publication within the operator UI's 15-second request budget: a
-/// request the UI abandons is dropped, check and all.
+/// One Holder authorization read, connections included. With durable
+/// publication after it, it must end well inside the operator UI's 60-second
+/// request limit: a request the UI abandons is dropped, check and all. The
+/// operator waits on it, so it stays short; one relay that answers is enough.
 const AUTHORIZATION_REFRESH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// One bounded, operator-driven Holder enrollment read usable before a Fleet
