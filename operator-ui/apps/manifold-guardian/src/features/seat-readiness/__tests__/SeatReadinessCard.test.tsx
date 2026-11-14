@@ -1,7 +1,13 @@
 import type { ReadinessReport } from '@operator-ui/types';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { guidance, labels, outcomes, updateGuidance } from '@/shared/utils/seatReadiness';
+import {
+  guidance,
+  labels,
+  loadGuidance,
+  outcomes,
+  updateGuidance
+} from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
@@ -12,6 +18,9 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   discovery: 'not_applicable',
   bitcoin: 'pass',
   version: 'not_applicable',
+  load: 'not_applicable',
+  host_load: { '6h': 12, '24h': 14 },
+  host_load_limit: null,
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
@@ -58,6 +67,73 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Update required.')).toBeTruthy();
     expect(screen.getByText(updateGuidance, { exact: false })).toBeTruthy();
     expect(screen.queryByText(guidance.uptime)).toBeNull();
+  });
+
+  it('should show the host load against its limit and explain a load above it', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({
+            load: 'host_load_high',
+            host_load: { '6h': 57, '24h': 66 },
+            host_load_limit: { block_above: 60, resume_below: 50 }
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText(labels.load)).toBeTruthy();
+    expect(screen.getByText(outcomes.host_load_high)).toBeTruthy();
+    // Held, the host waits on the 24-hour average, whatever the 6-hour one is.
+    expect(screen.getByText('24-hour average 66%; new seats reopen at 50% or less.')).toBeTruthy();
+    expect(screen.getByText(loadGuidance, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(updateGuidance, { exact: false })).toBeNull();
+    expect(screen.queryByText(guidance.uptime)).toBeNull();
+  });
+
+  it('should show the host load without a limit, and nothing where it was not read', () => {
+    const { unmount } = render(
+      <SeatReadinessCard readiness={{ ready_for_new_seats: true, report: report() }} />
+    );
+    expect(screen.getByText('No limit set.')).toBeTruthy();
+    expect(screen.getByText('6-hour average 12%.')).toBeTruthy();
+    unmount();
+
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: true, report: report({ host_load: null }) }}
+      />
+    );
+    expect(screen.queryByText(/6-hour average/)).toBeNull();
+  });
+
+  it('should say where new seats would stop on a host under the limit', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: true,
+          report: report({
+            load: 'pass',
+            host_load_limit: { block_above: 60, resume_below: 50 }
+          })
+        }}
+      />
+    );
+    expect(screen.getByText('6-hour average 12%; new seats stop above 60%.')).toBeTruthy();
+  });
+
+  it('should leave out the load check for a daemon that predates it', () => {
+    const { load: _, host_load: __, host_load_limit: ___, ...older } = report();
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}
+      />
+    );
+
+    expect(screen.queryByText(labels.load)).toBeNull();
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
   });
 
   it('should explain a closed gate whose only failure is uptime', () => {

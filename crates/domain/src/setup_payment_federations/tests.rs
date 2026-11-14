@@ -53,6 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
+        host_load_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
+            host_load_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
             min_mg_version: None,
@@ -464,6 +466,53 @@ fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
             raw(&(SETUP_PAYMENT_MAX_SEATS_PER_MG + 1).to_string()).as_bytes()
         ),
         Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
+    );
+}
+
+#[test]
+fn host_load_limit_is_absent_by_default_and_must_be_ordered_and_bounded() {
+    let raw = |limit: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","host_load_percent":{limit}}}"#
+        )
+    };
+    let limit = |block_above: u16, resume_below: u16| {
+        format!(r#"{{"block_above":{block_above},"resume_below":{resume_below}}}"#)
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.host_load_percent(), None);
+    assert!(
+        !String::from_utf8(content(vec![]))
+            .unwrap()
+            .contains("host_load_percent")
+    );
+    for (block_above, resume_below) in [(60, 50), (1, 1), (1_000, 1), (70, 70)] {
+        let admitted = AdmittedSetupPaymentFederations::parse(
+            raw(&limit(block_above, resume_below)).as_bytes(),
+        )
+        .expect("an ordered, in-range limit is admitted");
+        assert_eq!(
+            admitted.host_load_percent(),
+            Some(HostLoadLimit {
+                block_above,
+                resume_below
+            })
+        );
+    }
+    // Resuming above the block threshold would reopen a host the same run
+    // closed; zero would close every MG; above 1,000 is a publisher mistake.
+    for (block_above, resume_below) in [(50, 60), (0, 0), (60, 0), (1_001, 50)] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(
+                raw(&limit(block_above, resume_below)).as_bytes()
+            ),
+            Err(SetupPaymentFederationsContentError::InvalidHostLoadLimit),
+            "{block_above}/{resume_below}"
+        );
+    }
+    // Both thresholds are required.
+    assert!(
+        AdmittedSetupPaymentFederations::parse(raw(r#"{"block_above":60}"#).as_bytes()).is_err()
     );
 }
 

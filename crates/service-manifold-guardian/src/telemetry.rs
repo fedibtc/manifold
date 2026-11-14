@@ -349,8 +349,10 @@ pub struct SeatCapacityEvent {
 
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
 /// ownership as [`SeatCapacityEvent`]. Releases before 0.1.4 journal no
-/// uptime outcome, scores or minimums, and releases before 0.1.9 no version
-/// outcome.
+/// uptime outcome, scores or minimums, releases before 0.1.9 no version
+/// outcome, and releases before 0.1.16 no load outcome or figures. The host
+/// load is absent where the MG cannot read it, and its thresholds without
+/// a policy limit.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SeatReadinessEvent {
     pub ready: bool,
@@ -359,6 +361,18 @@ pub struct SeatReadinessEvent {
     pub bitcoin: String,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub load: Option<String>,
+    /// The host's 6- and 24-hour average load per online CPU, in percent.
+    #[serde(default)]
+    pub host_load_6h_pct: Option<u16>,
+    #[serde(default)]
+    pub host_load_24h_pct: Option<u16>,
+    /// The setup-payment policy's host load thresholds, in the same unit.
+    #[serde(default)]
+    pub host_load_block_above_pct: Option<u16>,
+    #[serde(default)]
+    pub host_load_resume_below_pct: Option<u16>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]

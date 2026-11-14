@@ -11,7 +11,7 @@ fn record(timestamp: &str, message: &str, fields: &str) -> serde_json::Value {
 
 const CAPACITY: &str = "\"mg_version\":\"0.1.6\",\"memory_max_seats\":9,\"policy_max_seats\":12,\"available_seats\":6,\"accepting_seats\":true";
 
-const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"version\":\"mg_version_too_old\",\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
+const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"version\":\"mg_version_too_old\",\"load\":\"host_load_high\",\"host_load_6h_pct\":85,\"host_load_24h_pct\":72,\"host_load_block_above_pct\":60,\"host_load_resume_below_pct\":50,\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
 
 fn capacity(fields: &str) -> Option<Stated<SeatCapacity>> {
     let mut latest = LatestReports::default();
@@ -74,6 +74,14 @@ fn keeps_the_last_valid_report_of_each_kind() {
         Some(ReadinessCode("uptime_7d_low".into()))
     );
     assert_eq!(readiness.report.uptime_30d_pct, Some(Percent(95.0)));
+    assert_eq!(
+        readiness.report.load,
+        Some(ReadinessCode("host_load_high".into()))
+    );
+    assert_eq!(readiness.report.host_load_6h_pct, Some(85));
+    assert_eq!(readiness.report.host_load_24h_pct, Some(72));
+    assert_eq!(readiness.report.host_load_block_above_pct, Some(60));
+    assert_eq!(readiness.report.host_load_resume_below_pct, Some(50));
 }
 
 #[test]
@@ -99,6 +107,8 @@ fn reports_from_releases_with_fewer_fields_decode() {
     .report;
     assert!(readiness.ready);
     assert_eq!(readiness.version, None);
+    assert_eq!(readiness.load, None);
+    assert_eq!(readiness.host_load_6h_pct, None);
     assert_eq!(readiness.uptime, None);
     assert_eq!(readiness.uptime_7d_pct, None);
 }
@@ -148,6 +158,8 @@ fn rejects_out_of_range_or_unbounded_values() {
         READINESS.replace("\"pass\"", "\"Pass\""),
         READINESS.replace("uptime_7d_low", &"x".repeat(33)),
         READINESS.replace("mg_version_too_old", "TooOld"),
+        READINESS.replace("\"host_load_6h_pct\":85", "\"host_load_6h_pct\":65536"),
+        READINESS.replace("\"host_load_24h_pct\":72", "\"host_load_24h_pct\":-1"),
     ] {
         assert_eq!(readiness(&fields), None, "{fields}");
     }

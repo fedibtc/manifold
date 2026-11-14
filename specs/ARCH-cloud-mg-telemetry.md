@@ -194,12 +194,15 @@ both shapes: `SeatCapacityEvent` and `SeatReadinessEvent` in
 under those names, and MG tests decode the emitted records with them. Releases
 before 0.1.4 journal only the free seats, the accepting flag and the operator
 limit, and no uptime outcome, scores or minimums; releases before 0.1.9
-journal no `version` outcome. Absent fields stay absent.
+journal no `version` outcome, and releases before 0.1.16 no `load` outcome or
+host load figures. Absent fields stay absent.
 
 While validating a batch from the MG journal, the collector keeps the last
 record of each kind, in journal order, that has an RFC 3339 timestamp and
 whose fields validate: counts as unsigned 32-bit integers, codes and versions
-as short bounded ASCII, and percentages from 0 to 100. A capacity record also
+as short bounded ASCII, uptime percentages from 0 to 100, and host load
+percentages as unsigned 16-bit integers, since load can exceed one task per
+CPU. A capacity record also
 needs at least one stated limit, free seats no greater than any of them, and
 a policy limit no greater than the most seats a setup-payment policy allows
 one MG. Every release states a limit. Releases before 0.1.4 state only the

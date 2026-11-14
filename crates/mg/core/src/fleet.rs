@@ -50,7 +50,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{HostLoadState, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -901,6 +901,17 @@ impl Fleet {
             .uptime()
             .await?
             .map_or(UptimeScores::START, |uptime| uptime.scores))
+    }
+
+    /// The readiness load check's durable state, or `None` before its first
+    /// sample.
+    pub async fn host_load(&self) -> anyhow::Result<Option<HostLoadState>> {
+        Ok(self.db.host_load().await?)
+    }
+
+    /// Replace the readiness load check's durable state.
+    pub async fn record_host_load(&self, state: HostLoadState) -> anyhow::Result<()> {
+        Ok(self.db.record_host_load(state).await?)
     }
 
     /// The durable verdict that gates admission.

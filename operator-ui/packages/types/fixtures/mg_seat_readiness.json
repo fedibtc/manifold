@@ -4,6 +4,15 @@
     "bitcoin": "bitcoin_syncing",
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
+    "host_load": {
+      "24h": 72,
+      "6h": 85
+    },
+    "host_load_limit": {
+      "block_above": 60,
+      "resume_below": 50
+    },
+    "load": "host_load_high",
     "relay": "pass",
     "uptime": "uptime_7d_low",
     "uptime_comparison": {

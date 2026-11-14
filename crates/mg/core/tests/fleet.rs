@@ -1329,6 +1329,9 @@ fn readiness(ready: bool) -> ReadinessReport {
             ReadinessOutcome::BitcoinSyncing
         },
         version: ReadinessOutcome::NotApplicable,
+        load: ReadinessOutcome::NotApplicable,
+        host_load: None,
+        host_load_limit: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -1529,15 +1532,16 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     fleet.shutdown().await;
 }
 
-/// The readiness worker follows the setup-payment policy's minimum release:
-/// raising it above this release stops discovery and quoting at the next
-/// run, and lowering or removing it restores them. The MG still serves its
+/// The readiness worker follows the setup-payment policy's minimum release
+/// and host load limit: raising the minimum above this release, or lowering
+/// the limit below the host's average load, stops discovery and quoting at
+/// the next run, and undoing either restores them. The MG still serves its
 /// seats meanwhile, so every one of those runs records an up uptime slot.
 #[tokio::test]
-async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
+async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::seat_readiness::{ReadinessProbe, run};
+    use crate::seat_readiness::{HostLoadPercent, HostLoadThresholds, ReadinessProbe, run};
     use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 
     /// Passing prerequisites, one run per step the test allows, each run in
@@ -1575,10 +1579,15 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
     );
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
 
-    let policy = |min_mg_version: Option<&str>| {
-        let field = min_mg_version
+    let policy = |min_mg_version: Option<&str>, host_load: Option<(u16, u16)>| {
+        let mut field = min_mg_version
             .map(|version| format!(r#","min_mg_version":"{version}""#))
             .unwrap_or_default();
+        if let Some((block_above, resume_below)) = host_load {
+            field.push_str(&format!(
+                r#","host_load_percent":{{"block_above":{block_above},"resume_below":{resume_below}}}"#
+            ));
+        }
         AdmittedSetupPaymentFederations::parse(
             format!(
                 r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
@@ -1606,25 +1615,38 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         fleet.clone(),
         policies,
         clock,
+        // Half a task per CPU on every sample, so the average stays at 50%.
+        || Ok(0.5),
     ));
 
     let this = env!("CARGO_PKG_VERSION");
     let mut previous_day_score = None;
-    for (run_index, (min_mg_version, advertised)) in [
-        (None, true),
-        (Some("999.0.0"), false),
-        (Some(this), true),
-        (Some("999.0.0"), false),
-        (Some("0.0.1"), true),
-        (Some("999.0.0"), false),
-        (None, true),
+    for (run_index, (min_mg_version, max_load, advertised)) in [
+        (None, None, true),
+        (Some("999.0.0"), None, false),
+        (Some(this), None, true),
+        (Some("999.0.0"), None, false),
+        (Some("0.0.1"), None, true),
+        (Some("999.0.0"), None, false),
+        (None, None, true),
+        (None, Some((49, 49)), false),
+        // Hysteresis: a held MG stays held while its day average is above the
+        // resume threshold, although the 6-hour one is under the block one.
+        (None, Some((60, 49)), false),
+        // A load equal to the resume threshold is within it.
+        (None, Some((60, 50)), true),
+        (None, Some((49, 49)), false),
+        // Removing the limit clears the hold, so a later limit starts from the
+        // averages alone.
+        (None, None, true),
+        (None, Some((60, 40)), true),
     ]
     .into_iter()
     .enumerate()
     {
         // Each policy ends the worker's wait, and the step lets one run go.
         if run_index > 0 {
-            publish.send_replace(Some(policy(min_mg_version)));
+            publish.send_replace(Some(policy(min_mg_version, max_load)));
         }
         step.send(()).await.unwrap();
         let checked = first_slot + run_index as u64 + 1;
@@ -1641,9 +1663,28 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         .unwrap_or_else(|_| panic!("{min_mg_version:?}: the run's verdict was not applied"));
         let report = fleet.seat_readiness().unwrap();
         assert_eq!(
-            report.version == ReadinessOutcome::MgVersionTooOld,
+            report.version == ReadinessOutcome::MgVersionTooOld
+                || report.load == ReadinessOutcome::HostLoadHigh,
             !advertised,
-            "{min_mg_version:?}"
+            "{min_mg_version:?} {max_load:?}"
+        );
+        assert_eq!(
+            report.host_load,
+            Some(HostLoadPercent {
+                six_hours: 50,
+                day: 50
+            })
+        );
+        assert_eq!(
+            report.host_load_limit,
+            max_load.map(|(block_above, resume_below)| HostLoadThresholds {
+                block_above,
+                resume_below
+            })
+        );
+        assert_eq!(
+            report.load == ReadinessOutcome::NotApplicable,
+            max_load.is_none()
         );
         assert_eq!(
             host.advertisement().await.is_some(),
@@ -1663,6 +1704,99 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         previous_day_score = Some(day);
     }
     worker.abort();
+    fleet.shutdown().await;
+}
+
+/// The load check's hold is durable: a held MG that restarts while its load
+/// is under the block threshold stays held until its day average reaches the
+/// resume threshold, instead of reopening for a window it likely should not.
+#[tokio::test]
+async fn a_load_hold_survives_restart() {
+    use crate::seat_readiness::{ReadinessProbe, run};
+    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+
+    /// Passing prerequisites, one run, then no more.
+    struct OnceProbe(bool);
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for OnceProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            if std::mem::replace(&mut self.0, true) {
+                std::future::pending::<()>().await;
+            }
+            readiness(true)
+        }
+    }
+
+    let policy = |block_above: u16, resume_below: u16| {
+        AdmittedSetupPaymentFederations::parse(
+            format!(
+                r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","host_load_percent":{{"block_above":{block_above},"resume_below":{resume_below}}}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    /// One run at a constant half-loaded host under `policy`, then the
+    /// report it produced.
+    async fn one_run(
+        fleet: &Arc<Fleet>,
+        policy: AdmittedSetupPaymentFederations,
+    ) -> ReadinessReport {
+        let (_publish, policies) = tokio::sync::watch::channel(Some(policy));
+        let worker = tokio::spawn(run(
+            OnceProbe(false),
+            fleet.clone(),
+            policies,
+            std::time::SystemTime::now,
+            || Ok(0.5),
+        ));
+        let report = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                // Each fleet here is freshly opened, so it has no report
+                // before this run's.
+                if let Some(report) = fleet.seat_readiness() {
+                    break report;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run completes");
+        worker.abort();
+        report
+    }
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 2, 31_600).await;
+    let fleet = Arc::new(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let held = one_run(&fleet, policy(49, 49)).await;
+    assert_eq!(held.load, ReadinessOutcome::HostLoadHigh);
+    assert!(fleet.host_load().await.unwrap().unwrap().held);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = Arc::new(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    assert!(fleet.host_load().await.unwrap().unwrap().held);
+    // 50% is under the new block threshold but above the resume one.
+    let still_held = one_run(&fleet, policy(60, 49)).await;
+    assert_eq!(still_held.load, ReadinessOutcome::HostLoadHigh);
+    assert!(!fleet.ready_for_new_seats().await);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = Arc::new(open_fleet(config, Arc::new(NoWallet)).await.unwrap());
+    let reopened = one_run(&fleet, policy(60, 50)).await;
+    assert_eq!(reopened.load, ReadinessOutcome::Pass);
+    assert!(!fleet.host_load().await.unwrap().unwrap().held);
     fleet.shutdown().await;
 }
 

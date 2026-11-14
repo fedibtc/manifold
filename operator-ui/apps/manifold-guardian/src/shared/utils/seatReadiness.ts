@@ -1,13 +1,14 @@
 import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'uptime';
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'load' | 'uptime';
 
 export const CHECKS: readonly ReadinessCheck[] = [
   'relay',
   'discovery',
   'bitcoin',
   'version',
+  'load',
   'uptime'
 ];
 
@@ -16,6 +17,7 @@ export const labels: Record<ReadinessCheck, string> = {
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
   version: 'Software version',
+  load: 'Host load',
   uptime: 'Uptime'
 };
 
@@ -30,6 +32,7 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
   bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
   mg_version_too_old: 'Update required.',
+  host_load_high: 'Above the limit for new seats.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
   uptime_30d_low: 'This host was offline too much recently.'
@@ -37,16 +40,18 @@ export const outcomes: Record<ReadinessOutcome, string> = {
 
 /** What a check that does not apply means for that check. */
 const notApplicable: Partial<Record<ReadinessCheck, string>> = {
-  version: 'No minimum set.'
+  version: 'No minimum set.',
+  load: 'No limit set.'
 };
 
 /** The host-facing words for one check's outcome. */
 export const describeOutcome = (check: ReadinessCheck, outcome: ReadinessOutcome): string =>
   (outcome === 'not_applicable' && notApplicable[check]) || outcomes[outcome];
 
-/** What to do about a failing check, shown under it. The version check has a one-line outcome
- * like the others; what to do about it is in the not-ready banner ({@link updateGuidance}). */
-export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
+/** What to do about a failing check, shown under it. The version and load checks have a one-line
+ * outcome like the others; what to do about them is in the not-ready banner ({@link updateGuidance},
+ * {@link loadGuidance}). */
+export const guidance: Record<Exclude<ReadinessCheck, 'version' | 'load'>, string> = {
   relay:
     'Check that this host can hold long-lived outbound connections to the relay. No inbound port is needed.',
   discovery:
@@ -56,14 +61,34 @@ export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
   uptime: 'Keep this host online.'
 };
 
+/** The host load figures the load check compared, or nothing where the daemon could not read the
+ * load or predates the check. A held host reopens on the 24-hour average, so that is the figure
+ * it is waiting on. */
+export const describeHostLoad = (report: ReadinessReport): string | null => {
+  const load = report.host_load;
+  if (load === null || load === undefined) return null;
+  const limit = report.host_load_limit;
+  if (limit === null || limit === undefined) return `6-hour average ${load['6h']}%.`;
+  return report.load === 'host_load_high'
+    ? `24-hour average ${load['24h']}%; new seats reopen at ${limit.resume_below}% or less.`
+    : `6-hour average ${load['6h']}%; new seats stop above ${limit.block_above}%.`;
+};
+
 export const updateGuidance =
   'This version of Manifold Guardian is below the minimum for new seats. Update to the latest release; this does not count against uptime.';
+
+export const loadGuidance =
+  'This host has been too busy for more seats. Move other work off it, or add CPU or faster disks; this does not count against uptime.';
 
 export const passed = (outcome: ReadinessOutcome): boolean =>
   outcome === 'pass' || outcome === 'not_applicable';
 
+/** The checks a report carries: a daemon that predates a check has no outcome for it. */
+export const reportedChecks = (report: ReadinessReport): ReadinessCheck[] =>
+  CHECKS.filter((check) => report[check] !== undefined);
+
 export const failedChecks = (report: ReadinessReport): ReadinessCheck[] =>
-  CHECKS.filter((check) => !passed(report[check]));
+  reportedChecks(report).filter((check) => !passed(report[check]));
 
 /** The uptime windows the gate compares, shortest first. */
 export const UPTIME_WINDOWS: readonly (keyof UptimePermille)[] = ['1d', '7d', '30d'];

@@ -141,6 +141,9 @@ const failingReport = {
   discovery: 'discovery_record_missing',
   bitcoin: 'bitcoin_no_fee_rate',
   version: 'mg_version_too_old',
+  load: 'host_load_high',
+  host_load: { '6h': 85, '24h': 72 },
+  host_load_limit: { block_above: 60, resume_below: 50 },
   uptime: 'pass',
   uptime_comparison: null
 } as const;
@@ -156,7 +159,7 @@ it('should send the operator to Health when a readiness check fails, naming only
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
       detail:
-        'Failing: Guardian discovery, Bitcoin backend, Software version. Open Health for what to check.',
+        'Failing: Guardian discovery, Bitcoin backend, Software version, Host load. Open Health for what to check.',
       path: '/health'
     }
   ]);
@@ -175,6 +178,9 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     discovery: 'not_applicable',
     bitcoin: 'pass',
     version: 'not_applicable',
+    load: 'not_applicable',
+    host_load: null,
+    host_load_limit: null,
     uptime: 'pass',
     uptime_comparison: null
   } as const;
