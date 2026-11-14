@@ -80,11 +80,14 @@ Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
 
 To stop MGs whose host is persistently busy from taking more seats, set
-`"max_host_load_percent": 70` (1 to 1,000). An MG whose 6-hour average load
-per online CPU is above it stops advertising and quoting new seats, keeps
-running its seats, and its uptime is not affected. Omitted, there is no load
-limit. MGs journal their average either way, so choose the value from the
-seat readiness telemetry.
+`"host_load_percent": {"block_above": 60, "resume_below": 50}` (each 1 to
+1,000, resume no higher than block). The value is the 15-minute load average
+divided by the host's CPU count, in percent: on a 16-CPU host, 60% is a load
+of 9.6. An MG whose 6-hour average goes above `block_above` stops advertising
+and quoting new seats until its 24-hour average is at or below
+`resume_below`; it keeps running its seats, and its uptime is not affected.
+Omitted, there is no load limit. MGs journal their averages either way, so
+choose the values from the seat readiness telemetry.
 
 To ask operators below a release to update without stopping their sales, set
 `"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).

@@ -23,7 +23,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
 use crate::identity::RootMnemonic;
-use crate::seat_readiness::{Uptime, UptimeScores};
+use crate::seat_readiness::{HostLoad, HostLoadState, Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
 pub(crate) const IDENTITY_ID: i64 = 1;
@@ -806,6 +806,52 @@ impl Db {
     pub(crate) async fn uptime(&self) -> Result<Option<Uptime>, DbError> {
         let mut conn = self.pool.acquire().await?;
         uptime_row(&mut conn).await
+    }
+
+    /// Replace the load check's state ([`crate::seat_readiness::run`]).
+    pub(crate) async fn record_host_load(&self, state: HostLoadState) -> Result<(), DbError> {
+        let sampled_at_ms = state
+            .load
+            .sampled_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis();
+        sqlx::query(
+            "INSERT INTO host_load (id, six_hours, day, sampled_at_ms, held) \
+             VALUES (1, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET six_hours = excluded.six_hours, \
+             day = excluded.day, sampled_at_ms = excluded.sampled_at_ms, held = excluded.held",
+        )
+        .bind(state.load.six_hours)
+        .bind(state.load.day)
+        .bind(i64::try_from(sampled_at_ms).unwrap_or(i64::MAX))
+        .bind(state.held)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The load check's state, or `None` before the first sample.
+    pub(crate) async fn host_load(&self) -> Result<Option<HostLoadState>, DbError> {
+        let row: Option<(f64, f64, i64, bool)> = sqlx::query_as(
+            "SELECT six_hours, day, sampled_at_ms, held FROM host_load WHERE id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(
+            row.map(|(six_hours, day, sampled_at_ms, held)| HostLoadState {
+                load: HostLoad {
+                    six_hours,
+                    day,
+                    sampled_at: UNIX_EPOCH
+                        + Duration::from_millis(
+                            u64::try_from(sampled_at_ms)
+                                .expect("sampled_at_ms is non-negative by schema CHECK"),
+                        ),
+                },
+                held,
+            }),
+        )
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {

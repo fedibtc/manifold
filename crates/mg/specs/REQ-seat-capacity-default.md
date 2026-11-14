@@ -56,8 +56,8 @@ that resting per-seat cost: headroom for DKG and chain-scan spikes and for
 The policy limit (default 12) bounds what RAM does not: concurrent-ceremony
 CPU and disk IO, for which no evidence exists yet. The readiness load check
 ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate)) stops new
-sales on a host that stays busy, once Fedi publishes a load limit; every MG
-journals its load average, which is the evidence for choosing that limit
+sales on a host that stays busy, once Fedi publishes load thresholds; every MG
+journals its load averages, which is the evidence for choosing that limit
 and, later, for relaxing the policy limit. Re-measure once seats
 carry weeks of mainnet-like history before treating the per-seat budget as
 settled; the young-federation measurement is the weakest part of this

@@ -119,8 +119,8 @@ impl SeatReadiness {
             bitcoin,
             version: Outcome::NotApplicable,
             load: Outcome::NotApplicable,
-            host_load_percent: None,
-            max_host_load_percent: None,
+            host_load: None,
+            host_load_limit: None,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }

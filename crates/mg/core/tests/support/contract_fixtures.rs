@@ -51,7 +51,8 @@ use mg_core::push_callback::CallbackAttemptOutcome;
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use mg_core::seat_readiness::{
-    ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
+    HostLoadPercent, HostLoadThresholds, ReadinessOutcome, ReadinessReport, UptimeComparison,
+    UptimePermille, UptimeWaitSecs,
 };
 use mg_core::wallet::PayoutRequestId;
 use serde_json::Value;
@@ -121,8 +122,14 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     version: ReadinessOutcome::MgVersionTooOld,
                     load: ReadinessOutcome::HostLoadHigh,
-                    host_load_percent: Some(85),
-                    max_host_load_percent: Some(70),
+                    host_load: Some(HostLoadPercent {
+                        six_hours: 85,
+                        day: 72,
+                    }),
+                    host_load_limit: Some(HostLoadThresholds {
+                        block_above: 60,
+                        resume_below: 50,
+                    }),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {

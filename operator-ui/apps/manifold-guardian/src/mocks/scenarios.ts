@@ -72,8 +72,8 @@ const READY: MockState['seatReadiness'] = {
   bitcoin: 'pass',
   version: 'pass',
   load: 'pass',
-  host_load_percent: 23,
-  max_host_load_percent: 70,
+  host_load: { '6h': 23, '24h': 25 },
+  host_load_limit: { block_above: 60, resume_below: 50 },
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -513,7 +513,8 @@ const builders = {
       version: 'mg_version_too_old'
     }
   }),
-  // The host's 6-hour average load is above the published limit.
+  // The host was held for load: its 6-hour average has come down, but the
+  // 24-hour one it reopens on has not.
   'host-load-high': () => ({
     ...base(),
     seats: [],
@@ -524,7 +525,7 @@ const builders = {
     seatReadiness: {
       ...READY,
       load: 'host_load_high',
-      host_load_percent: 85
+      host_load: { '6h': 57, '24h': 66 }
     }
   }),
   'uptime-low': () => ({
@@ -819,7 +820,7 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     affects: ['overview', 'health']
   },
   'host-load-high': {
-    desc: "Every prerequisite passes, but this host's 6-hour average load is above the setup-payment policy's limit, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
+    desc: "Every prerequisite passes, but this host's 6-hour average load went above the setup-payment policy's block threshold and its 24-hour average is not yet back to the resume threshold, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
     affects: ['overview', 'health']
   },
   'uptime-low': {

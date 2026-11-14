@@ -30,7 +30,7 @@ fn content(invites: &[&str]) -> String {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
-        max_host_load_percent: None,
+        host_load_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,

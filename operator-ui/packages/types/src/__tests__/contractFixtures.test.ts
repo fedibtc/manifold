@@ -354,8 +354,8 @@ const mgSeatReadinessMirror = {
     bitcoin: 'bitcoin_syncing',
     version: 'mg_version_too_old',
     load: 'host_load_high',
-    host_load_percent: 85,
-    max_host_load_percent: 70,
+    host_load: { '6h': 85, '24h': 72 },
+    host_load_limit: { block_above: 60, resume_below: 50 },
     uptime: 'uptime_7d_low',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },

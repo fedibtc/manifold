@@ -108,8 +108,8 @@ async fn rpc_with_network(
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
             load: ReadinessOutcome::NotApplicable,
-            host_load_percent: None,
-            max_host_load_percent: None,
+            host_load: None,
+            host_load_limit: None,
             uptime: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })

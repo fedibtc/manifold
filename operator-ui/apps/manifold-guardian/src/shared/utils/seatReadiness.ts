@@ -61,15 +61,17 @@ export const guidance: Record<Exclude<ReadinessCheck, 'version' | 'load'>, strin
   uptime: 'Keep this host online.'
 };
 
-/** The host load figures the load check compared, e.g. "6-hour average 85%, limit 70%.", or
- * nothing where the daemon could not read the load or predates the check. */
+/** The host load figures the load check compared, or nothing where the daemon could not read the
+ * load or predates the check. A held host reopens on the 24-hour average, so that is the figure
+ * it is waiting on. */
 export const describeHostLoad = (report: ReadinessReport): string | null => {
-  const average = report.host_load_percent;
-  if (average === null || average === undefined) return null;
-  const limit = report.max_host_load_percent;
-  return limit === null || limit === undefined
-    ? `6-hour average ${average}%.`
-    : `6-hour average ${average}%, limit ${limit}%.`;
+  const load = report.host_load;
+  if (load === null || load === undefined) return null;
+  const limit = report.host_load_limit;
+  if (limit === null || limit === undefined) return `6-hour average ${load['6h']}%.`;
+  return report.load === 'host_load_high'
+    ? `24-hour average ${load['24h']}%; new seats reopen at ${limit.resume_below}% or less.`
+    : `6-hour average ${load['6h']}%; new seats stop above ${limit.block_above}%.`;
 };
 
 export const updateGuidance =

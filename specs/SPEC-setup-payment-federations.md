@@ -143,10 +143,12 @@ replacement ordering as the new shared high-water mark.
   means 1,229 (about 1.2 GiB);
 - `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
-- `max_host_load_percent`, the host load above which an MG stops accepting
-  new seats: its 6-hour average system load per online CPU, in percent, from
-  1 to 1,000. Optional: absent means no load limit. An MG above it fails its
-  readiness load check
+- `host_load_percent`, an object of host load thresholds, each the system
+  load per online CPU in percent from 1 to 1,000: `block_above`, above which
+  an MG's 6-hour average load stops new seats, and `resume_below`, at or
+  below which its 24-hour average lets a held MG accept them again. Both are
+  required and `resume_below` is at most `block_above`. Optional as a whole:
+  absent means no load limit. A held MG fails its readiness load check
   ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)):
   it stops advertising and quoting new seats and keeps running its seats,
   and the check does not mark uptime down. MG and FA releases from 0.1.1 on
@@ -236,8 +238,8 @@ Admission performs all of these checks before the set influences policy:
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` outside 256 to 16,384, a
-    `max_seats_per_mg` above 256, or a `max_host_load_percent` outside 1 to
-    1,000;
+    `max_seats_per_mg` above 256, or a `host_load_percent` threshold outside
+    1 to 1,000 or with `resume_below` above `block_above`;
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could

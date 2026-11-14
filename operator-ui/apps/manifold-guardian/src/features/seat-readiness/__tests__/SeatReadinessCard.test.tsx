@@ -19,8 +19,8 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   bitcoin: 'pass',
   version: 'not_applicable',
   load: 'not_applicable',
-  host_load_percent: 12,
-  max_host_load_percent: null,
+  host_load: { '6h': 12, '24h': 14 },
+  host_load_limit: null,
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
@@ -74,7 +74,11 @@ describe('SeatReadinessCard', () => {
       <SeatReadinessCard
         readiness={{
           ready_for_new_seats: false,
-          report: report({ load: 'host_load_high', host_load_percent: 85, max_host_load_percent: 70 })
+          report: report({
+            load: 'host_load_high',
+            host_load: { '6h': 57, '24h': 66 },
+            host_load_limit: { block_above: 60, resume_below: 50 }
+          })
         }}
       />
     );
@@ -82,7 +86,8 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
     expect(screen.getByText(labels.load)).toBeTruthy();
     expect(screen.getByText(outcomes.host_load_high)).toBeTruthy();
-    expect(screen.getByText('6-hour average 85%, limit 70%.')).toBeTruthy();
+    // Held, the host waits on the 24-hour average, whatever the 6-hour one is.
+    expect(screen.getByText('24-hour average 66%; new seats reopen at 50% or less.')).toBeTruthy();
     expect(screen.getByText(loadGuidance, { exact: false })).toBeTruthy();
     expect(screen.queryByText(updateGuidance, { exact: false })).toBeNull();
     expect(screen.queryByText(guidance.uptime)).toBeNull();
@@ -98,14 +103,29 @@ describe('SeatReadinessCard', () => {
 
     render(
       <SeatReadinessCard
-        readiness={{ ready_for_new_seats: true, report: report({ host_load_percent: null }) }}
+        readiness={{ ready_for_new_seats: true, report: report({ host_load: null }) }}
       />
     );
     expect(screen.queryByText(/6-hour average/)).toBeNull();
   });
 
+  it('should say where new seats would stop on a host under the limit', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: true,
+          report: report({
+            load: 'pass',
+            host_load_limit: { block_above: 60, resume_below: 50 }
+          })
+        }}
+      />
+    );
+    expect(screen.getByText('6-hour average 12%; new seats stop above 60%.')).toBeTruthy();
+  });
+
   it('should leave out the load check for a daemon that predates it', () => {
-    const { load: _, host_load_percent: __, max_host_load_percent: ___, ...older } = report();
+    const { load: _, host_load: __, host_load_limit: ___, ...older } = report();
     render(
       <SeatReadinessCard
         readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}

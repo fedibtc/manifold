@@ -142,8 +142,8 @@ const failingReport = {
   bitcoin: 'bitcoin_no_fee_rate',
   version: 'mg_version_too_old',
   load: 'host_load_high',
-  host_load_percent: 85,
-  max_host_load_percent: 70,
+  host_load: { '6h': 85, '24h': 72 },
+  host_load_limit: { block_above: 60, resume_below: 50 },
   uptime: 'pass',
   uptime_comparison: null
 } as const;
@@ -179,8 +179,8 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     bitcoin: 'pass',
     version: 'not_applicable',
     load: 'not_applicable',
-    host_load_percent: null,
-    max_host_load_percent: null,
+    host_load: null,
+    host_load_limit: null,
     uptime: 'pass',
     uptime_comparison: null
   } as const;
