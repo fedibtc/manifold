@@ -101,13 +101,14 @@ pub struct PressureSample {
 /// least half of it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
 pub struct HostPressure {
-    pub cpu: PressureWindows,
-    pub io: PressureWindows,
+    pub cpu: PressurePermille,
+    pub io: PressurePermille,
 }
 
-/// One resource's averages, in per-mille of wall time.
+/// One resource's window averages, in per-mille of wall time (0..=1000): the
+/// share of time some task stalled on it, so 213 is 21.3%.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
-pub struct PressureWindows {
+pub struct PressurePermille {
     #[serde(rename = "6h")]
     pub six_hours: Option<u16>,
     #[serde(rename = "24h")]
@@ -119,7 +120,7 @@ impl HostPressure {
     pub fn from_samples(samples: &[PressureSample], now: SystemTime) -> Self {
         let mut samples = samples.to_vec();
         samples.sort_by_key(|sample| sample.at);
-        let windows = |total: fn(&PressureTotals) -> u64| PressureWindows {
+        let windows = |total: fn(&PressureTotals) -> u64| PressurePermille {
             six_hours: window_permille(&samples, now, BLOCK_WINDOW, total),
             day: window_permille(&samples, now, RESUME_WINDOW, total),
         };
@@ -178,12 +179,12 @@ pub fn holds(
     limit: fedi_decentralized_domain::HostPressureLimit,
 ) -> bool {
     let per_mille = |percent: u8| u16::from(percent) * 10;
-    let blocks = |windows: PressureWindows, block_above: u8| {
+    let blocks = |windows: PressurePermille, block_above: u8| {
         windows
             .six_hours
             .is_some_and(|average| average > per_mille(block_above))
     };
-    let resumes = |windows: PressureWindows, resume_below: u8| {
+    let resumes = |windows: PressurePermille, resume_below: u8| {
         windows
             .day
             .is_some_and(|average| average <= per_mille(resume_below))

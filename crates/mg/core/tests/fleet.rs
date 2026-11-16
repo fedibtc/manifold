@@ -1542,7 +1542,7 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
 async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::host_pressure::{HostPressure, PressureWindows};
+    use crate::host_pressure::{HostPressure, PressurePermille};
     use crate::seat_readiness::{ReadinessProbe, run};
     use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 
@@ -1686,11 +1686,11 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         assert_eq!(
             report.host_pressure,
             Some(HostPressure {
-                cpu: PressureWindows {
+                cpu: PressurePermille {
                     six_hours: Some(120),
                     day: Some(120),
                 },
-                io: PressureWindows {
+                io: PressurePermille {
                     six_hours: Some(30),
                     day: Some(30),
                 },

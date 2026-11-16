@@ -41,7 +41,7 @@ use mg_core::guardian_fee::{
 use mg_core::guardian_link::{
     AttentionReason, GuardianLinkAvailability, GuardianLinkStatus, LinkOfferStatus,
 };
-use mg_core::host_pressure::{HostPressure, PressureWindows};
+use mg_core::host_pressure::{HostPressure, PressurePermille};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
@@ -124,11 +124,12 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     version: ReadinessOutcome::MgVersionTooOld,
                     pressure: ReadinessOutcome::HostPressureHigh,
                     host_pressure: Some(HostPressure {
-                        cpu: PressureWindows {
+                        // Per-mille: 21.3%, above the 15% block limit below.
+                        cpu: PressurePermille {
                             six_hours: Some(213),
                             day: Some(87),
                         },
-                        io: PressureWindows {
+                        io: PressurePermille {
                             six_hours: Some(41),
                             day: None,
                         },

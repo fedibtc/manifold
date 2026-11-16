@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   guidance,
   labels,
-  pressureGuidance,
   outcomes,
+  pressureGuidance,
   updateGuidance
 } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
@@ -26,7 +26,10 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   ...overrides
 });
 
-const LIMIT = { cpu: { block_above: 15, resume_below: 10 }, io: { block_above: 10, resume_below: 5 } };
+const LIMIT = {
+  cpu: { block_above: 15, resume_below: 10 },
+  io: { block_above: 10, resume_below: 5 }
+};
 
 const MINIMUMS = { '1d': 700, '7d': 900, '30d': 930 };
 

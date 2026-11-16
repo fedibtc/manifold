@@ -7,8 +7,8 @@ import {
   formatPermille,
   guidance,
   labels,
-  pressureGuidance,
   passed,
+  pressureGuidance,
   reportedChecks,
   UPTIME_WINDOWS,
   updateGuidance,
@@ -67,8 +67,8 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                 {check !== 'version' &&
                   report[check] !== 'host_pressure_high' &&
                   !passed(report[check]) && (
-                  <span className={styles.guidance}>{guidance[check]}</span>
-                )}
+                    <span className={styles.guidance}>{guidance[check]}</span>
+                  )}
               </li>
             ))}
           </ul>

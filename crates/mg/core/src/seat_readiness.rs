@@ -1019,12 +1019,12 @@ mod tests {
             version: ReadinessOutcome::MgVersionTooOld,
             pressure: ReadinessOutcome::HostPressureHigh,
             host_pressure: Some(HostPressure {
-                cpu: host_pressure::PressureWindows {
+                cpu: host_pressure::PressurePermille {
                     six_hours: Some(213),
                     day: Some(87),
                 },
                 // A day window not yet covered is absent, not zero.
-                io: host_pressure::PressureWindows {
+                io: host_pressure::PressurePermille {
                     six_hours: Some(41),
                     day: None,
                 },

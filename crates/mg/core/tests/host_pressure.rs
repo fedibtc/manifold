@@ -54,11 +54,11 @@ fn limit() -> HostPressureLimit {
 
 fn pressure(cpu: (Option<u16>, Option<u16>), io: (Option<u16>, Option<u16>)) -> HostPressure {
     HostPressure {
-        cpu: PressureWindows {
+        cpu: PressurePermille {
             six_hours: cpu.0,
             day: cpu.1,
         },
-        io: PressureWindows {
+        io: PressurePermille {
             six_hours: io.0,
             day: io.1,
         },
@@ -126,7 +126,7 @@ fn a_window_is_stall_time_over_wall_time() {
     let measured = HostPressure::from_samples(&samples, at(30 * HOUR));
     assert_eq!(
         measured.cpu,
-        PressureWindows {
+        PressurePermille {
             six_hours: Some(20),
             day: Some(155)
         }

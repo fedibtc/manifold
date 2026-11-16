@@ -1,13 +1,7 @@
 import type { ReadinessOutcome, ReadinessReport, UptimePermille } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck =
-  | 'relay'
-  | 'discovery'
-  | 'bitcoin'
-  | 'version'
-  | 'pressure'
-  | 'uptime';
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'pressure' | 'uptime';
 
 export const CHECKS: readonly ReadinessCheck[] = [
   'relay',

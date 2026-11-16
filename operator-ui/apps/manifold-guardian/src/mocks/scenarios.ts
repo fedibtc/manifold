@@ -73,7 +73,10 @@ const READY: MockState['seatReadiness'] = {
   version: 'pass',
   pressure: 'pass',
   host_pressure: { cpu: { '6h': 21, '24h': 25 }, io: { '6h': 4, '24h': 6 } },
-  host_pressure_limit: { cpu: { block_above: 15, resume_below: 10 }, io: { block_above: 10, resume_below: 5 } },
+  host_pressure_limit: {
+    cpu: { block_above: 15, resume_below: 10 },
+    io: { block_above: 10, resume_below: 5 }
+  },
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
