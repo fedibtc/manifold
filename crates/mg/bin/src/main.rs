@@ -319,8 +319,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let push_gateway_origin = manifold_environment
         .push_gateway_origin()
         .map(|origin| {
-            let policy = if manifold_environment.environment() == ManifoldEnvironment::Development
-            {
+            let policy = if manifold_environment.environment() == ManifoldEnvironment::Development {
                 PushGatewayOriginPolicy::AllowInsecureLoopback
             } else {
                 PushGatewayOriginPolicy::HttpsOnly

@@ -27,24 +27,27 @@ const HOOK_PATH_COMPONENT_MAX_BYTES: usize = 512;
 pub const DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const MAX_PUSH_CALLBACK_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
-/// Deployment-pinned origin allowed to receive FA completion callbacks.
+/// The Manifold environment's push-gateway origin: the only origin an MG
+/// invokes callbacks under (FA completion hooks and guardian-link alerts).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PushGatewayOrigin {
     url: Url,
 }
 
-/// Whether deployment policy permits development HTTP on numeric loopback.
+/// Whether the origin may be development HTTP on numeric loopback. Only the
+/// development environment's local-gateway override gets
+/// [`Self::AllowInsecureLoopback`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushGatewayOriginPolicy {
-    /// Require HTTPS for every configured origin.
+    /// Require HTTPS (staging and production).
     HttpsOnly,
     /// Permit HTTP only for a numeric loopback origin.
     AllowInsecureLoopback,
 }
 
 impl PushGatewayOrigin {
-    /// Parse a public gateway origin. HTTPS is mandatory unless the explicit
-    /// development escape hatch is enabled for a loopback HTTP origin.
+    /// Parse a gateway origin. HTTPS is mandatory unless `policy` allows a
+    /// loopback HTTP origin in development.
     pub fn parse(
         value: &str,
         policy: PushGatewayOriginPolicy,
