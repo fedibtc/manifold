@@ -353,6 +353,13 @@ const mgSeatReadinessMirror = {
     discovery: 'discovery_record_missing',
     bitcoin: 'bitcoin_syncing',
     version: 'mg_version_too_old',
+    pressure: 'host_pressure_6h_high',
+    // Per-mille of wall time: 21.3% over the 15.0% maximum.
+    host_pressure: { cpu: { '6h': 213, '3.5d': 87 }, io: { '6h': 41, '3.5d': 30 } },
+    max_host_pressure: {
+      cpu: { '6h': 150, '3.5d': 100 },
+      io: { '6h': 100, '3.5d': 50 }
+    },
     uptime: 'uptime_7d_low',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },

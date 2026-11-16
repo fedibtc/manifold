@@ -27,6 +27,7 @@ pub mod fedimint_api;
 pub mod fleet;
 pub mod guardian_fee;
 pub mod guardian_link;
+pub mod host_pressure;
 pub mod identity;
 pub mod legacy_layout;
 pub mod onboarding;

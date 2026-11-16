@@ -53,6 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
+        max_pressure_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
+            max_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
             min_mg_version: None,
@@ -465,6 +467,76 @@ fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
         ),
         Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
     );
+}
+
+#[test]
+fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let parse = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    let windows = |six_hours, three_and_a_half_days| MaxPressureWindows {
+        six_hours,
+        three_and_a_half_days,
+    };
+    let defaults = MaxPressurePercent {
+        cpu: windows(15, 10),
+        io: windows(25, 15),
+    };
+    assert_eq!(MaxPressurePercent::default(), defaults);
+    assert_eq!(parse("").unwrap().max_pressure_percent(), defaults);
+    assert!(
+        !String::from_utf8(content(vec![]))
+            .unwrap()
+            .contains("max_pressure_percent")
+    );
+    assert_eq!(
+        parse(r#","max_pressure_percent":{"cpu":{"6h":30,"3.5d":20},"io":{"6h":40,"3.5d":25}}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        MaxPressurePercent {
+            cpu: windows(30, 20),
+            io: windows(40, 25),
+        }
+    );
+    // An omitted window or resource takes its own default, which differs by
+    // resource, and an unknown window is ignored, as for min_uptime_percent.
+    assert_eq!(
+        parse(r#","max_pressure_percent":{"io":{"3.5d":8,"1h":1}}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        MaxPressurePercent {
+            cpu: windows(15, 10),
+            io: windows(25, 8),
+        }
+    );
+    assert_eq!(
+        parse(r#","max_pressure_percent":{}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        defaults
+    );
+    // Windows are independent, and both ends of the range are admitted.
+    assert!(
+        parse(r#","max_pressure_percent":{"cpu":{"6h":1,"3.5d":100},"io":{"6h":100,"3.5d":1}}"#)
+            .is_ok()
+    );
+    // Zero would close every MG; a share of time cannot exceed 100%. Any one
+    // window being wrong refuses the publication.
+    for field in [
+        r#","max_pressure_percent":{"cpu":{"6h":0}}"#,
+        r#","max_pressure_percent":{"cpu":{"3.5d":0}}"#,
+        r#","max_pressure_percent":{"io":{"6h":101}}"#,
+        r#","max_pressure_percent":{"io":{"3.5d":101}}"#,
+    ] {
+        assert_eq!(
+            parse(field),
+            Err(SetupPaymentFederationsContentError::InvalidMaxPressure),
+            "{field}"
+        );
+    }
 }
 
 #[test]

@@ -163,6 +163,42 @@ advertisement without waiting for the next slot, and lowering or removing it
 reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
+Each run also requires CPU and IO pressure averages of at most the
+setup-payment policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
+over 3.5 days, IO 25% and 15%, when absent or before a policy is admitted;
+[SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
+Each run reads the cumulative pressure stall (PSI `some`) counters of the
+cgroup the daemon shares with its seats, for CPU and for IO, and divides the
+stall time added since the previous reading by the wall time elapsed. It
+folds that share into bias-corrected exponential moving averages with 6-hour
+and 3.5-day (84-hour) time constants: the uncorrected average and its weight
+each move `1 - exp(-elapsed / tau)` of the way to the share and to 1, and the
+average compared is their quotient. A young history is therefore the
+time-weighted mean of the intervals measured so far, so the busy minute
+while seats start after an upgrade does not close the host for days, and a
+long history is the plain moving average. The first measured interval sets
+every average to its own share, so a fresh install measures before it
+sells. An interval says
+nothing about pressure, and leaves the averages unchanged, when a counter
+went backwards, as it does when a restart recreates the cgroup; when the
+clock did not advance; or when it is longer than 30 minutes, since runs come
+every 10 minutes and a longer interval spans downtime that would otherwise
+count as time without pressure. The last reading, the averages and their weights
+are durable. The averages compare at the 0.1% telemetry reports, and a failure
+names the shorter failing window, `host_pressure_6h_high` before
+`host_pressure_3_5d_high`; a host steady just over a 3.5-day maximum stays
+closed, while a spike of a few hours closes it only while its 6-hour average
+is over. Pressure is a share of time, so unlike system load it does not
+depend on CPU count or speed, and it counts only waits of this MG's tasks.
+Counters that cannot be read fail the check (`host_pressure_unavailable`),
+and so does the first run before any interval is measured
+(`host_pressure_measuring`): every MG release that journals resource samples
+reported both counters when this check was added. Like the version check, a
+failing pressure check stops new seats but the MG still serves its seats, so
+it is not a prerequisite and never marks a slot down. Local E2E, whose MGs
+all share one busy test host's cgroup, skips the pressure check as it skips
+the relay and discovery checks.
+
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
@@ -190,7 +226,8 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
+fixed code per check, the three uptime scores, the minimums they were held to,
+and the pressure averages and thresholds for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

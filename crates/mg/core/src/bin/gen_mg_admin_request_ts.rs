@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 
 use mg_core::admin::AdminRequest;
+use mg_core::host_pressure::{HostPressure, PressurePermille};
 use mg_core::seat_readiness::{
     ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
 };
@@ -80,6 +81,8 @@ pub fn seat_readiness_generated() -> String {
     let declarations = [
         ReadinessOutcome::export_to_string(&config).expect("ReadinessOutcome exports"),
         ReadinessReport::export_to_string(&config).expect("ReadinessReport exports"),
+        HostPressure::export_to_string(&config).expect("HostPressure exports"),
+        PressurePermille::export_to_string(&config).expect("PressurePermille exports"),
         UptimeComparison::export_to_string(&config).expect("UptimeComparison exports"),
         UptimePermille::export_to_string(&config).expect("UptimePermille exports"),
         UptimeWaitSecs::export_to_string(&config).expect("UptimeWaitSecs exports"),

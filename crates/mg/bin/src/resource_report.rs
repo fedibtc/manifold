@@ -4,14 +4,17 @@
 //! The daemon and every bundled `fedimintd` sample their own process and write
 //! to their own safe-event journal, so a seat's samples arrive in that seat's
 //! journal without the daemon tracking child process ids. The daemon also
-//! samples the cgroup that it shares with its seats.
+//! samples the cgroup and the network namespace that it shares with its
+//! seats.
 //!
 //! Counters are cumulative. A consumer derives rates from the deltas between
 //! two samples. A counter whose source the kernel does not provide is omitted
 //! from the event.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
+
+use mg_core::host_pressure::{Pressure, cgroup_v2_dir};
 
 /// Early enough to see post-startup memory, after RocksDB and Iroh have opened.
 const FIRST_SAMPLE_DELAY: Duration = Duration::from_secs(60);
@@ -21,7 +24,8 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// The process that takes the samples.
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
-    /// The MG daemon. It also samples the cgroup it shares with its seats.
+    /// The MG daemon. It also samples the cgroup and network namespace it
+    /// shares with its seats.
     Daemon,
     /// One bundled `fedimintd` seat process.
     Fedimintd,
@@ -36,8 +40,8 @@ impl Role {
     }
 }
 
-/// Sample this process, and for the daemon also its cgroup, until the runtime
-/// shuts down.
+/// Sample this process, and for the daemon also its cgroup and network
+/// namespace, until the runtime shuts down.
 pub(crate) fn spawn(role: Role) {
     tokio::spawn(async move {
         tokio::time::sleep(FIRST_SAMPLE_DELAY).await;
@@ -72,14 +76,17 @@ pub(crate) fn spawn(role: Role) {
     });
 }
 
-/// Report the cgroup that the daemon shares with its seats. Its path stays
-/// local.
+/// Report the cgroup and the network namespace that the daemon shares with
+/// its seats. The cgroup path and interface names stay local.
 fn report_cgroup() {
     let cgroup = read("/proc/self/cgroup", cgroup_v2_dir);
     let cgroup_file = |name: &str| cgroup.as_ref().map(|dir| dir.join(name));
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
     let cpu_pressure = cgroup_file("cpu.pressure").and_then(|path| read(&path, Pressure::parse));
     let io_pressure = cgroup_file("io.pressure").and_then(|path| read(&path, Pressure::parse));
+    let memory_pressure =
+        cgroup_file("memory.pressure").and_then(|path| read(&path, Pressure::parse));
+    let network = read("/proc/self/net/dev", NetnsTraffic::parse);
     tracing::info!(
         safe_to_share = true,
         available_cpus = std::thread::available_parallelism()
@@ -91,6 +98,12 @@ fn report_cgroup() {
         cgroup_cpu_pressure_us = cpu_pressure.as_ref().map(|pressure| pressure.some_us),
         cgroup_io_pressure_us = io_pressure.as_ref().map(|pressure| pressure.some_us),
         cgroup_io_full_pressure_us = io_pressure.as_ref().and_then(|pressure| pressure.full_us),
+        cgroup_memory_pressure_us = memory_pressure.as_ref().map(|pressure| pressure.some_us),
+        cgroup_memory_full_pressure_us = memory_pressure
+            .as_ref()
+            .and_then(|pressure| pressure.full_us),
+        netns_rx_bytes = network.as_ref().map(|network| network.rx_bytes),
+        netns_tx_bytes = network.as_ref().map(|network| network.tx_bytes),
         "cgroup resource sample"
     );
 }
@@ -188,13 +201,6 @@ impl ProcessIo {
     }
 }
 
-/// The cgroup v2 directory of this process, from `/proc/<pid>/cgroup`. A
-/// container with its own cgroup namespace sees its own cgroup as `/`.
-fn cgroup_v2_dir(cgroup: &str) -> Option<PathBuf> {
-    let path = cgroup.lines().find_map(|line| line.strip_prefix("0::"))?;
-    Some(Path::new("/sys/fs/cgroup").join(path.trim_start_matches('/')))
-}
-
 /// CPU accounting of the cgroup that holds the daemon and its seats.
 #[derive(Debug, PartialEq, Eq)]
 struct CgroupCpu {
@@ -217,38 +223,57 @@ impl CgroupCpu {
     }
 }
 
-/// Cumulative stall time from a pressure stall information file.
+/// Bytes received and sent on every interface of this process's network
+/// namespace except loopback.
+///
+/// The daemon and its seats share one namespace, and the kernel does not split
+/// these counters by process. Where the MG runs in its own container
+/// namespace, as on Umbrel and StartOS, they count exactly the MG's and its
+/// seats' traffic, including bitcoind RPC to another container. With host
+/// networking, as in the Docker Compose example, they count the whole host,
+/// including any bitcoind on it. The sum falls when an interface goes away; a
+/// consumer treats that like a restart.
 #[derive(Debug, PartialEq, Eq)]
-struct Pressure {
-    /// Time in which at least one task stalled on the resource.
-    some_us: u64,
-    /// Time in which all non-idle tasks stalled. CPU pressure has no
-    /// meaningful `full` line.
-    full_us: Option<u64>,
+struct NetnsTraffic {
+    rx_bytes: u64,
+    tx_bytes: u64,
 }
 
-impl Pressure {
-    /// Parse a PSI file such as `cpu.pressure` or `io.pressure`.
-    fn parse(pressure: &str) -> Option<Self> {
-        let total = |kind: &str| {
-            field(pressure, kind, ' ')?
-                .split_ascii_whitespace()
-                .find_map(|pair| pair.strip_prefix("total="))?
-                .parse()
-                .ok()
+impl NetnsTraffic {
+    /// Parse `/proc/<pid>/net/dev`: two header lines, then one
+    /// `name: <8 receive counters> <8 transmit counters>` line per interface,
+    /// where the first counter of each group is bytes.
+    fn parse(dev: &str) -> Option<Self> {
+        let mut lines = dev.lines();
+        for _ in 0..2 {
+            lines.next().filter(|header| header.contains('|'))?;
+        }
+        let mut traffic = Self {
+            rx_bytes: 0,
+            tx_bytes: 0,
         };
-        Some(Self {
-            some_us: total("some")?,
-            full_us: total("full"),
-        })
+        for line in lines {
+            let (name, counters) = line.split_once(':')?;
+            let counters = counters
+                .split_ascii_whitespace()
+                .map(|counter| counter.parse::<u64>().ok())
+                .collect::<Option<Vec<_>>>()?;
+            let [rx_bytes, _, _, _, _, _, _, _, tx_bytes, ..] = counters[..] else {
+                return None;
+            };
+            if name.trim() == "lo" {
+                continue;
+            }
+            traffic.rx_bytes = traffic.rx_bytes.checked_add(rx_bytes)?;
+            traffic.tx_bytes = traffic.tx_bytes.checked_add(tx_bytes)?;
+        }
+        Some(traffic)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{CgroupCpu, Pressure, ProcessCpu, ProcessIo, ProcessMemory, cgroup_v2_dir};
+    use super::{CgroupCpu, NetnsTraffic, ProcessCpu, ProcessIo, ProcessMemory};
 
     #[test]
     fn parses_linux_status_fields_in_bytes() {
@@ -339,22 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_unified_cgroup_among_v1_lines() {
-        let cgroup = "12:cpu,cpuacct:/legacy\n0::/system.slice/fedimint-mg.service\n";
-        assert_eq!(
-            cgroup_v2_dir(cgroup),
-            Some(PathBuf::from(
-                "/sys/fs/cgroup/system.slice/fedimint-mg.service"
-            ))
-        );
-        assert_eq!(
-            cgroup_v2_dir("0::/\n"),
-            Some(PathBuf::from("/sys/fs/cgroup/"))
-        );
-        assert_eq!(cgroup_v2_dir("4:memory:/docker/abc\n"), None);
-    }
-
-    #[test]
     fn parses_cgroup_cpu_stat_with_and_without_quota_fields() {
         let with_quota = "usage_usec 500\nuser_usec 300\nsystem_usec 200\n\
             nr_periods 40\nnr_throttled 9\nthrottled_usec 7000\n";
@@ -377,21 +386,58 @@ mod tests {
     }
 
     #[test]
-    fn parses_pressure_totals_not_averages() {
-        let io = "some avg10=1.50 avg60=0.20 avg300=0.05 total=123456\n\
-            full avg10=0.75 avg60=0.10 avg300=0.02 total=65432\n";
+    fn sums_non_loopback_bytes_from_proc_net_dev() {
+        // Columns after the name: receive bytes packets errs drop fifo frame
+        // compressed multicast, then transmit bytes packets errs drop fifo
+        // colls carrier compressed. lo has the largest counts, so summing it
+        // shows. wg0 has no space after its colon, as the kernel prints a
+        // wide first counter.
+        let dev = "Inter-|   Receive                                                |  Transmit\n \
+            face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    \
+            lo: 7000000000    9100    0    0    0     0          0         0 7000000000    9100    0    0    0     0       0          0\n  \
+            eth0: 5000000000  812345    0   12    0     0          0       310 1234567    8790    0    0    0     0       0          0\n \
+            wg0:812345    4400    2    0    0     0          0         0 8790000000   31000    0    0    0     0       0          0\n";
         assert_eq!(
-            Pressure::parse(io),
-            Some(Pressure {
-                some_us: 123_456,
-                full_us: Some(65_432),
+            NetnsTraffic::parse(dev),
+            Some(NetnsTraffic {
+                // eth0 + wg0, without lo; the receive sum exceeds u32.
+                rx_bytes: 5_000_812_345,
+                tx_bytes: 8_791_234_567,
             })
         );
+    }
+
+    #[test]
+    fn parses_this_kernels_proc_net_dev() {
+        let dev = std::fs::read_to_string("/proc/self/net/dev").expect("procfs");
+        assert!(NetnsTraffic::parse(&dev).is_some(), "unparsed:\n{dev}");
+    }
+
+    #[test]
+    fn rejects_proc_net_dev_without_headers_or_with_a_short_line() {
+        let header = "Inter-|   Receive |  Transmit\n face |bytes packets|bytes packets\n";
+        assert_eq!(NetnsTraffic::parse(""), None);
         assert_eq!(
-            Pressure::parse("some avg10=0.00 avg60=0.00 avg300=0.00 total=99\n"),
-            Some(Pressure {
-                some_us: 99,
-                full_us: None,
+            NetnsTraffic::parse("  eth0: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n"),
+            None
+        );
+        assert_eq!(
+            NetnsTraffic::parse(&format!("{header}  eth0: 1 2 3 4 5 6 7 8\n")),
+            None
+        );
+        assert_eq!(
+            NetnsTraffic::parse(&format!(
+                "{header}  eth0: 1 2 3 4 5 6 7 8 x 10 11 12 13 14 15 16\n"
+            )),
+            None
+        );
+        assert_eq!(
+            NetnsTraffic::parse(&format!(
+                "{header}    lo: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n"
+            )),
+            Some(NetnsTraffic {
+                rx_bytes: 0,
+                tx_bytes: 0,
             })
         );
     }

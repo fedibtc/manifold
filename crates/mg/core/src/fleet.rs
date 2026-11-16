@@ -42,6 +42,7 @@ use crate::db::{
     SeatsConfigUpdate,
 };
 use crate::facts::{PortBase, SeatPorts};
+use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
@@ -901,6 +902,15 @@ impl Fleet {
             .uptime()
             .await?
             .map_or(UptimeScores::START, |uptime| uptime.scores))
+    }
+
+    /// Account for this run's pressure reading, `None` when the counters
+    /// could not be read, and return the pressure history after it.
+    pub async fn record_host_pressure(
+        &self,
+        reading: Option<PressureSample>,
+    ) -> anyhow::Result<Option<PressureState>> {
+        Ok(self.db.record_host_pressure(reading).await?)
     }
 
     /// The durable verdict that gates admission.

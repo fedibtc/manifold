@@ -41,6 +41,7 @@ use mg_core::guardian_fee::{
 use mg_core::guardian_link::{
     AttentionReason, GuardianLinkAvailability, GuardianLinkStatus, LinkOfferStatus,
 };
+use mg_core::host_pressure::{HostPressure, PressurePermille};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
@@ -120,6 +121,28 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     version: ReadinessOutcome::MgVersionTooOld,
+                    pressure: ReadinessOutcome::SixHourPressureHigh,
+                    host_pressure: Some(HostPressure {
+                        // Per-mille: 21.3%, above the 15% maximum below.
+                        cpu: PressurePermille {
+                            six_hours: 213,
+                            three_and_a_half_days: 87,
+                        },
+                        io: PressurePermille {
+                            six_hours: 41,
+                            three_and_a_half_days: 30,
+                        },
+                    }),
+                    max_host_pressure: Some(HostPressure {
+                        cpu: PressurePermille {
+                            six_hours: 150,
+                            three_and_a_half_days: 100,
+                        },
+                        io: PressurePermille {
+                            six_hours: 100,
+                            three_and_a_half_days: 50,
+                        },
+                    }),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {

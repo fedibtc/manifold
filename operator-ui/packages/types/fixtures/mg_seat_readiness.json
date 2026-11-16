@@ -4,6 +4,27 @@
     "bitcoin": "bitcoin_syncing",
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
+    "host_pressure": {
+      "cpu": {
+        "3.5d": 87,
+        "6h": 213
+      },
+      "io": {
+        "3.5d": 30,
+        "6h": 41
+      }
+    },
+    "max_host_pressure": {
+      "cpu": {
+        "3.5d": 100,
+        "6h": 150
+      },
+      "io": {
+        "3.5d": 50,
+        "6h": 100
+      }
+    },
+    "pressure": "host_pressure_6h_high",
     "relay": "pass",
     "uptime": "uptime_7d_low",
     "uptime_comparison": {

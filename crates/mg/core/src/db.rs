@@ -22,6 +22,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
+use crate::host_pressure::{
+    AverageWeights, PressureAverages, PressureSample, PressureState, PressureTotals,
+    ResourceAverages,
+};
 use crate::identity::RootMnemonic;
 use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
@@ -808,6 +812,54 @@ impl Db {
         uptime_row(&mut conn).await
     }
 
+    /// Account for this run's pressure `reading`, `None` when the counters
+    /// could not be read ([`PressureState::record`]), and return the history
+    /// after it, or `None` before the first reading.
+    pub(crate) async fn record_host_pressure(
+        &self,
+        reading: Option<PressureSample>,
+    ) -> Result<Option<PressureState>, DbError> {
+        let mut tx = self.begin_write().await?;
+        let previous = host_pressure_row(&mut tx).await?;
+        let Some(reading) = reading else {
+            return Ok(previous);
+        };
+        let next = PressureState::record(previous, reading);
+        let millis = i64::try_from(
+            next.last
+                .at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX);
+        let averages = next.averages;
+        sqlx::query(
+            "INSERT INTO host_pressure \
+             (id, sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, \
+             weight_6h, weight_3_5d) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+             cpu_some_us = excluded.cpu_some_us, io_some_us = excluded.io_some_us, \
+             cpu_6h = excluded.cpu_6h, cpu_3_5d = excluded.cpu_3_5d, \
+             io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d, \
+             weight_6h = excluded.weight_6h, weight_3_5d = excluded.weight_3_5d",
+        )
+        .bind(millis)
+        .bind(i64::try_from(next.last.totals.cpu_us).unwrap_or(i64::MAX))
+        .bind(i64::try_from(next.last.totals.io_us).unwrap_or(i64::MAX))
+        .bind(averages.map(|averages| averages.cpu.six_hours))
+        .bind(averages.map(|averages| averages.cpu.three_and_a_half_days))
+        .bind(averages.map(|averages| averages.io.six_hours))
+        .bind(averages.map(|averages| averages.io.three_and_a_half_days))
+        .bind(averages.map(|averages| averages.weights.six_hours))
+        .bind(averages.map(|averages| averages.weights.three_and_a_half_days))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(next))
+    }
+
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
         let (epoch,): (Vec<u8>,) =
             sqlx::query_as("SELECT offer_epoch FROM offer_state WHERE id = 1")
@@ -815,6 +867,10 @@ impl Db {
                 .await?;
         parse_offer_epoch(epoch)
     }
+}
+
+fn from_millis(millis: i64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(u64::try_from(millis).expect("non-negative by schema CHECK"))
 }
 
 async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>, DbError> {
@@ -826,6 +882,68 @@ async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>,
         scores: UptimeScores { day, week, month },
         slot: u64::try_from(slot).expect("slot is non-negative by schema CHECK"),
     }))
+}
+
+type HostPressureRow = (
+    i64,
+    i64,
+    i64,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+);
+
+async fn host_pressure_row(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Option<PressureState>, DbError> {
+    let row: Option<HostPressureRow> = sqlx::query_as(
+        "SELECT sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, \
+         weight_6h, weight_3_5d FROM host_pressure WHERE id = 1",
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(
+        |(at, cpu_us, io_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, weight_6h, weight_3_5d)| {
+            let averages = match (cpu_6h, cpu_3_5d, io_6h, io_3_5d, weight_6h, weight_3_5d) {
+                (
+                    Some(cpu_6h),
+                    Some(cpu_3_5d),
+                    Some(io_6h),
+                    Some(io_3_5d),
+                    Some(weight_6h),
+                    Some(weight_3_5d),
+                ) => Some(PressureAverages {
+                    cpu: ResourceAverages {
+                        six_hours: cpu_6h,
+                        three_and_a_half_days: cpu_3_5d,
+                    },
+                    io: ResourceAverages {
+                        six_hours: io_6h,
+                        three_and_a_half_days: io_3_5d,
+                    },
+                    weights: AverageWeights {
+                        six_hours: weight_6h,
+                        three_and_a_half_days: weight_3_5d,
+                    },
+                }),
+                (None, None, None, None, None, None) => None,
+                _ => unreachable!("all averages and weights or none by schema CHECK"),
+            };
+            PressureState {
+                last: PressureSample {
+                    at: from_millis(at),
+                    totals: PressureTotals {
+                        cpu_us: u64::try_from(cpu_us).expect("non-negative by schema CHECK"),
+                        io_us: u64::try_from(io_us).expect("non-negative by schema CHECK"),
+                    },
+                },
+                averages,
+            }
+        },
+    ))
 }
 
 pub(super) fn fresh_offer_epoch() -> OfferEpoch {
