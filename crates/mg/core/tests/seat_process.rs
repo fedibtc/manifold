@@ -89,6 +89,7 @@ async fn child_receives_configured_relay_and_auth_environment() {
         &config,
         SeatId::new("00".repeat(32)).unwrap(),
         SeatNo(0),
+        FedimintdLine::V0_12,
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
     )
@@ -137,6 +138,7 @@ async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
         &config,
         SeatId::new("00".repeat(32)).unwrap(),
         SeatNo(0),
+        FedimintdLine::V0_12,
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
     )
@@ -178,6 +180,7 @@ async fn iroh_carrying_ports_bind_all_interfaces_others_loopback() {
         &config,
         SeatId::new("00".repeat(32)).unwrap(),
         SeatNo(0),
+        FedimintdLine::V0_12,
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
     )

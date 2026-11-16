@@ -114,9 +114,9 @@ yields:
 
 Decommissioned seats do not start a loop or child. There is one official daemon
 child-spawn site, inside `SeatProcess::start`. The binary can dispatch itself as
-fedimintd when directly invoked under a `fedimintd` argv[0], but no second daemon
-path invokes that mode; direct external invocation is excluded by
-A-valid-history.
+fedimintd when directly invoked under a `fedimintd` argv[0], and the release's
+sibling `fedimintd-0-13` binary is fedimintd, but no second daemon path invokes
+either; direct external invocation is excluded by A-valid-history.
 
 **L5 (code) — the data-root flock is not a child-lifetime lock.** `Db::open`
 takes the flock before opening or migrating SQLite, and every `Db` clone retains

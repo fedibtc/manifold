@@ -199,6 +199,17 @@ replacement ordering as the new shared high-water mark.
   or one newer than `fman_version`, rejects the publication like any other
   invalid field. MG and FA releases from 0.1.1 on admit unknown fields and
   ignore it;
+- `fedimintd_0_13_federations`, an array of canonical (lowercase hex)
+  federation IDs whose guardians move from the 0.12 `fedimintd` line to 0.13
+  ([ARCH-manifold-guardian-seat-processes](../crates/mg/specs/ARCH-manifold-guardian-seat-processes.md#fedimintd-lines)).
+  Optional: absent or empty moves nothing, and publishers omit it when empty.
+  A listed federation need not be in `federations`. Each MG that hosts both
+  lines moves its own seats of a listed federation between two sessions, so
+  the federation runs mixed lines until every MG has polled. A move is
+  one-way: a later publication that drops a federation moves nothing back.
+  An entry that is not a canonical federation ID rejects the publication
+  like any other invalid field. MGs and FAs that admit unknown fields but
+  predate it ignore it and keep their seats on 0.12;
 - `guardian_link`, a boolean that turns on the MG's guardian link (mobile notifications)
   ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
   Optional: absent means the Manifold environment's default, on in
@@ -270,7 +281,9 @@ Admission performs all of these checks before the set influences policy:
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could
-    run; and the same for `recommended_min_mg_version`.
+    run; and the same for `recommended_min_mg_version`;
+15. reject a `fedimintd_0_13_federations` entry that is not a canonical
+    federation ID, which no MG could match to a seat.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join

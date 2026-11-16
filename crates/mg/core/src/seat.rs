@@ -16,6 +16,7 @@
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
+mod fedimintd_line;
 mod import;
 mod transfer;
 mod transfer_binding;
@@ -51,7 +52,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::backup_worker::BackupWorker;
 use crate::db::Db;
-use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
+use crate::facts::{CompletionCallbackStatus, DkgCodeSet, FedimintdLine, SeatFacts, SeatPorts};
 use crate::fedimint_api::{FedimintApi, FedimintApiError};
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
@@ -279,6 +280,10 @@ struct SeatLoop {
     completion_hooks: CompletionHookWake,
     transfer_wake: crate::transfer_worker::TransferWake,
     process_spawner: SeatProcessSpawner,
+    fedimintd_013_federations: fedimintd_line::Fedimintd013Federations,
+    /// This child was asked, or may have been asked, to stop after its
+    /// current session for a line move. Cleared by every spawn.
+    fedimintd_line_move_requested: bool,
     child: ProcessSlot,
     child_started: Option<tokio::time::Instant>,
     respawn_at: Option<tokio::time::Instant>,
@@ -392,6 +397,8 @@ pub(crate) struct SeatDurableState {
     pub(crate) decommissioned_at_ms: Option<i64>,
     /// Transfer fence loaded before any possible child spawn.
     pub(crate) transfer_phase: Option<TransferPhase>,
+    /// The `fedimintd` line that runs the guardian.
+    pub(crate) fedimintd_line: FedimintdLine,
 }
 
 /// Runtime capabilities and process configuration owned by one seat.
@@ -416,6 +423,8 @@ pub(crate) struct SeatRuntimeDependencies {
     pub(crate) completion_hooks: CompletionHookWake,
     pub(crate) transfer_wake: crate::transfer_worker::TransferWake,
     pub(crate) process_spawner: SeatProcessSpawner,
+    /// Federations moving to the 0.13 `fedimintd` line.
+    pub(crate) fedimintd_013_federations: fedimintd_line::Fedimintd013Federations,
 }
 
 #[derive(Clone)]
@@ -425,6 +434,8 @@ struct SeatRuntimeFacts {
     decommissioned_at_ms: Option<i64>,
     /// Transfer provenance or terminal fence, independent of formed state.
     transfer_phase: Option<TransferPhase>,
+    /// Mirrors the durable line; only the seat loop moves it.
+    fedimintd_line: FedimintdLine,
     health: SeatHealth,
 }
 
@@ -566,6 +577,7 @@ impl Seat {
             formed_invite,
             decommissioned_at_ms,
             transfer_phase,
+            fedimintd_line,
         } = durable;
         let SeatRuntimeDependencies {
             db,
@@ -579,6 +591,7 @@ impl Seat {
             completion_hooks,
             transfer_wake,
             process_spawner,
+            fedimintd_013_federations,
         } = runtime;
         let facts = Arc::new(facts);
         let data_dir = seat_data_dir(&process, facts.seat_no);
@@ -587,6 +600,7 @@ impl Seat {
             process_slot: ProcessSlotPhase::Empty,
             decommissioned_at_ms,
             transfer_phase,
+            fedimintd_line,
             health: SeatHealth::Unavailable,
         });
         // Keep only the next lifecycle command queued behind the one in progress.
@@ -611,6 +625,8 @@ impl Seat {
                 completion_hooks,
                 transfer_wake,
                 process_spawner,
+                fedimintd_013_federations,
+                fedimintd_line_move_requested: false,
                 child: ProcessSlot::Empty,
                 child_started: None,
                 respawn_at: None,
@@ -1068,6 +1084,7 @@ impl SeatLoop {
         self.watchdog_at = Some(tokio::time::Instant::now() + interval);
         if health == SeatHealth::Healthy {
             self.unresponsive_since = None;
+            self.request_fedimintd_line_move().await;
         } else {
             self.restart_if_unresponsive(failure_kind).await;
         }
@@ -1421,7 +1438,9 @@ impl SeatLoop {
                 None
             }
         };
-        if self.commit_session_boundary_exit(exit_code).await {
+        if self.commit_fedimintd_line_move(exit_code).await
+            || self.commit_session_boundary_exit(exit_code).await
+        {
             return;
         }
         if self
@@ -1522,12 +1541,15 @@ impl SeatLoop {
                 "child replacement requires a proved empty process slot"
             )));
         }
+        self.fedimintd_line_move_requested = false;
+        let line = self.state.borrow().fedimintd_line;
         let mut child = self
             .process_spawner
             .start(
                 &self.process,
                 self.facts.seat_id.clone(),
                 self.facts.seat_no,
+                line,
                 self.ports,
                 &self.keys.api_auth,
             )
@@ -2495,8 +2517,7 @@ impl SeatLoop {
             enabled_modules,
             federation_size,
             network: self.process.bitcoin_network,
-            fedimint_version: fedi_decentralized_service_manifold_guardian::FEDIMINTD_VERSION_0_1
-                .to_owned(),
+            fedimint_version: self.state.borrow().fedimintd_line.version().to_string(),
         };
         Ok(GuardianCode(base32::encode_prefixed(
             FEDIMINT_PREFIX,

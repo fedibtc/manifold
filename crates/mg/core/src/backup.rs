@@ -18,7 +18,7 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::facts::{SeatFacts, SeatNo};
+use crate::facts::{FedimintdLine, SeatFacts, SeatNo};
 use crate::identity::RootMnemonic;
 
 /// One seat's irreplaceable state.
@@ -70,6 +70,17 @@ pub struct SeatBackupDocument {
     pub plan: Plan,
     pub federation_size: FederationSize,
     pub created_at_ms: i64,
+    /// The bundled `fedimintd` line that last ran the seat's guardian
+    /// database. Releases that hosted only
+    /// 0.12 omit it, and 0.12 is still written by omission so those seats keep
+    /// their original document digest (like [`Self::transfer`]). A line this
+    /// release does not host fails to decode, so restore refuses the document
+    /// rather than starting a guardian on a line that cannot read its data.
+    #[serde(
+        default = "pre_line_documents_run_0_12",
+        skip_serializing_if = "FedimintdLine::is_v0_12"
+    )]
+    pub fedimintd_line: FedimintdLine,
     /// The accepted payment's recovery material. `None` only for a free seat,
     /// which has no money to lose.
     pub payment: Option<PaymentBackup>,
@@ -364,6 +375,7 @@ pub fn sha256_hex(contents: impl AsRef<[u8]>) -> String {
 impl SeatBackupDocument {
     pub fn new(
         facts: &SeatFacts,
+        fedimintd_line: FedimintdLine,
         payment: Option<PaymentBackup>,
         guardian: Option<GuardianArchiveRef>,
         decommissioned_at_ms: Option<i64>,
@@ -374,6 +386,7 @@ impl SeatBackupDocument {
             plan: facts.plan.clone(),
             federation_size: facts.federation_size,
             created_at_ms: facts.created_at_ms,
+            fedimintd_line,
             payment,
             guardian,
             decommissioned_at_ms,
@@ -454,6 +467,10 @@ impl SeatBackupDocument {
             created_at_ms: self.created_at_ms,
         }
     }
+}
+
+fn pre_line_documents_run_0_12() -> FedimintdLine {
+    FedimintdLine::V0_12
 }
 
 /// One seat's publication: everything the sink must make durable together.
@@ -537,6 +554,7 @@ pub(crate) async fn seat_publication_plan(
         outgoing,
         formed_invite,
         decommissioned_at_ms,
+        fedimintd_line,
     } = db.seat_recovery_facts(&facts.seat_id).await?;
     let payment = payment.map(|record| PaymentBackup::from_record(&record));
     let removed = outgoing == Some(crate::transfer_state::OutgoingTransfer::Removed);
@@ -571,7 +589,13 @@ pub(crate) async fn seat_publication_plan(
         archive_sha256,
         federation_invite,
     });
-    let mut document = SeatBackupDocument::new(facts, payment, guardian, decommissioned_at_ms);
+    let mut document = SeatBackupDocument::new(
+        facts,
+        fedimintd_line,
+        payment,
+        guardian,
+        decommissioned_at_ms,
+    );
     let accepted_backup = incoming.filter(|_| !removed).and_then(|incoming| {
         let keys = incoming.accepted()?;
         Some(IncomingTransferBackup::Accepted {

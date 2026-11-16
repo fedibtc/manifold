@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::backup::{GuardianArchive, GuardianArchiveRef, PaymentBackup, SeatBackupDocument};
-use crate::facts::{SeatFacts, SeatNo};
+use crate::facts::{FedimintdLine, SeatFacts, SeatNo};
 use crate::seat_process::BitcoindConfig;
 
 const TEST_MNEMONIC: &str =
@@ -112,6 +112,7 @@ fn transferred_document(seat: u8) -> (SeatBackupDocument, GuardianArchive) {
     );
     let mut document = SeatBackupDocument::new(
         &facts,
+        FedimintdLine::V0_12,
         Some(payment()),
         Some(GuardianArchiveRef {
             archive_sha256: archive.digest(),
@@ -411,11 +412,13 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
     let archive = guardian_archive(&consensus_json);
     let formed = SeatBackupDocument::new(
         &facts(1),
+        FedimintdLine::V0_12,
         Some(payment()),
         Some(guardian_ref(&archive)),
         None,
     );
-    let unformed = SeatBackupDocument::new(&facts(2), Some(payment()), None, None);
+    let unformed =
+        SeatBackupDocument::new(&facts(2), FedimintdLine::V0_12, Some(payment()), None, None);
 
     let recovered = recovered(
         vec![formed.clone(), unformed.clone()],
@@ -494,13 +497,21 @@ async fn seats_from_two_diverged_hosts_restore_side_by_side() {
     // against the creation order too.
     let host_b_seat = SeatBackupDocument::new(
         &created(1, 1_700_000_000_300),
+        FedimintdLine::V0_12,
         None,
         Some(guardian_ref(&second_archive)),
         None,
     );
-    let unformed = SeatBackupDocument::new(&created(2, 1_700_000_000_200), None, None, None);
+    let unformed = SeatBackupDocument::new(
+        &created(2, 1_700_000_000_200),
+        FedimintdLine::V0_12,
+        None,
+        None,
+        None,
+    );
     let host_a_seat = SeatBackupDocument::new(
         &created(3, 1_700_000_000_100),
+        FedimintdLine::V0_12,
         None,
         Some(guardian_ref(&first_archive)),
         None,
@@ -585,7 +596,7 @@ async fn a_restore_never_writes_into_an_existing_seat_directory() {
     let temp = TempDir::new().unwrap();
     let process = process(&temp);
 
-    let seat = SeatBackupDocument::new(&facts(3), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(3), FedimintdLine::V0_12, None, None, None);
     let occupied = crate::seat_process::seat_data_dir(&process, SeatNo(0));
     tokio::fs::create_dir_all(&occupied).await.unwrap();
     tokio::fs::write(occupied.join("private.encrypt"), "a live guardian")
@@ -615,7 +626,7 @@ async fn restore_refuses_a_preexisting_safe_event_journal_sibling() {
     let identity = test_identity();
     let temp = TempDir::new().unwrap();
     let process = process(&temp);
-    let seat = SeatBackupDocument::new(&facts(4), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(4), FedimintdLine::V0_12, None, None, None);
     let journal = crate::seat_process::seat_dir(&process, SeatNo(0)).join("safe-events");
     tokio::fs::create_dir_all(&journal).await.unwrap();
     tokio::fs::write(journal.join("sentinel"), b"prior install")
@@ -647,6 +658,7 @@ async fn a_crashed_restore_retries_to_completion() {
     let archive = guardian_archive(&consensus_json);
     let seat = SeatBackupDocument::new(
         &facts(5),
+        FedimintdLine::V0_12,
         Some(payment()),
         Some(guardian_ref(&archive)),
         None,
@@ -708,7 +720,13 @@ async fn a_crashed_restore_retries_to_completion() {
 async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(6), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(
+        &facts(6),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref(&archive)),
+        None,
+    );
     let recovered = recovered(
         vec![seat.clone()],
         vec![(seat.seat_id.clone(), archive.clone())],
@@ -747,7 +765,13 @@ async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
 async fn an_existing_directory_with_extra_files_refuses_adoption() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(6), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(
+        &facts(6),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref(&archive)),
+        None,
+    );
     let recovered = recovered(
         vec![seat.clone()],
         vec![(seat.seat_id.clone(), archive.clone())],
@@ -786,7 +810,13 @@ async fn an_existing_directory_with_extra_files_refuses_adoption() {
 async fn a_formed_seat_without_its_archive_refuses_the_whole_restore() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(4), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(
+        &facts(4),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref(&archive)),
+        None,
+    );
 
     // The seat document is there; its archive is not.
     let recovered = recovered(vec![seat], vec![]);
@@ -806,7 +836,7 @@ async fn a_formed_seat_without_its_archive_refuses_the_whole_restore() {
 async fn a_selected_guardianless_document_ignores_a_recovered_archive() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(5), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(5), FedimintdLine::V0_12, None, None, None);
     let recovered = recovered(vec![seat.clone()], vec![(seat.seat_id.clone(), archive)]);
     assert_eq!(recovered.formed(), 0);
 
@@ -848,8 +878,8 @@ async fn a_restore_that_cannot_finish_leaves_the_host_un_onboarded() {
     // being written whole.
     let recovered = recovered(
         vec![
-            SeatBackupDocument::new(&facts(8), Some(payment()), None, None),
-            SeatBackupDocument::new(&facts(8), None, None, None),
+            SeatBackupDocument::new(&facts(8), FedimintdLine::V0_12, Some(payment()), None, None),
+            SeatBackupDocument::new(&facts(8), FedimintdLine::V0_12, None, None, None),
         ],
         vec![],
     );

@@ -5,7 +5,7 @@
 //! upward import.
 
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, GuardianCode, Plan, SeatId,
+    FaId, FederationSize, FedimintdVersion, GuardianCode, Plan, SeatId,
 };
 
 /// The immutable creation-time facts of a seat. They are inserted together
@@ -25,6 +25,74 @@ pub struct SeatFacts {
     /// Guardian count used by DKG validation and leader setup.
     pub federation_size: FederationSize,
     pub created_at_ms: i64,
+}
+
+/// A bundled `fedimintd` major/minor line
+/// (ARCH-manifold-guardian-seat-processes *Subprocess model*).
+///
+/// A release hosts every line listed here, and each seat runs exactly one.
+/// A seat's `fedimintd` database is only readable by its own line and newer
+/// ones, so a seat never moves to an older line.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FedimintdLine {
+    /// Linked into the MG binary and entered through the `fedimintd` argv[0].
+    V0_12,
+    /// The sibling `fedimintd-0-13` binary from the same release.
+    V0_13,
+}
+
+impl FedimintdLine {
+    /// The line this release forms new seats on, and the only one it
+    /// advertises and quotes (SPEC-fa-rpc release policy).
+    pub const FORMATION: Self = Self::V0_12;
+
+    /// Whether this is the line documents from before lines existed imply.
+    pub fn is_v0_12(&self) -> bool {
+        *self == Self::V0_12
+    }
+
+    /// Durable spelling, shared by SQLite and the backup document.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::V0_12 => "0.12",
+            Self::V0_13 => "0.13",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "0.12" => Some(Self::V0_12),
+            "0.13" => Some(Self::V0_13),
+            _ => None,
+        }
+    }
+
+    /// The `fedimintd` version this line advertises and accepts in quotes.
+    pub fn version(self) -> FedimintdVersion {
+        match self {
+            Self::V0_12 => "0.12.0+fedi",
+            Self::V0_13 => "0.13.0+fedi",
+        }
+        .parse()
+        .expect("a line's version literal is valid SemVer")
+    }
+}
+
+impl serde::Serialize for FedimintdLine {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FedimintdLine {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::from_str(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "fedimintd line {value:?} is not hosted by this release"
+            ))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

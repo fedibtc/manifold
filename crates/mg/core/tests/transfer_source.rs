@@ -1,4 +1,5 @@
 use super::*;
+use crate::facts::FedimintdLine;
 use crate::transfer_state::OutgoingTransfer;
 use fedi_decentralized_service_manifold_guardian::{
     Locator, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest, TransferSeatResponse,
@@ -918,5 +919,159 @@ async fn pull_while_the_local_api_is_cut_asks_again_on_the_next_pull() {
     s.hand_over().await;
     assert_eq!(child.state().shutdown_after_current_session.len(), 1);
     assert_eq!(s.spawner.spawn_count(), 1);
+    s.fleet.shutdown().await;
+}
+
+// `fedimintd` line moves (seat/fedimintd_line.rs) share the boundary exit
+// with the handover above, so they are pinned against it here.
+
+/// Admit a policy listing this source's federation for the 0.13 line, as the
+/// Nostr boundary does on every refresh.
+async fn list_for_0_13(s: &Source, listed: bool) {
+    let invite: fedimint_core::invite_code::InviteCode = s
+        .fleet
+        .db
+        .formed_federation_invite(&s.grant.source_seat_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .parse()
+        .unwrap();
+    let ids = if listed {
+        format!(r#"["{}"]"#, invite.federation_id())
+    } else {
+        "[]".to_owned()
+    };
+    let admitted = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","fedimintd_0_13_federations":{ids}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    FleetSetupPaymentPolicyStore::new(s.fleet.clone()).apply(Some(&admitted));
+}
+
+async fn line(s: &Source) -> FedimintdLine {
+    s.fleet
+        .db
+        .fedimintd_line(&s.grant.source_seat_id)
+        .await
+        .unwrap()
+}
+
+/// A listed federation's guardian keeps running on 0.12 until fedimintd
+/// exits at a session boundary; it then restarts at once on 0.13, is not
+/// retired as a transfer source would be, and stays on 0.13 after the
+/// policy stops listing it.
+#[tokio::test]
+async fn listed_guardian_moves_to_0_13_at_its_session_boundary_and_never_back() {
+    let s = running_source(33_300).await;
+    let child = s.child().await;
+    s.seat.watchdog_tick_for_test().await;
+    assert!(
+        child.state().shutdown_after_current_session.is_empty(),
+        "an unlisted federation does not move"
+    );
+
+    list_for_0_13(&s, true).await;
+    s.seat.watchdog_tick_for_test().await;
+    s.seat.watchdog_tick_for_test().await;
+    assert_eq!(
+        child.state().shutdown_after_current_session.len(),
+        1,
+        "one request per child"
+    );
+    assert_eq!(
+        line(&s).await,
+        FedimintdLine::V0_12,
+        "nothing moves before the boundary"
+    );
+    assert_eq!(s.spawner.spawn_count(), 1);
+
+    child.stop_at_session_boundary();
+    eventually("the guardian restarts", || s.spawner.spawn_count() == 2).await;
+    assert_eq!(
+        s.spawner.spawned_lines(),
+        [FedimintdLine::V0_12, FedimintdLine::V0_13]
+    );
+    assert_eq!(line(&s).await, FedimintdLine::V0_13);
+    assert_eq!(s.outgoing().await, None, "a line move is no handover");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        s.sink.attempted.subscribe().wait_for(|document| {
+            document
+                .as_ref()
+                .is_some_and(|document| document.fedimintd_line == FedimintdLine::V0_13)
+        }),
+    )
+    .await
+    .expect("the backup records the new line")
+    .unwrap();
+
+    list_for_0_13(&s, false).await;
+    let moved = s.child().await;
+    s.seat.watchdog_tick_for_test().await;
+    assert!(moved.state().shutdown_after_current_session.is_empty());
+    moved.exit(1);
+    eventually("the guardian restarts", || s.spawner.spawn_count() == 3).await;
+    assert_eq!(s.spawner.spawned_lines()[2], FedimintdLine::V0_13);
+    s.fleet.shutdown().await;
+}
+
+/// A pull that arrives while a line move waits for its boundary is not
+/// lost: that boundary exit moves the guardian, and the destination's next
+/// pull asks the 0.13 child, whose own boundary exit hands it over.
+#[tokio::test]
+async fn pull_during_a_line_move_hands_over_after_the_move() {
+    let s = running_source(33_312).await;
+    list_for_0_13(&s, true).await;
+    s.seat.watchdog_tick_for_test().await;
+    s.pull_awaits_session_end().await;
+    let child = s.child().await;
+    assert_eq!(child.state().shutdown_after_current_session.len(), 2);
+
+    child.stop_at_session_boundary();
+    eventually("the guardian restarts", || s.spawner.spawn_count() == 2).await;
+    assert_eq!(s.outgoing().await, None);
+    assert_eq!(line(&s).await, FedimintdLine::V0_13);
+
+    s.hand_over().await;
+    assert_eq!(s.spawner.spawn_count(), 2);
+    s.fleet.shutdown().await;
+}
+
+/// A pull's boundary exit stays a handover when no line move was asked of
+/// that child, even for a listed federation: the move request comes only
+/// from a healthy probe, and this child exits before the next one.
+#[tokio::test]
+async fn boundary_exit_asked_only_by_a_pull_is_a_handover() {
+    let s = running_source(33_324).await;
+    // The probe due at start has run once this returns; the next is a
+    // minute away.
+    s.seat.watchdog_tick_for_test().await;
+    list_for_0_13(&s, true).await;
+    s.hand_over().await;
+    assert_eq!(line(&s).await, FedimintdLine::V0_12);
+    assert_eq!(s.spawner.spawn_count(), 1);
+    s.fleet.shutdown().await;
+}
+
+/// An install without the 0.13 binary never asks: moving would leave the
+/// guardian unable to start.
+#[tokio::test]
+async fn install_without_the_0_13_binary_does_not_move() {
+    let s = running_source(33_336).await;
+    s.spawner.lack_line(FedimintdLine::V0_13);
+    list_for_0_13(&s, true).await;
+    s.seat.watchdog_tick_for_test().await;
+    assert!(
+        s.child()
+            .await
+            .state()
+            .shutdown_after_current_session
+            .is_empty()
+    );
     s.fleet.shutdown().await;
 }

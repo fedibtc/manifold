@@ -200,3 +200,45 @@ async fn a_publication_carries_the_archive_its_document_names() {
         confirmed
     );
 }
+
+/// 0.12 seats keep the document (and digest) older releases wrote, and a
+/// 0.13 seat's line survives the relay round trip. A document naming a line
+/// this release does not host is refused instead of restored onto 0.12.
+#[test]
+fn the_fedimintd_line_round_trips_and_0_12_keeps_the_pre_line_document() {
+    let encode = |document: &SeatBackupDocument| {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(document, &mut bytes).unwrap();
+        bytes
+    };
+    let decode = |bytes: &[u8]| ciborium::from_reader::<SeatBackupDocument, _>(bytes);
+    let v0_12 = SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None);
+
+    let value: ciborium::Value = ciborium::from_reader(encode(&v0_12).as_slice()).unwrap();
+    let keys: Vec<_> = value
+        .as_map()
+        .unwrap()
+        .iter()
+        .map(|(key, _)| key.as_text().unwrap().to_owned())
+        .collect();
+    assert!(!keys.iter().any(|key| key == "fedimintd_line"), "{keys:?}");
+    assert_eq!(
+        decode(&encode(&v0_12)).unwrap().fedimintd_line,
+        FedimintdLine::V0_12
+    );
+
+    let v0_13 = SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_13, None, None, None);
+    assert_eq!(
+        decode(&encode(&v0_13)).unwrap().fedimintd_line,
+        FedimintdLine::V0_13
+    );
+
+    let mut unhosted = value.into_map().unwrap();
+    unhosted.push((
+        ciborium::Value::Text("fedimintd_line".to_owned()),
+        ciborium::Value::Text("0.14".to_owned()),
+    ));
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&ciborium::Value::Map(unhosted), &mut bytes).unwrap();
+    assert!(decode(&bytes).is_err());
+}

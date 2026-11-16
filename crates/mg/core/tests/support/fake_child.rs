@@ -428,6 +428,10 @@ pub struct FakeSeatProcessSpawner {
     requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
     children: Arc<Mutex<HashMap<SeatId, FakeChildEntry>>>,
+    /// The line of every spawn, in order.
+    spawned_lines: Mutex<Vec<FedimintdLine>>,
+    /// Lines whose binary this install lacks.
+    missing_lines: Mutex<std::collections::BTreeSet<FedimintdLine>>,
 }
 
 #[cfg(test)]
@@ -442,6 +446,8 @@ impl Default for FakeSeatProcessSpawner {
             requests: Default::default(),
             next_generation: Default::default(),
             children: Default::default(),
+            spawned_lines: Default::default(),
+            missing_lines: Default::default(),
         }
     }
 }
@@ -490,6 +496,19 @@ impl FakeSeatProcessSpawner {
         }
     }
 
+    pub(crate) fn spawned_lines(&self) -> Vec<FedimintdLine> {
+        self.spawned_lines.lock().unwrap().clone()
+    }
+
+    /// Remove `line`'s binary from this install.
+    pub(crate) fn lack_line(&self, line: FedimintdLine) {
+        self.missing_lines.lock().unwrap().insert(line);
+    }
+
+    pub(super) fn hosts(&self, line: FedimintdLine) -> bool {
+        !self.missing_lines.lock().unwrap().contains(&line)
+    }
+
     pub(crate) fn spawn_count(&self) -> usize {
         self.spawn_count.load(Ordering::Relaxed)
     }
@@ -530,9 +549,11 @@ impl FakeSeatProcessSpawner {
         config: &SeatProcessConfig,
         seat_id: SeatId,
         seat_no: SeatNo,
+        line: FedimintdLine,
         ports: SeatPorts,
     ) -> Result<SeatProcess, SeatProcessError> {
         self.spawn_count.fetch_add(1, Ordering::Relaxed);
+        self.spawned_lines.lock().unwrap().push(line);
         let mut steps = self
             .scripts
             .lock()

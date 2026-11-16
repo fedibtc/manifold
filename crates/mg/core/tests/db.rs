@@ -642,3 +642,52 @@ async fn recommended_seat_limits_migrate_to_automatic() {
         );
     }
 }
+
+/// Every seat that exists before the line column was formed on 0.12, the only
+/// line those releases hosted, so the migration records exactly that.
+#[tokio::test]
+async fn fedimintd_line_migration_records_existing_seats_as_0_12() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for migration in [
+        include_str!("../migrations/0001_initial.sql"),
+        include_str!("../migrations/0002_wallet_origin.sql"),
+        include_str!("../migrations/0003_payout_destination_cap.sql"),
+        include_str!("../migrations/0004_dkg_inputs.sql"),
+        include_str!("../migrations/0005_single_holder_authorization.sql"),
+        include_str!("../migrations/0006_seat_readiness.sql"),
+        include_str!("../migrations/0007_support_chat.sql"),
+        include_str!("../migrations/0008_runtime_seat_limits.sql"),
+        include_str!("../migrations/0009_uptime.sql"),
+        include_str!("../migrations/0010_guardian_transfers.sql"),
+        include_str!("../migrations/0011_payable_price.sql"),
+        include_str!("../migrations/0012_guardian_link.sql"),
+        include_str!("../migrations/0013_host_pressure.sql"),
+        include_str!("../migrations/0014_monthly_data_budget.sql"),
+        include_str!("../migrations/0015_cpu_capacity.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+    for quote in [1_u8, 2] {
+        sqlx::query(
+            "INSERT INTO seats (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms) \
+             VALUES (?, ?, 'fa', '{}', 7, 0)",
+        )
+        .bind([quote; 32].as_slice())
+        .bind(i64::from(quote))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0016_fedimintd_line.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let lines: Vec<String> =
+        sqlx::query_scalar("SELECT fedimintd_line FROM seats ORDER BY seat_no")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(lines, ["0.12", "0.12"]);
+}

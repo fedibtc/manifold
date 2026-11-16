@@ -104,6 +104,13 @@ To ask operators below a release to update without stopping their sales, set
 An MG below it sends its linked phone one notification. Omitted, nothing is
 recommended.
 
+To move a federation's guardians from fedimintd 0.12 to 0.13, list its
+federation ID: `"fedimintd_0_13_federations": ["<64 lowercase hex>"]`. Each
+MG that hosts both lines restarts its guardians of that federation on 0.13
+between two sessions, on its own poll, so the federation runs mixed versions
+for a while. Removing an ID later moves nothing back. Omitted or empty,
+nothing moves.
+
 MGs whose operators set a monthly data budget sell only the seats that
 budget covers, at the network data one seat uses. To change that figure from
 its default of 65, set for example `"seat_monthly_data_gb": 60`, in GB (10^9

@@ -21,18 +21,18 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest,
     DecommissionSeatResponse, DkgStatusInfo, EndedReason, EndedStatusInfo, FEDERATION_SIZES_0_1,
-    FEDIMINTD_VERSION_0_1, FaSignedRequest, FederationSize, FederationStatusInfo, FedimintdVersion,
-    FmResult, GetAvailabilityRequest, GetAvailabilityResponse, GetDkgCodeRequest,
-    GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest,
-    GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
-    GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
-    GetVersionRequest, GetVersionResponse, GuardianFeeAccount, ManifoldGuardianError,
-    ManifoldGuardianService, Plan, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
-    PullSeatRequest, PullSeatResponse, QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse,
-    RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse,
-    RestartDkgRequest, RestartDkgResponse, ServiceStatus, SetMetaFieldRequest,
-    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
-    StatusDetail, Timestamp, TransferSeatCall, TransferSeatResponse, VerifiedFaRequest,
+    FaSignedRequest, FederationSize, FederationStatusInfo, FedimintdVersion, FmResult,
+    GetAvailabilityRequest, GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse,
+    GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest, GetInviteCodeResponse,
+    GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, GetPeerAttestationRequest,
+    GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse, GetVersionRequest,
+    GetVersionResponse, GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
+    QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
+    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
+    RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest,
+    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp, TransferSeatCall,
+    TransferSeatResponse, VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -362,9 +362,7 @@ pub fn this_build_version() -> GetVersionResponse {
 }
 
 fn supported_fedimintd_version() -> FedimintdVersion {
-    FEDIMINTD_VERSION_0_1
-        .parse()
-        .expect("FEDIMINTD_VERSION_0_1 must be valid SemVer")
+    crate::facts::FedimintdLine::FORMATION.version()
 }
 
 impl ManifoldGuardianService for ManifoldGuardianRpc {

@@ -141,9 +141,9 @@ keep restoring under those builds as before.
 Version 3 is the version-2 document and archive with a different number: same
 addresses, encryption domains, archive layout and slice coordinates (a
 version-3 document names the version-2 archive generation), and native-seat
-derivations. This build's reader accepts versions 1, 2 and 3; an unknown
-version is rejected before interpreting its body, and transfer facts under any
-version but 3, or version 3 without them, are refused. A restored legacy or
+derivations. This build's reader accepts versions 1 to 4 (version 4 below);
+an unknown version is rejected before interpreting its body, and transfer
+facts under version 1 or 2, or version 3 without them, are refused. A restored legacy or
 mixed-version fleet republishes under the current versions instead of seeding
 confirmations for an envelope version it did not read; confirmations stay
 scoped to version 2, since gaining or losing transfer facts changes the
@@ -161,6 +161,20 @@ encrypted document, with provenance and the immutable archive reference; the
 archive beside it is the guardian. Recovery writes the guardian into the seat data
 directory and restores the accepted row; the seat starts like any formed seat,
 and expiry cannot cancel an accepted guardian.
+
+### `fedimintd` line extension (version 4)
+
+A seat document names the `fedimintd` line that last ran its guardian
+([ARCH-manifold-guardian-seat-processes](./ARCH-manifold-guardian-seat-processes.md#fedimintd-lines)),
+and recovery restores the seat on that line. A 0.12 document omits the field,
+so 0.12 documents keep their plaintext digest and their version. A document of
+a newer line is sealed under envelope version 4, with or without transfer
+facts, for the reason version 3 exists: readers from before lines accept
+versions 1 to 3 and ignore unknown fields, so they would restore the seat onto
+0.12 over a database the newer line wrote. Version 4 is what they refuse,
+which fails their whole restore. Version 4 has the version-2 archive. This
+build refuses a newer line under any other version, version 4 naming 0.12, and
+a line it does not host.
 
 A retired source carries a permanent transfer fence and formed federation invite.
 The fence is the `phase` the source's database stores, `stopped` or `removed`,

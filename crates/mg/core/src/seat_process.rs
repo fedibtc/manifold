@@ -39,7 +39,6 @@
 //!   bundled child also writes explicitly shareable structured events to its
 //!   bounded journal outside the fedimintd data directory.
 
-#[cfg(not(test))]
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
@@ -67,7 +66,7 @@ use tracing::instrument::WithSubscriber;
 
 #[cfg(not(test))]
 use crate::bundled_fedimintd;
-use crate::facts::{SeatNo, SeatPorts};
+use crate::facts::{FedimintdLine, SeatNo, SeatPorts};
 use crate::identity::SeatKeys;
 
 #[cfg(target_os = "linux")]
@@ -205,13 +204,26 @@ impl SeatProcessSpawner {
         config: &SeatProcessConfig,
         seat_id: SeatId,
         seat_no: SeatNo,
+        line: FedimintdLine,
         ports: SeatPorts,
         api_auth: &str,
     ) -> Result<SeatProcess, SeatProcessError> {
         match self {
-            Self::Bundled => SeatProcess::start(config, seat_id, seat_no, ports, api_auth).await,
+            Self::Bundled => {
+                SeatProcess::start(config, seat_id, seat_no, line, ports, api_auth).await
+            }
             #[cfg(test)]
-            Self::Fake(fake) => fake.start(config, seat_id, seat_no, ports).await,
+            Self::Fake(fake) => fake.start(config, seat_id, seat_no, line, ports).await,
+        }
+    }
+
+    /// Whether this install can run `line`: the release ships its binary.
+    pub(crate) fn hosts(&self, line: FedimintdLine) -> bool {
+        match self {
+            Self::Bundled => std::env::current_exe()
+                .is_ok_and(|own_exe| crate::bundled_fedimintd::program(own_exe, line).0.is_file()),
+            #[cfg(test)]
+            Self::Fake(fake) => fake.hosts(line),
         }
     }
 
@@ -247,11 +259,12 @@ impl SeatProcess {
         config: &SeatProcessConfig,
         seat_id: SeatId,
         seat_no: SeatNo,
+        line: FedimintdLine,
         ports: SeatPorts,
         api_auth: &str,
     ) -> Result<Self, SeatProcessError> {
         let (child, stdout_pump, stderr_pump, control) =
-            spawn_child(config, &seat_id, seat_no, ports, api_auth).await?;
+            spawn_child(config, &seat_id, seat_no, line, ports, api_auth).await?;
         Ok(Self {
             seat_id,
             child: SeatChild::Real(child),
@@ -486,6 +499,7 @@ async fn spawn_child(
     config: &SeatProcessConfig,
     seat_id: &SeatId,
     seat_no: SeatNo,
+    line: FedimintdLine,
     ports: SeatPorts,
     api_auth: &str,
 ) -> Result<
@@ -514,13 +528,17 @@ async fn spawn_child(
     let local_e2e = std::env::var_os("MG_E2E_LOCAL_IROH").is_some();
     let iroh_bind_ip = if local_e2e { "127.0.0.1" } else { "0.0.0.0" };
     #[cfg(not(test))]
-    let program =
-        std::env::current_exe().map_err(|source| SeatProcessError::LocateSelf { source })?;
+    let (program, argv0) = bundled_fedimintd::program(
+        std::env::current_exe().map_err(|source| SeatProcessError::LocateSelf { source })?,
+        line,
+    );
     #[cfg(test)]
-    let program = config.fedimintd.clone();
+    let (program, argv0) = {
+        let _ = line;
+        (config.fedimintd.clone(), "fedimintd")
+    };
     let mut command = Command::new(&program);
-    #[cfg(not(test))]
-    command.as_std_mut().arg0(bundled_fedimintd::ARGV0);
+    command.as_std_mut().arg0(argv0);
     command
         .env_clear()
         .env("FM_PASSWORD_API", api_auth)

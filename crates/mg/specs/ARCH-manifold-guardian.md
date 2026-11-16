@@ -31,7 +31,9 @@ grow when one of those capabilities is added. The bundled-child boundary is
 different: `core` depends directly on `fedimint-server` for the driven-DKG
 parent client and wire vocabulary. `fedimint-server` is already shipped through
 the binary's bundled `fedimintd`, and one shared protocol definition prevents
-the two ends from drifting.
+the two ends from drifting. The 0.13 line's child links its own copy, from
+Fedi's 0.13 fork, which keeps the driven-DKG protocol unchanged
+([ARCH-manifold-guardian-seat-processes](./ARCH-manifold-guardian-seat-processes.md#fedimintd-lines)).
 
 `fedimint` and `nostr` depend on `core` and fill those holes. `cli`
 owns the operator admin command tree and its standalone local-socket client

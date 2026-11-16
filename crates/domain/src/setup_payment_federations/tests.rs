@@ -62,6 +62,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         guardian_link: None,
         min_mg_version: None,
         recommended_min_mg_version: None,
+        fedimintd_0_13_federations: Vec::new(),
     })
     .expect("test content serializes")
 }
@@ -253,6 +254,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             guardian_link: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
+            fedimintd_0_13_federations: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -815,5 +817,50 @@ fn guardian_absence_policy_rejects_invalid_durations() {
     for value in ["0", "-1", "1.5", "\"86400\"", "18446744073709551616"] {
         let raw = content_with_min_uptime(&format!(",\"max_guardian_offline_secs\":{value}"));
         assert!(AdmittedSetupPaymentFederations::parse(raw.as_bytes()).is_err());
+    }
+}
+
+/// The line move is optional, omitted from the wire when empty, and admits
+/// only canonical federation IDs: an MG compares them with the IDs it derives
+/// from its seats' invites, so an uppercase spelling would never match.
+#[test]
+fn fedimintd_0_13_federations_admit_only_canonical_federation_ids() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    assert!(
+        admitted("")
+            .unwrap()
+            .fedimintd_0_13_federations()
+            .is_empty()
+    );
+    assert!(
+        !String::from_utf8(content(Vec::new()))
+            .unwrap()
+            .contains("fedimintd_0_13")
+    );
+
+    let id = format!("{:064x}", 0xab_u8);
+    let listed = admitted(&format!(r#","fedimintd_0_13_federations":["{id}","{id}"]"#)).unwrap();
+    assert_eq!(
+        listed
+            .fedimintd_0_13_federations()
+            .iter()
+            .collect::<Vec<_>>(),
+        [&FederationId(id.clone())]
+    );
+    for invalid in [
+        id.to_uppercase(),
+        id[1..].to_owned(),
+        "not-an-id".to_owned(),
+    ] {
+        assert_eq!(
+            admitted(&format!(r#","fedimintd_0_13_federations":["{invalid}"]"#)),
+            Err(SetupPaymentFederationsContentError::InvalidFedimintdLineFederation),
+            "{invalid}"
+        );
     }
 }

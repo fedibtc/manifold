@@ -14,13 +14,43 @@ accepted defense-in-depth residual under the single-tenant host model
 ([ARCH-manifold-guardian](./ARCH-manifold-guardian.md) *Trust boundaries*), not a reason
 to weaken the separate host, operator, storage, or network boundaries.
 
-The program spawned is the daemon's own binary: fedimintd is linked into
-it and entered through a `fedimintd` argv[0], so a deployment cannot
+The program spawned comes from the release itself, so a deployment cannot
 pair the MG with a fedimintd build it was not tested against. Its pinned
 implementation integrity remains a TCB premise.
 
-The current release hosts exactly one bundled fedimintd version
-([SPEC-fa-rpc](./SPEC-fa-rpc.md) release policy).
+## `fedimintd` lines
+
+A release hosts two pinned `fedimintd` lines, 0.12 and 0.13, and each seat
+runs exactly one of them. The 0.12 line is linked into the daemon's binary and
+entered through a `fedimintd` argv[0]. The 0.13 line is the sibling
+`fedimintd-0-13` binary in the daemon's own directory, built from a separate
+Cargo workspace: one binary cannot link two Fedimint versions, whose native
+`-sys` crates collide. Both lines register the same module set, with the
+shared SPv2 parameters, and speak the same driven-DKG protocol to the daemon.
+
+New seats form, advertise and quote on the formation line, 0.12
+([SPEC-fa-rpc](./SPEC-fa-rpc.md) release policy). A formed seat moves to 0.13
+when the setup-payment policy lists its federation
+([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
+This is the release's one supported line transition
+([CLAIM-manifold-guardian-supported-release-envelope](./CLAIM-manifold-guardian-supported-release-envelope.md)):
+
+- The seat asks its healthy child to stop after its current session and, on
+  the session-boundary exit, records the new line and respawns at once on the
+  new binary. The new line therefore opens the guardian database between two
+  sessions, as a restart would.
+- Each MG moves its own seats on its own poll, so a federation runs mixed
+  lines for a while. Fedi accepted this for the federations it lists.
+- A move is one-way: an older line is not trusted to read a database a newer
+  one wrote, so removing a federation from the policy moves nothing back. The
+  line lives with the seat's durable lifecycle state and in its backup
+  document ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)).
+- Guardian transfer stops its source at the same exit
+  ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md#session-boundary)).
+  The seat loop knows which one it asked a child for; once it asked, or may
+  have asked, for a line move, that child's session-boundary exit is the
+  move, and a transfer asks the next child.
+- An install whose release lacks the new line's binary does not move.
 
 ## Child environment
 

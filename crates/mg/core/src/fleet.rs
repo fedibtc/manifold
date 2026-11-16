@@ -41,7 +41,7 @@ use crate::db::{
     Db, NewPayment, NewSeat, Offer, QuoteSettings, SeatAdmissionResult, SeatRecord,
     SeatsConfigUpdate,
 };
-use crate::facts::{PortBase, SeatPorts};
+use crate::facts::{FedimintdLine, PortBase, SeatPorts};
 use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
@@ -345,6 +345,27 @@ impl FleetSetupPaymentPolicyStore {
             .await?;
         Ok(())
     }
+
+    /// Apply the policy the Nostr boundary admitted, retained or fresh, or
+    /// `None` when it admits none.
+    pub fn apply(
+        &self,
+        admitted: Option<&fedi_decentralized_domain::AdmittedSetupPaymentFederations>,
+    ) {
+        let federations = admitted
+            .map(|admitted| admitted.fedimintd_0_13_federations().clone())
+            .unwrap_or_default();
+        self.fleet
+            .fedimintd_013_federations
+            .send_if_modified(|current| {
+                if **current == federations {
+                    false
+                } else {
+                    *current = Arc::new(federations);
+                    true
+                }
+            });
+    }
 }
 
 pub struct Fleet {
@@ -381,6 +402,11 @@ pub struct Fleet {
     /// This daemon's Iroh endpoint id, bound once the router exists; the link
     /// offer names it so the phone can dial back.
     iroh_endpoint_id: std::sync::OnceLock<String>,
+    /// Federations whose seats move to the 0.13 `fedimintd` line, from the
+    /// admitted setup-payment policy; each seat loop watches it.
+    fedimintd_013_federations: tokio::sync::watch::Sender<
+        Arc<std::collections::BTreeSet<fedi_decentralized_domain::FederationId>>,
+    >,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -524,6 +550,8 @@ impl Fleet {
                 .await
                 .context("bind native Fedimint API connectors")?;
         let transfer_wake = crate::transfer_worker::TransferWake::default();
+        // Empty until the Nostr boundary admits the retained policy.
+        let (fedimintd_013_federations, _) = tokio::sync::watch::channel(Arc::default());
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {
@@ -532,6 +560,7 @@ impl Fleet {
             } = seat;
             let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
             let transfer_phase = db.transfer_phase(&facts.seat_id).await?;
+            let fedimintd_line = db.fedimintd_line(&facts.seat_id).await?;
             let ports =
                 SeatPorts::from_base(facts.seat_no.port_base(config.first_port_base).ok_or_else(
                     || anyhow!("stored seat_no {} exceeds port grid", facts.seat_no.0),
@@ -543,6 +572,7 @@ impl Fleet {
                     formed_invite,
                     decommissioned_at_ms,
                     transfer_phase,
+                    fedimintd_line,
                 },
                 SeatRuntimeDependencies {
                     db: db.clone(),
@@ -556,6 +586,7 @@ impl Fleet {
                     completion_hooks: completion_hooks.wake_handle(),
                     transfer_wake: transfer_wake.clone(),
                     process_spawner: config.process_spawner.clone(),
+                    fedimintd_013_federations: fedimintd_013_federations.subscribe(),
                 },
             );
             map.insert(seat.facts().seat_id.clone(), seat);
@@ -590,6 +621,7 @@ impl Fleet {
             seat_readiness: Mutex::new(None),
             guardian_link: Default::default(),
             iroh_endpoint_id: std::sync::OnceLock::new(),
+            fedimintd_013_federations,
         };
         Ok(fleet)
     }
@@ -1029,6 +1061,7 @@ impl Fleet {
                     formed_invite: None,
                     decommissioned_at_ms: None,
                     transfer_phase: None,
+                    fedimintd_line: FedimintdLine::FORMATION,
                 },
                 true,
             ),
@@ -1037,6 +1070,7 @@ impl Fleet {
                     formed_invite: self.db.formed_federation_invite(&facts.seat_id).await?,
                     decommissioned_at_ms: self.db.decommissioned_at_ms(&facts.seat_id).await?,
                     transfer_phase: self.db.transfer_phase(&facts.seat_id).await?,
+                    fedimintd_line: self.db.fedimintd_line(&facts.seat_id).await?,
                     facts,
                 },
                 false,
@@ -1083,6 +1117,7 @@ impl Fleet {
             formed_invite,
             decommissioned_at_ms,
             transfer_phase,
+            fedimintd_line,
         } = durable;
         if let Some(seat) = self
             .seats
@@ -1113,6 +1148,7 @@ impl Fleet {
                 formed_invite,
                 decommissioned_at_ms,
                 transfer_phase,
+                fedimintd_line,
             },
             SeatRuntimeDependencies {
                 db: self.db.clone(),
@@ -1126,6 +1162,7 @@ impl Fleet {
                 completion_hooks: self.completion_hooks.wake_handle(),
                 transfer_wake: self.transfers.wake_handle(),
                 process_spawner: self.config.process_spawner.clone(),
+                fedimintd_013_federations: self.fedimintd_013_federations.subscribe(),
             },
         );
         seats.insert(seat.facts().seat_id.clone(), seat.clone());
