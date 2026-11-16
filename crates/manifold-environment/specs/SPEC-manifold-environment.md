@@ -30,7 +30,10 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   development and staging use known-secret placeholders and production has
   none yet;
 - the Bitcoin network on which the environment forms federations;
-- an optional typed public default Esplora URL; and
+- an optional typed public default Esplora URL;
+- an optional push gateway origin, the only origin under which MG accepts
+  DKG completion and guardian-link hooks: none in development, the deployed
+  gateway in staging and production. An MG operator override replaces it; and
 - for development and staging only, the committed complete `IssuerSecretKeys`
   JSON of the environment's placeholder issuer (`test_issuer_secret_keys()`;
   `None` for production); and
@@ -54,8 +57,8 @@ development relay overrides follow the same rule.
 
 A change to an environment's relay, issuer identity or authority, committed
 issuer secret, PeerBadge minimum trust level, setup-payment publisher, Guardian
-Verification Fee account, Bitcoin network, default Esplora, or default
-guardian-transfer mapping is a change to the release itself: components that
+Verification Fee account, Bitcoin network, default Esplora, push gateway
+origin, or default guardian-transfer mapping is a change to the release itself: components that
 read the changed value must be rolled out together, because a mixed rollout
 can make them disagree while they show the same environment name. Each
 component's release version identifies the mappings it carries; there is no

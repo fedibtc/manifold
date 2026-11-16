@@ -62,6 +62,27 @@ fn environments_pin_their_bitcoin_network_and_public_default_backend() {
 }
 
 #[test]
+fn deployed_environments_pin_their_push_gateway_origin() {
+    let origin = |environment: ManifoldEnvironment| {
+        environment
+            .profile_with_env(|_| None)
+            .unwrap()
+            .default_push_gateway_origin()
+            .map(|url| url.as_str().to_owned())
+    };
+
+    assert_eq!(origin(ManifoldEnvironment::Development), None);
+    assert_eq!(
+        origin(ManifoldEnvironment::Staging).as_deref(),
+        Some("https://manifold-push-gateway.internal.k8s.us.dev.fedibtc.com/")
+    );
+    assert_eq!(
+        origin(ManifoldEnvironment::Production).as_deref(),
+        Some("https://push.manifold.dev.fedibtc.com/")
+    );
+}
+
+#[test]
 fn development_and_staging_have_distinct_placeholder_setup_payment_publishers() {
     let development = ManifoldEnvironment::Development
         .profile_with_env(|_| None)

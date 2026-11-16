@@ -19,6 +19,9 @@ use url::Url;
 
 const STAGING_NOSTR_RELAYS: &[&str] = &["wss://relay-staging.dev.fedibtc.com"];
 const STAGING_ESPLORA_URL: &str = "https://mutinynet.com/api/";
+const STAGING_PUSH_GATEWAY_ORIGIN: &str =
+    "https://manifold-push-gateway.internal.k8s.us.dev.fedibtc.com";
+const PRODUCTION_PUSH_GATEWAY_ORIGIN: &str = "https://push.manifold.dev.fedibtc.com";
 const PRODUCTION_NOSTR_RELAYS: &[&str] = &[
     "wss://relay.dev.fedibtc.com",
     "wss://relay.primal.net",
@@ -233,6 +236,7 @@ impl ManifoldEnvironment {
             relays,
             bitcoin_network,
             esplora_url,
+            push_gateway_origin,
         ) = match self {
             Self::Development => (
                 &[DEVELOPMENT_PLACEHOLDER_ISSUER][..],
@@ -241,6 +245,7 @@ impl ManifoldEnvironment {
                 Some(DEVELOPMENT_PLACEHOLDER_SUPPORT),
                 STAGING_NOSTR_RELAYS,
                 Network::Regtest,
+                None,
                 None,
             ),
             Self::Staging => (
@@ -251,6 +256,7 @@ impl ManifoldEnvironment {
                 STAGING_NOSTR_RELAYS,
                 Network::Signet,
                 Some(STAGING_ESPLORA_URL),
+                Some(STAGING_PUSH_GATEWAY_ORIGIN),
             ),
             Self::Production => (
                 PRODUCTION_ISSUERS,
@@ -260,6 +266,7 @@ impl ManifoldEnvironment {
                 PRODUCTION_NOSTR_RELAYS,
                 Network::Bitcoin,
                 None,
+                Some(PRODUCTION_PUSH_GATEWAY_ORIGIN),
             ),
         };
         let peer_badge_issuer_identities = issuers
@@ -301,6 +308,8 @@ impl ManifoldEnvironment {
             bitcoin_network,
             default_esplora_url: esplora_url
                 .map(|url| Url::parse(url).expect("built-in default Esplora URL is valid")),
+            default_push_gateway_origin: push_gateway_origin
+                .map(|origin| Url::parse(origin).expect("built-in push gateway origin is valid")),
         })
     }
 }
@@ -392,6 +401,7 @@ pub struct ManifoldEnvironmentProfile {
     support: Option<PublicKey>,
     bitcoin_network: Network,
     default_esplora_url: Option<Url>,
+    default_push_gateway_origin: Option<Url>,
 }
 
 impl ManifoldEnvironmentProfile {
@@ -512,6 +522,15 @@ impl ManifoldEnvironmentProfile {
     #[must_use]
     pub fn default_esplora_url(&self) -> Option<&Url> {
         self.default_esplora_url.as_ref()
+    }
+
+    /// Return the environment's push gateway origin, when one is deployed.
+    ///
+    /// MG accepts DKG completion and guardian-link hooks only under this
+    /// origin. Development has none: a local gateway is supplied per run.
+    #[must_use]
+    pub fn default_push_gateway_origin(&self) -> Option<&Url> {
+        self.default_push_gateway_origin.as_ref()
     }
 }
 

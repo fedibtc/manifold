@@ -149,7 +149,8 @@ struct ServeArgs {
         default_value = N0_PKARR_RELAY
     )]
     iroh_dns: SafeUrl,
-    /// Exact public push-gateway origin accepted for callback bearer URLs.
+    /// Exact public push-gateway origin accepted for callback bearer URLs,
+    /// overriding the Manifold environment's own gateway origin.
     #[arg(long, env = "FLEET_MANAGER_PUSH_GATEWAY_ORIGIN")]
     push_gateway_origin: Option<String>,
     /// Allow a loopback HTTP gateway in the development environment only.
@@ -319,6 +320,28 @@ fn admin_http_config(args: &ServeArgs) -> anyhow::Result<Option<(SocketAddr, Adm
     }
 }
 
+/// The one push-gateway origin this MG accepts hooks under: the operator's
+/// override when given, else the Manifold environment's deployed gateway.
+fn resolve_push_gateway_origin(
+    override_origin: Option<&str>,
+    allow_insecure: bool,
+    manifold_environment: &ManifoldEnvironmentProfile,
+) -> anyhow::Result<Option<PushGatewayOrigin>> {
+    let policy = if allow_insecure {
+        PushGatewayOriginPolicy::AllowInsecureLoopback
+    } else {
+        PushGatewayOriginPolicy::HttpsOnly
+    };
+    Ok(override_origin
+        .or_else(|| {
+            manifold_environment
+                .default_push_gateway_origin()
+                .map(|origin| origin.as_str())
+        })
+        .map(|origin| PushGatewayOrigin::parse(origin, policy))
+        .transpose()?)
+}
+
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let manifold_environment = args
         .manifold_environment
@@ -333,18 +356,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         !args.allow_insecure_push_gateway_origin || args.push_gateway_origin.is_some(),
         "--allow-insecure-push-gateway-origin requires --push-gateway-origin"
     );
-    let push_gateway_origin = args
-        .push_gateway_origin
-        .as_deref()
-        .map(|origin| {
-            let policy = if args.allow_insecure_push_gateway_origin {
-                PushGatewayOriginPolicy::AllowInsecureLoopback
-            } else {
-                PushGatewayOriginPolicy::HttpsOnly
-            };
-            PushGatewayOrigin::parse(origin, policy)
-        })
-        .transpose()?;
+    let push_gateway_origin = resolve_push_gateway_origin(
+        args.push_gateway_origin.as_deref(),
+        args.allow_insecure_push_gateway_origin,
+        &manifold_environment,
+    )?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon);

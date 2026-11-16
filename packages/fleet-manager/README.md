@@ -64,11 +64,11 @@ operator-owned Bitcoin Core backend instead of any profile Esplora default.
 `FLEET_MANAGER_ESPLORA_URL` optionally supplies a trusted, same-network Esplora
 fallback for Core RPC errors, including requests for blocks Core has pruned.
 It requires the Core settings above; the image supplies no default endpoint.
-`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is optional, including in production.
-When set, it must be the real public HTTPS origin of the deployed gateway.
-Without it, MG runs but rejects requests for DKG completion callbacks.
-Callback work restored under an absent or changed origin becomes
-`operator_blocked` until the matching origin is restored. Telemetry collection
+The environment profile supplies the push gateway origin, so production needs
+no `FLEET_MANAGER_PUSH_GATEWAY_ORIGIN`. Setting it overrides the profile's
+origin and must name the real public HTTPS origin of a deployed gateway.
+Callback work restored under a changed origin becomes `operator_blocked`
+until the matching origin is restored. Telemetry collection
 is independent: MG registers with the collector named in the authenticated
 setup-payment policy once it has its Holder authorization.
 

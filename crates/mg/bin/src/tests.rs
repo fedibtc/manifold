@@ -173,3 +173,49 @@ fn manifold_profile_generates_expected_spv2_consensus_config() {
         assert_eq!(client.min_allowed_cancellation_bps, 100);
     }
 }
+
+#[test]
+fn push_gateway_origin_defaults_to_the_environment_gateway_and_obeys_an_override() {
+    let profile = |environment: ManifoldEnvironment| environment.profile().unwrap();
+    let origin = |resolved: Option<PushGatewayOrigin>| {
+        resolved.map(|origin| {
+            origin
+                .validate(
+                    &fedi_decentralized_service_manifold_guardian::DkgCompletionCallback::new(
+                        fedi_decentralized_service_manifold_guardian::DkgCompletionCallbackInput {
+                            callback_url: "https://push.manifold.dev.fedibtc.com/hooks/id/secret"
+                                .to_owned(),
+                            idempotency_key: "formation-dkg-complete".to_owned(),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .is_ok()
+        })
+    };
+
+    let production = profile(ManifoldEnvironment::Production);
+    assert_eq!(
+        origin(resolve_push_gateway_origin(None, false, &production).unwrap()),
+        Some(true),
+        "production accepts hooks under its own gateway with no flag"
+    );
+    assert_eq!(
+        origin(
+            resolve_push_gateway_origin(Some("https://other.example"), false, &production).unwrap()
+        ),
+        Some(false),
+        "an explicit origin replaces the environment gateway"
+    );
+    assert_eq!(
+        origin(
+            resolve_push_gateway_origin(None, false, &profile(ManifoldEnvironment::Development))
+                .unwrap()
+        ),
+        None,
+        "development has no gateway unless one is supplied"
+    );
+    assert!(
+        resolve_push_gateway_origin(Some("http://gateway.example"), false, &production).is_err()
+    );
+}
