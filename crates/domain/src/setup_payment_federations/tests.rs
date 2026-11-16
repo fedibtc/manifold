@@ -483,7 +483,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
     };
     let defaults = MaxPressurePercent {
         cpu: windows(15, 10),
-        io: windows(10, 5),
+        io: windows(25, 15),
     };
     assert_eq!(MaxPressurePercent::default(), defaults);
     assert_eq!(parse("").unwrap().max_pressure_percent(), defaults);
@@ -509,7 +509,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
             .max_pressure_percent(),
         MaxPressurePercent {
             cpu: windows(15, 10),
-            io: windows(10, 8),
+            io: windows(25, 8),
         }
     );
     assert_eq!(

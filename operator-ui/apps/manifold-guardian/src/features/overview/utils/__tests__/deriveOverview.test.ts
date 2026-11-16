@@ -145,7 +145,7 @@ const failingReport = {
   host_pressure: { cpu: { '6h': 213, '3.5d': 87 }, io: { '6h': 41, '3.5d': 30 } },
   max_host_pressure: {
     cpu: { '6h': 150, '3.5d': 100 },
-    io: { '6h': 100, '3.5d': 50 }
+    io: { '6h': 250, '3.5d': 150 }
   },
   uptime: 'pass',
   uptime_comparison: null

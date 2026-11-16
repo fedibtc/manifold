@@ -151,7 +151,7 @@ replacement ordering as the new shared high-water mark.
   resource (PSI `some`)
   ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)).
   Optional as a whole, per resource and per window: an absent window means
-  CPU 15 and 10 and IO 10 and 5 respectively. Unknown resources and windows
+  CPU 15 and 10 and IO 25 and 15 respectively. Unknown resources and windows
   are ignored. An MG whose pressure is over a maximum, or cannot be read,
   stops advertising and quoting new seats and keeps running its seats, and
   the check does not mark uptime down. Consumers that admit unknown fields

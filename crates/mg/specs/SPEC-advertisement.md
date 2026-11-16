@@ -165,7 +165,7 @@ visible until its signed expiry, as above.
 
 Each run also requires CPU and IO pressure averages of at most the
 setup-payment policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
-over 3.5 days, IO 10% and 5%, when absent or before a policy is admitted;
+over 3.5 days, IO 25% and 15%, when absent or before a policy is admitted;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 Each run reads the cumulative pressure stall (PSI `some`) counters of the
 cgroup the daemon shares with its seats, for CPU and for IO, and divides the

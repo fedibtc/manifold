@@ -1787,7 +1787,7 @@ async fn the_pressure_history_survives_restart() {
     let origin = start - Duration::from_secs(25 * 60 * 60);
     let minutes = |n: u64| Duration::from_secs(n * 60);
     let calm = (50, 50);
-    let defaults = ((15, 10), (10, 5));
+    let defaults = ((15, 10), (25, 15));
     let open = || async {
         Arc::new(
             open_fleet(config.clone(), Arc::new(NoWallet))

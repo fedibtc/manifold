@@ -75,7 +75,7 @@ const READY: MockState['seatReadiness'] = {
   host_pressure: { cpu: { '6h': 41, '3.5d': 52 }, io: { '6h': 14, '3.5d': 11 } },
   max_host_pressure: {
     cpu: { '6h': 150, '3.5d': 100 },
-    io: { '6h': 100, '3.5d': 50 }
+    io: { '6h': 250, '3.5d': 150 }
   },
   uptime: 'pass',
   uptime_comparison: {

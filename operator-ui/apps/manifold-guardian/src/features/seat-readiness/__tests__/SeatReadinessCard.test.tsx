@@ -28,7 +28,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
 
 const MAXIMUMS = {
   cpu: { '6h': 150, '3.5d': 100 },
-  io: { '6h': 100, '3.5d': 50 }
+  io: { '6h': 250, '3.5d': 150 }
 };
 
 const MINIMUMS = { '1d': 700, '7d': 900, '30d': 930 };
@@ -103,9 +103,9 @@ describe('SeatReadinessCard', () => {
       '2.1',
       '1.8'
     ]);
-    expect(screen.getByText('/ 15.0% maximum')).toBeTruthy();
-    expect(screen.getAllByText('/ 10.0% maximum')).toHaveLength(2);
-    expect(screen.getByText('/ 5.0% maximum')).toBeTruthy();
+    expect(screen.getAllByText('/ 15.0% maximum')).toHaveLength(2);
+    expect(screen.getByText('/ 10.0% maximum')).toBeTruthy();
+    expect(screen.getByText('/ 25.0% maximum')).toBeTruthy();
     expect(screen.getByText(/once every average is within its maximum/)).toBeTruthy();
     // The bars replace the one-line check, and its read-failure guidance.
     expect(screen.queryByText(outcomes.host_pressure_3_5d_high)).toBeNull();

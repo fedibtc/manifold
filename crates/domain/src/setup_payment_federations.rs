@@ -92,8 +92,8 @@ impl Default for MaxPressurePercent {
                 three_and_a_half_days: 10,
             },
             io: MaxPressureWindows {
-                six_hours: 10,
-                three_and_a_half_days: 5,
+                six_hours: 25,
+                three_and_a_half_days: 15,
             },
         }
     }

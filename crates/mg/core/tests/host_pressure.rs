@@ -11,7 +11,7 @@ fn at(secs: u64) -> SystemTime {
 }
 
 /// The maximums Fedi would first publish, which are also the defaults:
-/// CPU 15% over 6 hours and 10% over 3.5 days, IO 10% and 5%.
+/// CPU 15% over 6 hours and 10% over 3.5 days, IO 25% and 15%.
 fn max() -> HostPressure {
     HostPressure::from(MaxPressurePercent::default())
 }
@@ -246,7 +246,7 @@ fn a_counter_reset_or_a_stuck_clock_is_skipped() {
 fn each_window_fails_just_above_its_maximum() {
     let max = max();
     assert_eq!(
-        permille((150, 100), (100, 50)).outcome(max),
+        permille((150, 100), (250, 150)).outcome(max),
         ReadinessOutcome::Pass
     );
     for (pressure, outcome) in [
@@ -259,16 +259,16 @@ fn each_window_fails_just_above_its_maximum() {
             ReadinessOutcome::HalfWeekPressureHigh,
         ),
         (
-            permille((0, 0), (101, 0)),
+            permille((0, 0), (251, 0)),
             ReadinessOutcome::SixHourPressureHigh,
         ),
         (
-            permille((0, 0), (0, 51)),
+            permille((0, 0), (0, 151)),
             ReadinessOutcome::HalfWeekPressureHigh,
         ),
         // Both windows over: the shorter is named.
         (
-            permille((0, 101), (101, 0)),
+            permille((0, 101), (251, 0)),
             ReadinessOutcome::SixHourPressureHigh,
         ),
     ] {
