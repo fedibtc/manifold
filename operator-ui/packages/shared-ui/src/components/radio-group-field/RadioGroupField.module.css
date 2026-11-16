@@ -1,0 +1,33 @@
+.field {
+  @apply uStack1;
+}
+
+.label {
+  @apply uLabel;
+}
+
+.hint {
+  @apply uFieldHint;
+}
+
+.options {
+  @apply mt-1 flex flex-col gap-2;
+}
+
+.row {
+  @apply flex items-center gap-2;
+}
+
+/* Matches the checkbox of CheckboxField, round, in ink rather than the
+   browser's accent. */
+.radio {
+  @apply h-4 w-4 border-strong text-ink accent-ink focus:outline focus:outline-2 focus:outline-ink;
+}
+
+.optionLabel {
+  @apply uInkSm;
+}
+
+.error {
+  @apply uFieldError;
+}

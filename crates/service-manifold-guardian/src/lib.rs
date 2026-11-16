@@ -25,6 +25,7 @@ mod locator;
 mod locked_payment;
 mod maintenance;
 mod mg_name;
+mod monthly_data_budget;
 mod service;
 pub mod signing;
 mod status;
@@ -78,6 +79,7 @@ pub use maintenance::{
     FederationMetadataUpdate, FederationMetadataWelcomeMessage, InvalidFederationMetadataValue,
 };
 pub use mg_name::MgName;
+pub use monthly_data_budget::{InvalidMonthlyDataBudget, MonthlyDataBudget};
 pub use service::{
     FmResult, ManifoldGuardianService, ManifoldGuardianServiceClient,
     ManifoldGuardianServiceClientTransport, ManifoldGuardianServiceServer,

@@ -1,3 +1,4 @@
+import type { MonthlyDataBudget } from '@operator-ui/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getState, resetState } from '@/mocks/state';
 import { dispatch } from '@/mocks/world/verbs';
@@ -86,7 +87,11 @@ describe('staged onboarding dispatch', () => {
     onboardToAuthorizationStage();
 
     const refused = dispatch({
-      ConfigureInitialOffer: { max_seats: 3, price_msats: 50_000_000 }
+      ConfigureInitialOffer: {
+        max_seats: 3,
+        price_msats: 50_000_000,
+        monthly_data_budget: 'unlimited'
+      }
     }) as { Err: { kind: string } };
 
     expect(refused.Err.kind).toBe('not_onboarded');
@@ -110,7 +115,13 @@ describe('staged onboarding dispatch', () => {
 
   it('should report starting until the fleet opens, then ready', () => {
     onboardToOfferStage();
-    dispatch({ ConfigureInitialOffer: { max_seats: 5, price_msats: 50_000_000 } });
+    dispatch({
+      ConfigureInitialOffer: {
+        max_seats: 5,
+        price_msats: 50_000_000,
+        monthly_data_budget: 'unlimited'
+      }
+    });
 
     const whileOpening = dispatch('Onboarding') as { Ok: Record<string, unknown> };
     const afterOpen = dispatch('Onboarding') as { Ok: Record<string, unknown> };
@@ -121,7 +132,13 @@ describe('staged onboarding dispatch', () => {
 
   it('should refuse a fleet verb between completion and the open fleet', () => {
     onboardToOfferStage();
-    dispatch({ ConfigureInitialOffer: { max_seats: 5, price_msats: 50_000_000 } });
+    dispatch({
+      ConfigureInitialOffer: {
+        max_seats: 5,
+        price_msats: 50_000_000,
+        monthly_data_budget: 'unlimited'
+      }
+    });
 
     expect(dispatch('ListSeats')).toEqual({
       Err: {
@@ -134,7 +151,13 @@ describe('staged onboarding dispatch', () => {
 
   it('should persist the configured capacity into the offer', () => {
     onboardToOfferStage();
-    dispatch({ ConfigureInitialOffer: { max_seats: 5, price_msats: 50_000_000 } });
+    dispatch({
+      ConfigureInitialOffer: {
+        max_seats: 5,
+        price_msats: 50_000_000,
+        monthly_data_budget: 'unlimited'
+      }
+    });
     dispatch('Onboarding');
     dispatch('Onboarding');
 
@@ -149,9 +172,36 @@ describe('staged onboarding dispatch', () => {
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        monthly_data_budget: 'unlimited',
+        seat_monthly_data_gb: 65,
+        data_max_seats: null,
         available_slots: 5
       }
     });
+  });
+
+  it('should keep a budget given during setup', () => {
+    onboardToOfferStage();
+    dispatch({
+      ConfigureInitialOffer: { max_seats: null, price_msats: null, monthly_data_budget: '500' }
+    });
+    dispatch('Onboarding');
+    dispatch('Onboarding');
+
+    expect(dispatch('ShowCapacity')).toMatchObject({
+      Ok: { monthly_data_budget: '500', data_max_seats: 7 }
+    });
+  });
+
+  it('should refuse an invalid budget at setup without completing it', () => {
+    onboardToOfferStage();
+
+    const refused = dispatch({
+      ConfigureInitialOffer: { max_seats: null, price_msats: null, monthly_data_budget: '0' }
+    }) as { Err: { message: string } };
+
+    expect(refused.Err.message).toMatch(/whole number of GB from 1/);
+    expect(getState().onboarding.stage).not.toBe('complete');
   });
 
   it('should refuse an initial offer below the restored seat floor', () => {
@@ -160,7 +210,11 @@ describe('staged onboarding dispatch', () => {
     dispatch('RefreshHolderAuthorizations');
 
     const refused = dispatch({
-      ConfigureInitialOffer: { max_seats: 0, price_msats: 50_000_000 }
+      ConfigureInitialOffer: {
+        max_seats: 0,
+        price_msats: 50_000_000,
+        monthly_data_budget: 'unlimited'
+      }
     }) as { Err: { message: string } };
 
     expect(refused.Err.message).toBe('cannot set max seats to 0; 2 seats are active');
@@ -171,8 +225,17 @@ describe('staged onboarding dispatch', () => {
     restore();
     dispatch('RefreshHolderAuthorizations');
 
-    expect(dispatch({ ConfigureInitialOffer: { max_seats: 2, price_msats: null } })).toEqual({
-      Ok: { onboarding: 'complete', max_seats: 2, plans: [] }
+    expect(
+      dispatch({
+        ConfigureInitialOffer: { max_seats: 2, price_msats: null, monthly_data_budget: 'unlimited' }
+      })
+    ).toEqual({
+      Ok: {
+        onboarding: 'complete',
+        max_seats: 2,
+        monthly_data_budget: 'unlimited',
+        plans: []
+      }
     });
   });
 
@@ -180,7 +243,9 @@ describe('staged onboarding dispatch', () => {
     resetState('not-onboarded');
     restore();
     dispatch('RefreshHolderAuthorizations');
-    dispatch({ ConfigureInitialOffer: { max_seats: 2, price_msats: null } });
+    dispatch({
+      ConfigureInitialOffer: { max_seats: 2, price_msats: null, monthly_data_budget: 'unlimited' }
+    });
     dispatch('Onboarding');
     dispatch('Onboarding');
 
@@ -204,9 +269,15 @@ describe('staged onboarding dispatch', () => {
     getState().relayAuthorization = 'absent';
     const emptyRefresh = dispatch('RefreshHolderAuthorizations') as { Ok: Record<string, unknown> };
     expect(emptyRefresh.Ok.nostr).toEqual(refreshed.Ok.nostr);
-    expect(dispatch({ ConfigureInitialOffer: { max_seats: 3, price_msats: 50_000_000 } })).toEqual(
-      alreadyOnboarded
-    );
+    expect(
+      dispatch({
+        ConfigureInitialOffer: {
+          max_seats: 3,
+          price_msats: 50_000_000,
+          monthly_data_budget: 'unlimited'
+        }
+      })
+    ).toEqual(alreadyOnboarded);
   });
 });
 
@@ -228,6 +299,9 @@ describe('SetCapacity', () => {
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        monthly_data_budget: 'not_set',
+        seat_monthly_data_gb: 65,
+        data_max_seats: null,
         available_slots: 0
       }
     });
@@ -247,6 +321,9 @@ describe('SetCapacity', () => {
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        monthly_data_budget: 'not_set',
+        seat_monthly_data_gb: 65,
+        data_max_seats: null,
         available_slots: 2
       }
     });
@@ -261,8 +338,90 @@ describe('SetCapacity', () => {
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        monthly_data_budget: 'not_set',
+        seat_monthly_data_gb: 65,
+        data_max_seats: null,
         available_slots: 2
       }
+    });
+  });
+});
+
+describe('SetDataBudget', () => {
+  // 179 GB over 65 GB a seat is 2.75: two whole seats, below the three running.
+  it('should stop new sales below the running seats without refusing the budget', () => {
+    resetState('seats-mixed');
+    getState().maxSeats = 10;
+
+    expect(dispatch({ SetDataBudget: { monthly_data_budget: '179' } })).toEqual({
+      Ok: {
+        max_seats: 10,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
+        monthly_data_budget: '179',
+        seat_monthly_data_gb: 65,
+        data_max_seats: 2,
+        available_slots: 0
+      }
+    });
+  });
+});
+
+describe('SetDataBudget answers', () => {
+  it('should lift the data limit for a plan without a cap', () => {
+    resetState('seats-mixed');
+    getState().maxSeats = 10;
+    dispatch({ SetDataBudget: { monthly_data_budget: '179' } });
+
+    expect(dispatch({ SetDataBudget: { monthly_data_budget: 'unlimited' } })).toMatchObject({
+      Ok: { monthly_data_budget: 'unlimited', data_max_seats: null, available_slots: 6 }
+    });
+  });
+
+  it('should refuse to go back to no answer', () => {
+    resetState('seats-mixed');
+    dispatch({ SetDataBudget: { monthly_data_budget: 'unlimited' } });
+
+    const refused = dispatch({ SetDataBudget: { monthly_data_budget: 'not_set' } }) as {
+      Err: { message: string };
+    };
+
+    expect(refused.Err.message).toMatch(/monthly data cap/);
+    expect(dispatch('ShowCapacity')).toMatchObject({ Ok: { monthly_data_budget: 'unlimited' } });
+  });
+
+  // The tokens MonthlyDataBudget::from_str refuses, so a dashboard bug that
+  // sends one fails here as it would against the daemon.
+  it.each([
+    '0',
+    '012',
+    '1.5',
+    '-1',
+    '4294967296',
+    ''
+  ])('should refuse %j and keep the stored answer', (token) => {
+    resetState('seats-mixed');
+    dispatch({ SetDataBudget: { monthly_data_budget: '179' } });
+
+    const refused = dispatch({
+      SetDataBudget: { monthly_data_budget: token as MonthlyDataBudget }
+    }) as { Err: { message: string } };
+
+    expect(refused.Err.message).toMatch(/whole number of GB from 1/);
+    expect(dispatch('ShowCapacity')).toMatchObject({ Ok: { monthly_data_budget: '179' } });
+  });
+
+  it('should accept the largest budget the daemon stores', () => {
+    resetState('seats-mixed');
+
+    expect(dispatch({ SetDataBudget: { monthly_data_budget: '4294967295' } })).toMatchObject({
+      Ok: { monthly_data_budget: '4294967295' }
     });
   });
 });

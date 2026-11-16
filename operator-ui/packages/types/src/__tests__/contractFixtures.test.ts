@@ -282,8 +282,13 @@ const adminRequestsMirror = {
   ShowCapacity: 'ShowCapacity',
   ShowSeatReadiness: 'ShowSeatReadiness',
   SetCapacity: { SetCapacity: { max_seats: 4 } },
+  SetDataBudget: { SetDataBudget: { monthly_data_budget: '500' } },
   ConfigureInitialOffer: {
-    ConfigureInitialOffer: { max_seats: 4, price_msats: 50_000_000 }
+    ConfigureInitialOffer: {
+      max_seats: 4,
+      price_msats: 50_000_000,
+      monthly_data_budget: 'unlimited'
+    }
   },
   ListPaymentFederations: 'ListPaymentFederations',
   PayoutDestination: 'PayoutDestination',

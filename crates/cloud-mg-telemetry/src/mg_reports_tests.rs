@@ -111,6 +111,7 @@ fn reports_from_releases_with_fewer_fields_decode() {
             cpu_count: None,
             cpu_iterations_per_sec: None,
             cpu_single_core_iterations_per_sec: None,
+            monthly_data_budget: None,
             mg_version: None,
         }
     );
@@ -125,6 +126,39 @@ fn reports_from_releases_with_fewer_fields_decode() {
     assert_eq!(readiness.cpu_pressure_6h_pct, None);
     assert_eq!(readiness.uptime, None);
     assert_eq!(readiness.uptime_7d_pct, None);
+}
+
+#[test]
+fn the_monthly_data_budget_tells_no_cap_from_no_answer() {
+    let with = |budget: &str| {
+        capacity(&format!("{CAPACITY},\"monthly_data_budget\":\"{budget}\""))
+            .map(|stated| stated.report.monthly_data_budget)
+    };
+    assert_eq!(with("not_set"), Some(Some(MonthlyDataBudget::NotSet)));
+    assert_eq!(with("unlimited"), Some(Some(MonthlyDataBudget::Unlimited)));
+    assert_eq!(
+        with("179"),
+        Some(Some(MonthlyDataBudget::Gb(
+            std::num::NonZeroU32::new(179).unwrap()
+        )))
+    );
+    // A release before 0.1.16 states none.
+    assert_eq!(
+        capacity(CAPACITY).map(|stated| stated.report.monthly_data_budget),
+        Some(None)
+    );
+    // A token this collector does not know, such as one a later release
+    // adds, drops the field and keeps the record.
+    for unknown in ["0", "-1", "4294967296", "metered", "1.5"] {
+        assert_eq!(with(unknown), Some(None), "{unknown}");
+    }
+    let report = capacity(&format!("{CAPACITY},\"monthly_data_budget\":42"))
+        .expect("a non-string token keeps the record")
+        .report;
+    assert_eq!(
+        (report.monthly_data_budget, report.available_seats),
+        (None, 6)
+    );
 }
 
 #[test]

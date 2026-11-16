@@ -179,6 +179,8 @@ const base = (): Pick<
   | 'relayAuthorization'
   | 'maxSeats'
   | 'cpuMaxSeats'
+  | 'monthlyDataBudget'
+  | 'seatMonthlyDataGb'
   | 'readyForNewSeats'
   | 'seatReadiness'
   | 'guardianLink'
@@ -191,6 +193,10 @@ const base = (): Pick<
   maxSeats: 3,
   // The setup-payment policy sets no per-seat CPU budget, so CPU sets no limit.
   cpuMaxSeats: null,
+  // An MG set up before the question, as every upgrade from 0.1.15 is.
+  monthlyDataBudget: 'not_set',
+  // The built-in default while the publication states no figure.
+  seatMonthlyDataGb: 65,
   readyForNewSeats: true,
   seatReadiness: READY,
   guardianLink: { availability: 'ready', link: null, offer: null },

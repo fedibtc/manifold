@@ -94,6 +94,7 @@ describe('SetupWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
     await screen.findByRole('heading', { name: 'Set your price' });
 
+    fireEvent.click(screen.getByLabelText('No monthly limit'));
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
 
     await waitFor(() => expect(onComplete).toHaveBeenCalled());

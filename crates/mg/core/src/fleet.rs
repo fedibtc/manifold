@@ -184,12 +184,7 @@ pub struct PaymentFederationStatus {
 /// publish or skip an advertisement. The seat count remains operator-private.
 pub(crate) struct AvailabilitySnapshot {
     pub(crate) accepting_seats: bool,
-    /// `None` is automatic.
-    pub(crate) max_seats: Option<u32>,
-    pub(crate) memory_max_seats: u32,
-    pub(crate) policy_max_seats: u32,
-    /// `None` while the publication sets no per-seat CPU budget.
-    pub(crate) cpu_max_seats: Option<u32>,
+    pub(crate) limits: crate::db::SeatLimits,
     /// `None` before the first CPU measurement.
     pub(crate) cpu_capacity: Option<crate::cpu_capacity::CpuCapacity>,
     pub(crate) available_seats: u32,
@@ -227,10 +222,10 @@ impl FleetNostrHost {
         tracing::info!(
             safe_to_share = true,
             mg_version = env!("CARGO_PKG_VERSION"),
-            max_seats = snapshot.max_seats,
-            memory_max_seats = snapshot.memory_max_seats,
-            policy_max_seats = snapshot.policy_max_seats,
-            cpu_max_seats = snapshot.cpu_max_seats,
+            max_seats = snapshot.limits.max_seats,
+            memory_max_seats = snapshot.limits.memory_max_seats,
+            policy_max_seats = snapshot.limits.policy_max_seats,
+            cpu_max_seats = snapshot.limits.cpu_max_seats,
             cpu_count = snapshot
                 .cpu_capacity
                 .as_ref()
@@ -243,6 +238,7 @@ impl FleetNostrHost {
                 .cpu_capacity
                 .as_ref()
                 .map(|cpu| cpu.single_core_iterations_per_sec),
+            monthly_data_budget = %snapshot.limits.monthly_data_budget,
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,
             "{SEAT_CAPACITY_EVENT}"
@@ -820,6 +816,20 @@ impl Fleet {
         Ok(())
     }
 
+    /// Replace the operator's monthly data budget. Only a GB budget limits
+    /// seats, and it only stops new sales; running seats keep running.
+    pub async fn set_monthly_data_budget(
+        &self,
+        monthly_data_budget: fedi_decentralized_service_manifold_guardian::MonthlyDataBudget,
+    ) -> anyhow::Result<()> {
+        self.update_seats_config(SeatsConfigUpdate {
+            monthly_data_budget: Some(monthly_data_budget),
+            ..SeatsConfigUpdate::default()
+        })
+        .await?;
+        Ok(())
+    }
+
     /// Apply one change to what limits admission; see
     /// [`crate::db::Db::update_seats_config`]. Returns whether a stored value
     /// changed.
@@ -967,10 +977,7 @@ impl Fleet {
             accepting_seats: snapshot.slots > 0
                 && settings.price.is_some()
                 && snapshot.ready_for_new_seats,
-            max_seats: snapshot.max_seats,
-            memory_max_seats: snapshot.memory_max_seats,
-            policy_max_seats: snapshot.policy_max_seats,
-            cpu_max_seats: snapshot.cpu_max_seats,
+            limits: snapshot.limits,
             cpu_capacity: snapshot.cpu_capacity,
             available_seats: snapshot.slots,
             plans: settings.plans(),

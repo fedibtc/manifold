@@ -92,7 +92,7 @@ for i in $(seq 1 "$MG_COUNT"); do
   "$BIN/manifold-test-issuer" --environment development --relay "$RELAY_URL" \
     --authorization-request "$authorization_request" --publish-mg-authorization >/dev/null
   "$BIN/fman-cli" --data-dir "$data_dir" refresh-holder-authorizations >/dev/null
-  "$BIN/fman-cli" --data-dir "$data_dir" onboard offer --max-seats "$((i + 1))" >/dev/null
+  "$BIN/fman-cli" --data-dir "$data_dir" onboard offer --max-seats "$((i + 1))" --monthly-data unlimited >/dev/null
   echo "mg$i      capacity=$((i + 1))  log: $data_dir/mg.log"
 done
 

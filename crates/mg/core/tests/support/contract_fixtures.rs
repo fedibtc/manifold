@@ -396,7 +396,13 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
         AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
         AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: Some(4) },
-        AdminRequest::SetCapacity { .. } => AdminRequest::ListPaymentFederations,
+        AdminRequest::SetCapacity { .. } => AdminRequest::SetDataBudget {
+            monthly_data_budget:
+                fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Gb(
+                    std::num::NonZeroU32::new(500).unwrap(),
+                ),
+        },
+        AdminRequest::SetDataBudget { .. } => AdminRequest::ListPaymentFederations,
         AdminRequest::ListPaymentFederations => AdminRequest::PayoutDestination,
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
             destination: Some("operator@example.com".to_owned()),
@@ -446,6 +452,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::RefreshHolderAuthorizations => AdminRequest::ConfigureInitialOffer {
             max_seats: Some(4),
             price_msats: Some(50_000_000),
+            monthly_data_budget:
+                fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Unlimited,
         },
         AdminRequest::ConfigureInitialOffer { .. } => AdminRequest::ShowMnemonic,
         AdminRequest::ShowMnemonic => AdminRequest::OnboardAsNew { if_needed: true },
@@ -466,6 +474,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::ShowCapacity => "ShowCapacity",
         AdminRequest::ShowSeatReadiness => "ShowSeatReadiness",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
+        AdminRequest::SetDataBudget { .. } => "SetDataBudget",
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",
         AdminRequest::PayoutDestination => "PayoutDestination",
         AdminRequest::SetPayoutDestination { .. } => "SetPayoutDestination",

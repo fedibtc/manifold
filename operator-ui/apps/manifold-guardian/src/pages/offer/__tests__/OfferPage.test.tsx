@@ -7,6 +7,9 @@ import * as adminCallModule from '@/shared/api/adminCall';
 vi.mock('@/features/offer/components/seat-capacity-form/SeatCapacityForm', () => ({
   SeatCapacityForm: () => <div>Seat capacity editor</div>
 }));
+vi.mock('@/features/offer/components/data-budget-form/DataBudgetForm', () => ({
+  DataBudgetForm: () => <div>Monthly data editor</div>
+}));
 
 import { OfferPage } from '../OfferPage';
 
@@ -96,7 +99,7 @@ it('should explain that blank stops selling and zero is free', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
   renderPage();
 
-  await screen.findByText(/Leave the field blank to stop selling seats/);
+  await screen.findByText(/Leave the price blank to stop selling seats/);
   screen.getByText(/gives seats away free/);
 });
 

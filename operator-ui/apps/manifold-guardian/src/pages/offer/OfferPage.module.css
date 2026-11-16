@@ -30,6 +30,10 @@
   @apply uFieldHint;
 }
 
+.priceNote {
+  @apply mt-2;
+}
+
 .error {
   @apply uFieldError;
 }

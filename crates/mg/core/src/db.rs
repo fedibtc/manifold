@@ -18,7 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::wallet::Msats;
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use fedi_decentralized_service_manifold_guardian::{FederationId, OfferEpoch, Plan};
+use fedi_decentralized_service_manifold_guardian::{
+    FederationId, MonthlyDataBudget, OfferEpoch, Plan,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
@@ -138,13 +140,7 @@ pub(crate) struct Offer {
 
 pub(crate) struct OfferSnapshot {
     pub(crate) offer: Offer,
-    /// The operator's limit on total seats; `None` is automatic.
-    pub(crate) max_seats: Option<u32>,
-    /// The runtime limits on total seats.
-    pub(crate) memory_max_seats: u32,
-    pub(crate) policy_max_seats: u32,
-    /// `None` while the publication sets no per-seat CPU budget.
-    pub(crate) cpu_max_seats: Option<u32>,
+    pub(crate) limits: SeatLimits,
     /// The CPU measurement the CPU limit divides; `None` before the first.
     pub(crate) cpu_capacity: Option<CpuCapacity>,
     /// Free slots under the lowest limit.
@@ -213,20 +209,12 @@ impl Db {
             .into_iter()
             .map(|(id,)| FederationId(id))
             .collect();
-        let (
-            epoch,
-            price,
-            max_seats,
-            memory_max_seats,
-            policy_max_seats,
-            cpu_max_seats,
-            ready_for_new_seats,
-        ): OfferStateRow = sqlx::query_as(
-            "SELECT offer_epoch, price_msats, max_seats, memory_max_seats, policy_max_seats, \
-             cpu_max_seats, ready_for_new_seats FROM offer_state WHERE id = 1",
+        let (epoch, price, ready_for_new_seats): (Vec<u8>, Option<i64>, bool) = sqlx::query_as(
+            "SELECT offer_epoch, price_msats, ready_for_new_seats FROM offer_state WHERE id = 1",
         )
         .fetch_one(&mut *tx)
         .await?;
+        let limits = SeatLimits::read(&mut tx).await?;
         let cpu_capacity = cpu_capacity_row(&mut tx).await?;
         let (active, next_no): (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
@@ -238,10 +226,6 @@ impl Db {
         .await?;
         tx.commit().await?;
         let epoch = parse_offer_epoch(epoch)?;
-        let max_seats = max_seats.map(stored_max_seats).transpose()?;
-        let memory_max_seats = stored_max_seats(memory_max_seats)?;
-        let policy_max_seats = stored_max_seats(policy_max_seats)?;
-        let cpu_max_seats = cpu_max_seats.map(stored_max_seats).transpose()?;
         Ok(OfferSnapshot {
             offer: Offer {
                 epoch,
@@ -250,17 +234,9 @@ impl Db {
                     payment_federations,
                 },
             },
-            max_seats,
-            memory_max_seats,
-            policy_max_seats,
-            cpu_max_seats,
+            limits,
             cpu_capacity,
-            slots: available_slots(
-                effective_max_seats(max_seats, memory_max_seats, policy_max_seats, cpu_max_seats),
-                first_port_base,
-                active,
-                next_no,
-            ),
+            slots: available_slots(limits.max_seats_total(), first_port_base, active, next_no),
             ready_for_new_seats,
         })
     }
@@ -468,6 +444,7 @@ impl Db {
         &self,
         price: Option<Msats>,
         max_seats: Option<u32>,
+        monthly_data_budget: MonthlyDataBudget,
     ) -> Result<Option<Msats>, DbError> {
         let price_msats = payable_price_column(price)?;
         let updated_at_ms = now_ms();
@@ -493,11 +470,12 @@ impl Db {
             return Err(DbError::SeatLimitBelowActive { requested, active });
         }
         sqlx::query(
-            "UPDATE offer_state SET price_msats = ?, max_seats = ?, updated_at_ms = ?, \
-             offer_epoch = ? WHERE id = 1",
+            "UPDATE offer_state SET price_msats = ?, max_seats = ?, monthly_data_budget = ?, \
+             updated_at_ms = ?, offer_epoch = ? WHERE id = 1",
         )
         .bind(price_msats)
         .bind(max_seats.map(i64::from))
+        .bind(monthly_data_budget.to_string())
         .bind(updated_at_ms)
         .bind(fresh_offer_epoch().as_bytes().as_slice())
         .execute(&mut *tx)
@@ -546,8 +524,9 @@ impl Db {
     /// The operator's `max_seats` may not fall below the active seat count. A
     /// runtime limit may; it then only leaves zero free slots.
     ///
-    /// The offer epoch is replaced in the same transaction when the operator's
-    /// `max_seats` or the readiness verdict changes, and when the change takes
+    /// The offer epoch is replaced in the same transaction when an operator
+    /// limit (`max_seats` or the monthly data budget) or the readiness verdict
+    /// changes, and when the change takes
     /// the last free slot away, as the admission of the last slot does. So a
     /// current-epoch quote always has a slot (SPEC-quote-settlement). A runtime
     /// limit change that leaves a free slot keeps the epoch: outstanding quotes
@@ -559,29 +538,15 @@ impl Db {
         first_port_base: crate::facts::PortBase,
     ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
-        let (max_seats, memory, policy, cpu, ready): (Option<i64>, i64, i64, Option<i64>, bool) =
-            sqlx::query_as(
-                "SELECT max_seats, memory_max_seats, policy_max_seats, cpu_max_seats, \
-                 ready_for_new_seats FROM offer_state WHERE id = 1",
-            )
-            .fetch_one(&mut *tx)
-            .await?;
+        let ready: bool =
+            sqlx::query_scalar("SELECT ready_for_new_seats FROM offer_state WHERE id = 1")
+                .fetch_one(&mut *tx)
+                .await?;
         let before = SeatsConfig {
-            max_seats: max_seats.map(stored_max_seats).transpose()?,
-            memory_max_seats: stored_max_seats(memory)?,
-            policy_max_seats: stored_max_seats(policy)?,
-            cpu_max_seats: cpu.map(stored_max_seats).transpose()?,
+            limits: SeatLimits::read(&mut tx).await?,
             ready_for_new_seats: ready,
         };
-        let after = SeatsConfig {
-            max_seats: update.max_seats.unwrap_or(before.max_seats),
-            memory_max_seats: update.memory_max_seats.unwrap_or(before.memory_max_seats),
-            policy_max_seats: update.policy_max_seats.unwrap_or(before.policy_max_seats),
-            cpu_max_seats: update.cpu_max_seats.unwrap_or(before.cpu_max_seats),
-            ready_for_new_seats: update
-                .ready_for_new_seats
-                .unwrap_or(before.ready_for_new_seats),
-        };
+        let after = before.with(update);
         let (active, next_no): (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
              COALESCE(MAX(s.seat_no) + 1, 0) \
@@ -602,32 +567,35 @@ impl Db {
         }
         let slots = |config: &SeatsConfig| {
             available_slots(
-                effective_max_seats(
-                    config.max_seats,
-                    config.memory_max_seats,
-                    config.policy_max_seats,
-                    config.cpu_max_seats,
-                ),
+                config.limits.max_seats_total(),
                 first_port_base,
                 active,
                 next_no,
             )
         };
-        let rotate = after.max_seats != before.max_seats
+        // The operator's limits at the figure in force before the write, so a
+        // published-figure change falls under the runtime rule below.
+        let per_seat = before.limits.policy_seat_monthly_data_gb;
+        let operator_changed = after.limits.operator(per_seat) != before.limits.operator(per_seat);
+        let rotate = operator_changed
             || after.ready_for_new_seats != before.ready_for_new_seats
             || (slots(&before) > 0 && slots(&after) == 0);
+        let limits = after.limits;
         sqlx::query(
             "UPDATE offer_state SET max_seats = ?, memory_max_seats = ?, policy_max_seats = ?, \
-             cpu_max_seats = ?, ready_for_new_seats = ? WHERE id = 1",
+             cpu_max_seats = ?, monthly_data_budget = ?, policy_seat_monthly_data_gb = ?, \
+             ready_for_new_seats = ? WHERE id = 1",
         )
-        .bind(after.max_seats.map(i64::from))
-        .bind(i64::from(after.memory_max_seats))
-        .bind(i64::from(after.policy_max_seats))
-        .bind(after.cpu_max_seats.map(i64::from))
+        .bind(limits.max_seats.map(i64::from))
+        .bind(i64::from(limits.memory_max_seats))
+        .bind(i64::from(limits.policy_max_seats))
+        .bind(limits.cpu_max_seats.map(i64::from))
+        .bind(limits.monthly_data_budget.to_string())
+        .bind(i64::from(limits.policy_seat_monthly_data_gb.get()))
         .bind(after.ready_for_new_seats)
         .execute(&mut *tx)
         .await?;
-        if after.max_seats != before.max_seats {
+        if operator_changed {
             sqlx::query("UPDATE offer_state SET updated_at_ms = ? WHERE id = 1")
                 .bind(now_ms())
                 .execute(&mut *tx)
@@ -936,17 +904,9 @@ async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>,
     }))
 }
 
-/// `offer_state` as [`Db::offer_snapshot`] reads it: epoch, price, the
-/// operator, memory, policy and CPU limits, and the readiness verdict.
-type OfferStateRow = (
-    Vec<u8>,
-    Option<i64>,
-    Option<i64>,
-    i64,
-    i64,
-    Option<i64>,
-    bool,
-);
+/// `offer_state` as [`SeatLimits::read`] reads it: the operator, memory,
+/// policy and CPU limits, the monthly data answer and the data per seat.
+type SeatLimitsRow = (Option<i64>, i64, i64, Option<i64>, String, i64);
 
 async fn cpu_capacity_row(
     conn: &mut sqlx::SqliteConnection,
@@ -1084,33 +1044,128 @@ pub(crate) struct SeatsConfigUpdate {
     /// Runtime limit from the measured CPU capacity and the publication's
     /// per-seat CPU budget (`crate::seat_capacity`). `Some(None)` removes it.
     pub(crate) cpu_max_seats: Option<Option<u32>>,
+    /// The operator's monthly data budget.
+    pub(crate) monthly_data_budget: Option<MonthlyDataBudget>,
+    /// The publication's per-seat monthly data, or its default.
+    pub(crate) policy_seat_monthly_data_gb: Option<NonZeroU32>,
     /// The readiness verdict (`crate::seat_readiness`).
     pub(crate) ready_for_new_seats: Option<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SeatsConfig {
-    max_seats: Option<u32>,
-    memory_max_seats: u32,
-    policy_max_seats: u32,
-    cpu_max_seats: Option<u32>,
+    limits: SeatLimits,
     ready_for_new_seats: bool,
 }
 
-/// The seat limit admission enforces: the lowest of the operator's and the
-/// runtime limits. An automatic operator limit and an absent CPU limit do not
-/// bind.
-pub(super) fn effective_max_seats(
-    max_seats: Option<u32>,
-    memory: u32,
-    policy: u32,
-    cpu: Option<u32>,
-) -> u32 {
-    max_seats
-        .unwrap_or(u32::MAX)
-        .min(memory)
-        .min(policy)
-        .min(cpu.unwrap_or(u32::MAX))
+impl SeatsConfig {
+    fn with(self, update: SeatsConfigUpdate) -> Self {
+        let limits = self.limits;
+        Self {
+            limits: SeatLimits {
+                max_seats: update.max_seats.unwrap_or(limits.max_seats),
+                memory_max_seats: update.memory_max_seats.unwrap_or(limits.memory_max_seats),
+                policy_max_seats: update.policy_max_seats.unwrap_or(limits.policy_max_seats),
+                cpu_max_seats: update.cpu_max_seats.unwrap_or(limits.cpu_max_seats),
+                monthly_data_budget: update
+                    .monthly_data_budget
+                    .unwrap_or(limits.monthly_data_budget),
+                policy_seat_monthly_data_gb: update
+                    .policy_seat_monthly_data_gb
+                    .unwrap_or(limits.policy_seat_monthly_data_gb),
+            },
+            ready_for_new_seats: update
+                .ready_for_new_seats
+                .unwrap_or(self.ready_for_new_seats),
+        }
+    }
+}
+
+/// What limits total seats (REQ-seat-capacity-default), as `offer_state`
+/// stores it. Admission sells up to [`Self::max_seats_total`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SeatLimits {
+    /// The operator's limit on total seats; `None` is automatic.
+    pub(crate) max_seats: Option<u32>,
+    /// Runtime limit from sampled host memory.
+    pub(crate) memory_max_seats: u32,
+    /// Runtime limit from the setup-payment publication.
+    pub(crate) policy_max_seats: u32,
+    /// Runtime limit from the measured CPU capacity; `None` while the
+    /// publication sets no per-seat CPU budget.
+    pub(crate) cpu_max_seats: Option<u32>,
+    /// The operator's monthly data budget, in GB per 30 days. Only
+    /// [`MonthlyDataBudget::Gb`] is a data limit.
+    pub(crate) monthly_data_budget: MonthlyDataBudget,
+    /// The data one seat uses, in GB per 30 days, as the setup-payment
+    /// publication states it or its default.
+    pub(crate) policy_seat_monthly_data_gb: NonZeroU32,
+}
+
+impl SeatLimits {
+    pub(super) async fn read(conn: &mut sqlx::SqliteConnection) -> Result<Self, DbError> {
+        let (max_seats, memory, policy, cpu, budget, per_seat): SeatLimitsRow = sqlx::query_as(
+            "SELECT max_seats, memory_max_seats, policy_max_seats, cpu_max_seats, \
+             monthly_data_budget, policy_seat_monthly_data_gb FROM offer_state WHERE id = 1",
+        )
+        .fetch_one(conn)
+        .await?;
+        Ok(Self {
+            max_seats: max_seats.map(stored_max_seats).transpose()?,
+            memory_max_seats: stored_max_seats(memory)?,
+            policy_max_seats: stored_max_seats(policy)?,
+            cpu_max_seats: cpu.map(stored_max_seats).transpose()?,
+            monthly_data_budget: budget.parse().map_err(|_| DbError::CorruptRow {
+                table: "offer_state",
+                key: "1".into(),
+                detail: "monthly_data_budget is not a monthly data budget token".into(),
+            })?,
+            policy_seat_monthly_data_gb: stored_data_gb(per_seat)?,
+        })
+    }
+
+    /// The seat limits the operator's answers make at `seat_monthly_data_gb`:
+    /// the maximum, and the seats the monthly data answer covers. An answer
+    /// that makes the same limits, such as `not_set` to `unlimited` or 130 to
+    /// 140 GB at 65 GB a seat, sells the same offer.
+    fn operator(&self, seat_monthly_data_gb: NonZeroU32) -> (Option<u32>, Option<u32>) {
+        (
+            self.max_seats,
+            data_seats(self.monthly_data_budget, seat_monthly_data_gb),
+        )
+    }
+
+    /// Seats the operator's monthly data budget covers at the published data
+    /// per seat, or `None` without a GB budget: neither an unanswered budget
+    /// nor an unlimited one limits seats. It does not measure use: a
+    /// month-to-date brake, from sampled network counters, would lower this
+    /// further once usage nears the budget, and belongs here.
+    pub(crate) fn data_max_seats(&self) -> Option<u32> {
+        data_seats(self.monthly_data_budget, self.policy_seat_monthly_data_gb)
+    }
+
+    /// The seat limit admission enforces: the lowest of the operator's and the
+    /// runtime limits. An automatic operator limit and an absent CPU or data
+    /// limit do not bind.
+    pub(crate) fn max_seats_total(&self) -> u32 {
+        [
+            self.max_seats,
+            Some(self.memory_max_seats),
+            Some(self.policy_max_seats),
+            self.cpu_max_seats,
+            self.data_max_seats(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("the memory and policy limits always bind")
+    }
+}
+
+/// Whole seats `budget` covers at `seat_monthly_data_gb` each, or `None`
+/// without a GB budget.
+fn data_seats(budget: MonthlyDataBudget, seat_monthly_data_gb: NonZeroU32) -> Option<u32> {
+    Some(budget.gb()?.get() / seat_monthly_data_gb.get())
 }
 
 pub(super) fn available_slots(
@@ -1137,7 +1192,18 @@ fn stored_price(msats: i64) -> Msats {
     Msats(u64::try_from(msats).expect("price_msats is non-negative by schema CHECK"))
 }
 
-pub(super) fn stored_max_seats(max_seats: i64) -> Result<u32, DbError> {
+fn stored_data_gb(gb: i64) -> Result<NonZeroU32, DbError> {
+    u32::try_from(gb)
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or_else(|| DbError::CorruptRow {
+            table: "offer_state",
+            key: "1".into(),
+            detail: "a monthly data amount is outside the positive u32 domain".into(),
+        })
+}
+
+fn stored_max_seats(max_seats: i64) -> Result<u32, DbError> {
     u32::try_from(max_seats).map_err(|_| DbError::CorruptRow {
         table: "offer_state",
         key: "1".into(),

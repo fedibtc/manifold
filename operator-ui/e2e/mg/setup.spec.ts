@@ -47,6 +47,8 @@ test('should take a new fleet from the doors through to a priced offer', async (
   // Setup asks for no seat count: the limit starts automatic.
   await expect(page.getByLabel('Maximum active seats')).toHaveCount(0);
   await page.getByLabel('Price per seat (sats)').fill('50000');
+  // Setup does not finish without the monthly data answer.
+  await page.getByLabel('No monthly limit').check();
   await page.getByRole('button', { name: 'Finish setup' }).click();
 
   // The final stage is durable but the fleet has not opened: the daemon
@@ -76,6 +78,9 @@ test('should take a new fleet from the doors through to a priced offer', async (
         iterations_per_sec: 12_600,
         single_core_iterations_per_sec: 810
       },
+      monthly_data_budget: 'unlimited',
+      seat_monthly_data_gb: 65,
+      data_max_seats: null,
       available_slots: 9
     }
   });

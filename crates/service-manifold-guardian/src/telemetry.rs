@@ -332,7 +332,8 @@ pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
 /// field keeps its name and meaning once released. The collector also uses
 /// these field names for its stored reports and private exports. Releases before 0.1.4
 /// journal only the seat counts, the accepting flag and the operator limit,
-/// and releases before 0.1.16 no CPU limit or CPU capacity.
+/// and releases before 0.1.16 no CPU limit, CPU capacity or monthly data
+/// budget.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SeatCapacityEvent {
     pub available_seats: u32,
@@ -359,8 +360,34 @@ pub struct SeatCapacityEvent {
     /// The benchmark iterations per second of one worker alone.
     #[serde(default)]
     pub cpu_single_core_iterations_per_sec: Option<u32>,
+    /// The operator's monthly data answer, as its token. Releases before
+    /// 0.1.16 do not journal it, and a token this release does not know
+    /// decodes as absent rather than refusing the record.
+    #[serde(default, deserialize_with = "known_monthly_data_budget")]
+    pub monthly_data_budget: Option<crate::MonthlyDataBudget>,
     #[serde(default)]
     pub mg_version: Option<String>,
+}
+
+/// Decode a monthly data token, or `None` for one this release does not
+/// know, such as an answer a later release adds: the rest of the record
+/// stays valid.
+fn known_monthly_data_budget<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::MonthlyDataBudget>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Token {
+        Known(crate::MonthlyDataBudget),
+        Unknown(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Token>::deserialize(deserializer)? {
+        Some(Token::Known(budget)) => Some(budget),
+        Some(Token::Unknown(_)) | None => None,
+    })
 }
 
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same

@@ -1,0 +1,12 @@
+.root {
+  @apply uStack4;
+}
+
+/* The amount belongs to the second option, so it indents past the radios. */
+.amount {
+  @apply uStack2 pl-6;
+}
+
+.coverage {
+  @apply uInkSm;
+}

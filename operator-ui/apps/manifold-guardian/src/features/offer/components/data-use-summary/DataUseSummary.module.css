@@ -1,0 +1,27 @@
+.root {
+  @apply uStack4;
+}
+
+.facts {
+  @apply uTileGrid;
+}
+
+.fact {
+  @apply uTile;
+}
+
+.fact dt {
+  @apply uMutedSm;
+}
+
+.fact dd {
+  @apply font-semibold tabular-nums text-ink;
+}
+
+.note {
+  @apply uMutedSm;
+}
+
+.link {
+  @apply uInlineLink w-fit text-sm;
+}

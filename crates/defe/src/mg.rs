@@ -172,7 +172,17 @@ impl MgDriver {
             }
             self.admin(data_dir, &["refresh-holder-authorizations"])?;
         }
-        self.admin(data_dir, &["onboard", "offer", "--max-seats", "1"])?;
+        self.admin(
+            data_dir,
+            &[
+                "onboard",
+                "offer",
+                "--max-seats",
+                "1",
+                "--monthly-data",
+                "unlimited",
+            ],
+        )?;
         Ok(())
     }
 

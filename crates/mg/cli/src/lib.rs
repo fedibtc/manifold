@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand};
-use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
+use fedi_decentralized_service_manifold_guardian::{FederationId, MonthlyDataBudget, SeatId};
 use mg_core::admin::{self, AdminRequest};
 use tracing_subscriber::prelude::*;
 
@@ -100,13 +100,42 @@ pub enum OnboardVerb {
         max_seats: MaxSeatsArg,
         #[arg(long = "price-msats")]
         price_msats: Option<u64>,
+        /// Whether this host's internet has a monthly data cap: `unlimited`,
+        /// or the GB this guardian may use a month.
+        #[arg(long = "monthly-data")]
+        monthly_data: DataBudgetArg,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum CapacityVerb {
     Show,
-    Set { max_seats: MaxSeatsArg },
+    Set {
+        max_seats: MaxSeatsArg,
+    },
+    /// Sell no more seats than this monthly data budget in GB covers, at the
+    /// data per seat Fedi publishes, or `unlimited` for an internet plan with
+    /// no monthly data cap. Running seats keep running.
+    SetDataBudget {
+        monthly_data: DataBudgetArg,
+    },
+}
+
+/// An operator's monthly data answer: a whole number of GB, or `unlimited`.
+#[derive(Clone, Copy, Debug)]
+pub struct DataBudgetArg(MonthlyDataBudget);
+
+impl std::str::FromStr for DataBudgetArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.parse() {
+            Ok(MonthlyDataBudget::NotSet) | Err(_) => {
+                Err("expected a whole number of GB above 0, or `unlimited`".to_owned())
+            }
+            Ok(budget) => Ok(Self(budget)),
+        }
+    }
 }
 
 /// An operator seat limit: a whole number, or `automatic` for no operator cap.
@@ -273,6 +302,11 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
         } => AdminRequest::SetCapacity {
             max_seats: max_seats.0,
         },
+        AdminVerb::Capacity {
+            verb: CapacityVerb::SetDataBudget { monthly_data },
+        } => AdminRequest::SetDataBudget {
+            monthly_data_budget: monthly_data.0,
+        },
         AdminVerb::PaymentFederations {
             verb: PaymentFederationsVerb::List,
         } => AdminRequest::ListPaymentFederations,
@@ -367,16 +401,21 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
                 OnboardVerb::Offer {
                     max_seats,
                     price_msats,
+                    monthly_data,
                 },
         } => AdminRequest::ConfigureInitialOffer {
             max_seats: max_seats.0,
             price_msats,
+            monthly_data_budget: monthly_data.0,
         },
     };
 
     match admin::request(&admin::socket_path(data_dir), &request).await? {
         Ok(value) => {
             println!("{}", serde_json::to_string_pretty(&value)?);
+            if let Some(warning) = data_budget_warning(&value) {
+                eprintln!("warning: {warning}");
+            }
             if let Some(incomplete) = value.get("incomplete") {
                 tracing::warn!(
                     claimed_msat = value["claimed_msat"].as_u64().unwrap_or_default(),
@@ -396,6 +435,21 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// What to tell an operator whose monthly data budget covers no seat, from a
+/// capacity response. The budget stands: it is the operator's answer, and
+/// the MG only stops selling.
+fn data_budget_warning(capacity: &serde_json::Value) -> Option<String> {
+    if capacity.get("data_max_seats")?.as_u64()? != 0 {
+        return None;
+    }
+    let budget = capacity.get("monthly_data_budget")?.as_str()?;
+    let per_seat = capacity.get("seat_monthly_data_gb")?.as_u64()?;
+    Some(format!(
+        "{budget} GB is less than one seat (about {per_seat} GB a month). \
+         This guardian will not sell new seats."
+    ))
 }
 
 #[cfg(test)]

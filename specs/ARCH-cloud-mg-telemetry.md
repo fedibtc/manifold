@@ -195,8 +195,10 @@ under those names, and MG tests decode the emitted records with them. Releases
 before 0.1.4 journal only the free seats, the accepting flag and the operator
 limit, and no uptime outcome, scores or minimums; releases before 0.1.9
 journal no `version` outcome, and releases before 0.1.16 no `pressure`
-outcome or pressure figures and no CPU limit or CPU capacity. Absent fields
-stay absent.
+outcome or pressure figures, no CPU limit or CPU capacity, and no
+`monthly_data_budget`. Absent fields stay absent. A `monthly_data_budget`
+token the collector does not know is dropped as if absent, so a later
+release's answer does not cost the rest of the record.
 
 While validating a batch from the MG journal, the collector keeps the last
 record of each kind, in journal order, that has an RFC 3339 timestamp and

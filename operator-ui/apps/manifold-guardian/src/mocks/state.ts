@@ -2,6 +2,7 @@ import type {
   FederationId,
   FeePolicy,
   GuardianLinkResponse,
+  MonthlyDataBudget,
   OnboardingResponse,
   PaymentFederation,
   ReadinessReport,
@@ -82,6 +83,12 @@ export interface MockState {
   /** The CPU seat limit, null while the setup-payment policy sets no
    *  per-seat CPU budget. Read by `ShowCapacity`. */
   cpuMaxSeats: number | null;
+  /** The operator's monthly data answer (`offer_state.monthly_data_budget`):
+   *  written by `ConfigureInitialOffer` and `SetDataBudget`, `not_set` on an
+   *  MG set up before the question. */
+  monthlyDataBudget: MonthlyDataBudget;
+  /** The data per seat in GB a month: the publication's, or the default of 65. */
+  seatMonthlyDataGb: number;
   /** The durable verdict that gates new seats, read by `ShowSeatReadiness`. */
   readyForNewSeats: boolean;
   /** The latest readiness run since the daemon started; null before one

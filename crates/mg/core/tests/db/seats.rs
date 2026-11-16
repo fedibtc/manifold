@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, DkgCompletionCallbackInput, FederationSize, InviteCode, Plan,
+    DkgCompletionCallback, DkgCompletionCallbackInput, FederationSize, InviteCode,
+    MonthlyDataBudget, Plan,
 };
 use tempfile::TempDir;
 
@@ -729,8 +730,8 @@ async fn memory_limit_that_leaves_a_slot_keeps_open_quotes_valid() {
     let snapshot = db.offer_snapshot(base).await.unwrap();
     assert_eq!(
         (
-            snapshot.max_seats,
-            snapshot.memory_max_seats,
+            snapshot.limits.max_seats,
+            snapshot.limits.memory_max_seats,
             snapshot.slots
         ),
         (Some(3), 1, 1)
@@ -795,7 +796,7 @@ async fn memory_limit_may_fall_below_active_seats() {
     assert!(set_limits(&db, Some(0), None).await.unwrap());
     assert_ne!(db.offer_epoch().await.unwrap(), epoch);
     let snapshot = db.offer_snapshot(base).await.unwrap();
-    assert_eq!((snapshot.slots, snapshot.memory_max_seats), (0, 0));
+    assert_eq!((snapshot.slots, snapshot.limits.memory_max_seats), (0, 0));
     assert_eq!(db.active_seat_count().await.unwrap(), 1);
 }
 
@@ -853,6 +854,162 @@ async fn admission_uses_the_lowest_of_operator_memory_and_policy_limits() {
     assert_eq!(db.max_seats().await.unwrap(), Some(5));
 }
 
+fn gb(gb: u32) -> Option<std::num::NonZeroU32> {
+    std::num::NonZeroU32::new(gb)
+}
+
+fn budget(gb: u32) -> Option<MonthlyDataBudget> {
+    Some(MonthlyDataBudget::Gb(
+        std::num::NonZeroU32::new(gb).unwrap(),
+    ))
+}
+
+async fn set_data(
+    db: &Db,
+    budget: Option<MonthlyDataBudget>,
+    per_seat: Option<std::num::NonZeroU32>,
+) -> Result<bool, DbError> {
+    let update = crate::db::SeatsConfigUpdate {
+        monthly_data_budget: budget,
+        policy_seat_monthly_data_gb: per_seat,
+        ..Default::default()
+    };
+    db.update_seats_config(update, crate::facts::PortBase::new(30_000).unwrap())
+        .await
+}
+
+#[tokio::test]
+async fn data_budget_limits_seats_to_whole_seats_it_covers() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 20).await.unwrap();
+    set_limits(&db, Some(20), Some(20)).await.unwrap();
+
+    // An operator who has not answered sets no limit.
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (
+            snapshot.limits.monthly_data_budget,
+            snapshot.limits.policy_seat_monthly_data_gb,
+            snapshot.slots
+        ),
+        (MonthlyDataBudget::NotSet, gb(65).unwrap(), 20)
+    );
+
+    // Before any publication the default 65 GB a seat applies: 180 / 65 is
+    // 2.77, so two whole seats.
+    set_data(&db, budget(180), None).await.unwrap();
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (snapshot.limits.data_max_seats(), snapshot.slots),
+        (Some(2), 2)
+    );
+
+    // A published 60 GB replaces it: 180 / 60 is exactly 3.
+    set_data(&db, None, gb(60)).await.unwrap();
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (snapshot.limits.data_max_seats(), snapshot.slots),
+        (Some(3), 3)
+    );
+
+    // An operator saying the internet has no cap lifts the limit, while the
+    // figure stays.
+    set_data(&db, Some(MonthlyDataBudget::Unlimited), None)
+        .await
+        .unwrap();
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (
+            snapshot.limits.monthly_data_budget,
+            snapshot.limits.data_max_seats(),
+            snapshot.limits.policy_seat_monthly_data_gb,
+            snapshot.slots
+        ),
+        (MonthlyDataBudget::Unlimited, None, gb(60).unwrap(), 20)
+    );
+}
+
+#[tokio::test]
+async fn data_limit_below_active_seats_only_stops_new_sales() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 20).await.unwrap();
+    set_limits(&db, Some(20), Some(20)).await.unwrap();
+    for n in 0..3 {
+        let epoch = db.offer_epoch().await.unwrap();
+        assert!(matches!(
+            db.admit_seat(new_seat(70 + n), epoch, base).await.unwrap(),
+            SeatAdmissionResult::Inserted(_)
+        ));
+    }
+
+    // 100 GB covers one 60 GB seat; three run, and all three keep running.
+    set_data(&db, budget(100), gb(60)).await.unwrap();
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (snapshot.limits.data_max_seats(), snapshot.slots),
+        (Some(1), 0)
+    );
+    assert_eq!(db.active_seat_count().await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn operator_data_changes_rotate_only_when_the_seats_they_cover_change() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 20).await.unwrap();
+    set_limits(&db, Some(20), Some(20)).await.unwrap();
+    let epoch = db.offer_epoch().await.unwrap();
+
+    // Answering "no cap" stores the answer but sells the same offer: no
+    // limit before or after.
+    assert!(
+        set_data(&db, Some(MonthlyDataBudget::Unlimited), None)
+            .await
+            .unwrap()
+    );
+    assert_eq!(db.offer_epoch().await.unwrap(), epoch);
+
+    // 130 GB at the default 65 GB a seat covers 2 seats: a new limit.
+    assert!(set_data(&db, budget(130), None).await.unwrap());
+    let two_seats = db.offer_epoch().await.unwrap();
+    assert_ne!(two_seats, epoch);
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 2);
+
+    // 140 GB still covers 2 seats (2.15), so open quotes stay valid, even
+    // though the stored answer changed.
+    assert!(set_data(&db, budget(140), None).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), two_seats);
+    assert!(set_data(&db, budget(130), None).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), two_seats);
+
+    // 195 GB covers 3 seats: the operator changed what is on offer, so it
+    // rotates even with free slots before and after.
+    assert!(set_data(&db, budget(195), None).await.unwrap());
+    let three_seats = db.offer_epoch().await.unwrap();
+    assert_ne!(three_seats, two_seats);
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 3);
+    assert!(!set_data(&db, budget(195), None).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), three_seats);
+
+    // A published figure is a runtime limit: one that leaves a slot keeps
+    // open quotes valid (195 / 97 is 2 seats) ...
+    assert!(set_data(&db, None, gb(97)).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), three_seats);
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 2);
+
+    // ... and one that takes the last slot refuses them.
+    assert!(set_data(&db, None, gb(196)).await.unwrap());
+    assert_ne!(db.offer_epoch().await.unwrap(), three_seats);
+    assert!(matches!(
+        db.admit_seat(new_seat(80), three_seats, base)
+            .await
+            .unwrap(),
+        SeatAdmissionResult::OfferChanged
+    ));
+}
+
 #[tokio::test]
 async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
     let (_dir, db) = open_db().await;
@@ -865,7 +1022,7 @@ async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
     // A fresh store has no CPU limit and no measurement.
     let snapshot = db.offer_snapshot(base).await.unwrap();
     assert_eq!(
-        (snapshot.cpu_max_seats, snapshot.cpu_capacity),
+        (snapshot.limits.cpu_max_seats, snapshot.cpu_capacity),
         (None, None)
     );
     // Memory's first value of 4 binds below the operator's 5.
@@ -873,7 +1030,10 @@ async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
 
     assert!(db.update_seats_config(cpu(Some(2)), base).await.unwrap());
     let snapshot = db.offer_snapshot(base).await.unwrap();
-    assert_eq!((snapshot.cpu_max_seats, snapshot.slots), (Some(2), 2));
+    assert_eq!(
+        (snapshot.limits.cpu_max_seats, snapshot.slots),
+        (Some(2), 2)
+    );
     assert!(!db.update_seats_config(cpu(Some(2)), base).await.unwrap());
 
     // Admission counts the CPU limit too: the second seat takes the last
@@ -894,7 +1054,7 @@ async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
     // A publication without a CPU budget removes the limit; memory binds again.
     assert!(db.update_seats_config(cpu(None), base).await.unwrap());
     let snapshot = db.offer_snapshot(base).await.unwrap();
-    assert_eq!((snapshot.cpu_max_seats, snapshot.slots), (None, 2));
+    assert_eq!((snapshot.limits.cpu_max_seats, snapshot.slots), (None, 2));
 }
 
 #[tokio::test]

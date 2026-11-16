@@ -53,6 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         seat_cpu_iterations_per_sec: None,
+        seat_monthly_data_gb: None,
         max_seats_per_mg: None,
         seat_memory_budget_mib_v2: None,
         max_seats_per_mg_v2: None,
@@ -243,6 +244,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             seat_cpu_iterations_per_sec: None,
+            seat_monthly_data_gb: None,
             max_seats_per_mg: None,
             seat_memory_budget_mib_v2: None,
             max_seats_per_mg_v2: None,
@@ -464,6 +466,34 @@ fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
     }
 }
 
+/// Like the memory budget, an absent data figure takes the built-in default.
+#[test]
+fn seat_monthly_data_defaults_to_65_and_is_bounded() {
+    let raw = |gb: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","seat_monthly_data_gb":{gb}}}"#
+        )
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.seat_monthly_data_gb().get(), 65);
+    assert_eq!(DEFAULT_SEAT_MONTHLY_DATA_GB, 65);
+    assert!(SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE.contains(&DEFAULT_SEAT_MONTHLY_DATA_GB));
+    let published = AdmittedSetupPaymentFederations::parse(raw("60").as_bytes()).unwrap();
+    assert_eq!(published.seat_monthly_data_gb().get(), 60);
+    for gb in [1, 60, 10_000] {
+        let admitted = AdmittedSetupPaymentFederations::parse(raw(&gb.to_string()).as_bytes())
+            .expect("an in-range figure is admitted");
+        assert_eq!(admitted.seat_monthly_data_gb().get(), gb);
+    }
+    for gb in ["0", "10001"] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(raw(gb).as_bytes()),
+            Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
+            "{gb}"
+        );
+    }
+}
+
 #[test]
 fn seat_cpu_budget_is_optional_with_no_default_and_bounded() {
     let raw = |budget: &str| {
@@ -619,6 +649,7 @@ fn unset_seat_limits_stay_off_the_wire() {
     let encoded = String::from_utf8(content(vec![])).unwrap();
     assert!(!encoded.contains("seat_memory_budget_mib"));
     assert!(!encoded.contains("seat_cpu_iterations_per_sec"));
+    assert!(!encoded.contains("seat_monthly_data_gb"));
     assert!(!encoded.contains("max_seats_per_mg"));
     assert!(!encoded.contains("guardian_transfer_v2"));
     assert!(!encoded.contains("min_mg_version"));

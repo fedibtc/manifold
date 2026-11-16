@@ -54,7 +54,7 @@ fleet-manager serve \
    --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE]
 ```
 
-Seat capacity and price are configured durably during browser or admin-socket onboarding. The daemon presents the available-RAM recommendation from [REQ-seat-capacity-default](../../crates/mg/specs/REQ-seat-capacity-default.md); it is not a process-start argument.
+Seat capacity, price and the answer about a monthly data cap are configured durably during browser or admin-socket onboarding. The daemon presents the available-RAM recommendation from [REQ-seat-capacity-default](../../crates/mg/specs/REQ-seat-capacity-default.md); it is not a process-start argument.
 
 `FLEET_MANAGER_MANIFOLD_ENVIRONMENT` is required and must match the FA and
 FLIP deployment (`development`, `staging`, or `production`).

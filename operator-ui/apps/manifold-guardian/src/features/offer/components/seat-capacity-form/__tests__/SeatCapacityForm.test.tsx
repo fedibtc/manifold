@@ -4,9 +4,15 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { CAPACITY_KEY } from '@/shared/api/hooks/use-capacity/useCapacity';
-import { describeAutomaticLimit, parseSeatCapacity, SeatCapacityForm } from '../SeatCapacityForm';
+import {
+  describeAutomaticLimit,
+  describeDataLimit,
+  parseSeatCapacity,
+  SeatCapacityForm
+} from '../SeatCapacityForm';
 
 let storedMaxSeats: number | null = 4;
+let dataMaxSeats: number | null = null;
 let writeError: Error | null = null;
 /** Seats the daemon reports. The floor counts the ones not decommissioned, the
  *  same way `Db::set_max_seats` does. Empty by default so a test opts in to the
@@ -28,6 +34,9 @@ const mockDaemon = () =>
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        monthly_data_budget: dataMaxSeats === null ? 'unlimited' : String(dataMaxSeats * 65),
+        seat_monthly_data_gb: 65,
+        data_max_seats: dataMaxSeats,
         available_slots: storedMaxSeats ?? 9
       } as never;
     }
@@ -59,6 +68,7 @@ const renderForm = () => {
 afterEach(() => {
   vi.restoreAllMocks();
   storedMaxSeats = 4;
+  dataMaxSeats = null;
   writeError = null;
   storedSeats = [];
   seatsUnavailable = false;
@@ -67,7 +77,10 @@ afterEach(() => {
 const limits = {
   max_seats: null,
   available_slots: 0,
-  cpu_benchmark: { cpu_count: 16, iterations_per_sec: 12_600, single_core_iterations_per_sec: 810 }
+  cpu_benchmark: { cpu_count: 16, iterations_per_sec: 12_600, single_core_iterations_per_sec: 810 },
+  monthly_data_budget: 'unlimited' as const,
+  seat_monthly_data_gb: 65,
+  data_max_seats: null
 };
 
 it('should name the CPU limit beside memory only while a CPU limit applies', () => {
@@ -123,6 +136,40 @@ it('should name the CPU limit beside memory only while a CPU limit applies', () 
       cpu_max_seats: null
     })
   ).toBe('Up to 1 seat for this host now.');
+});
+
+it('should name monthly data beside memory and CPU while a data limit applies', () => {
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: 4,
+      data_max_seats: 2
+    })
+  ).toBe(
+    'Up to 2 seats for this host now. Memory allows 9 seats, CPU 4 seats, monthly data 2 seats.'
+  );
+  // Without a CPU limit only the data limit joins memory.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: null,
+      data_max_seats: 2
+    })
+  ).toBe('Up to 2 seats for this host now. Memory allows 9 seats, monthly data 2 seats.');
+  // A data limit above memory still applies, so it is named; memory binds.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 3,
+      policy_max_seats: 12,
+      cpu_max_seats: null,
+      data_max_seats: 7
+    })
+  ).toBe('Up to 3 seats for this host now. Memory allows 3 seats, monthly data 7 seats.');
 });
 
 // `1e3` is a valid float, which `Number()` would read as 1000.
@@ -269,6 +316,71 @@ it('should show an automatic limit without a number and keep it on save', async 
   fireEvent.change(screen.getByLabelText('Maximum active seats'), { target: { value: '5' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: 5 } }));
+});
+
+it('should count the monthly data limit in the automatic figure', async () => {
+  storedMaxSeats = null;
+  dataMaxSeats = 3;
+  mockDaemon();
+  renderForm();
+
+  await screen.findByText(
+    'Up to 3 seats for this host now. Memory allows 9 seats, monthly data 3 seats.'
+  );
+});
+
+it('should say why a manual limit sells only what monthly data allows', async () => {
+  storedMaxSeats = 10;
+  dataMaxSeats = 2;
+  mockDaemon();
+  renderForm();
+
+  await screen.findByText('Your limit is 10 seats. Monthly data allows 2 seats.');
+});
+
+const withData = (max: number | null, memory: number, policy: number, data: number | null) => ({
+  ...limits,
+  max_seats: max,
+  memory_max_seats: memory,
+  policy_max_seats: policy,
+  cpu_max_seats: null,
+  seat_monthly_data_gb: 65,
+  data_max_seats: data,
+  available_slots: 0
+});
+
+// Only while data is the smallest limit: memory or the policy below it, or
+// data at or above the operator's own number, is not data's doing.
+it.each([
+  [withData(10, 9, 12, 2), 'Your limit is 10 seats. Monthly data allows 2 seats.'],
+  [withData(10, 2, 12, 2), 'Your limit is 10 seats. Monthly data allows 2 seats.'],
+  [withData(3, 9, 12, 0), 'Your limit is 3 seats. Monthly data allows 0 seats.'],
+  [withData(10, 1, 12, 2), null],
+  [withData(10, 9, 1, 2), null],
+  [withData(2, 9, 12, 2), null],
+  [withData(2, 9, 12, 5), null],
+  [withData(null, 9, 12, 2), null],
+  [withData(10, 9, 12, null), null],
+  // CPU below the data limit is not data's doing.
+  [{ ...withData(10, 9, 12, 2), cpu_max_seats: 1 }, null],
+  [
+    { ...withData(10, 9, 12, 2), cpu_max_seats: 2 },
+    'Your limit is 10 seats. Monthly data allows 2 seats.'
+  ]
+])('should describe the data limit of %o as %j', (capacity, expected) => {
+  expect(describeDataLimit(capacity)).toBe(expected);
+});
+
+it('should not explain the data limit for an automatic limit', async () => {
+  storedMaxSeats = null;
+  dataMaxSeats = 2;
+  mockDaemon();
+  renderForm();
+
+  await screen.findByText(
+    'Up to 2 seats for this host now. Memory allows 9 seats, monthly data 2 seats.'
+  );
+  expect(screen.queryByText(/Monthly data allows/)).toBeNull();
 });
 
 it('should switch an operator limit to automatic', async () => {

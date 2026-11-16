@@ -5242,19 +5242,20 @@ async fn complete_onboarding_stages(
     // Offer free seats right at onboarding so the daemon is accepting seats
     // — and therefore advertising — from its first Nostr cycle. Every test
     // either wants free seats or re-prices immediately after startup.
-    manifold_guardian_admin(
-        manifold_guardian_bin,
-        data_dir,
-        &[
-            "onboard",
-            "offer",
-            "--max-seats",
-            &max_seats,
-            "--price-msats",
-            "0",
-        ],
-    )
-    .await?;
+    let mut offer = vec![
+        "onboard",
+        "offer",
+        "--max-seats",
+        &max_seats,
+        "--price-msats",
+        "0",
+    ];
+    // The candidate requires the monthly data answer. The upgrade test
+    // onboards with the previous release, which has no such flag.
+    if manifold_guardian_bin == locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")? {
+        offer.extend(["--monthly-data", "unlimited"]);
+    }
+    manifold_guardian_admin(manifold_guardian_bin, data_dir, &offer).await?;
     Ok(())
 }
 

@@ -148,3 +148,29 @@ fn guardian_fee_help_presents_one_seat_id_choice() {
     assert!(help.contains("Usage: show [OPTIONS] <SEAT_ID|--seat-id <SEAT_ID>>"));
     assert!(help.contains("--seat-id <SEAT_ID>"));
 }
+
+#[test]
+fn a_data_budget_below_one_seat_warns_without_refusing() {
+    let capacity = |budget: &str, seats: Option<u32>| {
+        serde_json::json!({
+            "max_seats": null,
+            "monthly_data_budget": budget,
+            "seat_monthly_data_gb": 65,
+            "data_max_seats": seats,
+            "available_slots": 0,
+        })
+    };
+
+    assert_eq!(
+        data_budget_warning(&capacity("50", Some(0))).as_deref(),
+        Some(
+            "50 GB is less than one seat (about 65 GB a month). \
+             This guardian will not sell new seats."
+        )
+    );
+    // 65 GB covers exactly one seat, and a plan without a cap covers all.
+    assert_eq!(data_budget_warning(&capacity("65", Some(1))), None);
+    assert_eq!(data_budget_warning(&capacity("unlimited", None)), None);
+    // Responses without capacity, such as a price change, say nothing.
+    assert_eq!(data_budget_warning(&serde_json::json!({"plans": []})), None);
+}

@@ -104,6 +104,12 @@ To ask operators below a release to update without stopping their sales, set
 An MG below it sends its linked phone one notification. Omitted, nothing is
 recommended.
 
+MGs whose operators set a monthly data budget sell only the seats that
+budget covers, at the network data one seat uses. To change that figure from
+its default of 65, set for example `"seat_monthly_data_gb": 60`, in GB (10^9
+bytes) per 30 days, from 1 to 10,000. Derive it from the fleet's
+`fm_peer_transport_bytes_total`, transmitted plus received.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files. Older consumers
