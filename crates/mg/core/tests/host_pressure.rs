@@ -75,6 +75,11 @@ fn averages(cpu: (f64, f64), io: (f64, f64)) -> PressureAverages {
             six_hours: io.0,
             three_and_a_half_days: io.1,
         },
+        // Fully weighted: a long history, where the correction is a no-op.
+        weights: AverageWeights {
+            six_hours: 1.0,
+            three_and_a_half_days: 1.0,
+        },
     }
 }
 
@@ -134,8 +139,8 @@ impl Host {
 }
 
 /// The first reading only starts the history; the first measured interval
-/// seeds both averages with its own shares rather than with 0, so a fresh
-/// install has measured pressure before anything can pass it.
+/// sets both averages to its own shares rather than moving them from 0, so a
+/// fresh install has measured pressure before anything can pass it.
 #[test]
 fn the_first_interval_seeds_both_averages() {
     let first = PressureState::record(None, reading(0, 7_000, 9_000));
@@ -335,4 +340,62 @@ fn a_spike_fails_only_while_the_six_hour_average_is_over() {
         "{after} vs {expected}"
     );
     assert!(after > 3 * HOUR && after < 4 * HOUR);
+}
+
+/// Bias correction: right after an upgrade the first interval is the busy
+/// minute while the seats start. Without correction it would seed the
+/// 3.5-day average at 40%, which takes days to decay under 10%; corrected,
+/// an hour at 2% brings both averages to about the time-weighted mean,
+/// (1 min * 40% + 60 min * 2%) / 61 min = 2.6%.
+#[test]
+fn a_busy_first_minute_does_not_close_the_host_for_days() {
+    let mut state = PressureState::record(None, reading(0, 0, 0));
+    let (mut secs, mut cpu_us) = (MINUTE, stalled_us(MINUTE, 0.40));
+    state = PressureState::record(Some(state), reading(secs, cpu_us, 0));
+    let first = state.averages.unwrap();
+    assert!(close(first.cpu.three_and_a_half_days, 0.40));
+    assert_eq!(
+        HostPressure::from(first).outcome(max()),
+        ReadinessOutcome::SixHourPressureHigh
+    );
+    for _ in 0..6 {
+        secs += STEP;
+        cpu_us += stalled_us(STEP, 0.02);
+        state = PressureState::record(Some(state), reading(secs, cpu_us, 0));
+    }
+    let after = state.averages.unwrap().cpu;
+    let mean = (40.0 + 60.0 * 2.0) / 61.0 / 100.0;
+    // The weights favour recent minutes slightly, so a little under the mean.
+    assert!(
+        after.six_hours < mean && after.six_hours > 0.025,
+        "{after:?}"
+    );
+    assert!(
+        after.three_and_a_half_days < mean && after.three_and_a_half_days > 0.025,
+        "{after:?}"
+    );
+    assert_eq!(
+        HostPressure::from(state.averages.unwrap()).outcome(max()),
+        ReadinessOutcome::Pass
+    );
+}
+
+/// The correction does not excuse a host that is busy from the start: at 20%
+/// CPU stall for its first hour, every run fails the 15% 6-hour maximum.
+#[test]
+fn a_host_busy_from_the_start_fails_the_six_hour_window() {
+    let mut state = PressureState::record(None, reading(0, 0, 0));
+    let (mut secs, mut cpu_us) = (0, 0);
+    for interval in [MINUTE].into_iter().chain([STEP; 6]) {
+        secs += interval;
+        cpu_us += stalled_us(interval, 0.20);
+        state = PressureState::record(Some(state), reading(secs, cpu_us, 0));
+        let averages = state.averages.unwrap();
+        assert!(close(averages.cpu.six_hours, 0.20), "{averages:?}");
+        assert_eq!(
+            HostPressure::from(averages).outcome(max()),
+            ReadinessOutcome::SixHourPressureHigh,
+            "after {secs} s"
+        );
+    }
 }

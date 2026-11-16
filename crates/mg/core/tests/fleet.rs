@@ -1865,13 +1865,16 @@ async fn the_pressure_history_survives_restart() {
     fleet.shutdown().await;
     drop(fleet);
 
-    // 20 idle minutes after the reset reading: the 6-hour average falls to
-    // 12% * e^(-20/360) = 11.4% and the 3.5-day one to 12% * e^(-20/5040) =
-    // 12.0%, within a 12% maximum.
+    // 20 idle minutes after the reset reading. The averages carry only the
+    // one 10-minute interval at 12% so far, so the idle interval, twice as
+    // long, brings each to about a third of 12%: with gains g = 1 - e^(-t/tau)
+    // and weight w = 1 - e^(-10/tau), 12% * (1 - g20 / (w * (1 - g20) + g20)),
+    // 3.9% for 6 hours and 4.0% for 3.5 days. This needs the stored weight:
+    // an uncorrected average would still be near 12%.
     let fleet = open().await;
     let reopened = one_run(
         &fleet,
-        policy(((15, 12), calm)),
+        policy(defaults),
         start + minutes(30),
         Ok(PressureTotals {
             cpu_us: 2,
@@ -1883,7 +1886,7 @@ async fn the_pressure_history_survives_restart() {
     let averages = reopened.host_pressure.unwrap();
     assert_eq!(
         (averages.cpu.six_hours, averages.cpu.three_and_a_half_days),
-        (114, 120)
+        (39, 40)
     );
     assert!(fleet.ready_for_new_seats().await);
     fleet.shutdown().await;

@@ -23,7 +23,8 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
 use crate::host_pressure::{
-    PressureAverages, PressureSample, PressureState, PressureTotals, ResourceAverages,
+    AverageWeights, PressureAverages, PressureSample, PressureState, PressureTotals,
+    ResourceAverages,
 };
 use crate::identity::RootMnemonic;
 use crate::seat_readiness::{Uptime, UptimeScores};
@@ -835,12 +836,14 @@ impl Db {
         let averages = next.averages;
         sqlx::query(
             "INSERT INTO host_pressure \
-             (id, sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d) \
-             VALUES (1, ?, ?, ?, ?, ?, ?, ?) \
+             (id, sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, \
+             weight_6h, weight_3_5d) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
              cpu_some_us = excluded.cpu_some_us, io_some_us = excluded.io_some_us, \
              cpu_6h = excluded.cpu_6h, cpu_3_5d = excluded.cpu_3_5d, \
-             io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d",
+             io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d, \
+             weight_6h = excluded.weight_6h, weight_3_5d = excluded.weight_3_5d",
         )
         .bind(millis)
         .bind(i64::try_from(next.last.totals.cpu_us).unwrap_or(i64::MAX))
@@ -849,6 +852,8 @@ impl Db {
         .bind(averages.map(|averages| averages.cpu.three_and_a_half_days))
         .bind(averages.map(|averages| averages.io.six_hours))
         .bind(averages.map(|averages| averages.io.three_and_a_half_days))
+        .bind(averages.map(|averages| averages.weights.six_hours))
+        .bind(averages.map(|averages| averages.weights.three_and_a_half_days))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -887,34 +892,45 @@ type HostPressureRow = (
     Option<f64>,
     Option<f64>,
     Option<f64>,
+    Option<f64>,
+    Option<f64>,
 );
 
 async fn host_pressure_row(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<Option<PressureState>, DbError> {
     let row: Option<HostPressureRow> = sqlx::query_as(
-        "SELECT sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d \
-         FROM host_pressure WHERE id = 1",
+        "SELECT sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, \
+         weight_6h, weight_3_5d FROM host_pressure WHERE id = 1",
     )
     .fetch_optional(conn)
     .await?;
-    Ok(
-        row.map(|(at, cpu_us, io_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d)| {
-            let averages = match (cpu_6h, cpu_3_5d, io_6h, io_3_5d) {
-                (Some(cpu_6h), Some(cpu_3_5d), Some(io_6h), Some(io_3_5d)) => {
-                    Some(PressureAverages {
-                        cpu: ResourceAverages {
-                            six_hours: cpu_6h,
-                            three_and_a_half_days: cpu_3_5d,
-                        },
-                        io: ResourceAverages {
-                            six_hours: io_6h,
-                            three_and_a_half_days: io_3_5d,
-                        },
-                    })
-                }
-                (None, None, None, None) => None,
-                _ => unreachable!("all averages or none by schema CHECK"),
+    Ok(row.map(
+        |(at, cpu_us, io_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d, weight_6h, weight_3_5d)| {
+            let averages = match (cpu_6h, cpu_3_5d, io_6h, io_3_5d, weight_6h, weight_3_5d) {
+                (
+                    Some(cpu_6h),
+                    Some(cpu_3_5d),
+                    Some(io_6h),
+                    Some(io_3_5d),
+                    Some(weight_6h),
+                    Some(weight_3_5d),
+                ) => Some(PressureAverages {
+                    cpu: ResourceAverages {
+                        six_hours: cpu_6h,
+                        three_and_a_half_days: cpu_3_5d,
+                    },
+                    io: ResourceAverages {
+                        six_hours: io_6h,
+                        three_and_a_half_days: io_3_5d,
+                    },
+                    weights: AverageWeights {
+                        six_hours: weight_6h,
+                        three_and_a_half_days: weight_3_5d,
+                    },
+                }),
+                (None, None, None, None, None, None) => None,
+                _ => unreachable!("all averages and weights or none by schema CHECK"),
             };
             PressureState {
                 last: PressureSample {
@@ -926,8 +942,8 @@ async fn host_pressure_row(
                 },
                 averages,
             }
-        }),
-    )
+        },
+    ))
 }
 
 pub(super) fn fresh_offer_epoch() -> OfferEpoch {

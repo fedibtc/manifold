@@ -964,6 +964,10 @@ mod tests {
                 six_hours: 0.01,
                 three_and_a_half_days: 0.01,
             },
+            weights: host_pressure::AverageWeights {
+                six_hours: 1.0,
+                three_and_a_half_days: 1.0,
+            },
         };
         let state = |averages| Some(PressureState { last, averages });
         let (low, high) = (averages(0.01), averages(0.2));

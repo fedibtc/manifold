@@ -6,8 +6,10 @@
 //! microseconds in which at least one task stalled waiting for a CPU or for
 //! storage IO. The counters are cumulative, so the share of an interval spent
 //! stalled is the stall time added over the wall time elapsed. Each run folds
-//! that share into exponential moving averages, like the uptime scores
-//! ([`crate::seat_readiness::UptimeScores`]). Unlike the system load average,
+//! that share into bias-corrected exponential moving averages, like the
+//! uptime scores ([`crate::seat_readiness::UptimeScores`]) but divided by the
+//! weight measured so far, so a fresh history is the mean of what it measured
+//! rather than its first interval. Unlike the system load average,
 //! the share of time stalled does not depend on how fast or how many the CPUs
 //! are.
 
@@ -111,35 +113,24 @@ pub struct ResourceAverages {
     pub three_and_a_half_days: f64,
 }
 
-impl ResourceAverages {
-    /// The averages of a first measured interval: its share, so nothing is
-    /// assumed about a host before it was measured.
-    fn seed(share: f64) -> Self {
-        Self {
-            six_hours: share,
-            three_and_a_half_days: share,
-        }
-    }
-
-    /// Fold one interval of `elapsed` in: an average moves
-    /// `1 - exp(-elapsed / tau)` of the way to the interval's share.
-    fn fold(self, share: f64, elapsed: Duration) -> Self {
-        let toward = |average: f64, tau: Duration| {
-            let weight = 1.0 - (-elapsed.as_secs_f64() / tau.as_secs_f64()).exp();
-            average + weight * (share - average)
-        };
-        Self {
-            six_hours: toward(self.six_hours, SIX_HOURS_TAU),
-            three_and_a_half_days: toward(self.three_and_a_half_days, HALF_WEEK_TAU),
-        }
-    }
+/// How much of each average's full weight the measured intervals carry so
+/// far, `1 - exp(-measured / tau)`, between 0 and 1. The averages are
+/// divided by it (bias-corrected), so before an average has seen time
+/// comparable to its time constant it is the time-weighted mean of the
+/// intervals measured, not dominated by the first one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AverageWeights {
+    pub six_hours: f64,
+    pub three_and_a_half_days: f64,
 }
 
-/// The stall share averages of each resource.
+/// The bias-corrected stall share averages of both resources and the weight
+/// they carry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PressureAverages {
     pub cpu: ResourceAverages,
     pub io: ResourceAverages,
+    pub weights: AverageWeights,
 }
 
 /// The share of one interval each resource spent stalled, between 0 and 1.
@@ -152,9 +143,9 @@ struct IntervalShares {
 
 impl IntervalShares {
     /// The interval from `earlier` to `later`, or `None` when it says nothing
-    /// about pressure: a counter went backwards, as it does when a
-    /// restart recreates the cgroup; the clock did not advance; or the
-    /// interval is longer than [`MAX_INTERVAL`] and so spans downtime.
+    /// about pressure: a counter went backwards, as it does when a restart
+    /// recreates the cgroup; the clock did not advance; or the interval is
+    /// longer than [`MAX_INTERVAL`] and so spans downtime.
     fn between(earlier: PressureSample, later: PressureSample) -> Option<Self> {
         let elapsed = later.at.duration_since(earlier.at).ok()?;
         if elapsed.is_zero() || elapsed > MAX_INTERVAL {
@@ -175,19 +166,48 @@ impl IntervalShares {
 }
 
 impl PressureAverages {
-    fn seed(shares: IntervalShares) -> Self {
-        Self {
-            cpu: ResourceAverages::seed(shares.cpu),
-            io: ResourceAverages::seed(shares.io),
-        }
-    }
+    /// Before any interval: no weight, so the first interval's shares become
+    /// the averages exactly.
+    const UNMEASURED: Self = Self {
+        cpu: ResourceAverages {
+            six_hours: 0.0,
+            three_and_a_half_days: 0.0,
+        },
+        io: ResourceAverages {
+            six_hours: 0.0,
+            three_and_a_half_days: 0.0,
+        },
+        weights: AverageWeights {
+            six_hours: 0.0,
+            three_and_a_half_days: 0.0,
+        },
+    };
 
-    /// Fold one interval in, weighted by its length, so one interval counts
-    /// as much as the shorter ones it could have been.
+    /// Fold one interval in. The uncorrected average `m` moves
+    /// `1 - k = 1 - exp(-elapsed / tau)` of the way to the share, and the
+    /// weight `w` the same way toward 1; the corrected average `m / w` then
+    /// moves `(1 - k) / w'` of the way, so one interval counts as much as the
+    /// shorter ones it could have been.
     fn fold(self, shares: IntervalShares) -> Self {
+        let elapsed = shares.elapsed.as_secs_f64();
+        let gain = |tau: Duration| 1.0 - (-elapsed / tau.as_secs_f64()).exp();
+        let (gain_6h, gain_3_5d) = (gain(SIX_HOURS_TAU), gain(HALF_WEEK_TAU));
+        let weights = AverageWeights {
+            six_hours: self.weights.six_hours * (1.0 - gain_6h) + gain_6h,
+            three_and_a_half_days: self.weights.three_and_a_half_days * (1.0 - gain_3_5d)
+                + gain_3_5d,
+        };
+        let resource = |averages: ResourceAverages, share: f64| ResourceAverages {
+            six_hours: averages.six_hours
+                + gain_6h / weights.six_hours * (share - averages.six_hours),
+            three_and_a_half_days: averages.three_and_a_half_days
+                + gain_3_5d / weights.three_and_a_half_days
+                    * (share - averages.three_and_a_half_days),
+        };
         Self {
-            cpu: self.cpu.fold(shares.cpu, shares.elapsed),
-            io: self.io.fold(shares.io, shares.elapsed),
+            cpu: resource(self.cpu, shares.cpu),
+            io: resource(self.io, shares.io),
+            weights,
         }
     }
 }
@@ -212,13 +232,14 @@ impl PressureState {
                 averages: None,
             };
         };
-        let averages = match (
-            previous.averages,
-            IntervalShares::between(previous.last, reading),
-        ) {
-            (averages, None) => averages,
-            (None, Some(shares)) => Some(PressureAverages::seed(shares)),
-            (Some(averages), Some(shares)) => Some(averages.fold(shares)),
+        let averages = match IntervalShares::between(previous.last, reading) {
+            None => previous.averages,
+            Some(shares) => Some(
+                previous
+                    .averages
+                    .unwrap_or(PressureAverages::UNMEASURED)
+                    .fold(shares),
+            ),
         };
         Self {
             last: reading,

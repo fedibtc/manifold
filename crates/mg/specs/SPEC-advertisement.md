@@ -170,16 +170,21 @@ over 3.5 days, IO 10% and 5%, when absent or before a policy is admitted;
 Each run reads the cumulative pressure stall (PSI `some`) counters of the
 cgroup the daemon shares with its seats, for CPU and for IO, and divides the
 stall time added since the previous reading by the wall time elapsed. It
-folds that share into exponential moving averages with 6-hour and 3.5-day
-(84-hour) time constants, moving each `1 - exp(-elapsed / tau)` of the way
-to the share. The first measured interval seeds every average with its own
-share, so a fresh install measures before it sells. An interval says
+folds that share into bias-corrected exponential moving averages with 6-hour
+and 3.5-day (84-hour) time constants: the uncorrected average and its weight
+each move `1 - exp(-elapsed / tau)` of the way to the share and to 1, and the
+average compared is their quotient. A young history is therefore the
+time-weighted mean of the intervals measured so far, so the busy minute
+while seats start after an upgrade does not close the host for days, and a
+long history is the plain moving average. The first measured interval sets
+every average to its own share, so a fresh install measures before it
+sells. An interval says
 nothing about pressure, and leaves the averages unchanged, when a counter
 went backwards, as it does when a restart recreates the cgroup; when the
 clock did not advance; or when it is longer than 30 minutes, since runs come
 every 10 minutes and a longer interval spans downtime that would otherwise
-count as time without pressure. The last reading and the averages are
-durable. The averages compare at the 0.1% telemetry reports, and a failure
+count as time without pressure. The last reading, the averages and their weights
+are durable. The averages compare at the 0.1% telemetry reports, and a failure
 names the shorter failing window, `host_pressure_6h_high` before
 `host_pressure_3_5d_high`; a host steady just over a 3.5-day maximum stays
 closed, while a spike of a few hours closes it only while its 6-hour average
