@@ -53,6 +53,8 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
+        seat_memory_budget_mib_v2: None,
+        max_seats_per_mg_v2: None,
         max_pressure_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
@@ -240,6 +242,8 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
+            seat_memory_budget_mib_v2: None,
+            max_seats_per_mg_v2: None,
             max_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
@@ -415,58 +419,70 @@ fn rejects_oversized_malformed_versions_and_duplicate_fields() {
     }
 }
 
-fn content_with_seat_memory_budget(budget: &str) -> String {
-    format!(
-        r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","seat_memory_budget_mib":{budget}}}"#
+fn parse_with_fields(
+    fields: &str,
+) -> Result<AdmittedSetupPaymentFederations, SetupPaymentFederationsContentError> {
+    AdmittedSetupPaymentFederations::parse(
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{fields}}}"#
+        )
+        .as_bytes(),
     )
 }
 
 #[test]
-fn seat_memory_budget_is_optional_and_bounded() {
-    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![]))
-        .expect("content without a budget is admitted");
+fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
+    let budget = |fields: &str| parse_with_fields(fields).unwrap().seat_memory_budget_mib();
+    assert_eq!(budget(""), DEFAULT_SEAT_MEMORY_BUDGET_MIB);
+    // The field for older MGs does not reach this release, not even as a
+    // fallback when v2 is absent.
     assert_eq!(
-        absent.seat_memory_budget_mib(),
+        budget(r#","seat_memory_budget_mib":2048"#),
         DEFAULT_SEAT_MEMORY_BUDGET_MIB
     );
-
-    for budget in [256, 1_229, 16_384] {
-        let admitted = AdmittedSetupPaymentFederations::parse(
-            content_with_seat_memory_budget(&budget.to_string()).as_bytes(),
-        )
-        .expect("an in-range budget is admitted");
-        assert_eq!(admitted.seat_memory_budget_mib(), budget);
-    }
-    for budget in ["0", "255", "16385"] {
+    assert_eq!(
+        budget(r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":512"#),
+        512
+    );
+    for mib in [256, 16_384] {
         assert_eq!(
-            AdmittedSetupPaymentFederations::parse(
-                content_with_seat_memory_budget(budget).as_bytes()
-            ),
-            Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange)
+            budget(&format!(r#","seat_memory_budget_mib_v2":{mib}"#)),
+            mib
         );
+    }
+
+    for field in ["seat_memory_budget_mib", "seat_memory_budget_mib_v2"] {
+        for mib in ["0", "255", "16385"] {
+            assert_eq!(
+                parse_with_fields(&format!(r#","{field}":{mib}"#)),
+                Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange),
+                "{field}={mib}"
+            );
+        }
     }
 }
 
 #[test]
-fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
-    let raw = |seats: &str| {
-        format!(
-            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","max_seats_per_mg":{seats}}}"#
-        )
-    };
-    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
-    assert_eq!(absent.max_seats_per_mg(), 12);
-    for seats in [0, 5, SETUP_PAYMENT_MAX_SEATS_PER_MG] {
-        let admitted = AdmittedSetupPaymentFederations::parse(raw(&seats.to_string()).as_bytes())
-            .expect("an in-range limit is admitted");
-        assert_eq!(admitted.max_seats_per_mg(), seats);
-    }
+fn max_seats_per_mg_comes_from_v2_only_and_both_fields_are_bounded() {
+    let seats = |fields: &str| parse_with_fields(fields).unwrap().max_seats_per_mg();
+    assert_eq!(seats(""), 12);
+    assert_eq!(seats(r#","max_seats_per_mg":4"#), 12);
     assert_eq!(
-        AdmittedSetupPaymentFederations::parse(
-            raw(&(SETUP_PAYMENT_MAX_SEATS_PER_MG + 1).to_string()).as_bytes()
-        ),
-        Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
+        seats(r#","max_seats_per_mg":4,"max_seats_per_mg_v2":20"#),
+        20
     );
+    for limit in [0, SETUP_PAYMENT_MAX_SEATS_PER_MG] {
+        assert_eq!(seats(&format!(r#","max_seats_per_mg_v2":{limit}"#)), limit);
+    }
+
+    let too_high = SETUP_PAYMENT_MAX_SEATS_PER_MG + 1;
+    for field in ["max_seats_per_mg", "max_seats_per_mg_v2"] {
+        assert_eq!(
+            parse_with_fields(&format!(r#","{field}":{too_high}"#)),
+            Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh),
+            "{field}"
+        );
+    }
 }
 
 #[test]

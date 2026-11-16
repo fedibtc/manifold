@@ -138,11 +138,16 @@ replacement ordering as the new shared high-water mark.
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
   enough consumers have upgraded;
-- `seat_memory_budget_mib`, the RAM in MiB that each MG reserves per seat when
-  it computes its memory seat limit, from 256 to 16,384. Optional: absent
-  means 1,229 (about 1.2 GiB);
-- `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
+- `seat_memory_budget_mib_v2`, the RAM in MiB that each MG reserves per seat
+  when it computes its memory seat limit, from 256 to 16,384. Optional:
+  absent means 1,229 (about 1.2 GiB);
+- `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
+- `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
+  MGs before 0.1.16, with the same ranges and defaults. MGs from 0.1.16 on
+  ignore them and read only the `_v2` fields, with no fallback, so Fedi can
+  publish separate limits for releases that run the newer readiness checks.
+  A publication that wants the same limit for every release sets both;
 - `max_pressure_percent`, an object of CPU and IO pressure averages, each in
   percent of wall time from 1 to 100, above which an MG stops accepting new
   seats: `{"cpu": {"6h": ..., "3.5d": ...}, "io": {"6h": ..., "3.5d": ...}}`
@@ -241,8 +246,9 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
-12. reject a `seat_memory_budget_mib` outside 256 to 16,384, a
-    `max_seats_per_mg` above 256, or a `max_pressure_percent` window outside
+12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
+    256 to 16,384, a `max_seats_per_mg` or `max_seats_per_mg_v2` above 256, or
+    a `max_pressure_percent` window outside
     1 to 100, where 0 would close every MG and no share of time exceeds 100;
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
