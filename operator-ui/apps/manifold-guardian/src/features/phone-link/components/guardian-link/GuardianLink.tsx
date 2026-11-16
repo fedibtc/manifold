@@ -317,12 +317,9 @@ export const GuardianLink = (_props: GuardianLinkProps) => {
             <div className={styles.empty}>
               {phoneIcon}
 
-              <h2 className={styles.strongTitle}>Phone alerts are off on this host</h2>
+              <h2 className={styles.strongTitle}>Mobile notifications aren't available</h2>
 
-              <p className={styles.emptyText}>
-                Set <code className={styles.code}>FLEET_MANAGER_PUSH_GATEWAY_ORIGIN</code> and
-                restart Manifold Fedimint Guardian.
-              </p>
+              <p className={styles.emptyText}>This network has no push gateway for the Fedi app.</p>
             </div>
           </section>
         ))}

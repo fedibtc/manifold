@@ -7,7 +7,6 @@ bash -n packages/fleet-manager/entrypoint.sh
 bash -n packages/fleet-manager/validate.sh
 
 grep -q -- '--manifold-environment' packages/fleet-manager/entrypoint.sh
-grep -q -- '--push-gateway-origin' packages/fleet-manager/entrypoint.sh
 
 # `--option=value` makes a value beginning with `-` unambiguously an option
 # value to clap. The stub receives precisely what the release entrypoint execs.
@@ -22,16 +21,14 @@ capture="$tmp_dir/argv"
 PATH="$tmp_dir:$PATH" \
   FLEET_MANAGER_CAPTURED_ARGV="$capture" \
   FLEET_MANAGER_MANIFOLD_ENVIRONMENT=development \
-  FLEET_MANAGER_PUSH_GATEWAY_ORIGIN=https://gateway.example \
   FLEET_MANAGER_BITCOIND_URL=http://127.0.0.1:18443 \
   FLEET_MANAGER_BITCOIND_USERNAME=operator \
   FLEET_MANAGER_BITCOIND_PASSWORD=-leading-hyphen-password \
   packages/fleet-manager/entrypoint.sh
 grep -Fx -- '--bitcoind-password=-leading-hyphen-password' "$capture"
-grep -Fx -- '--push-gateway-origin' "$capture"
 
-# Production without notifications still starts with its local Bitcoin node.
-env -u FLEET_MANAGER_PUSH_GATEWAY_ORIGIN -u FLEET_MANAGER_ESPLORA_URL \
+# Production starts with its local Bitcoin node and no Esplora fallback.
+env -u FLEET_MANAGER_ESPLORA_URL \
   PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
   FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
   FLEET_MANAGER_BITCOIND_URL=http://bitcoin:8332 \
@@ -39,8 +36,9 @@ env -u FLEET_MANAGER_PUSH_GATEWAY_ORIGIN -u FLEET_MANAGER_ESPLORA_URL \
   FLEET_MANAGER_BITCOIND_PASSWORD=test-password \
   packages/fleet-manager/entrypoint.sh
 grep -Fx -- 'production' "$capture"
-if grep -q -- '--push-gateway-origin' "$capture"; then
-  echo 'Absent push gateway must not be passed to the daemon' >&2
+# The push gateway comes from the Manifold environment, never the package.
+if grep -q -- 'push-gateway' "$capture"; then
+  echo 'The entrypoint must not pass a push gateway to the daemon' >&2
   exit 1
 fi
 if grep -q -- '--esplora-url' "$capture"; then

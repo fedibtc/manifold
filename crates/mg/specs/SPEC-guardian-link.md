@@ -33,8 +33,8 @@ app created, exactly as it invokes an FI's DKG completion hook.
   carries only the fixed alert. `link_device` is the app's only
   call; it carries no device key, since nothing after it needs one. One
   device is linked at a time: `link_device` replaces the previous device.
-- **Hook.** `link_device` carries a hook URL under the deployment's
-  configured push-gateway origin, else `PushGatewayUnusable`. The app creates
+- **Hook.** `link_device` carries a hook URL under the Manifold
+  environment's push-gateway origin, else `PushGatewayUnusable`. The app creates
   the hook with its own fixed title and body, workflow `guardian_link`, and
   no TTL, so it never expires. The daemon's invocation carries no
   `data`: nothing about the host's seats, federations, amounts, messages, or
@@ -123,7 +123,8 @@ even for an offer made while it was on, and the notifier sends nothing and
 records nothing as told. A link stored while it was on is kept; when the flag
 turns it on again, the next notifier pass tells the reasons current then.
 `RevokeGuardianLink` works either way. When on, `availability` is
-`no_push_gateway` for a deployment without a push-gateway origin, else
+`no_push_gateway` in an environment without a push-gateway origin
+(development, unless a local gateway is named), else
 `ready`.
 
 The link is one row (`guardian_link`) in the daemon's database; the open offer

@@ -4746,10 +4746,10 @@ fn spawn_routed_manifold_guardian(
             );
     }
     if let Some(origin) = push_gateway_origin {
-        command
-            .arg("--push-gateway-origin")
-            .arg(origin)
-            .arg("--allow-insecure-push-gateway-origin");
+        command.env(
+            fedi_decentralized_manifold_environment::DEV_PUSH_GATEWAY_ORIGIN_ENV,
+            origin,
+        );
     }
     if data_dir.join(PAYOUT_CRASH_SEAM_ENABLE).is_file() {
         // The upgrade qualification runs pre-rename executables, which read

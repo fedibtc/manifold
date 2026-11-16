@@ -30,7 +30,12 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   development and staging use known-secret placeholders and production has
   none yet;
 - the Bitcoin network on which the environment forms federations;
-- an optional typed public default Esplora URL; and
+- an optional typed public default Esplora URL;
+- an optional push-gateway origin, where that environment's Fedi app creates
+  hooks and so the only origin MGs invoke callbacks under: the staging and
+  production gateways, and none in development unless
+  `MANIFOLD_DEV_PUSH_GATEWAY_ORIGIN` names a local one (loopback HTTP
+  allowed); and
 - for development and staging only, the committed complete `IssuerSecretKeys`
   JSON of the environment's placeholder issuer (`test_issuer_secret_keys()`;
   `None` for production); and
@@ -132,12 +137,13 @@ between differing signed lists.
 The profile value is the only resolution source outside development.
 `profile()` resolves development-only overrides inside this crate: in the
 Development profile, `MANIFOLD_DEV_NOSTR_RELAYS` (whitespace- or
-comma-separated relay URLs) and `MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER` (a
-Nostr public key) replace the built-in defaults, letting local harnesses point
+comma-separated relay URLs), `MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER` (a
+Nostr public key), and `MANIFOLD_DEV_PUSH_GATEWAY_ORIGIN` (a local gateway's
+origin) replace the built-in defaults, letting local harnesses point
 components at leased test relays and test publisher keys without any
 per-binary CLI surface. In Staging and Production, `profile()` fails when
-either variable is set rather than silently ignoring or honoring it — no
-deployed binary can have its relay routing or trust root redirected through
+any of them is set rather than silently ignoring or honoring it — no
+deployed binary can have its relay routing, trust root or push gateway redirected through
 the environment. The Fedi app likewise consumes the profile default only —
 end-user devices carry no trust-root override surface, the same rule that
 keeps the issuer channel shrink-only. Rotation, routine or emergency, ships a
