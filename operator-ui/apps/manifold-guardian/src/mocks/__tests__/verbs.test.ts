@@ -139,7 +139,18 @@ describe('staged onboarding dispatch', () => {
     dispatch('Onboarding');
 
     expect(dispatch('ShowCapacity')).toEqual({
-      Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 5 }
+      Ok: {
+        max_seats: 5,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
+        available_slots: 5
+      }
     });
   });
 
@@ -207,7 +218,18 @@ describe('SetCapacity', () => {
 
     expect(refused.Err.message).toBe('cannot set max seats to 2; 3 seats are active');
     expect(dispatch('ShowCapacity')).toEqual({
-      Ok: { max_seats: 3, memory_max_seats: 9, policy_max_seats: 12, available_slots: 0 }
+      Ok: {
+        max_seats: 3,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
+        available_slots: 0
+      }
     });
   });
 
@@ -215,10 +237,32 @@ describe('SetCapacity', () => {
     resetState('seats-mixed');
 
     expect(dispatch({ SetCapacity: { max_seats: 5 } })).toEqual({
-      Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 2 }
+      Ok: {
+        max_seats: 5,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
+        available_slots: 2
+      }
     });
     expect(dispatch('ShowCapacity')).toEqual({
-      Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 2 }
+      Ok: {
+        max_seats: 5,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
+        available_slots: 2
+      }
     });
   });
 });

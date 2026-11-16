@@ -79,6 +79,9 @@ export interface MockState {
    *  when automatic: written by `ConfigureInitialOffer` and `SetCapacity`,
    *  read by `ShowCapacity`. */
   maxSeats: number | null;
+  /** The CPU seat limit, null while the setup-payment policy sets no
+   *  per-seat CPU budget. Read by `ShowCapacity`. */
+  cpuMaxSeats: number | null;
   /** The durable verdict that gates new seats, read by `ShowSeatReadiness`. */
   readyForNewSeats: boolean;
   /** The latest readiness run since the daemon started; null before one

@@ -1,4 +1,5 @@
 import { Button, CheckboxField, SectionCard, TextInput } from '@operator-ui/common-ui';
+import type { CapacityResponse } from '@operator-ui/types';
 import { type FormEvent, useState } from 'react';
 import { useCapacity } from '@/shared/api/hooks/use-capacity/useCapacity';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
@@ -30,6 +31,21 @@ export const parseSeatCapacity = (value: string, activeSeats: number | null = nu
     };
   }
   return { ok: true as const, maxSeats };
+};
+
+const seats = (count: number) => `${count} ${count === 1 ? 'seat' : 'seats'}`;
+
+/** What the runtime limits allow together. Only while a CPU limit applies, it
+ *  also names memory's and CPU's share side by side, so an operator sees why
+ *  the host sells fewer seats than memory allows. */
+export const describeAutomaticLimit = (capacity: CapacityResponse) => {
+  const cpu = capacity.cpu_max_seats;
+  const memory = capacity.memory_max_seats;
+  if (cpu === null) {
+    return `Up to ${seats(Math.min(capacity.policy_max_seats, memory))} for this host now.`;
+  }
+  const limit = Math.min(capacity.policy_max_seats, memory, cpu);
+  return `Up to ${seats(limit)} for this host now. Memory allows ${seats(memory)}, CPU ${seats(cpu)}.`;
 };
 
 export const SeatCapacityForm = () => {
@@ -98,13 +114,7 @@ export const SeatCapacityForm = () => {
       ? undefined
       : `${activeSeats} ${activeSeats === 1 ? 'seat is' : 'seats are'} active. The limit cannot go below that.`;
 
-  const automaticLimit = capacity.data
-    ? Math.min(capacity.data.policy_max_seats, capacity.data.memory_max_seats)
-    : null;
-  const automaticHint =
-    automaticLimit === null
-      ? undefined
-      : `Up to ${automaticLimit} ${automaticLimit === 1 ? 'seat' : 'seats'} for this host now.`;
+  const automaticHint = capacity.data ? describeAutomaticLimit(capacity.data) : undefined;
 
   return (
     <SectionCard title="Seat capacity">

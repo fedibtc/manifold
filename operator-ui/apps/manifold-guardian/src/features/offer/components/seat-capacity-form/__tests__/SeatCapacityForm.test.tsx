@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { CAPACITY_KEY } from '@/shared/api/hooks/use-capacity/useCapacity';
-import { parseSeatCapacity, SeatCapacityForm } from '../SeatCapacityForm';
+import { describeAutomaticLimit, parseSeatCapacity, SeatCapacityForm } from '../SeatCapacityForm';
 
 let storedMaxSeats: number | null = 4;
 let writeError: Error | null = null;
@@ -22,6 +22,12 @@ const mockDaemon = () =>
         max_seats: storedMaxSeats,
         memory_max_seats: 9,
         policy_max_seats: 12,
+        cpu_max_seats: null,
+        cpu_benchmark: {
+          cpu_count: 16,
+          iterations_per_sec: 12_600,
+          single_core_iterations_per_sec: 810
+        },
         available_slots: storedMaxSeats ?? 9
       } as never;
     }
@@ -56,6 +62,67 @@ afterEach(() => {
   writeError = null;
   storedSeats = [];
   seatsUnavailable = false;
+});
+
+const limits = {
+  max_seats: null,
+  available_slots: 0,
+  cpu_benchmark: { cpu_count: 16, iterations_per_sec: 12_600, single_core_iterations_per_sec: 810 }
+};
+
+it('should name the CPU limit beside memory only while a CPU limit applies', () => {
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: 2
+    })
+  ).toBe('Up to 2 seats for this host now. Memory allows 9 seats, CPU 2 seats.');
+  // Memory binds below CPU; a CPU limit of 1 reads in the singular.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 0,
+      policy_max_seats: 12,
+      cpu_max_seats: 1
+    })
+  ).toBe('Up to 0 seats for this host now. Memory allows 0 seats, CPU 1 seat.');
+  // The policy limit binds below both.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 3,
+      cpu_max_seats: 5
+    })
+  ).toBe('Up to 3 seats for this host now. Memory allows 9 seats, CPU 5 seats.');
+  // A CPU limit of zero stops sales; it is not an absent limit.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: 0
+    })
+  ).toBe('Up to 0 seats for this host now. Memory allows 9 seats, CPU 0 seats.');
+  // Without a CPU limit the line names no limit, as before CPU limits.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: null
+    })
+  ).toBe('Up to 9 seats for this host now.');
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 1,
+      cpu_max_seats: null
+    })
+  ).toBe('Up to 1 seat for this host now.');
 });
 
 // `1e3` is a valid float, which `Number()` would read as 1000.
