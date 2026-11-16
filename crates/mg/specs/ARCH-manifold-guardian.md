@@ -359,16 +359,15 @@ futures are gone.
 The focused verification split is recorded in
 [`testing.md`](../testing.md).
 
-Operators configure the sole accepted gateway origin with
-`--push-gateway-origin` (`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN`). Omitting it keeps
-ordinary direct-daemon service available: MG discards any supplied callback
-and proceeds with `StartDkg` callback-free. Production accepts HTTPS only. Development may opt
-into a loopback HTTP origin with `--allow-insecure-push-gateway-origin`
-(`FLEET_MANAGER_ALLOW_INSECURE_PUSH_GATEWAY_ORIGIN`); that escape hatch is
-rejected for every other Manifold environment.
-The Umbrel and StartOS production packages may omit
-`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` while push notifications are deferred.
-This does not disable telemetry registration or collection.
+The sole accepted gateway origin is the Manifold environment's
+([SPEC-manifold-environment](../../manifold-environment/specs/SPEC-manifold-environment.md)),
+the gateway the Fedi app of that environment creates its hooks at; operators
+and packages do not configure it. Staging and production name an HTTPS origin.
+Development has none unless `MANIFOLD_DEV_PUSH_GATEWAY_ORIGIN` names a local
+gateway, which may be loopback HTTP. Without an origin, ordinary
+direct-daemon service stays available: MG discards any supplied callback and
+proceeds with `StartDkg` callback-free. This does not affect telemetry
+registration or collection.
 
 ## State ownership
 

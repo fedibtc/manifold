@@ -66,10 +66,12 @@ it('should send the host away and mint nothing where the policy keeps mobile not
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 
-it('should name the setting when no push gateway is configured, without minting a code', async () => {
+it('should say the network has no push gateway, without minting a code', async () => {
   const adminCall = renderPage({ ...unlinked, availability: 'no_push_gateway' });
-  expect(await screen.findByText('Phone alerts are off on this host')).toBeInTheDocument();
-  expect(screen.getByText('FLEET_MANAGER_PUSH_GATEWAY_ORIGIN')).toBeInTheDocument();
+  expect(await screen.findByText("Mobile notifications aren't available")).toBeInTheDocument();
+  expect(
+    screen.getByText('This network has no push gateway for the Fedi app.')
+  ).toBeInTheDocument();
   expect(adminCall).not.toHaveBeenCalledWith('CreateGuardianLinkOffer');
 });
 

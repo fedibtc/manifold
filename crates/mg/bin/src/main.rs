@@ -149,16 +149,6 @@ struct ServeArgs {
         default_value = N0_PKARR_RELAY
     )]
     iroh_dns: SafeUrl,
-    /// Exact public push-gateway origin accepted for callback bearer URLs.
-    #[arg(long, env = "FLEET_MANAGER_PUSH_GATEWAY_ORIGIN")]
-    push_gateway_origin: Option<String>,
-    /// Allow a loopback HTTP gateway in the development environment only.
-    #[arg(
-        long,
-        env = "FLEET_MANAGER_ALLOW_INSECURE_PUSH_GATEWAY_ORIGIN",
-        default_value_t = false
-    )]
-    allow_insecure_push_gateway_origin: bool,
     /// Bind the private operator web UI and HTTP admin API.
     #[arg(long)]
     admin_http_bind: Option<SocketAddr>,
@@ -324,25 +314,18 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .manifold_environment
         .profile()
         .map_err(|err| anyhow::anyhow!("resolve Manifold environment profile: {err}"))?;
-    anyhow::ensure!(
-        !args.allow_insecure_push_gateway_origin
-            || manifold_environment.environment() == ManifoldEnvironment::Development,
-        "--allow-insecure-push-gateway-origin is development-only"
-    );
-    anyhow::ensure!(
-        !args.allow_insecure_push_gateway_origin || args.push_gateway_origin.is_some(),
-        "--allow-insecure-push-gateway-origin requires --push-gateway-origin"
-    );
-    let push_gateway_origin = args
-        .push_gateway_origin
-        .as_deref()
+    // The environment owns its gateway. Only a development override can name a
+    // local one, so only development may use loopback HTTP.
+    let push_gateway_origin = manifold_environment
+        .push_gateway_origin()
         .map(|origin| {
-            let policy = if args.allow_insecure_push_gateway_origin {
+            let policy = if manifold_environment.environment() == ManifoldEnvironment::Development
+            {
                 PushGatewayOriginPolicy::AllowInsecureLoopback
             } else {
                 PushGatewayOriginPolicy::HttpsOnly
             };
-            PushGatewayOrigin::parse(origin, policy)
+            PushGatewayOrigin::parse(origin.as_str(), policy)
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;

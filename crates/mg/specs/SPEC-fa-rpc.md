@@ -161,14 +161,14 @@ snapshot plus an inline final-directory stat and never contacts the child.
 while the child is unavailable. A formed child's `Hello` is the sole repair
 path for a missing record; no FA read fetches or records an invite.
 
-When a push gateway origin is configured, MG accepts
+When its Manifold environment names a push gateway origin, MG accepts
 `DkgCompletionCallback` only when its bearer URL is an exact
 `/hooks/{hook_id}/{hook_secret}` path under that origin. It atomically installs
 an accepted callback in the dedicated `completion_callbacks` row only after the
 seat has proved its existing child is an idle `NeedsParams` child, and before
 the child request. The first accepted `StartDkg` callback is retained for the
 formation; `RestartDkg` carries no callback and leaves it unchanged. The
-idempotency key is stable for formation. Without a configured origin, MG
+idempotency key is stable for formation. Without an origin, MG
 discards the callback and records the formation as callback-free rather than
 refusing it. Delivery begins only after the formed record exists. Existing bounded
 retry, operator-blocked, terminalization, idempotency, and bearer-clearing

@@ -167,7 +167,7 @@ impl Fleet {
                 anyhow::bail!("mobile notifications are not enabled on this network")
             }
             GuardianLinkAvailability::NoPushGateway => anyhow::bail!(
-                "this host has no push gateway configured, so it cannot notify a phone"
+                "this network has no push gateway, so it cannot notify a phone"
             ),
             GuardianLinkAvailability::Ready => {}
         }

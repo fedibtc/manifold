@@ -19,6 +19,11 @@ use url::Url;
 
 const STAGING_NOSTR_RELAYS: &[&str] = &["wss://relay-staging.dev.fedibtc.com"];
 const STAGING_ESPLORA_URL: &str = "https://mutinynet.com/api/";
+/// The staging push gateway.
+const STAGING_PUSH_GATEWAY_ORIGIN: &str =
+    "https://manifold-push-gateway.internal.k8s.us.dev.fedibtc.com";
+/// The production push gateway.
+const PRODUCTION_PUSH_GATEWAY_ORIGIN: &str = "https://push.manifold.dev.fedibtc.com";
 const PRODUCTION_NOSTR_RELAYS: &[&str] = &[
     "wss://relay.dev.fedibtc.com",
     "wss://relay.primal.net",
@@ -156,6 +161,10 @@ pub const DEV_NOSTR_RELAYS_ENV: &str = "MANIFOLD_DEV_NOSTR_RELAYS";
 /// replacing the built-in development placeholder publisher.
 pub const DEV_SETUP_PAYMENT_PUBLISHER_ENV: &str = "MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER";
 
+/// Development-only push-gateway override: the origin of a local gateway.
+/// Development has no built-in gateway.
+pub const DEV_PUSH_GATEWAY_ORIGIN_ENV: &str = "MANIFOLD_DEV_PUSH_GATEWAY_ORIGIN";
+
 impl ManifoldEnvironment {
     /// Whether MGs in this environment start guardian transfers, given the
     /// `guardian_transfer_v2` flag of the admitted setup-payment policy, if any.
@@ -210,10 +219,12 @@ impl ManifoldEnvironment {
     ) -> Result<ManifoldEnvironmentProfile, ManifoldEnvironmentProfileError> {
         let relays_override = env(DEV_NOSTR_RELAYS_ENV);
         let publisher_override = env(DEV_SETUP_PAYMENT_PUBLISHER_ENV);
+        let push_gateway_override = env(DEV_PUSH_GATEWAY_ORIGIN_ENV);
         if self != Self::Development {
             for (variable, value) in [
                 (DEV_NOSTR_RELAYS_ENV, &relays_override),
                 (DEV_SETUP_PAYMENT_PUBLISHER_ENV, &publisher_override),
+                (DEV_PUSH_GATEWAY_ORIGIN_ENV, &push_gateway_override),
             ] {
                 if value.is_some() {
                     return Err(
@@ -233,6 +244,7 @@ impl ManifoldEnvironment {
             relays,
             bitcoin_network,
             esplora_url,
+            push_gateway_origin,
         ) = match self {
             Self::Development => (
                 &[DEVELOPMENT_PLACEHOLDER_ISSUER][..],
@@ -241,6 +253,7 @@ impl ManifoldEnvironment {
                 Some(DEVELOPMENT_PLACEHOLDER_SUPPORT),
                 STAGING_NOSTR_RELAYS,
                 Network::Regtest,
+                None,
                 None,
             ),
             Self::Staging => (
@@ -251,6 +264,7 @@ impl ManifoldEnvironment {
                 STAGING_NOSTR_RELAYS,
                 Network::Signet,
                 Some(STAGING_ESPLORA_URL),
+                Some(STAGING_PUSH_GATEWAY_ORIGIN),
             ),
             Self::Production => (
                 PRODUCTION_ISSUERS,
@@ -260,6 +274,7 @@ impl ManifoldEnvironment {
                 PRODUCTION_NOSTR_RELAYS,
                 Network::Bitcoin,
                 None,
+                Some(PRODUCTION_PUSH_GATEWAY_ORIGIN),
             ),
         };
         let peer_badge_issuer_identities = issuers
@@ -288,6 +303,16 @@ impl ManifoldEnvironment {
                 AccountType::BtcDepositor,
             )
         });
+        let push_gateway_origin = match push_gateway_override {
+            Some(value) => Some(Url::parse(value.trim()).map_err(|err| {
+                ManifoldEnvironmentProfileError::InvalidOverride {
+                    variable: DEV_PUSH_GATEWAY_ORIGIN_ENV,
+                    detail: err.to_string(),
+                }
+            })?),
+            None => push_gateway_origin
+                .map(|origin| Url::parse(origin).expect("built-in push gateway origin is valid")),
+        };
         Ok(ManifoldEnvironmentProfile {
             environment: self,
             nostr_relays,
@@ -301,6 +326,7 @@ impl ManifoldEnvironment {
             bitcoin_network,
             default_esplora_url: esplora_url
                 .map(|url| Url::parse(url).expect("built-in default Esplora URL is valid")),
+            push_gateway_origin,
         })
     }
 }
@@ -392,6 +418,7 @@ pub struct ManifoldEnvironmentProfile {
     support: Option<PublicKey>,
     bitcoin_network: Network,
     default_esplora_url: Option<Url>,
+    push_gateway_origin: Option<Url>,
 }
 
 impl ManifoldEnvironmentProfile {
@@ -512,6 +539,15 @@ impl ManifoldEnvironmentProfile {
     #[must_use]
     pub fn default_esplora_url(&self) -> Option<&Url> {
         self.default_esplora_url.as_ref()
+    }
+
+    /// Return the environment's push-gateway origin: where the Fedi app
+    /// creates hooks, so the only origin an MG invokes callbacks under.
+    /// `None` in development unless [`DEV_PUSH_GATEWAY_ORIGIN_ENV`] names a
+    /// local gateway.
+    #[must_use]
+    pub fn push_gateway_origin(&self) -> Option<&Url> {
+        self.push_gateway_origin.as_ref()
     }
 }
 

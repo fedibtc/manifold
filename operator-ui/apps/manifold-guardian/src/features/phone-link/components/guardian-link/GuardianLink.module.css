@@ -70,9 +70,6 @@
 .emptyText {
   @apply max-w-md text-sm text-gray-500;
 }
-.code {
-  @apply break-words font-mono text-xs text-ink;
-}
 .error {
   @apply text-sm text-error;
 }

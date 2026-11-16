@@ -290,7 +290,11 @@ fn staging_and_production_refuse_development_overrides() {
         ManifoldEnvironment::Staging,
         ManifoldEnvironment::Production,
     ] {
-        for variable in [DEV_NOSTR_RELAYS_ENV, DEV_SETUP_PAYMENT_PUBLISHER_ENV] {
+        for variable in [
+            DEV_NOSTR_RELAYS_ENV,
+            DEV_SETUP_PAYMENT_PUBLISHER_ENV,
+            DEV_PUSH_GATEWAY_ORIGIN_ENV,
+        ] {
             let err = environment
                 .profile_with_env(|name| (name == variable).then(|| "anything".to_owned()))
                 .unwrap_err();
@@ -528,4 +532,43 @@ fn a_published_guardian_link_flag_wins_over_the_environment_default() {
     assert!(ManifoldEnvironment::Development.guardian_link(None));
     assert!(ManifoldEnvironment::Staging.guardian_link(None));
     assert!(!ManifoldEnvironment::Production.guardian_link(None));
+}
+
+#[test]
+fn each_environment_names_its_push_gateway_and_only_development_overrides_it() {
+    let origin = |environment: ManifoldEnvironment| {
+        environment
+            .profile_with_env(|_| None)
+            .unwrap()
+            .push_gateway_origin()
+            .map(Url::to_string)
+    };
+    assert_eq!(origin(ManifoldEnvironment::Development), None);
+    assert_eq!(
+        origin(ManifoldEnvironment::Staging).as_deref(),
+        Some("https://manifold-push-gateway.internal.k8s.us.dev.fedibtc.com/")
+    );
+    assert_eq!(
+        origin(ManifoldEnvironment::Production).as_deref(),
+        Some("https://push.manifold.dev.fedibtc.com/")
+    );
+
+    let local = ManifoldEnvironment::Development
+        .profile_with_env(|name| {
+            (name == DEV_PUSH_GATEWAY_ORIGIN_ENV).then(|| " http://127.0.0.1:4100 ".to_owned())
+        })
+        .unwrap();
+    assert_eq!(
+        local.push_gateway_origin().map(Url::as_str),
+        Some("http://127.0.0.1:4100/")
+    );
+    assert!(matches!(
+        ManifoldEnvironment::Development.profile_with_env(|name| {
+            (name == DEV_PUSH_GATEWAY_ORIGIN_ENV).then(|| "not a url".to_owned())
+        }),
+        Err(ManifoldEnvironmentProfileError::InvalidOverride {
+            variable: DEV_PUSH_GATEWAY_ORIGIN_ENV,
+            ..
+        })
+    ));
 }
