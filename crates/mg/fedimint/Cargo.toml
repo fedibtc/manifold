@@ -3,6 +3,8 @@ name = "mg-fedimint"
 version = "0.1.0"
 autotests = false
 edition = "2024"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyhow = "1"
