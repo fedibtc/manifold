@@ -353,6 +353,9 @@ const mgSeatReadinessMirror = {
     discovery: 'discovery_record_missing',
     bitcoin: 'bitcoin_syncing',
     version: 'mg_version_too_old',
+    pressure: 'host_pressure_high',
+    host_pressure: { cpu: { '6h': 213, '24h': 87 }, io: { '6h': 41, '24h': null } },
+    host_pressure_limit: { cpu: { block_above: 15, resume_below: 10 }, io: { block_above: 10, resume_below: 5 } },
     uptime: 'uptime_7d_low',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },

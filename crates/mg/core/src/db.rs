@@ -22,6 +22,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
+use crate::host_pressure::{self, PressureSample, PressureTotals};
 use crate::identity::RootMnemonic;
 use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
@@ -808,6 +809,83 @@ impl Db {
         uptime_row(&mut conn).await
     }
 
+    /// Store one pressure sample when it is due, drop samples the averages
+    /// no longer need, and store whether the pressure check holds new seats
+    /// ([`crate::seat_readiness::run`]), in one transaction.
+    pub(crate) async fn record_host_pressure(
+        &self,
+        sample: Option<PressureSample>,
+        held: bool,
+    ) -> Result<(), DbError> {
+        let millis = |at: SystemTime| {
+            i64::try_from(
+                at.duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_millis(),
+            )
+            .unwrap_or(i64::MAX)
+        };
+        let mut tx = self.begin_write().await?;
+        if let Some(sample) = sample {
+            let (newest,): (Option<i64>,) =
+                sqlx::query_as("SELECT MAX(sampled_at_ms) FROM host_pressure_samples")
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let newest = newest.map(from_millis);
+            let (store, drop_before) = host_pressure::retention(newest, sample.at);
+            if store {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO host_pressure_samples \
+                     (sampled_at_ms, cpu_some_us, io_some_us) VALUES (?, ?, ?)",
+                )
+                .bind(millis(sample.at))
+                .bind(i64::try_from(sample.totals.cpu_us).unwrap_or(i64::MAX))
+                .bind(i64::try_from(sample.totals.io_us).unwrap_or(i64::MAX))
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query("DELETE FROM host_pressure_samples WHERE sampled_at_ms < ?")
+                .bind(millis(drop_before))
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO host_pressure_hold (id, held) VALUES (1, ?) \
+             ON CONFLICT (id) DO UPDATE SET held = excluded.held",
+        )
+        .bind(held)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The stored pressure samples, oldest first, and whether the pressure
+    /// check holds new seats.
+    pub(crate) async fn host_pressure(&self) -> Result<(Vec<PressureSample>, bool), DbError> {
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT sampled_at_ms, cpu_some_us, io_some_us FROM host_pressure_samples \
+             ORDER BY sampled_at_ms",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let held: Option<(bool,)> =
+            sqlx::query_as("SELECT held FROM host_pressure_hold WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        let samples = rows
+            .into_iter()
+            .map(|(at, cpu, io)| PressureSample {
+                at: from_millis(at),
+                totals: PressureTotals {
+                    cpu_us: u64::try_from(cpu).expect("non-negative by schema CHECK"),
+                    io_us: u64::try_from(io).expect("non-negative by schema CHECK"),
+                },
+            })
+            .collect();
+        Ok((samples, held.is_some_and(|(held,)| held)))
+    }
+
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
         let (epoch,): (Vec<u8>,) =
             sqlx::query_as("SELECT offer_epoch FROM offer_state WHERE id = 1")
@@ -815,6 +893,10 @@ impl Db {
                 .await?;
         parse_offer_epoch(epoch)
     }
+}
+
+fn from_millis(millis: i64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(u64::try_from(millis).expect("non-negative by schema CHECK"))
 }
 
 async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>, DbError> {

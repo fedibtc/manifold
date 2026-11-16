@@ -143,6 +143,20 @@ replacement ordering as the new shared high-water mark.
   means 1,229 (about 1.2 GiB);
 - `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
+- `host_pressure_percent`, CPU and IO pressure thresholds for new seats:
+  `{"cpu": {...}, "io": {...}}`, each with `block_above` and `resume_below` in
+  percent of wall time from 1 to 100, `resume_below` at most `block_above`.
+  Pressure is the share of time in which a task of the MG's cgroup stalled
+  waiting for the resource (PSI `some`). Either resource's 6-hour average
+  above its `block_above` stops new seats; a stopped MG accepts them again
+  only once both 24-hour averages are at or below their `resume_below`.
+  Every field is required. Optional as a whole: absent means no pressure
+  limit. A held MG, or one whose pressure cannot be read while the field is
+  set, fails its readiness pressure check
+  ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)):
+  it stops advertising and quoting new seats and keeps running its seats,
+  and the check does not mark uptime down. MG and FA releases from 0.1.1 on
+  admit unknown fields and ignore it;
 - `min_mg_version`, the oldest Manifold Guardian release that may advertise
   new seats, as a SemVer string no newer than `fman_version` by SemVer
   precedence. Optional: absent or `null` means no minimum, so a later
@@ -227,8 +241,9 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
-12. reject a `seat_memory_budget_mib` outside 256 to 16,384 or a
-    `max_seats_per_mg` above 256;
+12. reject a `seat_memory_budget_mib` outside 256 to 16,384, a
+    `max_seats_per_mg` above 256, or a `host_pressure_percent` threshold
+    outside 1 to 100 or with `resume_below` above `block_above`;
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could

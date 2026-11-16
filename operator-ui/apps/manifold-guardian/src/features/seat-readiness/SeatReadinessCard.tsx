@@ -2,12 +2,14 @@ import { Banner } from '@operator-ui/common-ui';
 import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
 import {
-  CHECKS,
+  describeHostPressure,
   describeOutcome,
   formatPermille,
   guidance,
   labels,
+  pressureGuidance,
   passed,
+  reportedChecks,
   UPTIME_WINDOWS,
   updateGuidance,
   uptimeLabels
@@ -27,7 +29,9 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   // Absent from daemons that predate the figures, null when a run could not record them.
   const uptime = report?.uptime_comparison ?? null;
   // With figures, the uptime bars replace the generic uptime check.
-  const checks = uptime ? CHECKS.filter((check) => check !== 'uptime') : CHECKS;
+  const reported = report ? reportedChecks(report) : [];
+  const checks = uptime ? reported.filter((check) => check !== 'uptime') : reported;
+  const hostPressure = report ? describeHostPressure(report) : null;
   const wait = uptime ? Math.max(...UPTIME_WINDOWS.map((window) => uptime.wait_secs[window])) : 0;
   return (
     <>
@@ -40,6 +44,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
           This host stopped advertising and quoting new seats until every check passes. Running
           seats are not affected.
           {report?.version === 'mg_version_too_old' && ` ${updateGuidance}`}
+          {report?.pressure === 'host_pressure_high' && ` ${pressureGuidance}`}
         </Banner>
       )}
 
@@ -56,7 +61,12 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                 <strong>{labels[check]}</strong>
 
                 <span>{describeOutcome(check, report[check])}</span>
-                {check !== 'version' && !passed(report[check]) && (
+                {check === 'pressure' && hostPressure && (
+                  <span className={styles.guidance}>{hostPressure}</span>
+                )}
+                {check !== 'version' &&
+                  report[check] !== 'host_pressure_high' &&
+                  !passed(report[check]) && (
                   <span className={styles.guidance}>{guidance[check]}</span>
                 )}
               </li>

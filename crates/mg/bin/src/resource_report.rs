@@ -10,8 +10,10 @@
 //! two samples. A counter whose source the kernel does not provide is omitted
 //! from the event.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
+
+use mg_core::host_pressure::{Pressure, cgroup_v2_dir};
 
 /// Early enough to see post-startup memory, after RocksDB and Iroh have opened.
 const FIRST_SAMPLE_DELAY: Duration = Duration::from_secs(60);
@@ -188,13 +190,6 @@ impl ProcessIo {
     }
 }
 
-/// The cgroup v2 directory of this process, from `/proc/<pid>/cgroup`. A
-/// container with its own cgroup namespace sees its own cgroup as `/`.
-fn cgroup_v2_dir(cgroup: &str) -> Option<PathBuf> {
-    let path = cgroup.lines().find_map(|line| line.strip_prefix("0::"))?;
-    Some(Path::new("/sys/fs/cgroup").join(path.trim_start_matches('/')))
-}
-
 /// CPU accounting of the cgroup that holds the daemon and its seats.
 #[derive(Debug, PartialEq, Eq)]
 struct CgroupCpu {
@@ -217,38 +212,9 @@ impl CgroupCpu {
     }
 }
 
-/// Cumulative stall time from a pressure stall information file.
-#[derive(Debug, PartialEq, Eq)]
-struct Pressure {
-    /// Time in which at least one task stalled on the resource.
-    some_us: u64,
-    /// Time in which all non-idle tasks stalled. CPU pressure has no
-    /// meaningful `full` line.
-    full_us: Option<u64>,
-}
-
-impl Pressure {
-    /// Parse a PSI file such as `cpu.pressure` or `io.pressure`.
-    fn parse(pressure: &str) -> Option<Self> {
-        let total = |kind: &str| {
-            field(pressure, kind, ' ')?
-                .split_ascii_whitespace()
-                .find_map(|pair| pair.strip_prefix("total="))?
-                .parse()
-                .ok()
-        };
-        Some(Self {
-            some_us: total("some")?,
-            full_us: total("full"),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{CgroupCpu, Pressure, ProcessCpu, ProcessIo, ProcessMemory, cgroup_v2_dir};
+    use super::{CgroupCpu, ProcessCpu, ProcessIo, ProcessMemory};
 
     #[test]
     fn parses_linux_status_fields_in_bytes() {
@@ -339,22 +305,6 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_unified_cgroup_among_v1_lines() {
-        let cgroup = "12:cpu,cpuacct:/legacy\n0::/system.slice/fedimint-mg.service\n";
-        assert_eq!(
-            cgroup_v2_dir(cgroup),
-            Some(PathBuf::from(
-                "/sys/fs/cgroup/system.slice/fedimint-mg.service"
-            ))
-        );
-        assert_eq!(
-            cgroup_v2_dir("0::/\n"),
-            Some(PathBuf::from("/sys/fs/cgroup/"))
-        );
-        assert_eq!(cgroup_v2_dir("4:memory:/docker/abc\n"), None);
-    }
-
-    #[test]
     fn parses_cgroup_cpu_stat_with_and_without_quota_fields() {
         let with_quota = "usage_usec 500\nuser_usec 300\nsystem_usec 200\n\
             nr_periods 40\nnr_throttled 9\nthrottled_usec 7000\n";
@@ -372,26 +322,6 @@ mod tests {
                 usage_us: 500,
                 throttled_periods: None,
                 throttled_us: None,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_pressure_totals_not_averages() {
-        let io = "some avg10=1.50 avg60=0.20 avg300=0.05 total=123456\n\
-            full avg10=0.75 avg60=0.10 avg300=0.02 total=65432\n";
-        assert_eq!(
-            Pressure::parse(io),
-            Some(Pressure {
-                some_us: 123_456,
-                full_us: Some(65_432),
-            })
-        );
-        assert_eq!(
-            Pressure::parse("some avg10=0.00 avg60=0.00 avg300=0.00 total=99\n"),
-            Some(Pressure {
-                some_us: 99,
-                full_us: None,
             })
         );
     }

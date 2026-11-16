@@ -41,6 +41,7 @@ use mg_core::guardian_fee::{
 use mg_core::guardian_link::{
     AttentionReason, GuardianLinkAvailability, GuardianLinkStatus, LinkOfferStatus,
 };
+use mg_core::host_pressure::{HostPressure, PressureWindows};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
     DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
@@ -51,7 +52,8 @@ use mg_core::push_callback::CallbackAttemptOutcome;
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use mg_core::seat_readiness::{
-    ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
+    HostPressureThresholds, PressureThresholdsReport, ReadinessOutcome, ReadinessReport,
+    UptimeComparison, UptimePermille, UptimeWaitSecs,
 };
 use mg_core::wallet::PayoutRequestId;
 use serde_json::Value;
@@ -120,6 +122,27 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     version: ReadinessOutcome::MgVersionTooOld,
+                    pressure: ReadinessOutcome::HostPressureHigh,
+                    host_pressure: Some(HostPressure {
+                        cpu: PressureWindows {
+                            six_hours: Some(213),
+                            day: Some(87),
+                        },
+                        io: PressureWindows {
+                            six_hours: Some(41),
+                            day: None,
+                        },
+                    }),
+                    host_pressure_limit: Some(HostPressureThresholds {
+                        cpu: PressureThresholdsReport {
+                            block_above: 15,
+                            resume_below: 10,
+                        },
+                        io: PressureThresholdsReport {
+                            block_above: 10,
+                            resume_below: 5,
+                        },
+                    }),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {

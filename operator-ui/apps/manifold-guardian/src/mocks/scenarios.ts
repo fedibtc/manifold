@@ -71,6 +71,9 @@ const READY: MockState['seatReadiness'] = {
   discovery: 'pass',
   bitcoin: 'pass',
   version: 'pass',
+  pressure: 'pass',
+  host_pressure: { cpu: { '6h': 21, '24h': 25 }, io: { '6h': 4, '24h': 6 } },
+  host_pressure_limit: { cpu: { block_above: 15, resume_below: 10 }, io: { block_above: 10, resume_below: 5 } },
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -510,6 +513,21 @@ const builders = {
       version: 'mg_version_too_old'
     }
   }),
+  // The host was held for CPU pressure: its 6-hour average has come down,
+  // but the 24-hour one it reopens on has not.
+  'host-pressure-high': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      pressure: 'host_pressure_high',
+      host_pressure: { cpu: { '6h': 92, '24h': 134 }, io: { '6h': 12, '24h': 18 } }
+    }
+  }),
   'uptime-low': () => ({
     ...base(),
     seats: [],
@@ -802,6 +820,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'version-too-old': {
     desc: 'Every prerequisite passes, but the setup-payment policy requires a newer release than this host runs, so the daemon has stopped advertising and quoting new seats until it is updated. Uptime is not affected.',
+    affects: ['overview', 'health']
+  },
+  'host-pressure-high': {
+    desc: "Every prerequisite passes, but this host's 6-hour CPU pressure went above the setup-payment policy's block threshold and its 24-hour average is not yet back to the resume threshold, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
     affects: ['overview', 'health']
   },
   'uptime-low': {

@@ -163,6 +163,29 @@ advertisement without waiting for the next slot, and lowering or removing it
 reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
+Each run also applies the setup-payment policy's `host_pressure_percent`
+thresholds; without them the check does not apply and holds nothing, so a
+limit published later starts from the averages alone. Each run reads the
+cumulative pressure stall (PSI `some`) counters of the cgroup the daemon
+shares with its seats, for CPU and for IO, and the MG stores at most one
+reading per 9 minutes for a day. A window's average is the stall time added
+between consecutive stored readings in it, divided by the wall time between
+them, over 6 hours and over 24 hours. A pair whose counter went backwards, as
+it does when a restart recreates the cgroup, is left out of both sums, and a
+window is not yet averaged until its readings cover half of it. Pressure is a
+share of time, so unlike system load it does not depend on CPU count or
+speed, and it counts only waits of this MG's tasks. The check holds new
+seats once either 6-hour average is above its `block_above`, and keeps
+holding them until both 24-hour averages are at or below their
+`resume_below`, so a host near a threshold does not open and close by the
+hour; a window not yet averaged neither blocks nor resumes. The readings and
+the hold are durable, so a restart does not reopen a held MG. With
+thresholds set, counters that cannot be read fail the check and keep the
+hold: every MG release that journals resource samples reported both
+counters when this check was added. Like the version check, a held MG stops
+selling new seats but still serves its seats, so the pressure check is not a
+prerequisite and never marks a slot down.
+
 Each run also requires three uptime scores of at least the setup-payment
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
@@ -190,7 +213,8 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
+fixed code per check, the three uptime scores, the minimums they were held to,
+and the pressure averages and thresholds for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

@@ -51,6 +51,39 @@ pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
 /// Largest per-MG seat limit a publication may set.
 pub const SETUP_PAYMENT_MAX_SEATS_PER_MG: u32 = 256;
 
+/// Smallest and largest pressure threshold a publication may set, in percent
+/// of wall time. Zero would close every MG; pressure is a share of time, so no
+/// average exceeds 100.
+pub const SETUP_PAYMENT_HOST_PRESSURE_PERCENT_RANGE: std::ops::RangeInclusive<u8> = 1..=100;
+
+/// Pressure thresholds for one resource, in percent of wall time during which
+/// at least one task of the MG's cgroup stalled on it (PSI `some`), with
+/// hysteresis: its 6-hour average above `block_above` stops new seats, and a
+/// stopped MG accepts them again only once its 24-hour average is at or below
+/// `resume_below`. One object, so admission can require
+/// `resume_below <= block_above`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PressureThresholds {
+    pub block_above: u8,
+    pub resume_below: u8,
+}
+
+/// Pressure thresholds for the resources an MG's seats compete for: CPU and
+/// storage IO. Memory has its own seat limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct HostPressureLimit {
+    pub cpu: PressureThresholds,
+    pub io: PressureThresholds,
+}
+
+impl PressureThresholds {
+    fn admissible(self) -> bool {
+        SETUP_PAYMENT_HOST_PRESSURE_PERCENT_RANGE.contains(&self.block_above)
+            && SETUP_PAYMENT_HOST_PRESSURE_PERCENT_RANGE.contains(&self.resume_below)
+            && self.resume_below <= self.block_above
+    }
+}
+
 fn default_min_fee_ppm() -> u64 {
     DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM
 }
@@ -198,6 +231,11 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
 
+    /// CPU and IO pressure thresholds for new seats. Optional on the wire:
+    /// absent means no pressure limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_pressure_percent: Option<HostPressureLimit>,
+
     /// Whether MGs start new direct-proof guardian transfers. Optional on the wire:
     /// absent, the Manifold environment's default applies (on in development
     /// and staging, off in production). Transfers an MG already stored run to
@@ -247,6 +285,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
+    host_pressure_percent: Option<HostPressureLimit>,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
@@ -289,6 +328,12 @@ impl AdmittedSetupPaymentFederations {
             .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
         {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
+        }
+        if content
+            .host_pressure_percent
+            .is_some_and(|limit| !limit.cpu.admissible() || !limit.io.admissible())
+        {
+            return Err(SetupPaymentFederationsContentError::InvalidHostPressureLimit);
         }
         let max_guardian_offline_secs = content
             .max_guardian_offline_secs
@@ -365,6 +410,7 @@ impl AdmittedSetupPaymentFederations {
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
+            host_pressure_percent: content.host_pressure_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
@@ -448,6 +494,13 @@ impl AdmittedSetupPaymentFederations {
         self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
     }
 
+    /// Return the CPU and IO pressure thresholds for new seats, or `None`
+    /// when the event sets no pressure limit.
+    #[must_use]
+    pub fn host_pressure_percent(&self) -> Option<HostPressureLimit> {
+        self.host_pressure_percent
+    }
+
     /// Return the published direct-proof guardian-transfer flag. `None` when the event
     /// omits it; the Manifold environment then supplies the default
     /// (`ManifoldEnvironment::guardian_transfer_v2`).
@@ -517,6 +570,10 @@ pub enum SetupPaymentFederationsContentError {
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
 
+    /// A published pressure threshold is outside the admitted range, or a
+    /// resume threshold is above its block threshold.
+    InvalidHostPressureLimit,
+
     /// A published minimum uptime is above 100%, which no MG can reach.
     MinUptimeTooHigh,
 
@@ -554,6 +611,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"
+            }
+            Self::InvalidHostPressureLimit => {
+                "setup-payment federation set sets an invalid host pressure limit"
             }
             Self::ZeroOfflineDuration => "guardian absence limit must be positive",
             Self::MinUptimeTooHigh => {

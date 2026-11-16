@@ -85,6 +85,7 @@ impl SeatReadiness {
             fleet,
             setup_payment_policy,
             SystemTime::now,
+            mg_core::host_pressure::read_cgroup_pressure,
         ))
     }
 
@@ -117,6 +118,9 @@ impl SeatReadiness {
             discovery,
             bitcoin,
             version: Outcome::NotApplicable,
+            pressure: Outcome::NotApplicable,
+            host_pressure: None,
+            host_pressure_limit: None,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }

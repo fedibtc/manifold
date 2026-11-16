@@ -48,11 +48,12 @@ pub use mg_seat_bindings::{
 pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use setup_payment_federations::{
     AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_MEMORY_BUDGET_MIB,
-    DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, MgVersion, MinUptimePercent,
-    SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
-    SETUP_PAYMENT_FEDERATIONS_MAX_COUNT, SETUP_PAYMENT_MAX_MIN_FEE_PPM,
-    SETUP_PAYMENT_MAX_SEATS_PER_MG, SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE,
-    SetupPaymentFederationsContent, SetupPaymentFederationsContentError,
+    DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, HostPressureLimit, MgVersion, MinUptimePercent,
+    PressureThresholds, SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES,
+    SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_COUNT,
+    SETUP_PAYMENT_MAX_MIN_FEE_PPM, SETUP_PAYMENT_MAX_SEATS_PER_MG,
+    SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE, SetupPaymentFederationsContent,
+    SetupPaymentFederationsContentError,
 };
 pub use signed_json::{
     PurposeTag, SIGNED_JSON_ENVELOPE_MAX_BYTES, SIGNED_JSON_PAYLOAD_MAX_BYTES, SignedJsonEnvelope,

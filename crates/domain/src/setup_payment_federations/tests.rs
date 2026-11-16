@@ -53,6 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
+        host_pressure_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,
@@ -239,6 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
+            host_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
             min_mg_version: None,
@@ -465,6 +467,74 @@ fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
         ),
         Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
     );
+}
+
+#[test]
+fn host_pressure_limit_is_absent_by_default_and_must_be_ordered_and_bounded() {
+    let raw = |limit: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","host_pressure_percent":{limit}}}"#
+        )
+    };
+    let limit = |cpu: (u8, u8), io: (u8, u8)| {
+        format!(
+            r#"{{"cpu":{{"block_above":{},"resume_below":{}}},"io":{{"block_above":{},"resume_below":{}}}}}"#,
+            cpu.0, cpu.1, io.0, io.1
+        )
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.host_pressure_percent(), None);
+    assert!(
+        !String::from_utf8(content(vec![]))
+            .unwrap()
+            .contains("host_pressure_percent")
+    );
+    let admitted =
+        AdmittedSetupPaymentFederations::parse(raw(&limit((15, 10), (10, 5))).as_bytes()).unwrap();
+    assert_eq!(
+        admitted.host_pressure_percent(),
+        Some(HostPressureLimit {
+            cpu: PressureThresholds {
+                block_above: 15,
+                resume_below: 10
+            },
+            io: PressureThresholds {
+                block_above: 10,
+                resume_below: 5
+            },
+        })
+    );
+    for (cpu, io) in [((1, 1), (100, 1)), ((100, 100), (7, 7))] {
+        assert!(
+            AdmittedSetupPaymentFederations::parse(raw(&limit(cpu, io)).as_bytes()).is_ok(),
+            "{cpu:?} {io:?}"
+        );
+    }
+    // Resuming above the block threshold would reopen a host the same run
+    // closed; zero would close every MG; a share of time cannot exceed 100%.
+    // Either resource alone being wrong refuses the publication.
+    for (cpu, io) in [
+        ((10, 15), (10, 5)),
+        ((15, 10), (5, 10)),
+        ((0, 0), (10, 5)),
+        ((15, 10), (101, 5)),
+    ] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(raw(&limit(cpu, io)).as_bytes()),
+            Err(SetupPaymentFederationsContentError::InvalidHostPressureLimit),
+            "{cpu:?} {io:?}"
+        );
+    }
+    // Both resources, and both thresholds of each, are required.
+    for partial in [
+        r#"{"cpu":{"block_above":15,"resume_below":10}}"#,
+        r#"{"cpu":{"block_above":15},"io":{"block_above":10,"resume_below":5}}"#,
+    ] {
+        assert!(
+            AdmittedSetupPaymentFederations::parse(raw(partial).as_bytes()).is_err(),
+            "{partial}"
+        );
+    }
 }
 
 #[test]

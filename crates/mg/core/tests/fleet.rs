@@ -1329,6 +1329,9 @@ fn readiness(ready: bool) -> ReadinessReport {
             ReadinessOutcome::BitcoinSyncing
         },
         version: ReadinessOutcome::NotApplicable,
+        pressure: ReadinessOutcome::NotApplicable,
+        host_pressure: None,
+        host_pressure_limit: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -1529,14 +1532,17 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     fleet.shutdown().await;
 }
 
-/// The readiness worker follows the setup-payment policy's minimum release:
-/// raising it above this release stops discovery and quoting at the next
-/// run, and lowering or removing it restores them. The MG still serves its
+/// The readiness worker follows the setup-payment policy's minimum release
+/// and pressure thresholds: raising the minimum above this release, or a
+/// threshold below the host's pressure, stops discovery and quoting at the
+/// next run, and undoing either restores them, the pressure check with
+/// hysteresis. The MG still serves its
 /// seats meanwhile, so every one of those runs records an up uptime slot.
 #[tokio::test]
-async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
+async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::host_pressure::{HostPressure, PressureWindows};
     use crate::seat_readiness::{ReadinessProbe, run};
     use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
 
@@ -1575,10 +1581,13 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
     );
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
 
-    let policy = |min_mg_version: Option<&str>| {
-        let field = min_mg_version
+    let policy = |min_mg_version: Option<&str>, pressure: Option<PressureLimit>| {
+        let mut field = min_mg_version
             .map(|version| format!(r#","min_mg_version":"{version}""#))
             .unwrap_or_default();
+        if let Some(limit) = pressure {
+            field.push_str(&pressure_policy_field(limit));
+        }
         AdmittedSetupPaymentFederations::parse(
             format!(
                 r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
@@ -1596,6 +1605,14 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
                 + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
         }
     };
+    // A day of history at 12% CPU and 3% IO pressure, and readings that go on
+    // at the same rates.
+    let origin = clock() - Duration::from_secs(25 * 60 * 60);
+    seed_pressure(&fleet, origin, clock()).await;
+    let read_pressure = {
+        let clock = clock.clone();
+        move || Ok(pressure_totals(origin, clock()))
+    };
     let (step, steps) = tokio::sync::mpsc::channel(1);
     let (publish, policies) = tokio::sync::watch::channel(None);
     let worker = tokio::spawn(run(
@@ -1606,25 +1623,45 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         fleet.clone(),
         policies,
         clock,
+        read_pressure,
     ));
 
     let this = env!("CARGO_PKG_VERSION");
     let mut previous_day_score = None;
-    for (run_index, (min_mg_version, advertised)) in [
-        (None, true),
-        (Some("999.0.0"), false),
-        (Some(this), true),
-        (Some("999.0.0"), false),
-        (Some("0.0.1"), true),
-        (Some("999.0.0"), false),
-        (None, true),
+    let calm = (50, 50);
+    for (run_index, (min_mg_version, max_load, advertised)) in [
+        (None, None, true),
+        (Some("999.0.0"), None, false),
+        (Some(this), None, true),
+        (Some("999.0.0"), None, false),
+        (Some("0.0.1"), None, true),
+        (Some("999.0.0"), None, false),
+        (None, None, true),
+        // CPU alone above its block threshold, IO calm.
+        (None, Some(((11, 11), calm)), false),
+        // Hysteresis: a held MG stays held while its CPU day average is
+        // above the resume threshold, although the 6-hour one is under the
+        // block one.
+        (None, Some(((15, 10), calm)), false),
+        // An average equal to the resume threshold is within it.
+        (None, Some(((15, 12), calm)), true),
+        // IO alone above its block threshold, CPU calm; then held until IO
+        // is at its resume threshold.
+        (None, Some((calm, (2, 2))), false),
+        (None, Some((calm, (5, 2))), false),
+        (None, Some((calm, (5, 3))), true),
+        (None, Some(((11, 11), calm)), false),
+        // Removing the limit clears the hold, so a later limit starts from the
+        // averages alone.
+        (None, None, true),
+        (None, Some(((15, 5), calm)), true),
     ]
     .into_iter()
     .enumerate()
     {
         // Each policy ends the worker's wait, and the step lets one run go.
         if run_index > 0 {
-            publish.send_replace(Some(policy(min_mg_version)));
+            publish.send_replace(Some(policy(min_mg_version, max_load)));
         }
         step.send(()).await.unwrap();
         let checked = first_slot + run_index as u64 + 1;
@@ -1641,9 +1678,31 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
         .unwrap_or_else(|_| panic!("{min_mg_version:?}: the run's verdict was not applied"));
         let report = fleet.seat_readiness().unwrap();
         assert_eq!(
-            report.version == ReadinessOutcome::MgVersionTooOld,
+            report.version == ReadinessOutcome::MgVersionTooOld
+                || report.pressure == ReadinessOutcome::HostPressureHigh,
             !advertised,
-            "{min_mg_version:?}"
+            "{min_mg_version:?} {max_load:?}"
+        );
+        assert_eq!(
+            report.host_pressure,
+            Some(HostPressure {
+                cpu: PressureWindows {
+                    six_hours: Some(120),
+                    day: Some(120),
+                },
+                io: PressureWindows {
+                    six_hours: Some(30),
+                    day: Some(30),
+                },
+            })
+        );
+        assert_eq!(
+            report.host_pressure_limit,
+            max_load.map(|limit| domain_limit(limit).into())
+        );
+        assert_eq!(
+            report.pressure == ReadinessOutcome::NotApplicable,
+            max_load.is_none()
         );
         assert_eq!(
             host.advertisement().await.is_some(),
@@ -1664,6 +1723,221 @@ async fn the_readiness_worker_follows_the_policy_minimum_and_keeps_uptime_up() {
     }
     worker.abort();
     fleet.shutdown().await;
+}
+
+/// The pressure check's hold is durable: a held MG that restarts while its
+/// pressure is under the block thresholds stays held until its day averages
+/// reach the resume thresholds, instead of reopening for a window it likely
+/// should not. A cgroup recreated by the restart starts its counters again,
+/// which leaves the stored history intact.
+#[tokio::test]
+async fn a_pressure_hold_survives_restart() {
+    use crate::host_pressure::PressureTotals;
+    use crate::seat_readiness::{ReadinessProbe, run};
+    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+
+    /// Passing prerequisites, one run, then no more.
+    struct OnceProbe(bool);
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for OnceProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            if std::mem::replace(&mut self.0, true) {
+                std::future::pending::<()>().await;
+            }
+            readiness(true)
+        }
+    }
+
+    let policy = |limit: PressureLimit| {
+        AdmittedSetupPaymentFederations::parse(
+            format!(
+                r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{}}}"#,
+                pressure_policy_field(limit)
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    /// One run under `policy` at `now`, reading `reading`, then its report.
+    async fn one_run(
+        fleet: &Arc<Fleet>,
+        policy: AdmittedSetupPaymentFederations,
+        now: std::time::SystemTime,
+        reading: anyhow::Result<PressureTotals>,
+    ) -> ReadinessReport {
+        let (_publish, policies) = tokio::sync::watch::channel(Some(policy));
+        let reading = std::sync::Mutex::new(Some(reading));
+        let worker = tokio::spawn(run(
+            OnceProbe(false),
+            fleet.clone(),
+            policies,
+            move || now,
+            move || reading.lock().unwrap().take().expect("one run reads once"),
+        ));
+        let report = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                // Each fleet here is freshly opened, so it has no report
+                // before this run's.
+                if let Some(report) = fleet.seat_readiness() {
+                    break report;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run completes");
+        // The report is set after the hold is stored.
+        worker.abort();
+        report
+    }
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 2, 31_600).await;
+    let start = std::time::SystemTime::now();
+    let origin = start - Duration::from_secs(25 * 60 * 60);
+    let fleet = Arc::new(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    seed_pressure(&fleet, origin, start).await;
+    let calm = (50, 50);
+    let held = one_run(
+        &fleet,
+        policy(((11, 11), calm)),
+        start,
+        Ok(pressure_totals(origin, start)),
+    )
+    .await;
+    assert_eq!(held.pressure, ReadinessOutcome::HostPressureHigh);
+    assert!(fleet.host_pressure().await.unwrap().1);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // After a restart, 12% is under the new block threshold but above the
+    // resume one, and the recreated cgroup's counters went back to zero.
+    let later = start + Duration::from_secs(10 * 60);
+    let fleet = Arc::new(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    assert!(fleet.host_pressure().await.unwrap().1);
+    let still_held = one_run(
+        &fleet,
+        policy(((15, 10), calm)),
+        later,
+        Ok(PressureTotals {
+            cpu_us: 1,
+            io_us: 1,
+        }),
+    )
+    .await;
+    assert_eq!(still_held.pressure, ReadinessOutcome::HostPressureHigh);
+    // The history from before the reset still decides the averages.
+    assert_eq!(still_held.host_pressure.unwrap().cpu.day, Some(120));
+    assert!(!fleet.ready_for_new_seats().await);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // Counters that cannot be read fail the check and keep the hold.
+    let fleet = Arc::new(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let unreadable = one_run(
+        &fleet,
+        policy(((15, 12), calm)),
+        later + Duration::from_secs(10 * 60),
+        Err(anyhow::anyhow!("no cgroup pressure")),
+    )
+    .await;
+    assert_eq!(
+        unreadable.pressure,
+        ReadinessOutcome::HostPressureUnavailable
+    );
+    assert_eq!(unreadable.host_pressure, None);
+    assert!(!fleet.ready_for_new_seats().await);
+    assert!(fleet.host_pressure().await.unwrap().1);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = Arc::new(open_fleet(config, Arc::new(NoWallet)).await.unwrap());
+    let now = later + Duration::from_secs(20 * 60);
+    let reopened = one_run(
+        &fleet,
+        policy(((15, 12), calm)),
+        now,
+        Ok(PressureTotals {
+            cpu_us: 2,
+            io_us: 2,
+        }),
+    )
+    .await;
+    assert_eq!(reopened.pressure, ReadinessOutcome::Pass);
+    assert!(!fleet.host_pressure().await.unwrap().1);
+    fleet.shutdown().await;
+}
+
+/// CPU and IO `(block_above, resume_below)` pressure thresholds.
+type PressureLimit = ((u8, u8), (u8, u8));
+
+fn domain_limit(
+    ((cpu_block, cpu_resume), (io_block, io_resume)): PressureLimit,
+) -> fedi_decentralized_domain::HostPressureLimit {
+    use fedi_decentralized_domain::{HostPressureLimit, PressureThresholds};
+    HostPressureLimit {
+        cpu: PressureThresholds {
+            block_above: cpu_block,
+            resume_below: cpu_resume,
+        },
+        io: PressureThresholds {
+            block_above: io_block,
+            resume_below: io_resume,
+        },
+    }
+}
+
+/// The setup-payment policy field setting `limit`, with its leading comma.
+fn pressure_policy_field(limit: PressureLimit) -> String {
+    format!(
+        r#","host_pressure_percent":{}"#,
+        serde_json::to_string(&domain_limit(limit)).unwrap()
+    )
+}
+
+/// The counters of a cgroup that has stalled 12% of the time on CPU and 3% on
+/// IO since `origin`.
+fn pressure_totals(
+    origin: std::time::SystemTime,
+    at: std::time::SystemTime,
+) -> crate::host_pressure::PressureTotals {
+    let elapsed_us = u64::try_from(at.duration_since(origin).unwrap().as_micros()).unwrap();
+    crate::host_pressure::PressureTotals {
+        cpu_us: elapsed_us * 12 / 100,
+        io_us: elapsed_us * 3 / 100,
+    }
+}
+
+/// Store a day of 10-minute [`pressure_totals`] samples ending before `end`.
+async fn seed_pressure(fleet: &Fleet, origin: std::time::SystemTime, end: std::time::SystemTime) {
+    let slot = Duration::from_secs(10 * 60);
+    let mut at = end - Duration::from_secs(24 * 60 * 60);
+    while at < end {
+        fleet
+            .record_host_pressure(
+                Some(crate::host_pressure::PressureSample {
+                    at,
+                    totals: pressure_totals(origin, at),
+                }),
+                false,
+            )
+            .await
+            .unwrap();
+        at += slot;
+    }
 }
 
 #[tokio::test]

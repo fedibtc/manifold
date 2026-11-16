@@ -42,6 +42,7 @@ use crate::db::{
     SeatsConfigUpdate,
 };
 use crate::facts::{PortBase, SeatPorts};
+use crate::host_pressure::PressureSample;
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
@@ -901,6 +902,22 @@ impl Fleet {
             .uptime()
             .await?
             .map_or(UptimeScores::START, |uptime| uptime.scores))
+    }
+
+    /// The readiness pressure check's stored samples, oldest first, and
+    /// whether it holds new seats.
+    pub async fn host_pressure(&self) -> anyhow::Result<(Vec<PressureSample>, bool)> {
+        Ok(self.db.host_pressure().await?)
+    }
+
+    /// Store a pressure sample when it is due, and whether the pressure check
+    /// holds new seats.
+    pub async fn record_host_pressure(
+        &self,
+        sample: Option<PressureSample>,
+        held: bool,
+    ) -> anyhow::Result<()> {
+        Ok(self.db.record_host_pressure(sample, held).await?)
     }
 
     /// The durable verdict that gates admission.

@@ -349,8 +349,10 @@ pub struct SeatCapacityEvent {
 
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
 /// ownership as [`SeatCapacityEvent`]. Releases before 0.1.4 journal no
-/// uptime outcome, scores or minimums, and releases before 0.1.9 no version
-/// outcome.
+/// uptime outcome, scores or minimums, releases before 0.1.9 no version
+/// outcome, and releases before 0.1.16 no pressure outcome or figures. An
+/// average is absent where the MG cannot read the counters or has not yet
+/// sampled half its window, and the thresholds without a policy limit.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SeatReadinessEvent {
     pub ready: bool,
@@ -359,6 +361,27 @@ pub struct SeatReadinessEvent {
     pub bitcoin: String,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub pressure: Option<String>,
+    /// The MG cgroup's 6- and 24-hour average CPU and IO pressure (PSI
+    /// `some`), in percent of wall time.
+    #[serde(default)]
+    pub cpu_pressure_6h_pct: Option<f64>,
+    #[serde(default)]
+    pub cpu_pressure_24h_pct: Option<f64>,
+    #[serde(default)]
+    pub io_pressure_6h_pct: Option<f64>,
+    #[serde(default)]
+    pub io_pressure_24h_pct: Option<f64>,
+    /// The setup-payment policy's pressure thresholds, in the same unit.
+    #[serde(default)]
+    pub cpu_pressure_block_above_pct: Option<f64>,
+    #[serde(default)]
+    pub cpu_pressure_resume_below_pct: Option<f64>,
+    #[serde(default)]
+    pub io_pressure_block_above_pct: Option<f64>,
+    #[serde(default)]
+    pub io_pressure_resume_below_pct: Option<f64>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]
