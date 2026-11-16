@@ -40,7 +40,7 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
-use fedi_decentralized_service_manifold_guardian::{FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1};
+use fedi_decentralized_service_manifold_guardian::FEDERATION_SIZES_0_1;
 use mg_core::admin::{AdminRequest, SupportChat};
 use mg_core::db::Db;
 use mg_core::directory::{AdvertisementSnapshot, DirectoryPresence, OnboardingStatus};
@@ -514,9 +514,7 @@ fn build_payload(
             ),
         }],
         availability: Availability {
-            fedimintd_version: FEDIMINTD_VERSION_0_1
-                .parse()
-                .expect("the bundled fedimintd version is valid SemVer"),
+            fedimintd_version: mg_core::facts::FedimintdLine::FORMATION.version(),
             federation_sizes: FEDERATION_SIZES_0_1.to_vec(),
         },
         plans: snapshot.plans,
@@ -875,6 +873,7 @@ async fn admit_setup_payment_federations(
             .await
             .context("retain setup-payment policy")?;
     }
+    store.apply(admission.admitted.as_ref().map(|policy| policy.set()));
     Ok(admission.admitted)
 }
 

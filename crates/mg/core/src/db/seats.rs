@@ -15,7 +15,8 @@
 
 use super::{Db, DbError, IDENTITY_ID, now_ms};
 use crate::facts::{
-    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatNo,
+    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, FedimintdLine, SeatFacts,
+    SeatNo,
 };
 use crate::identity::RootMnemonic;
 use crate::wallet::{ClaimOutcome, EcashClaimEvidence};
@@ -32,6 +33,7 @@ pub(crate) struct SeatRecoveryFacts {
     pub(crate) outgoing: Option<crate::transfer_state::OutgoingTransfer>,
     pub(crate) formed_invite: Option<InviteCode>,
     pub(crate) decommissioned_at_ms: Option<i64>,
+    pub(crate) fedimintd_line: FedimintdLine,
 }
 
 async fn payment(
@@ -59,6 +61,22 @@ async fn decommissioned_at_ms(
     .bind(seat_id.as_bytes().as_slice())
     .fetch_optional(conn)
     .await?)
+}
+
+async fn fedimintd_line(
+    conn: &mut sqlx::SqliteConnection,
+    seat_id: &SeatId,
+) -> Result<FedimintdLine, DbError> {
+    let line =
+        sqlx::query_scalar::<_, String>("SELECT fedimintd_line FROM seats WHERE quote_id = ?")
+            .bind(seat_id.as_bytes().as_slice())
+            .fetch_one(conn)
+            .await?;
+    FedimintdLine::from_str(&line).ok_or_else(|| DbError::CorruptRow {
+        table: "seats",
+        key: hex::encode(seat_id.as_bytes()),
+        detail: format!("fedimintd_line {line}"),
+    })
 }
 
 async fn formed_federation_invite(
@@ -140,6 +158,8 @@ pub struct RestoredSeat {
     /// the moment it is restored.
     pub guardian: Option<RestoredGuardianConfig>,
     pub decommissioned_at_ms: Option<i64>,
+    /// The `fedimintd` line the seat's guardian database was last run by.
+    pub fedimintd_line: FedimintdLine,
     /// Validated transfer recovery state, rebuilt before the identity commits.
     pub(crate) incoming_transfer: Option<crate::transfer_state::IncomingTransfer>,
     pub(crate) outgoing_transfer: Option<crate::backup::OutgoingTransferBackup>,
@@ -574,8 +594,9 @@ impl Db {
         let plan = serde_json_canonicalizer::to_string(&new_seat.plan)
             .expect("Plan always serializes to canonical JSON");
         sqlx::query(
-            "INSERT INTO seats (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO seats \
+             (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms, fedimintd_line) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(next_no)
@@ -583,6 +604,7 @@ impl Db {
         .bind(plan)
         .bind(i64::from(new_seat.federation_size.0))
         .bind(created_at_ms)
+        .bind(FedimintdLine::FORMATION.as_str())
         .execute(&mut *tx)
         .await?;
         if let Some(payment) = &new_seat.payment {
@@ -919,6 +941,36 @@ impl Db {
     }
 
     /// The immutable invite for this formed seat, if it has formed.
+    /// The `fedimintd` line that runs this seat's guardian.
+    pub(crate) async fn fedimintd_line(&self, seat_id: &SeatId) -> Result<FedimintdLine, DbError> {
+        fedimintd_line(&mut *self.pool().acquire().await?, seat_id).await
+    }
+
+    /// Move a seat's guardian from line `from` to the newer line `to`.
+    /// `false` when the seat no longer runs `from`, which leaves it unchanged.
+    ///
+    /// # Panics
+    ///
+    /// When `to` is not newer than `from`: a `fedimintd` database is not
+    /// readable by an older line.
+    pub(crate) async fn move_fedimintd_line(
+        &self,
+        seat_id: &SeatId,
+        from: FedimintdLine,
+        to: FedimintdLine,
+    ) -> Result<bool, DbError> {
+        assert!(from < to, "a seat only moves to a newer fedimintd line");
+        let result = sqlx::query(
+            "UPDATE seats SET fedimintd_line = ? WHERE quote_id = ? AND fedimintd_line = ?",
+        )
+        .bind(to.as_str())
+        .bind(seat_id.as_bytes().as_slice())
+        .bind(from.as_str())
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub(crate) async fn formed_federation_invite(
         &self,
         seat_id: &SeatId,
@@ -944,6 +996,7 @@ impl Db {
             outgoing: super::transfers::outgoing(&mut snapshot, seat_id).await?,
             formed_invite: formed_federation_invite(&mut snapshot, seat_id).await?,
             decommissioned_at_ms: decommissioned_at_ms(&mut snapshot, seat_id).await?,
+            fedimintd_line: fedimintd_line(&mut snapshot, seat_id).await?,
         };
         snapshot.commit().await?;
         Ok(facts)
@@ -992,8 +1045,9 @@ impl Db {
                 .expect("Plan always serializes to canonical JSON");
             let quote_id = facts.seat_id.as_bytes().as_slice();
             sqlx::query(
-                "INSERT INTO seats (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO seats \
+                 (quote_id, seat_no, fi_id, plan, federation_size, created_at_ms, fedimintd_line) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(quote_id)
             .bind(i64::from(facts.seat_no.0))
@@ -1001,6 +1055,7 @@ impl Db {
             .bind(plan)
             .bind(i64::from(facts.federation_size.0))
             .bind(facts.created_at_ms)
+            .bind(seat.fedimintd_line.as_str())
             .execute(&mut *tx)
             .await?;
             if seat.guardian.is_some() || seat.outgoing_transfer.is_some() {

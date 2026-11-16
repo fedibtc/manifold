@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bitcoin::Network;
 use clap::Parser as _;
 use fedimint_core::Amount;

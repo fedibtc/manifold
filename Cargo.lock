@@ -6322,6 +6322,7 @@ dependencies = [
  "mg-core",
  "mg-fedimint",
  "mg-nostr",
+ "mg-spv2-params",
  "mg-telemetry",
  "nostr-sdk",
  "operator-ui-static",
@@ -6508,6 +6509,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "mg-spv2-params"
+version = "0.1.16"
 
 [[package]]
 name = "mg-telemetry"

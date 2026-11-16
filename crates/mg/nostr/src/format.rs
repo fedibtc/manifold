@@ -127,9 +127,20 @@ pub(crate) const LEGACY_DOCUMENT_VERSION: u32 = 1;
 /// document, which republishes it regardless.
 pub(crate) const TRANSFER_DOCUMENT_VERSION: u32 = 3;
 
+/// The envelope version of a document whose seat runs a `fedimintd` line
+/// newer than 0.12 ([`SeatBackupDocument::fedimintd_line`]), with or without
+/// transfer facts. Same shape and archive as [`BACKUP_DOCUMENT_VERSION`], for
+/// the same reason as [`TRANSFER_DOCUMENT_VERSION`]: readers from before
+/// lines accept versions 1 to 3 and ignore unknown fields, so they would
+/// restore such a seat onto 0.12, whose database the newer line already
+/// wrote. They refuse version 4 instead.
+pub(crate) const LINE_DOCUMENT_VERSION: u32 = 4;
+
 /// The envelope version a document is sealed under.
 fn document_version(document: &SeatBackupDocument) -> u32 {
-    if document.transfer.is_some() {
+    if !document.fedimintd_line.is_v0_12() {
+        LINE_DOCUMENT_VERSION
+    } else if document.transfer.is_some() {
         TRANSFER_DOCUMENT_VERSION
     } else {
         BACKUP_DOCUMENT_VERSION
@@ -150,11 +161,13 @@ pub enum BackupError {
     #[error("parse backup document: {0}")]
     Parse(#[source] ciborium::de::Error<std::io::Error>),
     #[error(
-        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION}, {BACKUP_DOCUMENT_VERSION} or {TRANSFER_DOCUMENT_VERSION})"
+        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION}, {BACKUP_DOCUMENT_VERSION}, {TRANSFER_DOCUMENT_VERSION} or {LINE_DOCUMENT_VERSION})"
     )]
     UnsupportedVersion { found: u32 },
     #[error("backup document carries guardian-transfer facts under the wrong version")]
     TransferVersion,
+    #[error("backup document names its fedimintd line under the wrong version")]
+    LineVersion,
     #[error("version 1 guardian archive: {0}")]
     LegacyArchive(#[source] anyhow::Error),
     #[error(
@@ -262,7 +275,8 @@ impl BackupIdentity {
     /// refusing any schema version this build does not know. The archive
     /// generation it names comes back with it, as the envelope's version: it
     /// decides the archive's shape and coordinates, and a
-    /// [`TRANSFER_DOCUMENT_VERSION`] document names the current one.
+    /// [`TRANSFER_DOCUMENT_VERSION`] or [`LINE_DOCUMENT_VERSION`] document
+    /// names the current one.
     ///
     /// The version check lives here rather than in the caller because every
     /// reader of a document is a restore path acting on recovery material:
@@ -284,6 +298,7 @@ impl BackupIdentity {
             LEGACY_DOCUMENT_VERSION,
             BACKUP_DOCUMENT_VERSION,
             TRANSFER_DOCUMENT_VERSION,
+            LINE_DOCUMENT_VERSION,
         ]
         .contains(&version.version)
         {
@@ -304,11 +319,15 @@ impl BackupIdentity {
         // document carrying them would be read by a pre-transfer reader
         // without them, so this writer never produces one and this reader
         // refuses it.
+        // Likewise a newer line and the line version.
         let Envelope { version, document } = envelope;
+        if (version == LINE_DOCUMENT_VERSION) == document.fedimintd_line.is_v0_12() {
+            return Err(BackupError::LineVersion);
+        }
         match (version, document.transfer.is_some()) {
-            (TRANSFER_DOCUMENT_VERSION, true) => Ok(Envelope {
-                // The archive of a transfer-bearing document is the current
-                // one, at the current version's coordinates.
+            // The archive of a transfer- or line-bearing document is the
+            // current one, at the current version's coordinates.
+            (TRANSFER_DOCUMENT_VERSION, true) | (LINE_DOCUMENT_VERSION, _) => Ok(Envelope {
                 version: BACKUP_DOCUMENT_VERSION,
                 document,
             }),

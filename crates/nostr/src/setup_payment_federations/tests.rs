@@ -39,6 +39,7 @@ fn content(invites: &[&str]) -> String {
         guardian_link: None,
         min_mg_version: None,
         recommended_min_mg_version: None,
+        fedimintd_0_13_federations: Vec::new(),
     })
     .expect("test content serializes")
 }

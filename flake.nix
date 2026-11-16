@@ -22,6 +22,13 @@
       flake = false;
     };
     fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi28";
+    # The second bundled fedimintd line (ARCH-manifold-guardian-seat-processes
+    # *Subprocess model*): Fedi's 0.13 fork, built from source by the separate
+    # `crates/mg/fedimintd-0.13` Cargo workspace.
+    fedimint-0_13 = {
+      url = "github:fedibtc/fedimint/706486ca18ac20ccafd0b64adb2df7604f319a5d";
+      flake = false;
+    };
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -44,6 +51,7 @@
       selfci,
       peerbadge-sdk-src,
       fedimint,
+      fedimint-0_13,
       fedi,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -201,6 +209,23 @@
           src = fedi;
           patches = [ ./patches/fedi-stability-pool-config-version.patch ];
         };
+        # The 0.13 line links no Fedimint client crate, so the client-side
+        # payment log redaction above has nothing to patch there; only the test
+        # environment patches apply.
+        fedimint013Patched = pkgs.applyPatches {
+          name = "fedimint-0.13-test-patches";
+          src = fedimint-0_13;
+          patches = [
+            ./patches/fedimint-dkg-test-pause.patch
+            ./patches/fedimint-test-scheduled-shutdown-wait.patch
+          ];
+        };
+        # The same Fedi stability-pool source, adapted to the 0.13 decoding API.
+        fedi013Patched = pkgs.applyPatches {
+          name = "fedi-stability-pool-fedimint-0.13";
+          src = fediPatched;
+          patches = [ ./patches/fedi-stability-pool-fedimint-0.13.patch ];
+        };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
 
@@ -232,6 +257,8 @@
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
           link_dependency fedi ${fediPatched}
+          link_dependency fedimint-0.13 ${fedimint013Patched}
+          link_dependency fedi-0.13 ${fedi013Patched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
           link_dependency fedimint-aleph-bft ${alephBftPatched}
         '';
@@ -374,6 +401,51 @@
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
             };
 
+            # The 0.13 fedimintd line: its own Cargo workspace and lockfile
+            # (see crates/mg/fedimintd-0.13/Cargo.toml), hence its own vendored
+            # dependencies. It has no tests of its own.
+            fedimintd013Args = {
+              pname = "fedimintd-0-13";
+              cargoVendorDir = craneLib.vendorCargoDeps {
+                cargoLock = ./crates/mg/fedimintd-0.13/Cargo.lock;
+              };
+              cargoExtraArgs = "--locked --manifest-path crates/mg/fedimintd-0.13/Cargo.toml";
+              doCheck = false;
+            };
+            fedimintd013Deps = craneLib.buildDepsOnly (
+              fedimintd013Args
+              // {
+                # Crane's dummy source keeps only the root Cargo.lock.
+                dummySrc = pkgs.runCommand "fedimintd-0-13-dummy-src" { } ''
+                  cp -r ${craneLib.mkDummySrc { src = buildSrc; }} "$out"
+                  chmod -R u+w "$out"
+                  cp ${./crates/mg/fedimintd-0.13/Cargo.lock} "$out/crates/mg/fedimintd-0.13/Cargo.lock"
+                '';
+              }
+            );
+            fedimintd013 = craneLib.buildPackage (
+              fedimintd013Args
+              // {
+                cargoArtifacts = fedimintd013Deps;
+                env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimint013SourceRev;
+                # Crane's installer lists the members of the workspace in the
+                # current directory, which is the main one; pick the binary from
+                # the build log instead.
+                doNotPostBuildInstallCargoBinaries = true;
+                nativeBuildInputs = [
+                  pkgs.cmake
+                  pkgs.jq
+                  pkgs.pkg-config
+                ];
+                installPhaseCommand = ''
+                  mkdir -p "$out/bin"
+                  jq -rR 'fromjson? | select(.reason == "compiler-artifact" and .target.name == "fedimintd-0-13") | .executable | select(. != null)' \
+                    <"$cargoBuildLog" | xargs -I{} cp {} "$out/bin/"
+                  test -x "$out/bin/fedimintd-0-13"
+                '';
+              }
+            );
+
             fleetManager = craneLib.buildPackage {
               cargoArtifacts = workspaceDeps;
               # Shipped daemon builds consume their Vite output. Workspace,
@@ -384,6 +456,9 @@
               # Keep it tied to the reviewed Fedimint input, not the Manifold
               # checkout or a source snapshot's missing `.git` fallback.
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
+              # The MG runs the 0.13 line from beside its own executable
+              # (`mg_core::bundled_fedimintd::program`).
+              postInstall = "cp ${fedimintd013}/bin/fedimintd-0-13 $out/bin/";
             };
 
             setupPaymentPublisher = craneLib.buildPackage {
@@ -418,6 +493,9 @@
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
               env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
+              # The MG runs the 0.13 line from beside its own executable
+              # (`mg_core::bundled_fedimintd::program`).
+              postInstall = "cp ${fedimintd013}/bin/fedimintd-0-13 $out/bin/";
             };
 
             tests =
@@ -1000,6 +1078,8 @@
         fedimintdMetricVersion = "0.12.0";
         fedimintSourceRev = "5bdb75485c4aaaeead4ab655fff6c62852de80b0";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
+        # The 0.13 line's `fedimint-0_13` input; it reports this in `app_start_ts`.
+        fedimint013SourceRev = "706486ca18ac20ccafd0b64adb2df7604f319a5d";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI

@@ -57,6 +57,11 @@ cargo build --locked "${build_args[@]}" \
   -p mg-cli \
   -p fa-cli \
   -p devmon
+# The 0.13 fedimintd line is its own Cargo workspace. The MG runs it from
+# beside fleet-manager, so it builds into the same directory.
+cargo build --locked "${build_args[@]}" \
+  --manifest-path crates/mg/fedimintd-0.13/Cargo.toml \
+  --target-dir "$target_dir"
 
 # Resolve a service binary from the dev shell PATH, failing with a teaching
 # error instead of letting a test die on a missing binary mid-run.

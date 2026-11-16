@@ -241,11 +241,15 @@ between sessions:
   endpoint exits with its ordinary code. On the session-boundary exit the
   source records `Transferred`, which also keeps the supervisor from ever
   starting the guardian again.
-- Only the source MG, on `TransferSeat`, calls
-  `shutdown_after_current_session`, so the exit code is the handover. This
-  is an accepted risk: anyone holding the guardian's admin password can call
-  that endpoint by hand, and the source then retires the seat as if it had
-  been transferred. The same password can already stop the guardian.
+- Only the source MG calls `shutdown_after_current_session`: on
+  `TransferSeat`, or to move the seat to a newer `fedimintd` line
+  ([ARCH-manifold-guardian-seat-processes](./ARCH-manifold-guardian-seat-processes.md#fedimintd-lines)).
+  The exit code is the handover unless the MG asked that process for a line
+  move; that exit moves the line instead, and the destination's next
+  `TransferSeat` asks the restarted process. This is an accepted risk:
+  anyone holding the guardian's admin password can call that endpoint by
+  hand, and the source then retires the seat as if it had been transferred.
+  The same password can already stop the guardian.
 - Any other exit is a crash, including a session timeout, a panic, and a
   kill by the watchdog or the operator. The guardian restarts from its own
   database, which continues its session rather than forking it, and the

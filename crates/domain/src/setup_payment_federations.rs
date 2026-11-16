@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::str::FromStr;
@@ -391,6 +391,16 @@ pub struct SetupPaymentFederationsContent {
     /// otherwise runs as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended_min_mg_version: Option<MgVersion>,
+
+    /// Federations whose guardians move from the 0.12 `fedimintd` line to
+    /// 0.13. An MG that hosts both lines moves each of its seats in a listed
+    /// federation between two sessions; each guardian moves on its own MG's
+    /// poll, so a federation runs mixed lines for a while. A move is
+    /// one-way: removing a federation does not move it back. Optional on the
+    /// wire: absent, no federation moves. Omitted when empty, like
+    /// [`Self::seat_memory_budget_mib`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fedimintd_0_13_federations: Vec<FederationId>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -415,6 +425,7 @@ pub struct AdmittedSetupPaymentFederations {
     guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
+    fedimintd_0_13_federations: BTreeSet<FederationId>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -427,8 +438,9 @@ impl AdmittedSetupPaymentFederations {
     /// Returns an error for oversized or malformed content, excessive entries,
     /// invalid, oversized, or secret-bearing invites, duplicate derived
     /// federation IDs, a minimum fee rate above the payer's send-rate
-    /// ceiling, a minimum uptime above 100%, or a minimum or recommended
-    /// MG release above the latest one.
+    /// ceiling, a minimum uptime above 100%, a minimum or recommended
+    /// MG release above the latest one, or a `fedimintd` line move naming
+    /// something other than a canonical federation ID.
     pub fn parse(raw_content: &[u8]) -> Result<Self, SetupPaymentFederationsContentError> {
         if raw_content.len() > SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES {
             return Err(SetupPaymentFederationsContentError::ContentTooLarge);
@@ -530,6 +542,19 @@ impl AdmittedSetupPaymentFederations {
         {
             return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
         }
+        // Canonical spelling only: consumers match these against the IDs
+        // they derive from invites, as `federations` keys are derived above.
+        let fedimintd_0_13_federations = content
+            .fedimintd_0_13_federations
+            .into_iter()
+            .map(|federation_id| {
+                fedimint_core::config::FederationId::from_str(&federation_id.0)
+                    .ok()
+                    .filter(|parsed| parsed.to_string() == federation_id.0)
+                    .map(|_| federation_id)
+                    .ok_or(SetupPaymentFederationsContentError::InvalidFedimintdLineFederation)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
             if invite_code.0.is_empty() {
@@ -571,6 +596,7 @@ impl AdmittedSetupPaymentFederations {
             guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
+            fedimintd_0_13_federations,
         })
     }
 
@@ -698,6 +724,13 @@ impl AdmittedSetupPaymentFederations {
     pub fn recommended_min_mg_version(&self) -> Option<&MgVersion> {
         self.recommended_min_mg_version.as_ref()
     }
+
+    /// Return the federations whose guardians move to the 0.13 `fedimintd`
+    /// line; empty when the event names none.
+    #[must_use]
+    pub fn fedimintd_0_13_federations(&self) -> &BTreeSet<FederationId> {
+        &self.fedimintd_0_13_federations
+    }
 }
 
 /// Failure while parsing or semantically admitting publication content.
@@ -759,6 +792,10 @@ pub enum SetupPaymentFederationsContentError {
     RecommendedMinMgVersionAboveLatest,
     /// An absence limit must allow a positive amount of time.
     ZeroOfflineDuration,
+
+    /// A `fedimintd` line move names something other than a canonical
+    /// federation ID.
+    InvalidFedimintdLineFederation,
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
@@ -803,6 +840,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::RecommendedMinMgVersionAboveLatest => {
                 "setup-payment federation set sets a recommended MG release above the latest one"
+            }
+            Self::InvalidFedimintdLineFederation => {
+                "setup-payment federation set moves a fedimintd line for an invalid federation id"
             }
         };
         formatter.write_str(message)

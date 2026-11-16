@@ -1,0 +1,10 @@
+[package]
+name = "mg-spv2-params"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately dependency-free: both bundled fedimintd lines read it, and each
+# line links its own Fedimint and stability-pool sources.
+[dependencies]

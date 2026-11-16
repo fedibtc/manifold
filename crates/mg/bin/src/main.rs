@@ -27,7 +27,6 @@ mod transfer_source;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
@@ -66,11 +65,6 @@ use stability_pool_server::StabilityPoolInit;
 use stability_pool_server::common::config::{CollateralRatio, OracleConfig};
 use tracing_subscriber::prelude::*;
 
-const MANIFOLD_SPV2_CYCLE_DURATION: Duration = Duration::from_secs(10 * 60);
-const MANIFOLD_SPV2_MIN_SEEK: Amount = Amount::from_msats(10_000);
-const MANIFOLD_SPV2_MIN_PROVIDE: Amount = Amount::from_msats(100_000);
-const MANIFOLD_SPV2_MAX_PROVIDER_FEE_RATE_PPB: u64 = 22_062;
-const MANIFOLD_SPV2_MIN_CANCELLATION_BPS: u32 = 100;
 const N0_PKARR_RELAY: &str = "https://dns.iroh.link/pkarr";
 
 #[cfg(test)]
@@ -738,24 +732,19 @@ fn is_bundled_fedimintd() -> bool {
 }
 
 fn manifold_stability_pool_init() -> StabilityPoolInit {
+    let (provider, seeker) = mg_spv2_params::COLLATERAL_RATIO;
     StabilityPoolInit {
-        // The local E2E environment is network-isolated, so its real
-        // fedimintd processes use the module's deterministic oracle rather
-        // than waiting forever on public price sources.
-        oracle_config: if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
+        oracle_config: if mg_spv2_params::use_mock_oracle() {
             OracleConfig::Mock
         } else {
             OracleConfig::Aggregate
         },
-        cycle_duration: MANIFOLD_SPV2_CYCLE_DURATION,
-        collateral_ratio: CollateralRatio {
-            provider: 1,
-            seeker: 1,
-        },
-        min_allowed_seek: MANIFOLD_SPV2_MIN_SEEK,
-        min_allowed_provide: MANIFOLD_SPV2_MIN_PROVIDE,
-        max_allowed_provide_fee_rate_ppb: MANIFOLD_SPV2_MAX_PROVIDER_FEE_RATE_PPB,
-        min_allowed_cancellation_bps: MANIFOLD_SPV2_MIN_CANCELLATION_BPS,
+        cycle_duration: mg_spv2_params::CYCLE_DURATION,
+        collateral_ratio: CollateralRatio { provider, seeker },
+        min_allowed_seek: Amount::from_msats(mg_spv2_params::MIN_SEEK_MSATS),
+        min_allowed_provide: Amount::from_msats(mg_spv2_params::MIN_PROVIDE_MSATS),
+        max_allowed_provide_fee_rate_ppb: mg_spv2_params::MAX_PROVIDER_FEE_RATE_PPB,
+        min_allowed_cancellation_bps: mg_spv2_params::MIN_CANCELLATION_BPS,
     }
 }
 

@@ -317,7 +317,8 @@ entire FA surface and is kept small and scannable for those two facts.
 Adding a wire verb without a trait method fails compilation.
 
 `GetQuote` applies release policy before quoting: the requested
-fedimintd version must equal the release's sole supported version, the
+fedimintd version must equal the release's formation line
+([ARCH-manifold-guardian-seat-processes](./ARCH-manifold-guardian-seat-processes.md#fedimintd-lines)), the
 federation size must be between 7 and 20 inclusive, and the selected plan must
 exactly match a currently offered plan. For a paid plan, the named payment
 federation must be a member of the accepted common setup-payment set — read

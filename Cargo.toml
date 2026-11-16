@@ -1,5 +1,13 @@
 [workspace]
-exclude = [".nix-deps/fedi", ".nix-deps/fedimint", ".nix-deps/peerbadge-sdk"]
+exclude = [
+  ".nix-deps/fedi",
+  ".nix-deps/fedi-0.13",
+  ".nix-deps/fedimint",
+  ".nix-deps/fedimint-0.13",
+  ".nix-deps/peerbadge-sdk",
+  # A separate workspace: it links the 0.13 Fedimint source.
+  "crates/mg/fedimintd-0.13",
+]
 members = [
   "crates/bounded-rolling-file",
   "crates/cloud-mg-telemetry",
@@ -27,6 +35,7 @@ members = [
   "crates/mg/fedimint",
   "crates/mg/meta-fields",
   "crates/mg/nostr",
+  "crates/mg/spv2-params",
   "crates/mg/telemetry",
   "crates/nostr",
   "crates/nostr-clients",

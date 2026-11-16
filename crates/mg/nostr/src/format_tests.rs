@@ -2,7 +2,7 @@ use fedi_decentralized_service_manifold_guardian::{
     FaId, FederationSize, InviteCode, Plan, QuoteId,
 };
 use mg_core::backup::GuardianArchiveRef;
-use mg_core::facts::{SeatFacts, SeatNo};
+use mg_core::facts::{FedimintdLine, SeatFacts, SeatNo};
 use mg_core::identity::RootMnemonic;
 use mg_core::legacy_layout::LegacyGuardianArchive;
 
@@ -91,6 +91,7 @@ fn formed_publication(facts: &SeatFacts, archive: &GuardianArchive) -> SeatPubli
     SeatPublication {
         document: SeatBackupDocument::new(
             facts,
+            FedimintdLine::V0_12,
             None,
             Some(GuardianArchiveRef {
                 archive_sha256: archive.digest(),
@@ -106,7 +107,13 @@ fn formed_publication(facts: &SeatFacts, archive: &GuardianArchive) -> SeatPubli
 fn seat_document_roundtrips_through_seal_and_restores_the_original_facts() {
     let identity = test_identity();
     let facts = seat_facts();
-    let document = SeatBackupDocument::new(&facts, None, Some(guardian_ref()), None);
+    let document = SeatBackupDocument::new(
+        &facts,
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref()),
+        None,
+    );
 
     let sealed = identity.seal_seat_document(&document).unwrap();
     let recovered = identity.open_seat_document(&sealed).unwrap().document;
@@ -128,13 +135,20 @@ fn sealed_contents_are_one_fixed_size_whatever_they_carry() {
     let formed = identity
         .seal_seat_document(&SeatBackupDocument::new(
             &facts,
+            FedimintdLine::V0_12,
             None,
             Some(guardian_ref()),
             None,
         ))
         .unwrap();
     let unformed = identity
-        .seal_seat_document(&SeatBackupDocument::new(&facts, None, None, None))
+        .seal_seat_document(&SeatBackupDocument::new(
+            &facts,
+            FedimintdLine::V0_12,
+            None,
+            None,
+            None,
+        ))
         .unwrap();
     let slices = identity.seal_archive(&big_guardian_archive());
 
@@ -154,6 +168,7 @@ fn an_oversized_document_fails_loudly_instead_of_being_truncated() {
     let identity = test_identity();
     let document = SeatBackupDocument::new(
         &seat_facts(),
+        FedimintdLine::V0_12,
         None,
         Some(GuardianArchiveRef {
             archive_sha256: "11".repeat(32),
@@ -171,7 +186,13 @@ fn an_oversized_document_fails_loudly_instead_of_being_truncated() {
 
 #[test]
 fn another_mnemonic_cannot_read_a_backup() {
-    let document = SeatBackupDocument::new(&seat_facts(), None, Some(guardian_ref()), None);
+    let document = SeatBackupDocument::new(
+        &seat_facts(),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref()),
+        None,
+    );
     let sealed = test_identity().seal_seat_document(&document).unwrap();
 
     let err = stranger_identity().open_seat_document(&sealed).unwrap_err();
@@ -184,7 +205,13 @@ fn another_mnemonic_cannot_read_a_backup() {
 #[test]
 fn backup_events_carry_only_their_blinded_coordinate() {
     let identity = test_identity();
-    let document = SeatBackupDocument::new(&seat_facts(), None, Some(guardian_ref()), None);
+    let document = SeatBackupDocument::new(
+        &seat_facts(),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref()),
+        None,
+    );
     let events = published_events(
         &identity,
         &SeatPublication {
@@ -311,6 +338,7 @@ fn legacy_published_events(
     ciborium::into_writer(archive, &mut bytes).unwrap();
     let document = SeatBackupDocument::new(
         facts,
+        FedimintdLine::V0_12,
         None,
         Some(GuardianArchiveRef {
             archive_sha256: sha256_hex(&bytes),
@@ -540,7 +568,7 @@ fn a_document_from_a_future_version_is_refused() {
     let mut payload = Vec::new();
     ciborium::into_writer(
         &Envelope {
-            version: TRANSFER_DOCUMENT_VERSION + 1,
+            version: LINE_DOCUMENT_VERSION + 1,
             document: 0xF00D_u32,
         },
         &mut payload,
@@ -565,7 +593,7 @@ fn a_removal_tombstone_claims_only_its_obsolete_archive_slices() {
     old_events.pop().unwrap(); // replaced seat document
     assert!(old_events.len() > 1);
     old_events.remove(0); // an omitted obsolete slice is irrelevant too
-    let mut document = SeatBackupDocument::new(&facts, None, None, None);
+    let mut document = SeatBackupDocument::new(&facts, FedimintdLine::V0_12, None, None, None);
     document.transfer = Some(TransferBackup {
         incoming: None,
         outgoing: Some(OutgoingTransferBackup {
@@ -696,7 +724,7 @@ fn a_transfer_document_restores_with_its_archive() {
 fn transfer_facts_under_the_wrong_version_are_refused() {
     let identity = test_identity();
     let stopped = stopped_source_publication(&seat_facts(), &guardian_archive(64)).document;
-    let ordinary = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let ordinary = SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None);
     for (case, version, document) in [
         (
             "transfer facts at version 2",
@@ -732,7 +760,7 @@ fn transfer_facts_under_the_wrong_version_are_refused() {
 #[test]
 fn a_non_canonical_frame_is_refused() {
     let identity = test_identity();
-    let document = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let document = SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None);
     let mut payload = Vec::new();
     ciborium::into_writer(
         &Envelope {
@@ -792,7 +820,13 @@ fn a_document_with_a_legacy_seat_number_still_opens() {
         seat_no: u32,
     }
     let identity = test_identity();
-    let document = SeatBackupDocument::new(&seat_facts(), None, Some(guardian_ref()), None);
+    let document = SeatBackupDocument::new(
+        &seat_facts(),
+        FedimintdLine::V0_12,
+        None,
+        Some(guardian_ref()),
+        None,
+    );
     let mut payload = Vec::new();
     ciborium::into_writer(
         &Envelope {
@@ -821,7 +855,8 @@ fn published_events_decode_into_the_fleet_they_describe() {
     let identity = test_identity();
     let archive = big_guardian_archive();
     let publication = formed_publication(&seat_facts_no(1, 0), &archive);
-    let unformed = SeatBackupDocument::new(&seat_facts_no(2, 1), None, None, None);
+    let unformed =
+        SeatBackupDocument::new(&seat_facts_no(2, 1), FedimintdLine::V0_12, None, None, None);
 
     let mut events = published_events(&identity, &publication);
     assert!(events.len() > 2, "the interesting case is a sliced archive");
@@ -892,6 +927,7 @@ fn one_seats_slices_do_not_stand_in_for_another_seats() {
     let backed_up = formed_publication(&seat_facts_no(6, 0), &archive);
     let bare = SeatBackupDocument::new(
         &seat_facts_no(7, 1),
+        FedimintdLine::V0_12,
         None,
         Some(GuardianArchiveRef {
             archive_sha256: archive.digest(),
@@ -922,7 +958,7 @@ fn one_seats_slices_do_not_stand_in_for_another_seats() {
 /// whatever that document held, permanently and without anyone being told.
 #[test]
 fn a_document_that_cannot_be_read_refuses_the_restore() {
-    let seat = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let seat = SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None);
 
     // Relay answers are signature-verified and filtered by author, so this
     // stands in for the case that can actually reach a restore: a payload
@@ -967,7 +1003,7 @@ fn a_single_slice_archive_restores() {
 fn a_duplicate_document_event_refuses_the_restore() {
     let identity = test_identity();
     let publication = SeatPublication {
-        document: SeatBackupDocument::new(&seat_facts(), None, None, None),
+        document: SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None),
         archive: None,
     };
     let mut events = published_events(&identity, &publication);
@@ -990,7 +1026,7 @@ fn a_duplicate_document_event_refuses_the_restore() {
 fn a_document_at_a_foreign_coordinate_refuses_the_restore() {
     let identity = test_identity();
     let publication = SeatPublication {
-        document: SeatBackupDocument::new(&seat_facts(), None, None, None),
+        document: SeatBackupDocument::new(&seat_facts(), FedimintdLine::V0_12, None, None, None),
         archive: None,
     };
     let content = published_events(&identity, &publication).remove(0).content;
@@ -1055,5 +1091,102 @@ fn padding_boundaries_produce_whole_uniform_events() {
     let uniform = exact[0].len();
     for slice in exact.iter().chain(&spilled).chain(&empty) {
         assert_eq!(slice.len(), uniform);
+    }
+}
+
+/// A document's envelope version, as every reader reads it before the body.
+fn envelope_version(identity: &BackupIdentity, content: &str) -> u32 {
+    let blob = BASE64.decode(content).unwrap();
+    let plaintext = identity.open_blob(&blob, AAD_DOCUMENT).unwrap();
+    let version: Envelope<serde::de::IgnoredAny> =
+        ciborium::from_reader(unframe(&plaintext).unwrap()).unwrap();
+    version.version
+}
+
+fn on_0_13(mut publication: SeatPublication) -> SeatPublication {
+    publication.document.fedimintd_line = FedimintdLine::V0_13;
+    publication
+}
+
+/// Readers from before `fedimintd` lines accept versions 1 to 3 and ignore
+/// unknown fields, so they would restore a 0.13 seat onto 0.12. Every 0.13
+/// document, with or without transfer facts, carries a version they refuse;
+/// 0.12 documents keep the versions they had.
+#[test]
+fn a_pre_line_reader_refuses_every_newer_line_document_and_reads_the_rest() {
+    let identity = test_identity();
+    let archive = guardian_archive(64);
+    let version_of = |publication: &SeatPublication| {
+        envelope_version(
+            &identity,
+            &published_events(&identity, publication)
+                .pop()
+                .unwrap()
+                .content,
+        )
+    };
+    let pre_line_versions = [
+        LEGACY_DOCUMENT_VERSION,
+        BACKUP_DOCUMENT_VERSION,
+        TRANSFER_DOCUMENT_VERSION,
+    ];
+    let formed = formed_publication(&seat_facts(), &archive);
+    let stopped = stopped_source_publication(&seat_facts(), &archive);
+    assert_eq!(version_of(&formed), BACKUP_DOCUMENT_VERSION);
+    assert_eq!(version_of(&stopped), TRANSFER_DOCUMENT_VERSION);
+    for publication in [on_0_13(formed), on_0_13(stopped)] {
+        assert!(!pre_line_versions.contains(&version_of(&publication)));
+    }
+}
+
+/// A 0.13 document names the current archive generation and restores with
+/// its line, also when it carries transfer facts.
+#[test]
+fn a_newer_line_document_restores_with_its_line_and_archive() {
+    let identity = test_identity();
+    let archive = big_guardian_archive();
+    for publication in [
+        on_0_13(formed_publication(&seat_facts(), &archive)),
+        on_0_13(stopped_source_publication(&seat_facts(), &archive)),
+    ] {
+        let events = published_events(&identity, &publication);
+        let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
+        assert_eq!(recovered.seats, vec![publication.document.clone()]);
+        assert_eq!(recovered.seats[0].fedimintd_line, FedimintdLine::V0_13);
+        assert_eq!(
+            recovered.archives.get(&publication.document.seat_id),
+            Some(&archive)
+        );
+    }
+}
+
+/// A newer line and the line version come together: a 0.13 document at an
+/// older version is one a pre-line reader would restore onto 0.12, and a
+/// 0.12 document at the line version is no writer's output.
+#[test]
+fn a_line_under_the_wrong_version_is_refused() {
+    let identity = test_identity();
+    let archive = guardian_archive(64);
+    let formed_0_13 = on_0_13(formed_publication(&seat_facts(), &archive)).document;
+    let stopped_0_13 = on_0_13(stopped_source_publication(&seat_facts(), &archive)).document;
+    let formed_0_12 = formed_publication(&seat_facts(), &archive).document;
+    for (case, version, document) in [
+        ("0.13 at version 2", BACKUP_DOCUMENT_VERSION, &formed_0_13),
+        ("0.13 at version 1", LEGACY_DOCUMENT_VERSION, &formed_0_13),
+        (
+            "0.13 transfer at version 3",
+            TRANSFER_DOCUMENT_VERSION,
+            &stopped_0_13,
+        ),
+        ("0.12 at version 4", LINE_DOCUMENT_VERSION, &formed_0_12),
+    ] {
+        let mut payload = Vec::new();
+        ciborium::into_writer(&Envelope { version, document }, &mut payload).unwrap();
+        let sealed = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
+        let err = identity.open_seat_document(&sealed).unwrap_err();
+        assert!(
+            matches!(err, BackupError::LineVersion),
+            "{case}: expected LineVersion, got {err:?}"
+        );
     }
 }

@@ -312,6 +312,7 @@ pub(crate) async fn install(
                     federation_invite: guardian.federation_invite.clone(),
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
+            fedimintd_line: seat.fedimintd_line,
             incoming_transfer,
             outgoing_transfer: seat
                 .transfer

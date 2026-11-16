@@ -293,6 +293,55 @@ async fn seat_creation_facts_and_startup_load_roundtrip() {
     assert_eq!(payment.outcome, None);
 }
 
+/// A new seat forms on the release's formation line and later moves only
+/// forward. The move names the line it leaves, so a stale mover cannot
+/// overwrite a newer line, and the schema admits only hosted lines.
+#[tokio::test]
+async fn fedimintd_line_starts_at_formation_and_moves_only_from_the_stored_line() {
+    let (_dir, db) = open_db().await;
+    let seat = crate::test_support::insert_test_seat(&db, new_seat(41)).await;
+    let id = &seat.seat_id;
+    assert_eq!(
+        db.fedimintd_line(id).await.unwrap(),
+        FedimintdLine::FORMATION
+    );
+    assert_eq!(FedimintdLine::FORMATION, FedimintdLine::V0_12);
+
+    assert!(
+        db.move_fedimintd_line(id, FedimintdLine::V0_12, FedimintdLine::V0_13)
+            .await
+            .unwrap()
+    );
+    assert_eq!(db.fedimintd_line(id).await.unwrap(), FedimintdLine::V0_13);
+    assert_eq!(
+        db.seat_recovery_facts(id).await.unwrap().fedimintd_line,
+        FedimintdLine::V0_13,
+        "backups read the moved line"
+    );
+    assert!(
+        !db.move_fedimintd_line(id, FedimintdLine::V0_12, FedimintdLine::V0_13)
+            .await
+            .unwrap()
+    );
+    assert_eq!(db.fedimintd_line(id).await.unwrap(), FedimintdLine::V0_13);
+
+    let unhosted = sqlx::query("UPDATE seats SET fedimintd_line = '0.14' WHERE quote_id = ?")
+        .bind(id.as_bytes().as_slice())
+        .execute(db.pool())
+        .await;
+    assert!(unhosted.is_err(), "the schema admits only hosted lines");
+}
+
+#[tokio::test]
+#[should_panic(expected = "only moves to a newer fedimintd line")]
+async fn fedimintd_line_never_moves_back() {
+    let (_dir, db) = open_db().await;
+    let seat = crate::test_support::insert_test_seat(&db, new_seat(42)).await;
+    let _ = db
+        .move_fedimintd_line(&seat.seat_id, FedimintdLine::V0_13, FedimintdLine::V0_12)
+        .await;
+}
+
 #[tokio::test]
 async fn free_seat_has_no_payment_ledger_row() {
     let (_dir, db) = open_db().await;

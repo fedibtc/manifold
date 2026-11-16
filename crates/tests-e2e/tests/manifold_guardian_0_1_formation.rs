@@ -43,6 +43,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "manifold_guardian_0_1_formation/fedimintd_line.rs"]
+mod fedimintd_line;
 #[path = "manifold_guardian_0_1_formation/guardian_transfer.rs"]
 mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
@@ -4536,8 +4538,34 @@ async fn start_daemons(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> (Vec<Child>, Vec<String>) {
+    start_daemons_from(
+        &vec![manifold_guardian_bin; guardian_count],
+        temp,
+        bitcoind,
+        max_seats,
+        first_port_base,
+        iroh_overrides,
+        nostr,
+        push_gateway_origin,
+    )
+    .await
+}
+
+/// [`start_daemons`], daemon `index` running `manifold_guardian_bins[index]`.
+#[expect(clippy::too_many_arguments)]
+async fn start_daemons_from(
+    manifold_guardian_bins: &[&Path],
+    temp: &Path,
+    bitcoind: &defe_api::BitcoindInfo,
+    max_seats: u32,
+    first_port_base: u16,
+    iroh_overrides: Option<&str>,
+    nostr: Option<NostrEnv<'_>>,
+    push_gateway_origin: Option<&str>,
+) -> (Vec<Child>, Vec<String>) {
+    let guardian_count = manifold_guardian_bins.len();
     let mut starting = Vec::with_capacity(guardian_count);
-    for index in 0..guardian_count {
+    for (index, manifold_guardian_bin) in manifold_guardian_bins.iter().copied().enumerate() {
         let data_dir = temp.join(format!("mg-{index}"));
         // The seat port grid is per-host; give each daemon a disjoint block.
         let port_base = first_port_base + u16::try_from(index).unwrap() * MG_PORT_STRIDE;
@@ -4558,6 +4586,7 @@ async fn start_daemons(
 
     let ready = join_all(starting.into_iter().map(|(index, mut daemon)| {
         let data_dir = temp.join(format!("mg-{index}"));
+        let manifold_guardian_bin = manifold_guardian_bins[index];
         async move {
             // A Manifold Guardian has no identity until it is onboarded, so it waits
             // on its admin socket instead of serving RPC. This is the operator's
