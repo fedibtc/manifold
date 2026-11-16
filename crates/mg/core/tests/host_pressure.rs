@@ -11,7 +11,8 @@ fn at(secs: u64) -> SystemTime {
 }
 
 /// The maximums Fedi would first publish, which are also the defaults:
-/// CPU 15% over 6 hours and 10% over 3.5 days, IO 25% and 15%.
+/// CPU 15% over 6 hours and 10% over 3.5 days, IO 25% and 15%, memory 70% and
+/// 70%.
 fn max() -> HostPressure {
     HostPressure::from(MaxPressurePercent::default())
 }
@@ -53,10 +54,19 @@ fn finds_the_unified_cgroup_among_v1_lines() {
     assert_eq!(cgroup_v2_dir("4:memory:/docker/abc\n"), None);
 }
 
+/// A reading of a cgroup that has never stalled on memory.
 fn reading(secs: u64, cpu_us: u64, io_us: u64) -> PressureSample {
+    with_memory(secs, cpu_us, io_us, 0)
+}
+
+fn with_memory(secs: u64, cpu_us: u64, io_us: u64, memory_us: u64) -> PressureSample {
     PressureSample {
         at: at(secs),
-        totals: PressureTotals { cpu_us, io_us },
+        totals: PressureTotals {
+            cpu_us,
+            io_us,
+            memory_us,
+        },
     }
 }
 
@@ -75,6 +85,10 @@ fn averages(cpu: (f64, f64), io: (f64, f64)) -> PressureAverages {
             six_hours: io.0,
             three_and_a_half_days: io.1,
         },
+        memory: ResourceAverages {
+            six_hours: 0.0,
+            three_and_a_half_days: 0.0,
+        },
         // Fully weighted: a long history, where the correction is a no-op.
         weights: AverageWeights {
             six_hours: 1.0,
@@ -92,6 +106,10 @@ fn permille(cpu: (u16, u16), io: (u16, u16)) -> HostPressure {
         io: PressurePermille {
             six_hours: io.0,
             three_and_a_half_days: io.1,
+        },
+        memory: PressurePermille {
+            six_hours: 0,
+            three_and_a_half_days: 0,
         },
     }
 }
@@ -398,4 +416,52 @@ fn a_host_busy_from_the_start_fails_the_six_hour_window() {
             "after {secs} s"
         );
     }
+}
+
+/// Memory is a third resource like CPU and IO: the first interval seeds its
+/// averages at its share, its counter going back skips the interval for
+/// every resource, and each of its windows fails just above its maximum.
+#[test]
+fn memory_is_measured_and_compared_like_cpu_and_io() {
+    let first = PressureState::record(None, with_memory(0, 0, 0, 5_000));
+    let second = PressureState::record(
+        Some(first),
+        with_memory(STEP, 0, 0, 5_000 + stalled_us(STEP, 0.40)),
+    );
+    let seeded = second.averages.unwrap();
+    assert!(close(seeded.memory.six_hours, 0.40));
+    assert!(close(seeded.memory.three_and_a_half_days, 0.40));
+    assert!(close(seeded.cpu.six_hours, 0.0));
+    // 40% is within the 70% default maximums.
+    assert_eq!(
+        HostPressure::from(seeded).outcome(max()),
+        ReadinessOutcome::Pass
+    );
+    // The memory counter went back, CPU and IO moved on: nothing is folded.
+    let reset = PressureState::record(
+        Some(second),
+        with_memory(2 * STEP, stalled_us(STEP, 0.5), 0, 1),
+    );
+    assert_eq!(reset.averages, Some(seeded));
+
+    let memory = |six_hours, three_and_a_half_days| HostPressure {
+        memory: PressurePermille {
+            six_hours,
+            three_and_a_half_days,
+        },
+        ..permille((0, 0), (0, 0))
+    };
+    assert_eq!(memory(700, 700).outcome(max()), ReadinessOutcome::Pass);
+    assert_eq!(
+        memory(701, 0).outcome(max()),
+        ReadinessOutcome::SixHourPressureHigh
+    );
+    assert_eq!(
+        memory(0, 701).outcome(max()),
+        ReadinessOutcome::HalfWeekPressureHigh
+    );
+    assert_eq!(
+        memory(701, 701).outcome(max()),
+        ReadinessOutcome::SixHourPressureHigh
+    );
 }

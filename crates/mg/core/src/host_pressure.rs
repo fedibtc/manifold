@@ -1,10 +1,12 @@
-//! CPU and IO pressure on the cgroup this MG shares with its seats, as the
-//! readiness pressure check compares it
+//! CPU, IO and memory pressure on the cgroup this MG shares with its seats,
+//! as the readiness pressure check compares it
 //! ([`crate::seat_readiness`], `crates/mg/specs/SPEC-advertisement.md`).
 //!
 //! The kernel's pressure stall information (PSI) counts, per cgroup, the
-//! microseconds in which at least one task stalled waiting for a CPU or for
-//! storage IO. The counters are cumulative, so the share of an interval spent
+//! microseconds in which at least one task stalled waiting for a CPU, for
+//! storage IO or for memory (reclaim, swap-in, refaults). The kernel creates
+//! the three files together with every cgroup, whichever controllers are
+//! enabled, so they are readable together or not at all. The counters are cumulative, so the share of an interval spent
 //! stalled is the stall time added over the wall time elapsed. Each run folds
 //! that share into bias-corrected exponential moving averages, like the
 //! uptime scores ([`crate::seat_readiness::UptimeScores`]) but divided by the
@@ -78,6 +80,7 @@ pub fn cgroup_v2_dir(cgroup: &str) -> Option<PathBuf> {
 pub struct PressureTotals {
     pub cpu_us: u64,
     pub io_us: u64,
+    pub memory_us: u64,
 }
 
 /// Read the `some` stall counters of the cgroup this process runs in, which
@@ -95,6 +98,7 @@ pub fn read_cgroup_pressure() -> anyhow::Result<PressureTotals> {
     Ok(PressureTotals {
         cpu_us: read("cpu.pressure")?,
         io_us: read("io.pressure")?,
+        memory_us: read("memory.pressure")?,
     })
 }
 
@@ -125,12 +129,13 @@ pub struct AverageWeights {
     pub three_and_a_half_days: f64,
 }
 
-/// The bias-corrected stall share averages of both resources and the weight
+/// The bias-corrected stall share averages of every resource and the weight
 /// they carry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PressureAverages {
     pub cpu: ResourceAverages,
     pub io: ResourceAverages,
+    pub memory: ResourceAverages,
     pub weights: AverageWeights,
 }
 
@@ -139,6 +144,7 @@ pub struct PressureAverages {
 struct IntervalShares {
     cpu: f64,
     io: f64,
+    memory: f64,
     elapsed: Duration,
 }
 
@@ -161,6 +167,7 @@ impl IntervalShares {
         Some(Self {
             cpu: share(earlier.totals.cpu_us, later.totals.cpu_us)?,
             io: share(earlier.totals.io_us, later.totals.io_us)?,
+            memory: share(earlier.totals.memory_us, later.totals.memory_us)?,
             elapsed,
         })
     }
@@ -175,6 +182,10 @@ impl PressureAverages {
             three_and_a_half_days: 0.0,
         },
         io: ResourceAverages {
+            six_hours: 0.0,
+            three_and_a_half_days: 0.0,
+        },
+        memory: ResourceAverages {
             six_hours: 0.0,
             three_and_a_half_days: 0.0,
         },
@@ -208,6 +219,7 @@ impl PressureAverages {
         Self {
             cpu: resource(self.cpu, shares.cpu),
             io: resource(self.io, shares.io),
+            memory: resource(self.memory, shares.memory),
             weights,
         }
     }
@@ -255,6 +267,7 @@ impl PressureState {
 pub struct HostPressure {
     pub cpu: PressurePermille,
     pub io: PressurePermille,
+    pub memory: PressurePermille,
 }
 
 /// One resource's figures, in per-mille of wall time (0..=1000): the share of
@@ -280,6 +293,7 @@ impl From<PressureAverages> for HostPressure {
         Self {
             cpu: resource(averages.cpu),
             io: resource(averages.io),
+            memory: resource(averages.memory),
         }
     }
 }
@@ -293,17 +307,20 @@ impl From<MaxPressurePercent> for HostPressure {
         Self {
             cpu: resource(max.cpu),
             io: resource(max.io),
+            memory: resource(max.memory),
         }
     }
 }
 
 impl HostPressure {
     /// The readiness outcome of these averages against `max`, naming the
-    /// shorter window that fails, for either resource. The averages compare
-    /// at the 0.1% a report shows.
+    /// shorter window that fails, for any resource. The averages compare at
+    /// the 0.1% a report shows.
     pub fn outcome(self, max: Self) -> ReadinessOutcome {
         let over = |window: fn(PressurePermille) -> u16| {
-            window(self.cpu) > window(max.cpu) || window(self.io) > window(max.io)
+            window(self.cpu) > window(max.cpu)
+                || window(self.io) > window(max.io)
+                || window(self.memory) > window(max.memory)
         };
         if over(|windows| windows.six_hours) {
             ReadinessOutcome::SixHourPressureHigh

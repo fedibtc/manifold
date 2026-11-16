@@ -132,6 +132,10 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                             six_hours: 41,
                             three_and_a_half_days: 30,
                         },
+                        memory: PressurePermille {
+                            six_hours: 62,
+                            three_and_a_half_days: 18,
+                        },
                     }),
                     max_host_pressure: Some(HostPressure {
                         cpu: PressurePermille {
@@ -141,6 +145,10 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                         io: PressurePermille {
                             six_hours: 100,
                             three_and_a_half_days: 50,
+                        },
+                        memory: PressurePermille {
+                            six_hours: 700,
+                            three_and_a_half_days: 650,
                         },
                     }),
                     uptime: ReadinessOutcome::WeekUptimeLow,

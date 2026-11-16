@@ -382,6 +382,15 @@ pub struct SeatReadinessEvent {
     pub max_io_pressure_6h_pct: Option<f64>,
     #[serde(default)]
     pub max_io_pressure_3_5d_pct: Option<f64>,
+    /// The same averages and maximums for memory pressure.
+    #[serde(default)]
+    pub memory_pressure_6h_pct: Option<f64>,
+    #[serde(default)]
+    pub memory_pressure_3_5d_pct: Option<f64>,
+    #[serde(default)]
+    pub max_memory_pressure_6h_pct: Option<f64>,
+    #[serde(default)]
+    pub max_memory_pressure_3_5d_pct: Option<f64>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]

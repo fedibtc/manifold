@@ -72,7 +72,8 @@ pub struct MaxPressureWindows {
 }
 
 /// Maximum pressure averages, in percent, for the resources an MG's seats
-/// compete for: CPU and storage IO. Memory has its own seat limit.
+/// compete for: CPU, storage IO and memory. Memory also has its own seat
+/// limit, from the per-seat memory budget.
 ///
 /// Optional on the wire as a whole, per resource and per window: an omitted
 /// window takes its [`Default`] value, so a publication can change one window
@@ -82,6 +83,7 @@ pub struct MaxPressureWindows {
 pub struct MaxPressurePercent {
     pub cpu: MaxPressureWindows,
     pub io: MaxPressureWindows,
+    pub memory: MaxPressureWindows,
 }
 
 impl Default for MaxPressurePercent {
@@ -94,6 +96,10 @@ impl Default for MaxPressurePercent {
             io: MaxPressureWindows {
                 six_hours: 25,
                 three_and_a_half_days: 15,
+            },
+            memory: MaxPressureWindows {
+                six_hours: 70,
+                three_and_a_half_days: 70,
             },
         }
     }
@@ -108,6 +114,8 @@ struct MaxPressurePercentWire {
     cpu: MaxPressureWindowsWire,
     #[serde(default)]
     io: MaxPressureWindowsWire,
+    #[serde(default)]
+    memory: MaxPressureWindowsWire,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -131,6 +139,7 @@ impl From<MaxPressurePercentWire> for MaxPressurePercent {
         Self {
             cpu: windows(wire.cpu, defaults.cpu),
             io: windows(wire.io, defaults.io),
+            memory: windows(wire.memory, defaults.memory),
         }
     }
 }
@@ -303,8 +312,8 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg_v2: Option<u32>,
 
-    /// CPU and IO pressure averages above which an MG stops accepting new
-    /// seats. Optional on the wire: absent, [`MaxPressurePercent::default`]
+    /// CPU, IO and memory pressure averages above which an MG stops accepting
+    /// new seats. Optional on the wire: absent, [`MaxPressurePercent::default`]
     /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_pressure_percent: Option<MaxPressurePercent>,
@@ -408,7 +417,10 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
         }
         let max_pressure_percent = content.max_pressure_percent.unwrap_or_default();
-        if !max_pressure_percent.cpu.admissible() || !max_pressure_percent.io.admissible() {
+        if !max_pressure_percent.cpu.admissible()
+            || !max_pressure_percent.io.admissible()
+            || !max_pressure_percent.memory.admissible()
+        {
             return Err(SetupPaymentFederationsContentError::InvalidMaxPressure);
         }
         let max_guardian_offline_secs = content
@@ -573,7 +585,7 @@ impl AdmittedSetupPaymentFederations {
         self.max_seats_per_mg
     }
 
-    /// Return the maximum CPU and IO pressure averages for new seats; an
+    /// Return the maximum CPU, IO and memory pressure averages for new seats; an
     /// event that omits the field yields [`MaxPressurePercent::default`].
     #[must_use]
     pub fn max_pressure_percent(&self) -> MaxPressurePercent {

@@ -163,13 +163,15 @@ advertisement without waiting for the next slot, and lowering or removing it
 reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
-Each run also requires CPU and IO pressure averages of at most the
+Each run also requires CPU, IO and memory pressure averages of at most the
 setup-payment policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
-over 3.5 days, IO 25% and 15%, when absent or before a policy is admitted;
+over 3.5 days, IO 25% and 15%, memory 70% and 70%, when absent or before a
+policy is admitted;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 Each run reads the cumulative pressure stall (PSI `some`) counters of the
-cgroup the daemon shares with its seats, for CPU and for IO, and divides the
-stall time added since the previous reading by the wall time elapsed. It
+cgroup the daemon shares with its seats, for CPU, for IO and for memory, and
+divides the stall time added since the previous reading by the wall time
+elapsed. It
 folds that share into bias-corrected exponential moving averages with 6-hour
 and 3.5-day (84-hour) time constants: the uncorrected average and its weight
 each move `1 - exp(-elapsed / tau)` of the way to the share and to 1, and the
@@ -193,7 +195,8 @@ depend on CPU count or speed, and it counts only waits of this MG's tasks.
 Counters that cannot be read fail the check (`host_pressure_unavailable`),
 and so does the first run before any interval is measured
 (`host_pressure_measuring`): every MG release that journals resource samples
-reported both counters when this check was added. Like the version check, a
+reported the CPU and IO counters when this check was added, and the kernel
+creates the memory counter together with them. Like the version check, a
 failing pressure check stops new seats but the MG still serves its seats, so
 it is not a prerequisite and never marks a slot down. Local E2E, whose MGs
 all share one busy test host's cgroup, skips the pressure check as it skips

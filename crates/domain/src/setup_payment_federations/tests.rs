@@ -500,6 +500,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
     let defaults = MaxPressurePercent {
         cpu: windows(15, 10),
         io: windows(25, 15),
+        memory: windows(70, 70),
     };
     assert_eq!(MaxPressurePercent::default(), defaults);
     assert_eq!(parse("").unwrap().max_pressure_percent(), defaults);
@@ -509,12 +510,15 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
             .contains("max_pressure_percent")
     );
     assert_eq!(
-        parse(r#","max_pressure_percent":{"cpu":{"6h":30,"3.5d":20},"io":{"6h":40,"3.5d":25}}"#)
-            .unwrap()
-            .max_pressure_percent(),
+        parse(
+            r#","max_pressure_percent":{"cpu":{"6h":30,"3.5d":20},"io":{"6h":40,"3.5d":25},"memory":{"6h":50,"3.5d":45}}"#
+        )
+        .unwrap()
+        .max_pressure_percent(),
         MaxPressurePercent {
             cpu: windows(30, 20),
             io: windows(40, 25),
+            memory: windows(50, 45),
         }
     );
     // An omitted window or resource takes its own default, which differs by
@@ -526,6 +530,16 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
         MaxPressurePercent {
             cpu: windows(15, 10),
             io: windows(25, 8),
+            memory: windows(70, 70),
+        }
+    );
+    assert_eq!(
+        parse(r#","max_pressure_percent":{"memory":{"6h":40}}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        MaxPressurePercent {
+            memory: windows(40, 70),
+            ..defaults
         }
     );
     assert_eq!(
@@ -546,6 +560,8 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
         r#","max_pressure_percent":{"cpu":{"3.5d":0}}"#,
         r#","max_pressure_percent":{"io":{"6h":101}}"#,
         r#","max_pressure_percent":{"io":{"3.5d":101}}"#,
+        r#","max_pressure_percent":{"memory":{"6h":0}}"#,
+        r#","max_pressure_percent":{"memory":{"3.5d":101}}"#,
     ] {
         assert_eq!(
             parse(field),

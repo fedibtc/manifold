@@ -22,7 +22,7 @@ export const labels: Record<ReadinessCheck, string> = {
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
   version: 'Software version',
-  pressure: 'CPU and disk pressure',
+  pressure: 'CPU, disk and memory pressure',
   uptime: 'Uptime'
 };
 
@@ -39,7 +39,7 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   mg_version_too_old: 'Update required.',
   host_pressure_6h_high: 'Too busy over the last 6 hours.',
   host_pressure_3_5d_high: 'Too busy over the last 3.5 days.',
-  host_pressure_unavailable: 'This host’s CPU and disk pressure could not be read.',
+  host_pressure_unavailable: 'This host’s CPU, disk and memory pressure could not be read.',
   host_pressure_measuring: 'Measuring. The first figures arrive a minute after the host starts.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
@@ -74,7 +74,7 @@ export const updateGuidance =
   'This version of Manifold Guardian is below the minimum for new seats. Update to the latest release; this does not count against uptime.';
 
 export const pressureGuidance =
-  'This host has been too busy for more seats: its tasks spent too long waiting for CPU or disk. Move other work off it, or add CPU or faster disks; this does not count against uptime.';
+  'This host has been too busy for more seats: its tasks spent too long waiting for CPU, disk or memory. Move other work off it, or add CPU, memory or faster disks; this does not count against uptime.';
 
 /** Whether a pressure outcome is an average over its maximum, rather than missing figures. */
 export const pressureHigh = (outcome: ReadinessOutcome | undefined): boolean =>
@@ -103,7 +103,7 @@ export const uptimeLabels: Record<keyof UptimePermille, string> = {
 export const formatPermille = (permille: number): string => `${(permille / 10).toFixed(1)}%`;
 
 /** The pressure resources the gate compares, as the operator reads them. */
-export const PRESSURE_RESOURCES = ['cpu', 'io'] as const;
+export const PRESSURE_RESOURCES = ['cpu', 'io', 'memory'] as const;
 
 /** The pressure windows the gate compares, shortest first. */
 export const PRESSURE_WINDOWS: readonly (keyof PressurePermille)[] = ['6h', '3.5d'];
@@ -113,5 +113,6 @@ export const pressureLabels: Record<
   Record<keyof PressurePermille, string>
 > = {
   cpu: { '6h': 'CPU, 6-hour average', '3.5d': 'CPU, 3.5-day average' },
-  io: { '6h': 'Disk, 6-hour average', '3.5d': 'Disk, 3.5-day average' }
+  io: { '6h': 'Disk, 6-hour average', '3.5d': 'Disk, 3.5-day average' },
+  memory: { '6h': 'Memory, 6-hour average', '3.5d': 'Memory, 3.5-day average' }
 };

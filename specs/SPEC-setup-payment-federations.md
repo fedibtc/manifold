@@ -148,15 +148,15 @@ replacement ordering as the new shared high-water mark.
   ignore them and read only the `_v2` fields, with no fallback, so Fedi can
   publish separate limits for releases that run the newer readiness checks.
   A publication that wants the same limit for every release sets both;
-- `max_pressure_percent`, an object of CPU and IO pressure averages, each in
-  percent of wall time from 1 to 100, above which an MG stops accepting new
-  seats: `{"cpu": {"6h": ..., "3.5d": ...}, "io": {"6h": ..., "3.5d": ...}}`
-  for the averages with 6-hour and 3.5-day time constants. Pressure is the
-  share of time in which a task of the MG's cgroup stalled waiting for the
-  resource (PSI `some`)
+- `max_pressure_percent`, an object of CPU, IO and memory pressure averages,
+  each in percent of wall time from 1 to 100, above which an MG stops
+  accepting new seats: `{"cpu": {"6h": ..., "3.5d": ...}, "io": {...},
+  "memory": {...}}` for the averages with 6-hour and 3.5-day time constants.
+  Pressure is the share of time in which a task of the MG's cgroup stalled
+  waiting for the resource (PSI `some`)
   ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)).
   Optional as a whole, per resource and per window: an absent window means
-  CPU 15 and 10 and IO 25 and 15 respectively. Unknown resources and windows
+  CPU 15 and 10, IO 25 and 15, and memory 70 and 70 respectively. Unknown resources and windows
   are ignored. An MG whose pressure is over a maximum, or cannot be read,
   stops advertising and quoting new seats and keeps running its seats, and
   the check does not mark uptime down. Consumers that admit unknown fields
