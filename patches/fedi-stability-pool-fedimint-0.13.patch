@@ -1,0 +1,14 @@
+diff --git a/crates/modules/stability-pool/common/src/lib.rs b/crates/modules/stability-pool/common/src/lib.rs
+index 5fe15e2..dbdf1c4 100644
+--- a/crates/modules/stability-pool/common/src/lib.rs
++++ b/crates/modules/stability-pool/common/src/lib.rs
+@@ -183,7 +183,8 @@ impl Decodable for Account {
+         modules: &ModuleDecoderRegistry,
+     ) -> Result<Self, DecodeError> {
+         let raw = AccountUnchecked::consensus_decode_partial(r, modules)?;
+-        Ok(raw.try_into()?)
++        raw.try_into()
++            .map_err(|e: anyhow::Error| DecodeError::custom(e.to_string()))
+     }
+ }
+ 

@@ -1,0 +1,207 @@
+# The 0.13 fedimintd line, built as its own binary
+# (ARCH-manifold-guardian-seat-processes *Subprocess model*).
+#
+# This is a separate Cargo workspace because one workspace resolves one
+# Fedimint source: the main workspace links 0.12 into the MG binary, and the
+# `-sys` crates with `links` (RocksDB, secp256k1) cannot appear twice in one
+# binary. Nix provides `.nix-deps/fedimint-0.13` from the `fedimint-0_13` flake
+# input. Shared Manifold code must stay Fedimint-free to be usable here.
+[workspace]
+
+[package]
+name = "mg-fedimintd-0-13"
+version = "0.1.16"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/fedibtc/manifold"
+publish = false
+
+[[bin]]
+name = "fedimintd-0-13"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+fedimint-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-core" }
+fedimint-server-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server-core" }
+fedimintd = { path = "../../../.nix-deps/fedimint-0.13/fedimintd", default-features = false, features = [
+  "jemalloc",
+] }
+mg-spv2-params = { path = "../spv2-params" }
+safe-tracing = { path = "../../safe-tracing" }
+stability-pool-server = { path = "../../../.nix-deps/fedi-0.13/crates/modules/stability-pool/server" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[build-dependencies]
+fedimint-build = { path = "../../../.nix-deps/fedimint-0.13/fedimint-build" }
+
+[target.'cfg(not(any(target_env = "msvc", target_os = "ios", target_os = "android")))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling"] }
+
+# The flakebox profiles (`dev`, `ci`, `release`) must exist here too.
+[profile.dev]
+debug = false
+
+# Copied from the main workspace (and so from Fedimint's), less packages this
+# graph does not contain: DKG and RSA keygen are minutes-slow
+# at opt-level 0, and jemalloc's `configure` fails outright at `-O0` under Nix.
+[profile.dev.package]
+aleph-bft-crypto = { opt-level = 3 }
+aleph-bft-rmc = { opt-level = 3 }
+aleph-bft-types = { opt-level = 3 }
+bitcoin = { opt-level = 3 }
+bitcoin-io = { opt-level = 3 }
+bitcoin-units = { opt-level = 3 }
+bitcoin_hashes = { opt-level = 3 }
+block-buffer = { opt-level = 3 }
+bls12_381 = { opt-level = 3 }
+byteorder = { opt-level = 3 }
+digest = { opt-level = 3 }
+fedimint-core = { opt-level = 3 }
+fedimint-derive-secret = { opt-level = 3 }
+fedimint-threshold-crypto = { opt-level = 3 }
+fedimint-walletv2-common = { opt-level = 3 }
+ff = { opt-level = 3 }
+group = { opt-level = 3 }
+hashbrown = { opt-level = 3 }
+hex-conservative = { opt-level = 3 }
+hmac = { opt-level = 3 }
+libc = { opt-level = 3 }
+librocksdb-sys = { opt-level = 3 }
+memchr = { opt-level = 3 }
+miniscript = { opt-level = 3 }
+pairing = { opt-level = 3 }
+parity-scale-codec = { opt-level = 3 }
+ppv-lite86 = { opt-level = 3 }
+rand = { opt-level = 3 }
+rand_chacha = { opt-level = 3 }
+rand_core = { opt-level = 3 }
+regex = { opt-level = 3 }
+ring = { opt-level = 3 }
+rustls = { opt-level = 3 }
+secp256k1 = { opt-level = 3 }
+secp256k1-sys = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+subtle = { opt-level = 3 }
+tikv-jemalloc-sys = { opt-level = 3 }
+zeroize = { opt-level = 3 }
+
+[profile.dev.package."*"]
+# Keep dependencies without debug information if the workspace profile is
+# changed to "line-tables-only" for more useful workspace panic traces.
+debug = false
+
+[profile.ci]
+debug = false
+incremental = false
+inherits = "dev"
+lto = "off"
+
+# Repeated: `inherits` does not carry package-specific overrides.
+[profile.ci.package]
+aleph-bft-crypto = { opt-level = 3 }
+aleph-bft-rmc = { opt-level = 3 }
+aleph-bft-types = { opt-level = 3 }
+bitcoin = { opt-level = 3 }
+bitcoin-io = { opt-level = 3 }
+bitcoin-units = { opt-level = 3 }
+bitcoin_hashes = { opt-level = 3 }
+block-buffer = { opt-level = 3 }
+bls12_381 = { opt-level = 3 }
+byteorder = { opt-level = 3 }
+digest = { opt-level = 3 }
+fedimint-core = { opt-level = 3 }
+fedimint-derive-secret = { opt-level = 3 }
+fedimint-threshold-crypto = { opt-level = 3 }
+fedimint-walletv2-common = { opt-level = 3 }
+ff = { opt-level = 3 }
+group = { opt-level = 3 }
+hashbrown = { opt-level = 3 }
+hex-conservative = { opt-level = 3 }
+hmac = { opt-level = 3 }
+libc = { opt-level = 3 }
+librocksdb-sys = { opt-level = 3 }
+memchr = { opt-level = 3 }
+miniscript = { opt-level = 3 }
+pairing = { opt-level = 3 }
+parity-scale-codec = { opt-level = 3 }
+ppv-lite86 = { opt-level = 3 }
+rand = { opt-level = 3 }
+rand_chacha = { opt-level = 3 }
+rand_core = { opt-level = 3 }
+regex = { opt-level = 3 }
+ring = { opt-level = 3 }
+rustls = { opt-level = 3 }
+secp256k1 = { opt-level = 3 }
+secp256k1-sys = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+subtle = { opt-level = 3 }
+tikv-jemalloc-sys = { opt-level = 3 }
+zeroize = { opt-level = 3 }
+
+[profile.ci.package."*"]
+# Keep dependencies without debug information if the workspace profile is
+# changed to "line-tables-only" for more useful workspace panic traces.
+debug = false
+
+# The stability-pool crates name the fedibtc fork by git; route them, like the
+# rest of the graph, to the one 0.13 source.
+[patch."https://github.com/fedibtc/fedimint"]
+fedimint-aead = { path = "../../../.nix-deps/fedimint-0.13/crypto/aead" }
+fedimint-api-client = { path = "../../../.nix-deps/fedimint-0.13/fedimint-api-client" }
+fedimint-build = { path = "../../../.nix-deps/fedimint-0.13/fedimint-build" }
+fedimint-connectors = { path = "../../../.nix-deps/fedimint-0.13/fedimint-connectors" }
+fedimint-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-core" }
+fedimint-db-locked = { path = "../../../.nix-deps/fedimint-0.13/fedimint-db-locked" }
+fedimint-derive-secret = { path = "../../../.nix-deps/fedimint-0.13/crypto/derive-secret" }
+fedimint-hkdf = { path = "../../../.nix-deps/fedimint-0.13/crypto/hkdf" }
+fedimint-ln-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-ln-common" }
+fedimint-lnv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-lnv2-common" }
+fedimint-logging = { path = "../../../.nix-deps/fedimint-0.13/fedimint-logging" }
+fedimint-meta-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-meta-common" }
+fedimint-metrics = { path = "../../../.nix-deps/fedimint-0.13/fedimint-metrics" }
+fedimint-mint-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-mint-common" }
+fedimint-mintv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-mintv2-common" }
+fedimint-rocksdb = { path = "../../../.nix-deps/fedimint-0.13/fedimint-rocksdb" }
+fedimint-server = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server" }
+fedimint-server-bitcoin-rpc = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server-bitcoin-rpc" }
+fedimint-server-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server-core" }
+fedimint-tbs = { path = "../../../.nix-deps/fedimint-0.13/crypto/tbs" }
+fedimint-tpe = { path = "../../../.nix-deps/fedimint-0.13/crypto/tpe" }
+fedimint-util-error = { path = "../../../.nix-deps/fedimint-0.13/fedimint-util-error" }
+fedimint-wallet-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-wallet-common" }
+fedimint-walletv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-walletv2-common" }
+
+[patch.crates-io]
+fedimint-aead = { path = "../../../.nix-deps/fedimint-0.13/crypto/aead" }
+fedimint-aleph-bft = { path = "../../../.nix-deps/fedimint-aleph-bft" }
+fedimint-api-client = { path = "../../../.nix-deps/fedimint-0.13/fedimint-api-client" }
+fedimint-build = { path = "../../../.nix-deps/fedimint-0.13/fedimint-build" }
+fedimint-connectors = { path = "../../../.nix-deps/fedimint-0.13/fedimint-connectors" }
+fedimint-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-core" }
+fedimint-db-locked = { path = "../../../.nix-deps/fedimint-0.13/fedimint-db-locked" }
+fedimint-derive-secret = { path = "../../../.nix-deps/fedimint-0.13/crypto/derive-secret" }
+fedimint-hkdf = { path = "../../../.nix-deps/fedimint-0.13/crypto/hkdf" }
+fedimint-ln-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-ln-common" }
+fedimint-lnv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-lnv2-common" }
+fedimint-logging = { path = "../../../.nix-deps/fedimint-0.13/fedimint-logging" }
+fedimint-meta-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-meta-common" }
+fedimint-metrics = { path = "../../../.nix-deps/fedimint-0.13/fedimint-metrics" }
+fedimint-mint-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-mint-common" }
+fedimint-mintv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-mintv2-common" }
+fedimint-rocksdb = { path = "../../../.nix-deps/fedimint-0.13/fedimint-rocksdb" }
+fedimint-server = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server" }
+fedimint-server-bitcoin-rpc = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server-bitcoin-rpc" }
+fedimint-server-core = { path = "../../../.nix-deps/fedimint-0.13/fedimint-server-core" }
+fedimint-tbs = { path = "../../../.nix-deps/fedimint-0.13/crypto/tbs" }
+fedimint-tpe = { path = "../../../.nix-deps/fedimint-0.13/crypto/tpe" }
+fedimint-util-error = { path = "../../../.nix-deps/fedimint-0.13/fedimint-util-error" }
+fedimint-wallet-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-wallet-common" }
+fedimint-walletv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-walletv2-common" }
+librocksdb-sys = { path = "../../../.nix-deps/librocksdb-sys" }
+# The same iroh 0.35 send-livelock fix and macOS netwatch fix as the main
+# workspace: see its `[patch.crates-io]`.
+iroh = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }

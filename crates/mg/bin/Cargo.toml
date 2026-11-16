@@ -53,6 +53,7 @@ iroh = { workspace = true }
 mg-core = { path = "../core" }
 mg-fedimint = { path = "../fedimint" }
 mg-nostr = { path = "../nostr" }
+mg-spv2-params = { path = "../spv2-params" }
 mg-telemetry = { path = "../telemetry" }
 nostr-sdk = "0.44"
 operator-ui-static = { path = "../../operator-ui-static", optional = true }
