@@ -1777,6 +1777,14 @@ async fn the_pressure_history_survives_restart() {
         })
         .await
         .expect("the run completes");
+        // The report is visible before its verdict is stored; wait for both.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fleet.ready_for_new_seats().await != report.ready() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run's verdict is stored");
         worker.abort();
         report
     }
