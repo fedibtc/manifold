@@ -18,6 +18,7 @@ fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 anyhow = "1"
 axum = "0.8.4"
 base64 = "0.22"
+bls12_381 = "0.8"
 fa-client = { path = "../fa-client" }
 fedi-decentralized-cloud-mg-telemetry = { path = "../cloud-mg-telemetry", features = [
   "test-support",
@@ -29,10 +30,18 @@ fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier", feat
 ] }
 fedi-decentralized-service-manifold-guardian = { path = "../service-manifold-guardian" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fedimint-client.workspace = true
+fedimint-connectors.workspace = true
 fedimint-core.workspace = true
 fedimint-derive-secret.workspace = true
+fedimint-lnv2-client.workspace = true
+fedimint-lnv2-common.workspace = true
 fedimint-mintv2-client.workspace = true
+fedimint-rocksdb.workspace = true
+fedimint-tbs.workspace = true
+fedimint-walletv2-client.workspace = true
 futures-util = { version = "0.3", features = ["sink"] }
+group = "0.13"
 hex = "0.4"
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
 libc = "0.2"
@@ -42,8 +51,11 @@ mg-fedimint = { path = "../mg/fedimint" }
 mg-nostr = { path = "../mg/nostr" }
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 peerbadge-protocol.workspace = true
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+ring = "0.17"
 secp256k1 = "0.30"
+serde.workspace = true
 serde_json = "1"
 serde_json_canonicalizer = "0.3"
 sha2 = "0.10"

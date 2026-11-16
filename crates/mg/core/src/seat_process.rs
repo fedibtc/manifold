@@ -512,7 +512,14 @@ async fn spawn_child(
     // carry only loopback and relay addresses, and the harness dials
     // loopback routes via FM_IROH_CONNECT_OVERRIDES_PLAIN.
     let local_e2e = std::env::var_os("MG_E2E_LOCAL_IROH").is_some();
-    let iroh_bind_ip = if local_e2e { "127.0.0.1" } else { "0.0.0.0" };
+    // The seat-cost simulation runs the MG under test in its own network
+    // namespace, where loopback binds are unreachable from its peers, so it
+    // may widen the harness bind; its explicit routes still name every peer.
+    let iroh_bind_ip = if local_e2e {
+        std::env::var("MG_E2E_IROH_BIND_IP").unwrap_or_else(|_| "127.0.0.1".to_owned())
+    } else {
+        "0.0.0.0".to_owned()
+    };
     #[cfg(not(test))]
     let program =
         std::env::current_exe().map_err(|source| SeatProcessError::LocateSelf { source })?;
