@@ -229,15 +229,19 @@ pub fn this_mg_version() -> MgVersion {
         .expect("the workspace version is SemVer")
 }
 
-/// The pressure check for one run, from the pressure history after it,
-/// whether this run read the counters, and the maximums it compares against.
-/// Returns the outcome and the averages to report. Counters that cannot be
-/// read, or no interval measured yet, fail the check rather than pass it.
+/// The pressure check for one run, from recording this run's reading (the
+/// pressure history after it), whether this run read the counters, and the
+/// maximums it compares against. Returns the outcome and the averages to
+/// report. Counters that cannot be read or a history that cannot be stored,
+/// or no interval measured yet, fail the check rather than pass it.
 pub fn pressure_outcome(
-    state: Option<PressureState>,
+    recorded: anyhow::Result<Option<PressureState>>,
     read: bool,
     max: HostPressure,
 ) -> (ReadinessOutcome, Option<HostPressure>) {
+    let Ok(state) = recorded else {
+        return (ReadinessOutcome::HostPressureUnavailable, None);
+    };
     let pressure = state
         .filter(|_| read)
         .and_then(|state| state.averages)
@@ -443,15 +447,14 @@ pub async fn run(
         };
         report.version = version;
         if let Some(reading) = reading {
-            let state = fleet
+            let recorded = fleet
                 .record_host_pressure(reading)
                 .await
-                .unwrap_or_else(|error| {
+                .inspect_err(|error| {
                     tracing::warn!(%error, "failed to record the pressure reading");
-                    None
                 });
             let (pressure, host_pressure) =
-                pressure_outcome(state, reading.is_some(), max_pressure);
+                pressure_outcome(recorded, reading.is_some(), max_pressure);
             report.pressure = pressure;
             report.host_pressure = host_pressure;
             report.max_host_pressure = Some(max_pressure);
@@ -943,8 +946,9 @@ mod tests {
         assert_eq!(this_mg_version().to_string(), env!("CARGO_PKG_VERSION"));
     }
 
-    /// Unreadable counters or no measured interval fail the check, and
-    /// otherwise the averages decide against the maximums.
+    /// Unreadable counters, a history that cannot be stored, or no measured
+    /// interval fail the check, and otherwise the averages decide against
+    /// the maximums.
     #[test]
     fn pressure_fails_closed() {
         let max = HostPressure::from(MaxPressurePercent::default());
@@ -972,24 +976,30 @@ mod tests {
         let state = |averages| Some(PressureState { last, averages });
         let (low, high) = (averages(0.01), averages(0.2));
         let reported = |averages| Some(HostPressure::from(averages));
+        // A history that cannot be stored or read fails as unreadable
+        // counters do, not as a history still measuring.
         assert_eq!(
-            pressure_outcome(None, false, max),
+            pressure_outcome(Err(anyhow::anyhow!("database is locked")), true, max),
             (ReadinessOutcome::HostPressureUnavailable, None)
         );
         assert_eq!(
-            pressure_outcome(state(Some(low)), false, max),
+            pressure_outcome(Ok(None), false, max),
             (ReadinessOutcome::HostPressureUnavailable, None)
         );
         assert_eq!(
-            pressure_outcome(state(None), true, max),
+            pressure_outcome(Ok(state(Some(low))), false, max),
+            (ReadinessOutcome::HostPressureUnavailable, None)
+        );
+        assert_eq!(
+            pressure_outcome(Ok(state(None)), true, max),
             (ReadinessOutcome::HostPressureMeasuring, None)
         );
         assert_eq!(
-            pressure_outcome(state(Some(high)), true, max),
+            pressure_outcome(Ok(state(Some(high))), true, max),
             (ReadinessOutcome::SixHourPressureHigh, reported(high))
         );
         assert_eq!(
-            pressure_outcome(state(Some(low)), true, max),
+            pressure_outcome(Ok(state(Some(low))), true, max),
             (ReadinessOutcome::Pass, reported(low))
         );
     }
