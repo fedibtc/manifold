@@ -166,9 +166,9 @@ entry per active, unexpired MG that has a stored report:
   `mg_version`.
 - `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
   `discovery`, `bitcoin`, `version`, `pressure`, `cpu_pressure_6h_pct`,
-  `cpu_pressure_24h_pct`, `io_pressure_6h_pct`, `io_pressure_24h_pct`,
-  `cpu_pressure_block_above_pct`, `cpu_pressure_resume_below_pct`,
-  `io_pressure_block_above_pct`, `io_pressure_resume_below_pct`, `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
+  `cpu_pressure_3_5d_pct`, `io_pressure_6h_pct`, `io_pressure_3_5d_pct`,
+  `max_cpu_pressure_6h_pct`, `max_cpu_pressure_3_5d_pct`,
+  `max_io_pressure_6h_pct`, `max_io_pressure_3_5d_pct`, `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
   `uptime_30d_pct`, `min_uptime_1d_pct`, `min_uptime_7d_pct` and
   `min_uptime_30d_pct`.
 

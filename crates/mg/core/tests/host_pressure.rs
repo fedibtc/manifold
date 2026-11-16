@@ -1,68 +1,19 @@
 use std::time::{Duration, UNIX_EPOCH};
 
-use fedi_decentralized_domain::{HostPressureLimit, PressureThresholds};
-
 use super::*;
 
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
+const STEP: u64 = 10 * MINUTE;
 
 fn at(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_000_000_000 + secs)
 }
 
-/// Samples every 10 minutes from `from` to `to` seconds, with each counter
-/// growing by its share of wall time (in per-mille) from `start` totals.
-fn trace(
-    from: u64,
-    to: u64,
-    cpu_permille: u64,
-    io_permille: u64,
-    start: PressureTotals,
-) -> Vec<PressureSample> {
-    (0..=(to - from) / (10 * MINUTE))
-        .map(|n| {
-            let elapsed_us = n * 10 * MINUTE * 1_000_000;
-            PressureSample {
-                at: at(from + n * 10 * MINUTE),
-                totals: PressureTotals {
-                    cpu_us: start.cpu_us + elapsed_us * cpu_permille / 1000,
-                    io_us: start.io_us + elapsed_us * io_permille / 1000,
-                },
-            }
-        })
-        .collect()
-}
-
-const ZERO: PressureTotals = PressureTotals {
-    cpu_us: 0,
-    io_us: 0,
-};
-
-fn limit() -> HostPressureLimit {
-    HostPressureLimit {
-        cpu: PressureThresholds {
-            block_above: 15,
-            resume_below: 10,
-        },
-        io: PressureThresholds {
-            block_above: 10,
-            resume_below: 5,
-        },
-    }
-}
-
-fn pressure(cpu: (Option<u16>, Option<u16>), io: (Option<u16>, Option<u16>)) -> HostPressure {
-    HostPressure {
-        cpu: PressurePermille {
-            six_hours: cpu.0,
-            day: cpu.1,
-        },
-        io: PressurePermille {
-            six_hours: io.0,
-            day: io.1,
-        },
-    }
+/// The maximums Fedi would first publish, which are also the defaults:
+/// CPU 15% over 6 hours and 10% over 3.5 days, IO 10% and 5%.
+fn max() -> HostPressure {
+    HostPressure::from(MaxPressurePercent::default())
 }
 
 #[test]
@@ -102,228 +53,286 @@ fn finds_the_unified_cgroup_among_v1_lines() {
     assert_eq!(cgroup_v2_dir("4:memory:/docker/abc\n"), None);
 }
 
-/// A window's average is exactly the stall time added over the wall time
-/// elapsed between its samples, not a decaying average: a load that ended
-/// leaves the 6-hour window entirely once 6 hours have passed.
-#[test]
-fn a_window_is_stall_time_over_wall_time() {
-    // 20% CPU and 4% IO for a day.
-    let day = trace(0, 24 * HOUR, 200, 40, ZERO);
-    let now = at(24 * HOUR);
-    assert_eq!(
-        HostPressure::from_samples(&day, now),
-        pressure((Some(200), Some(200)), (Some(40), Some(40)))
-    );
-    // Then 2% CPU for 6 hours: the 6-hour window sees only that; the day
-    // window is 18 hours at 20% and 6 at 2%: 15.5%.
-    let last = day.last().unwrap().totals;
-    let mut samples = day;
-    samples.extend(
-        trace(24 * HOUR, 30 * HOUR, 20, 40, last)
-            .into_iter()
-            .skip(1),
-    );
-    let measured = HostPressure::from_samples(&samples, at(30 * HOUR));
-    assert_eq!(
-        measured.cpu,
-        PressurePermille {
-            six_hours: Some(20),
-            day: Some(155)
+fn reading(secs: u64, cpu_us: u64, io_us: u64) -> PressureSample {
+    PressureSample {
+        at: at(secs),
+        totals: PressureTotals { cpu_us, io_us },
+    }
+}
+
+/// Counter growth for `secs` of wall time at `share` of it stalled.
+fn stalled_us(secs: u64, share: f64) -> u64 {
+    (secs as f64 * 1_000_000.0 * share).round() as u64
+}
+
+fn averages(cpu: (f64, f64), io: (f64, f64)) -> PressureAverages {
+    PressureAverages {
+        cpu: ResourceAverages {
+            six_hours: cpu.0,
+            three_and_a_half_days: cpu.1,
+        },
+        io: ResourceAverages {
+            six_hours: io.0,
+            three_and_a_half_days: io.1,
+        },
+    }
+}
+
+fn permille(cpu: (u16, u16), io: (u16, u16)) -> HostPressure {
+    HostPressure {
+        cpu: PressurePermille {
+            six_hours: cpu.0,
+            three_and_a_half_days: cpu.1,
+        },
+        io: PressurePermille {
+            six_hours: io.0,
+            three_and_a_half_days: io.1,
+        },
+    }
+}
+
+fn close(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() < 1e-9
+}
+
+/// A host stalled at constant shares, read every [`STEP`].
+struct Host {
+    state: PressureState,
+    secs: u64,
+    cpu_us: u64,
+    io_us: u64,
+}
+
+impl Host {
+    fn at(averages: PressureAverages) -> Self {
+        Self {
+            state: PressureState {
+                last: reading(0, 0, 0),
+                averages: Some(averages),
+            },
+            secs: 0,
+            cpu_us: 0,
+            io_us: 0,
         }
-    );
-    // Sample order does not matter.
-    samples.reverse();
-    assert_eq!(
-        HostPressure::from_samples(&samples, at(30 * HOUR)),
-        measured
-    );
-}
-
-#[test]
-fn a_window_needs_samples_over_half_of_it() {
-    let samples = trace(0, 3 * HOUR - 10 * MINUTE, 500, 500, ZERO);
-    let early = HostPressure::from_samples(&samples, at(3 * HOUR));
-    assert_eq!(early, pressure((None, None), (None, None)));
-    let samples = trace(0, 3 * HOUR, 500, 500, ZERO);
-    let covered = HostPressure::from_samples(&samples, at(3 * HOUR));
-    assert_eq!(covered, pressure((Some(500), None), (Some(500), None)));
-    assert_eq!(
-        HostPressure::from_samples(&[], at(0)),
-        pressure((None, None), (None, None))
-    );
-}
-
-/// A restart recreates the cgroup, so its counters start again near zero. The
-/// pair across the reset says nothing about its interval and is skipped; the
-/// pairs on both sides still count.
-#[test]
-fn a_counter_reset_after_restart_skips_only_the_pair_across_it() {
-    let before = trace(
-        0,
-        4 * HOUR,
-        300,
-        100,
-        PressureTotals {
-            cpu_us: 9_000_000_000,
-            io_us: 7_000_000_000,
-        },
-    );
-    // Back after 10 minutes with counters from zero; one reading at the
-    // reset itself.
-    let after = trace(
-        4 * HOUR + 10 * MINUTE,
-        6 * HOUR,
-        300,
-        100,
-        PressureTotals {
-            cpu_us: 5,
-            io_us: 5,
-        },
-    );
-    let samples: Vec<_> = before.iter().chain(after.iter()).copied().collect();
-    let measured = HostPressure::from_samples(&samples, at(6 * HOUR));
-    // 5 h 50 min of pairs at 30% and 10%, nothing negative or inflated.
-    assert_eq!(measured, pressure((Some(300), None), (Some(100), None)));
-    // A reset of one counter only skips that counter's pair.
-    let mut io_only = samples.clone();
-    let reset = before.len();
-    io_only[reset].totals.cpu_us =
-        before[reset - 1].totals.cpu_us + 10 * MINUTE * 1_000_000 * 300 / 1000;
-    for (n, sample) in io_only.iter_mut().enumerate().skip(reset + 1) {
-        sample.totals.cpu_us = io_only_cpu(&before, n - reset);
     }
-    assert_eq!(
-        HostPressure::from_samples(&io_only, at(6 * HOUR))
-            .io
-            .six_hours,
-        Some(100)
-    );
 
-    fn io_only_cpu(before: &[PressureSample], steps: usize) -> u64 {
-        before.last().unwrap().totals.cpu_us
-            + (steps as u64 + 1) * 10 * MINUTE * 1_000_000 * 300 / 1000
-    }
-}
-
-#[test]
-fn a_clock_set_back_or_a_repeated_time_adds_nothing() {
-    let mut samples = trace(0, 4 * HOUR, 300, 100, ZERO);
-    let last = *samples.last().unwrap();
-    // The same time again with more stall: no wall time, so no average.
-    samples.push(PressureSample {
-        at: last.at,
-        totals: PressureTotals {
-            cpu_us: last.totals.cpu_us + 1_000_000_000,
-            io_us: last.totals.io_us,
-        },
-    });
-    assert_eq!(
-        HostPressure::from_samples(&samples, at(4 * HOUR))
-            .cpu
-            .six_hours,
-        Some(300)
-    );
-}
-
-/// Both sides of each threshold, for each resource alone.
-#[test]
-fn either_six_hour_average_above_its_threshold_blocks() {
-    let calm = (Some(0), Some(0));
-    for (cpu, io, blocked) in [
-        // At the CPU threshold (15%) does not block; just above does.
-        ((Some(150), Some(0)), calm, false),
-        ((Some(151), Some(0)), calm, true),
-        // IO alone, with CPU calm.
-        (calm, (Some(100), Some(0)), false),
-        (calm, (Some(101), Some(0)), true),
-        // One resource over is enough while the other is fine.
-        ((Some(400), Some(0)), (Some(10), Some(0)), true),
-        ((Some(10), Some(0)), (Some(400), Some(0)), true),
-        // An uncovered window does not block.
-        ((None, None), (None, None), false),
-    ] {
-        assert_eq!(
-            holds(false, pressure(cpu, io), limit()),
-            blocked,
-            "{cpu:?} {io:?}"
+    /// One run after `elapsed` seconds at these shares.
+    fn run_after(&mut self, elapsed: u64, cpu: f64, io: f64) -> PressureAverages {
+        self.secs += elapsed;
+        self.cpu_us += stalled_us(elapsed, cpu);
+        self.io_us += stalled_us(elapsed, io);
+        self.state = PressureState::record(
+            Some(self.state),
+            reading(self.secs, self.cpu_us, self.io_us),
         );
+        self.state.averages.unwrap()
+    }
+
+    fn outcome(&self) -> ReadinessOutcome {
+        HostPressure::from(self.state.averages.unwrap()).outcome(max())
     }
 }
 
+/// The first reading only starts the history; the first measured interval
+/// seeds both averages with its own shares rather than with 0, so a fresh
+/// install has measured pressure before anything can pass it.
 #[test]
-fn a_held_mg_resumes_only_when_both_day_averages_are_down() {
-    for (cpu, io, still_held) in [
-        // At both resume thresholds (10%, 5%) resumes; just above either
-        // keeps holding, although both 6-hour averages are under their block
-        // thresholds.
-        ((Some(0), Some(100)), (Some(0), Some(50)), false),
-        ((Some(0), Some(101)), (Some(0), Some(50)), true),
-        ((Some(0), Some(100)), (Some(0), Some(51)), true),
-        // An uncovered day window does not resume.
-        ((Some(0), None), (Some(0), Some(0)), true),
-        // A resource over its block threshold holds even with good days.
-        ((Some(151), Some(0)), (Some(0), Some(0)), true),
+fn the_first_interval_seeds_both_averages() {
+    let first = PressureState::record(None, reading(0, 7_000, 9_000));
+    assert_eq!(first.averages, None);
+    let second = PressureState::record(
+        Some(first),
+        reading(
+            STEP,
+            7_000 + stalled_us(STEP, 0.30),
+            9_000 + stalled_us(STEP, 0.02),
+        ),
+    );
+    let seeded = second.averages.unwrap();
+    assert!(close(seeded.cpu.six_hours, 0.30) && close(seeded.cpu.three_and_a_half_days, 0.30));
+    assert!(close(seeded.io.six_hours, 0.02) && close(seeded.io.three_and_a_half_days, 0.02));
+    // 30% CPU is over the 15% maximum from the first interval on.
+    assert_eq!(
+        HostPressure::from(seeded).outcome(max()),
+        ReadinessOutcome::SixHourPressureHigh
+    );
+}
+
+/// Each interval moves an average `1 - exp(-elapsed / tau)` of the way to its
+/// share, so one 30-minute interval weighs as much as the three 10-minute
+/// ones it could have been.
+#[test]
+fn an_interval_weighs_by_its_length() {
+    let start = averages((0.0, 0.0), (0.4, 0.4));
+    let once = Host::at(start).run_after(30 * MINUTE, 0.5, 0.1);
+    let weight = |tau_hours: f64| 1.0 - (-0.5f64 / tau_hours).exp();
+    assert!(close(once.cpu.six_hours, 0.5 * weight(6.0)));
+    assert!(close(once.cpu.three_and_a_half_days, 0.5 * weight(84.0)));
+    assert!(close(once.io.six_hours, 0.4 - 0.3 * weight(6.0)));
+    let mut host = Host::at(start);
+    for _ in 0..3 {
+        host.run_after(STEP, 0.5, 0.1);
+    }
+    let steps = host.state.averages.unwrap();
+    assert!((steps.cpu.six_hours - once.cpu.six_hours).abs() < 1e-6);
+    assert!((steps.cpu.three_and_a_half_days - once.cpu.three_and_a_half_days).abs() < 1e-6);
+    assert!((steps.io.six_hours - once.io.six_hours).abs() < 1e-6);
+}
+
+/// An interval longer than 30 minutes spans downtime, such as a daemon
+/// restarted inside a live cgroup, and leaves the averages as they were
+/// rather than counting the downtime as no pressure; the next interval is
+/// measured from the new counters.
+#[test]
+fn a_gap_longer_than_thirty_minutes_is_skipped() {
+    let before = averages((0.12, 0.12), (0.03, 0.03));
+    let mut host = Host::at(before);
+    assert_eq!(host.run_after(12 * HOUR, 0.0, 0.0), before);
+    assert_eq!(host.run_after(30 * MINUTE + 1, 0.0, 0.0), before);
+    let weight = 1.0 - (-(STEP as f64) / (6.0 * 3600.0)).exp();
+    let next = host.run_after(STEP, 1.0, 0.0);
+    assert!(close(next.cpu.six_hours, 0.12 + weight * 0.88));
+    assert!(close(next.io.six_hours, 0.03 - weight * 0.03));
+    // Exactly 30 minutes still counts.
+    let mut host = Host::at(before);
+    assert_ne!(host.run_after(30 * MINUTE, 0.0, 0.0), before);
+}
+
+/// A counter that went backwards, as when a restart recreates the cgroup,
+/// or a clock that did not advance, leaves the averages as they were; the
+/// next interval is measured from the new counters.
+#[test]
+fn a_counter_reset_or_a_stuck_clock_is_skipped() {
+    let before = averages((0.12, 0.12), (0.03, 0.03));
+    let start = PressureState {
+        last: reading(0, 50_000_000_000, 8_000_000_000),
+        averages: Some(before),
+    };
+    // After a restart the CPU counter restarted near zero; the IO counter,
+    // here, did not. Either going back skips the interval for both.
+    let reset_reading = reading(STEP, 1_000, 8_000_000_000 + stalled_us(STEP, 0.5));
+    let reset = PressureState::record(Some(start), reset_reading);
+    assert_eq!(reset.averages, Some(before));
+    assert_eq!(reset.last, reset_reading);
+    // The clock set back, and then a repeated time.
+    for secs in [STEP - 1, STEP] {
+        let skipped = PressureState::record(Some(reset), reading(secs, 2_000, 9_000_000_000_000));
+        assert_eq!(skipped.averages, Some(before), "at {secs}");
+    }
+    // The next interval counts from the counters after the reset.
+    let next = PressureState::record(
+        Some(reset),
+        reading(
+            2 * STEP,
+            1_000 + stalled_us(STEP, 1.0),
+            8_000_000_000 + stalled_us(STEP, 0.5),
+        ),
+    )
+    .averages
+    .unwrap();
+    let weight = 1.0 - (-(STEP as f64) / (6.0 * 3600.0)).exp();
+    assert!(close(next.cpu.six_hours, 0.12 + weight * 0.88));
+    assert!(close(next.io.six_hours, 0.03 - weight * 0.03));
+}
+
+/// Every window passes at its maximum and fails 0.1% above it, alone, with
+/// every other window idle; the outcome names the shorter failing window.
+#[test]
+fn each_window_fails_just_above_its_maximum() {
+    let max = max();
+    assert_eq!(
+        permille((150, 100), (100, 50)).outcome(max),
+        ReadinessOutcome::Pass
+    );
+    for (pressure, outcome) in [
+        (
+            permille((151, 0), (0, 0)),
+            ReadinessOutcome::SixHourPressureHigh,
+        ),
+        (
+            permille((0, 101), (0, 0)),
+            ReadinessOutcome::HalfWeekPressureHigh,
+        ),
+        (
+            permille((0, 0), (101, 0)),
+            ReadinessOutcome::SixHourPressureHigh,
+        ),
+        (
+            permille((0, 0), (0, 51)),
+            ReadinessOutcome::HalfWeekPressureHigh,
+        ),
+        // Both windows over: the shorter is named.
+        (
+            permille((0, 101), (101, 0)),
+            ReadinessOutcome::SixHourPressureHigh,
+        ),
     ] {
+        assert_eq!(pressure.outcome(max), outcome, "{pressure:?}");
+    }
+    // Rounding to 0.1% decides: 15.049% compares as 15.0%.
+    let just_under = HostPressure::from(averages((0.15049, 0.0), (0.0, 0.0)));
+    assert_eq!(just_under.outcome(max), ReadinessOutcome::Pass);
+}
+
+/// A host steady at 12% CPU passes the 15% 6-hour maximum but fails the 10%
+/// 3.5-day one, however long it stays there.
+#[test]
+fn a_host_steady_at_twelve_percent_fails_the_long_window() {
+    let mut host = Host::at(averages((0.12, 0.12), (0.01, 0.01)));
+    for _ in 0..(7 * 24 * 6) {
+        host.run_after(STEP, 0.12, 0.01);
+        assert_eq!(host.outcome(), ReadinessOutcome::HalfWeekPressureHigh);
+    }
+}
+
+/// A single spike of 6 hours at 40% on a 2% baseline fails the 6-hour
+/// window while its average is over 15%, but barely moves the 3.5-day one:
+/// 2% + 38% * (1 - e^(-6/84)) = 4.6%. So the host passes again as soon as
+/// the 6-hour average is back at 15%, which from 2% + 38% * (1 - e^-1) =
+/// 26.0% at the spike's end takes 6h * ln(24.0 / 13.05) = 3.66 hours.
+#[test]
+fn a_spike_fails_only_while_the_six_hour_average_is_over() {
+    let mut host = Host::at(averages((0.02, 0.02), (0.0, 0.0)));
+    let mut first_failure = None;
+    for n in 1..=36 {
+        let averages = host.run_after(STEP, 0.40, 0.0);
+        let over = averages.cpu.six_hours >= 0.1505;
         assert_eq!(
-            holds(true, pressure(cpu, io), limit()),
-            still_held,
-            "{cpu:?} {io:?}"
+            host.outcome(),
+            if over {
+                ReadinessOutcome::SixHourPressureHigh
+            } else {
+                ReadinessOutcome::Pass
+            },
+            "run {n}"
         );
-    }
-}
-
-/// Driven through a trace, the check holds a host whose CPU pressure went
-/// from 2% to 30% for 8 hours, keeps holding it after the 6-hour average is
-/// back under 15%, and reopens once the day average is at 10%.
-#[test]
-fn a_pressured_host_reopens_only_after_the_day_average_falls() {
-    let mut samples = trace(0, 24 * HOUR, 20, 0, ZERO);
-    let mut totals = samples.last().unwrap().totals;
-    let mut held = false;
-    let (mut first_held, mut under_block, mut reopened) = (None, None, None);
-    for n in 1..=(48 * HOUR / (10 * MINUTE)) {
-        let secs = 24 * HOUR + n * 10 * MINUTE;
-        let hours = (secs - 24 * HOUR) as f64 / HOUR as f64;
-        let cpu_permille = if hours <= 8.0 { 300 } else { 20 };
-        totals.cpu_us += 10 * MINUTE * 1_000_000 * cpu_permille / 1000;
-        samples.push(PressureSample {
-            at: at(secs),
-            totals,
-        });
-        let measured = HostPressure::from_samples(&samples, at(secs));
-        held = holds(held, measured, limit());
-        if held {
-            first_held.get_or_insert(hours);
-        }
-        if hours > 8.0 && measured.cpu.six_hours.is_some_and(|average| average <= 150) {
-            under_block.get_or_insert(hours);
-        }
-        if first_held.is_some() && !held {
-            reopened.get_or_insert(hours);
+        if over && first_failure.is_none() {
+            first_failure = Some(n);
         }
     }
-    let (first_held, under_block, reopened) =
-        (first_held.unwrap(), under_block.unwrap(), reopened.unwrap());
-    // The 6-hour average passes 15% once 13/28 of the window is at 30%:
-    // about 2.8 hours in.
-    assert!((2.5..=3.0).contains(&first_held), "{first_held}");
-    // Back to 15% once at most 13/28 of the window is still the 8 high
-    // hours: about 11.2 hours in.
-    assert!((11.0..=11.5).contains(&under_block), "{under_block}");
-    // The day average is 2% + 28%·(8 h / 24 h) ≈ 11.3% while all 8 hours are
-    // in it, and reaches 10% once about 6.9 of them remain: about 25 hours in.
-    assert!((24.5..=25.5).contains(&reopened), "{reopened}");
-    assert!(under_block < reopened);
-    assert!(!held, "the host stays open once it reopened");
-}
+    // 2% + 38% * (1 - e^(-t/6h)) reaches 15.05% after 6h * ln(38/24.95) =
+    // 2.52 hours: the 16th run.
+    assert_eq!(first_failure, Some(16));
+    let at_end = host.state.averages.unwrap().cpu;
+    assert!(close(
+        at_end.six_hours,
+        0.02 + 0.38 * (1.0 - (-1.0f64).exp())
+    ));
+    assert!(close(
+        at_end.three_and_a_half_days,
+        0.02 + 0.38 * (1.0 - (-6.0f64 / 84.0).exp())
+    ));
+    assert!(at_end.three_and_a_half_days < 0.10);
 
-#[test]
-fn stores_one_sample_per_spacing_and_keeps_a_day() {
-    let (store, before) = retention(None, at(HOUR));
-    assert!(store);
-    assert_eq!(before, at(HOUR) - RESUME_WINDOW);
-    assert!(!retention(Some(at(0)), at(9 * MINUTE - 1)).0);
-    assert!(retention(Some(at(0)), at(9 * MINUTE)).0);
-    // A clock set back stores nothing.
-    assert!(!retention(Some(at(HOUR)), at(0)).0);
+    let expected = 6.0 * 3600.0 * ((at_end.six_hours - 0.02) / (0.1505 - 0.02)).ln();
+    let mut after = 0;
+    while host.outcome() != ReadinessOutcome::Pass {
+        host.run_after(STEP, 0.02, 0.0);
+        after += STEP;
+    }
+    assert!(
+        (after as f64) >= expected && (after as f64) < expected + STEP as f64,
+        "{after} vs {expected}"
+    );
+    assert!(after > 3 * HOUR && after < 4 * HOUR);
 }

@@ -56,10 +56,10 @@ that resting per-seat cost: headroom for DKG and chain-scan spikes and for
 The policy limit (default 12) bounds what RAM does not: concurrent-ceremony
 CPU and disk IO, for which no evidence exists yet. The readiness pressure
 check ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate)) stops
-new sales on a host whose seats keep waiting for CPU or disk, once Fedi
-publishes pressure thresholds; every MG journals its pressure averages, which
-is the evidence for tuning those thresholds and, later, for relaxing the
-policy limit. Re-measure once seats
+new sales on a host whose seats keep waiting for CPU or disk, at maximums
+Fedi can publish and that otherwise default; every MG journals its pressure
+averages, which is the evidence for tuning those maximums and, later, for
+relaxing the policy limit. Re-measure once seats
 carry weeks of mainnet-like history before treating the per-seat budget as
 settled; the young-federation measurement is the weakest part of this
 basis.

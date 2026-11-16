@@ -52,8 +52,7 @@ use mg_core::push_callback::CallbackAttemptOutcome;
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use mg_core::seat_readiness::{
-    HostPressureThresholds, PressureThresholdsReport, ReadinessOutcome, ReadinessReport,
-    UptimeComparison, UptimePermille, UptimeWaitSecs,
+    ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
 };
 use mg_core::wallet::PayoutRequestId;
 use serde_json::Value;
@@ -122,26 +121,26 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
                     version: ReadinessOutcome::MgVersionTooOld,
-                    pressure: ReadinessOutcome::HostPressureHigh,
+                    pressure: ReadinessOutcome::SixHourPressureHigh,
                     host_pressure: Some(HostPressure {
-                        // Per-mille: 21.3%, above the 15% block limit below.
+                        // Per-mille: 21.3%, above the 15% maximum below.
                         cpu: PressurePermille {
-                            six_hours: Some(213),
-                            day: Some(87),
+                            six_hours: 213,
+                            three_and_a_half_days: 87,
                         },
                         io: PressurePermille {
-                            six_hours: Some(41),
-                            day: None,
+                            six_hours: 41,
+                            three_and_a_half_days: 30,
                         },
                     }),
-                    host_pressure_limit: Some(HostPressureThresholds {
-                        cpu: PressureThresholdsReport {
-                            block_above: 15,
-                            resume_below: 10,
+                    max_host_pressure: Some(HostPressure {
+                        cpu: PressurePermille {
+                            six_hours: 150,
+                            three_and_a_half_days: 100,
                         },
-                        io: PressureThresholdsReport {
-                            block_above: 10,
-                            resume_below: 5,
+                        io: PressurePermille {
+                            six_hours: 100,
+                            three_and_a_half_days: 50,
                         },
                     }),
                     uptime: ReadinessOutcome::WeekUptimeLow,

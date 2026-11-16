@@ -4,28 +4,34 @@
 //!
 //! The kernel's pressure stall information (PSI) counts, per cgroup, the
 //! microseconds in which at least one task stalled waiting for a CPU or for
-//! storage IO. The counters are cumulative, so a window's average pressure is
-//! the stall time added between stored samples divided by the wall time
-//! between them. Unlike the system load average, the share of time stalled
-//! does not depend on how fast or how many the CPUs are.
+//! storage IO. The counters are cumulative, so the share of an interval spent
+//! stalled is the stall time added over the wall time elapsed. Each run folds
+//! that share into exponential moving averages, like the uptime scores
+//! ([`crate::seat_readiness::UptimeScores`]). Unlike the system load average,
+//! the share of time stalled does not depend on how fast or how many the CPUs
+//! are.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context as _;
+use fedi_decentralized_domain::{MaxPressurePercent, MaxPressureWindows};
 
-/// The window whose average stops new seats.
-pub const BLOCK_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
+use crate::seat_readiness::ReadinessOutcome;
 
-/// The window whose average lets a stopped MG accept new seats again: longer
-/// than [`BLOCK_WINDOW`], so a host near a threshold does not open and close
-/// by the hour.
-pub const RESUME_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+/// The time constant of the short averages, which close an MG for the hours
+/// a spike lasts.
+pub const SIX_HOURS_TAU: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// The shortest time between two stored samples. Runs come every 10 minutes,
-/// or every minute while a check fails; one sample per slot is enough for
-/// averages over hours.
-pub const MIN_SAMPLE_SPACING: Duration = Duration::from_secs(9 * 60);
+/// The time constant of the long averages, 3.5 days, which close an MG whose
+/// pressure stays high for days and barely move for a single spike.
+pub const HALF_WEEK_TAU: Duration = Duration::from_secs(84 * 60 * 60);
+
+/// The longest interval folded into the averages. Runs come every 10
+/// minutes, or every minute while a check fails, so a longer interval spans
+/// downtime: a daemon restarted inside a live cgroup would otherwise count
+/// the time it was down as time without pressure.
+pub const MAX_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 /// Cumulative stall time from a pressure stall information file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,117 +102,195 @@ pub struct PressureSample {
     pub totals: PressureTotals,
 }
 
-/// Average pressure per resource over [`BLOCK_WINDOW`] and [`RESUME_WINDOW`],
-/// in per-mille of wall time. A window is `None` until its samples cover at
-/// least half of it.
+/// One resource's stall share averages, each between 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResourceAverages {
+    /// Exponential moving average with time constant [`SIX_HOURS_TAU`].
+    pub six_hours: f64,
+    /// Exponential moving average with time constant [`HALF_WEEK_TAU`].
+    pub three_and_a_half_days: f64,
+}
+
+impl ResourceAverages {
+    /// The averages of a first measured interval: its share, so nothing is
+    /// assumed about a host before it was measured.
+    fn seed(share: f64) -> Self {
+        Self {
+            six_hours: share,
+            three_and_a_half_days: share,
+        }
+    }
+
+    /// Fold one interval of `elapsed` in: an average moves
+    /// `1 - exp(-elapsed / tau)` of the way to the interval's share.
+    fn fold(self, share: f64, elapsed: Duration) -> Self {
+        let toward = |average: f64, tau: Duration| {
+            let weight = 1.0 - (-elapsed.as_secs_f64() / tau.as_secs_f64()).exp();
+            average + weight * (share - average)
+        };
+        Self {
+            six_hours: toward(self.six_hours, SIX_HOURS_TAU),
+            three_and_a_half_days: toward(self.three_and_a_half_days, HALF_WEEK_TAU),
+        }
+    }
+}
+
+/// The stall share averages of each resource.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PressureAverages {
+    pub cpu: ResourceAverages,
+    pub io: ResourceAverages,
+}
+
+/// The share of one interval each resource spent stalled, between 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IntervalShares {
+    cpu: f64,
+    io: f64,
+    elapsed: Duration,
+}
+
+impl IntervalShares {
+    /// The interval from `earlier` to `later`, or `None` when it says nothing
+    /// about pressure: a counter went backwards, as it does when a
+    /// restart recreates the cgroup; the clock did not advance; or the
+    /// interval is longer than [`MAX_INTERVAL`] and so spans downtime.
+    fn between(earlier: PressureSample, later: PressureSample) -> Option<Self> {
+        let elapsed = later.at.duration_since(earlier.at).ok()?;
+        if elapsed.is_zero() || elapsed > MAX_INTERVAL {
+            return None;
+        }
+        let share = |before: u64, after: u64| {
+            let stalled = after.checked_sub(before)?;
+            // A cgroup cannot stall longer than wall time; clamp the
+            // counters' rounding noise.
+            Some((stalled as f64 / elapsed.as_micros() as f64).min(1.0))
+        };
+        Some(Self {
+            cpu: share(earlier.totals.cpu_us, later.totals.cpu_us)?,
+            io: share(earlier.totals.io_us, later.totals.io_us)?,
+            elapsed,
+        })
+    }
+}
+
+impl PressureAverages {
+    fn seed(shares: IntervalShares) -> Self {
+        Self {
+            cpu: ResourceAverages::seed(shares.cpu),
+            io: ResourceAverages::seed(shares.io),
+        }
+    }
+
+    /// Fold one interval in, weighted by its length, so one interval counts
+    /// as much as the shorter ones it could have been.
+    fn fold(self, shares: IntervalShares) -> Self {
+        Self {
+            cpu: self.cpu.fold(shares.cpu, shares.elapsed),
+            io: self.io.fold(shares.io, shares.elapsed),
+        }
+    }
+}
+
+/// The durable pressure history: the last reading and the averages over the
+/// intervals measured since the first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PressureState {
+    pub last: PressureSample,
+    /// `None` until an interval has been measured.
+    pub averages: Option<PressureAverages>,
+}
+
+impl PressureState {
+    /// Account for this run's `reading`. History starts at the first reading,
+    /// and a reading always becomes the last one, so an interval that says
+    /// nothing is skipped and the next is measured from the new counters.
+    pub fn record(previous: Option<Self>, reading: PressureSample) -> Self {
+        let Some(previous) = previous else {
+            return Self {
+                last: reading,
+                averages: None,
+            };
+        };
+        let averages = match (
+            previous.averages,
+            IntervalShares::between(previous.last, reading),
+        ) {
+            (averages, None) => averages,
+            (None, Some(shares)) => Some(PressureAverages::seed(shares)),
+            (Some(averages), Some(shares)) => Some(averages.fold(shares)),
+        };
+        Self {
+            last: reading,
+            averages,
+        }
+    }
+}
+
+/// The averages per resource, or the policy's maximums for them, as a report
+/// states them and the check compares them: in per-mille of wall time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
 pub struct HostPressure {
     pub cpu: PressurePermille,
     pub io: PressurePermille,
 }
 
-/// One resource's window averages, in per-mille of wall time (0..=1000): the
-/// share of time some task stalled on it, so 213 is 21.3%.
+/// One resource's figures, in per-mille of wall time (0..=1000): the share of
+/// time some task stalled on it, so 213 is 21.3%.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
 pub struct PressurePermille {
+    /// The average with a 6-hour time constant.
     #[serde(rename = "6h")]
-    pub six_hours: Option<u16>,
-    #[serde(rename = "24h")]
-    pub day: Option<u16>,
+    pub six_hours: u16,
+    /// The average with a 3.5-day time constant.
+    #[serde(rename = "3.5d")]
+    pub three_and_a_half_days: u16,
+}
+
+impl From<PressureAverages> for HostPressure {
+    fn from(averages: PressureAverages) -> Self {
+        // An average of shares in 0..=1 stays in 0..=1.
+        let permille = |share: f64| (share.clamp(0.0, 1.0) * 1000.0).round() as u16;
+        let resource = |averages: ResourceAverages| PressurePermille {
+            six_hours: permille(averages.six_hours),
+            three_and_a_half_days: permille(averages.three_and_a_half_days),
+        };
+        Self {
+            cpu: resource(averages.cpu),
+            io: resource(averages.io),
+        }
+    }
+}
+
+impl From<MaxPressurePercent> for HostPressure {
+    fn from(max: MaxPressurePercent) -> Self {
+        let resource = |max: MaxPressureWindows| PressurePermille {
+            six_hours: u16::from(max.six_hours) * 10,
+            three_and_a_half_days: u16::from(max.three_and_a_half_days) * 10,
+        };
+        Self {
+            cpu: resource(max.cpu),
+            io: resource(max.io),
+        }
+    }
 }
 
 impl HostPressure {
-    /// The averages ending at `now` over `samples`, in any order.
-    pub fn from_samples(samples: &[PressureSample], now: SystemTime) -> Self {
-        let mut samples = samples.to_vec();
-        samples.sort_by_key(|sample| sample.at);
-        let windows = |total: fn(&PressureTotals) -> u64| PressurePermille {
-            six_hours: window_permille(&samples, now, BLOCK_WINDOW, total),
-            day: window_permille(&samples, now, RESUME_WINDOW, total),
+    /// The readiness outcome of these averages against `max`, naming the
+    /// shorter window that fails, for either resource. The averages compare
+    /// at the 0.1% a report shows.
+    pub fn outcome(self, max: Self) -> ReadinessOutcome {
+        let over = |window: fn(PressurePermille) -> u16| {
+            window(self.cpu) > window(max.cpu) || window(self.io) > window(max.io)
         };
-        Self {
-            cpu: windows(|totals| totals.cpu_us),
-            io: windows(|totals| totals.io_us),
+        if over(|windows| windows.six_hours) {
+            ReadinessOutcome::SixHourPressureHigh
+        } else if over(|windows| windows.three_and_a_half_days) {
+            ReadinessOutcome::HalfWeekPressureHigh
+        } else {
+            ReadinessOutcome::Pass
         }
     }
-}
-
-/// Stall time added over wall time elapsed, summed over consecutive sample
-/// pairs that both fall in the `window` ending at `now`. A pair whose counter
-/// went backwards, as it does when a restart recreates the cgroup, or whose
-/// clock did not advance, says nothing about its interval and is left out of
-/// both sums.
-fn window_permille(
-    sorted: &[PressureSample],
-    now: SystemTime,
-    window: Duration,
-    total: fn(&PressureTotals) -> u64,
-) -> Option<u16> {
-    let start = now.checked_sub(window)?;
-    let (mut stalled_us, mut wall_us) = (0u128, 0u128);
-    for pair in sorted.windows(2) {
-        let [earlier, later] = pair else { continue };
-        if earlier.at < start || later.at > now {
-            continue;
-        }
-        let Ok(elapsed) = later.at.duration_since(earlier.at) else {
-            continue;
-        };
-        let (before, after) = (total(&earlier.totals), total(&later.totals));
-        if elapsed.is_zero() || after < before {
-            continue;
-        }
-        stalled_us += u128::from(after - before);
-        wall_us += elapsed.as_micros();
-    }
-    if wall_us == 0 || wall_us < window.as_micros() / 2 {
-        return None;
-    }
-    // Rounded to the 0.1% the check compares at; a cgroup cannot stall
-    // longer than wall time, so clamp rounding noise from the counters.
-    let permille = (stalled_us * 1000 + wall_us / 2) / wall_us;
-    Some(u16::try_from(permille.min(1000)).expect("clamped to 1000"))
-}
-
-/// Whether the pressure check holds new seats after this run, given whether
-/// it held them after the last one. Either resource's 6-hour average above its
-/// block threshold holds them; a held MG resumes only once both 24-hour
-/// averages are at or below their resume thresholds. A window not yet covered
-/// neither blocks nor resumes.
-pub fn holds(
-    held: bool,
-    pressure: HostPressure,
-    limit: fedi_decentralized_domain::HostPressureLimit,
-) -> bool {
-    let per_mille = |percent: u8| u16::from(percent) * 10;
-    let blocks = |windows: PressurePermille, block_above: u8| {
-        windows
-            .six_hours
-            .is_some_and(|average| average > per_mille(block_above))
-    };
-    let resumes = |windows: PressurePermille, resume_below: u8| {
-        windows
-            .day
-            .is_some_and(|average| average <= per_mille(resume_below))
-    };
-    let blocked =
-        blocks(pressure.cpu, limit.cpu.block_above) || blocks(pressure.io, limit.io.block_above);
-    let resumed = resumes(pressure.cpu, limit.cpu.resume_below)
-        && resumes(pressure.io, limit.io.resume_below);
-    blocked || (held && !resumed)
-}
-
-/// The samples to keep after `sample`: none older than [`RESUME_WINDOW`]
-/// before it, and it only when the newest kept one is at least
-/// [`MIN_SAMPLE_SPACING`] older. Returns whether to store `sample` and the
-/// time before which stored samples can go.
-pub fn retention(newest_stored: Option<SystemTime>, sample: SystemTime) -> (bool, SystemTime) {
-    let store = newest_stored.is_none_or(|newest| {
-        sample
-            .duration_since(newest)
-            .is_ok_and(|since| since >= MIN_SAMPLE_SPACING)
-    });
-    (store, sample.checked_sub(RESUME_WINDOW).unwrap_or(sample))
 }
 
 #[cfg(test)]

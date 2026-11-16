@@ -138,7 +138,7 @@ fn readiness(failing: &[&str]) -> ReadinessReport {
         version: outcome("version", ReadinessOutcome::MgVersionTooOld),
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
-        host_pressure_limit: None,
+        max_host_pressure: None,
         uptime: outcome("uptime", ReadinessOutcome::DayUptimeLow),
         uptime_comparison: None,
     }

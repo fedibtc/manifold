@@ -22,7 +22,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
-use crate::host_pressure::{self, PressureSample, PressureTotals};
+use crate::host_pressure::{
+    PressureAverages, PressureSample, PressureState, PressureTotals, ResourceAverages,
+};
 use crate::identity::RootMnemonic;
 use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
@@ -809,81 +811,48 @@ impl Db {
         uptime_row(&mut conn).await
     }
 
-    /// Store one pressure sample when it is due, drop samples the averages
-    /// no longer need, and store whether the pressure check holds new seats
-    /// ([`crate::seat_readiness::run`]), in one transaction.
+    /// Account for this run's pressure `reading`, `None` when the counters
+    /// could not be read ([`PressureState::record`]), and return the history
+    /// after it, or `None` before the first reading.
     pub(crate) async fn record_host_pressure(
         &self,
-        sample: Option<PressureSample>,
-        held: bool,
-    ) -> Result<(), DbError> {
-        let millis = |at: SystemTime| {
-            i64::try_from(
-                at.duration_since(UNIX_EPOCH)
-                    .unwrap_or(Duration::ZERO)
-                    .as_millis(),
-            )
-            .unwrap_or(i64::MAX)
-        };
+        reading: Option<PressureSample>,
+    ) -> Result<Option<PressureState>, DbError> {
         let mut tx = self.begin_write().await?;
-        if let Some(sample) = sample {
-            let (newest,): (Option<i64>,) =
-                sqlx::query_as("SELECT MAX(sampled_at_ms) FROM host_pressure_samples")
-                    .fetch_one(&mut *tx)
-                    .await?;
-            let newest = newest.map(from_millis);
-            let (store, drop_before) = host_pressure::retention(newest, sample.at);
-            if store {
-                sqlx::query(
-                    "INSERT OR REPLACE INTO host_pressure_samples \
-                     (sampled_at_ms, cpu_some_us, io_some_us) VALUES (?, ?, ?)",
-                )
-                .bind(millis(sample.at))
-                .bind(i64::try_from(sample.totals.cpu_us).unwrap_or(i64::MAX))
-                .bind(i64::try_from(sample.totals.io_us).unwrap_or(i64::MAX))
-                .execute(&mut *tx)
-                .await?;
-            }
-            sqlx::query("DELETE FROM host_pressure_samples WHERE sampled_at_ms < ?")
-                .bind(millis(drop_before))
-                .execute(&mut *tx)
-                .await?;
-        }
-        sqlx::query(
-            "INSERT INTO host_pressure_hold (id, held) VALUES (1, ?) \
-             ON CONFLICT (id) DO UPDATE SET held = excluded.held",
+        let previous = host_pressure_row(&mut tx).await?;
+        let Some(reading) = reading else {
+            return Ok(previous);
+        };
+        let next = PressureState::record(previous, reading);
+        let millis = i64::try_from(
+            next.last
+                .at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis(),
         )
-        .bind(held)
+        .unwrap_or(i64::MAX);
+        let averages = next.averages;
+        sqlx::query(
+            "INSERT INTO host_pressure \
+             (id, sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+             cpu_some_us = excluded.cpu_some_us, io_some_us = excluded.io_some_us, \
+             cpu_6h = excluded.cpu_6h, cpu_3_5d = excluded.cpu_3_5d, \
+             io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d",
+        )
+        .bind(millis)
+        .bind(i64::try_from(next.last.totals.cpu_us).unwrap_or(i64::MAX))
+        .bind(i64::try_from(next.last.totals.io_us).unwrap_or(i64::MAX))
+        .bind(averages.map(|averages| averages.cpu.six_hours))
+        .bind(averages.map(|averages| averages.cpu.three_and_a_half_days))
+        .bind(averages.map(|averages| averages.io.six_hours))
+        .bind(averages.map(|averages| averages.io.three_and_a_half_days))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(())
-    }
-
-    /// The stored pressure samples, oldest first, and whether the pressure
-    /// check holds new seats.
-    pub(crate) async fn host_pressure(&self) -> Result<(Vec<PressureSample>, bool), DbError> {
-        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
-            "SELECT sampled_at_ms, cpu_some_us, io_some_us FROM host_pressure_samples \
-             ORDER BY sampled_at_ms",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let held: Option<(bool,)> =
-            sqlx::query_as("SELECT held FROM host_pressure_hold WHERE id = 1")
-                .fetch_optional(&self.pool)
-                .await?;
-        let samples = rows
-            .into_iter()
-            .map(|(at, cpu, io)| PressureSample {
-                at: from_millis(at),
-                totals: PressureTotals {
-                    cpu_us: u64::try_from(cpu).expect("non-negative by schema CHECK"),
-                    io_us: u64::try_from(io).expect("non-negative by schema CHECK"),
-                },
-            })
-            .collect();
-        Ok((samples, held.is_some_and(|(held,)| held)))
+        Ok(Some(next))
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
@@ -908,6 +877,57 @@ async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>,
         scores: UptimeScores { day, week, month },
         slot: u64::try_from(slot).expect("slot is non-negative by schema CHECK"),
     }))
+}
+
+type HostPressureRow = (
+    i64,
+    i64,
+    i64,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+);
+
+async fn host_pressure_row(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Option<PressureState>, DbError> {
+    let row: Option<HostPressureRow> = sqlx::query_as(
+        "SELECT sampled_at_ms, cpu_some_us, io_some_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d \
+         FROM host_pressure WHERE id = 1",
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(
+        row.map(|(at, cpu_us, io_us, cpu_6h, cpu_3_5d, io_6h, io_3_5d)| {
+            let averages = match (cpu_6h, cpu_3_5d, io_6h, io_3_5d) {
+                (Some(cpu_6h), Some(cpu_3_5d), Some(io_6h), Some(io_3_5d)) => {
+                    Some(PressureAverages {
+                        cpu: ResourceAverages {
+                            six_hours: cpu_6h,
+                            three_and_a_half_days: cpu_3_5d,
+                        },
+                        io: ResourceAverages {
+                            six_hours: io_6h,
+                            three_and_a_half_days: io_3_5d,
+                        },
+                    })
+                }
+                (None, None, None, None) => None,
+                _ => unreachable!("all averages or none by schema CHECK"),
+            };
+            PressureState {
+                last: PressureSample {
+                    at: from_millis(at),
+                    totals: PressureTotals {
+                        cpu_us: u64::try_from(cpu_us).expect("non-negative by schema CHECK"),
+                        io_us: u64::try_from(io_us).expect("non-negative by schema CHECK"),
+                    },
+                },
+                averages,
+            }
+        }),
+    )
 }
 
 pub(super) fn fresh_offer_epoch() -> OfferEpoch {

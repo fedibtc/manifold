@@ -2,13 +2,16 @@ import { Banner } from '@operator-ui/common-ui';
 import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
 import {
-  describeHostPressure,
   describeOutcome,
   formatPermille,
   guidance,
   labels,
+  PRESSURE_RESOURCES,
+  PRESSURE_WINDOWS,
   passed,
   pressureGuidance,
+  pressureHigh,
+  pressureLabels,
   reportedChecks,
   UPTIME_WINDOWS,
   updateGuidance,
@@ -24,14 +27,23 @@ interface SeatReadinessCardProps {
 /** Bars show 50–100%: under 50% a window is far from passing anyway. */
 const barPosition = (permille: number) => `${Math.max(0, (permille - 500) / 5)}%`;
 
+/** Pressure bars show 0 to twice the maximum, so the maximum's tick sits in the middle. */
+const pressurePosition = (permille: number, maximum: number) =>
+  `${Math.min(100, (permille / (2 * maximum)) * 100)}%`;
+
 export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   const { ready_for_new_seats: ready, report } = readiness;
   // Absent from daemons that predate the figures, null when a run could not record them.
   const uptime = report?.uptime_comparison ?? null;
-  // With figures, the uptime bars replace the generic uptime check.
+  // Absent from daemons that predate the check, null without figures this run.
+  const pressure = report?.host_pressure ?? null;
+  const maximums = report?.max_host_pressure ?? null;
+  const pressureBars = pressure && maximums ? { pressure, maximums } : null;
+  // With figures, the uptime and pressure bars replace their generic checks.
   const reported = report ? reportedChecks(report) : [];
-  const checks = uptime ? reported.filter((check) => check !== 'uptime') : reported;
-  const hostPressure = report ? describeHostPressure(report) : null;
+  const checks = reported.filter(
+    (check) => !(check === 'uptime' && uptime) && !(check === 'pressure' && pressureBars)
+  );
   const wait = uptime ? Math.max(...UPTIME_WINDOWS.map((window) => uptime.wait_secs[window])) : 0;
   return (
     <>
@@ -44,7 +56,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
           This host stopped advertising and quoting new seats until every check passes. Running
           seats are not affected.
           {report?.version === 'mg_version_too_old' && ` ${updateGuidance}`}
-          {report?.pressure === 'host_pressure_high' && ` ${pressureGuidance}`}
+          {pressureHigh(report?.pressure) && ` ${pressureGuidance}`}
         </Banner>
       )}
 
@@ -61,11 +73,9 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
                 <strong>{labels[check]}</strong>
 
                 <span>{describeOutcome(check, report[check])}</span>
-                {check === 'pressure' && hostPressure && (
-                  <span className={styles.guidance}>{hostPressure}</span>
-                )}
                 {check !== 'version' &&
-                  report[check] !== 'host_pressure_high' &&
+                  !pressureHigh(report[check]) &&
+                  report[check] !== 'host_pressure_measuring' &&
                   !passed(report[check]) && (
                     <span className={styles.guidance}>{guidance[check]}</span>
                   )}
@@ -130,11 +140,67 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
             </section>
           )}
 
+          {pressureBars && (
+            <section className={styles.uptime} aria-label="CPU and disk pressure">
+              <div className={styles.uptimeHead}>
+                <strong>{labels.pressure}</strong>
+
+                <span className={styles.guidance}>
+                  {passed(report.pressure)
+                    ? 'Every average is within its maximum.'
+                    : 'New seats reopen once every average is within its maximum.'}
+                </span>
+              </div>
+              {PRESSURE_RESOURCES.flatMap((resource) =>
+                PRESSURE_WINDOWS.map((window) => {
+                  const average = pressureBars.pressure[resource][window];
+                  const maximum = pressureBars.maximums[resource][window];
+                  const ok = average <= maximum;
+                  const label = pressureLabels[resource][window];
+                  return (
+                    <div key={`${resource}-${window}`} className={styles.gauge}>
+                      <div className={styles.gaugeHead}>
+                        <span>{label}</span>
+
+                        <span className={styles.figure}>
+                          <span className={ok ? styles.ok : styles.bad}>
+                            {formatPermille(average)}
+                          </span>
+
+                          <span className={styles.min}> / {formatPermille(maximum)} maximum</span>
+                        </span>
+                      </div>
+
+                      {/* biome-ignore lint/a11y/useSemanticElements: as for the uptime bars */}
+                      <div
+                        className={styles.track}
+                        role="meter"
+                        aria-label={label}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={average / 10}
+                      >
+                        <div
+                          className={ok ? styles.fillOk : styles.fillBad}
+                          style={{ width: pressurePosition(average, maximum) }}
+                        />
+
+                        <div className={styles.tick} style={{ left: '50%' }} />
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </section>
+          )}
+
           <p className={styles.checkedAt}>
             Last checked {formatCheckedAt(Math.floor(report.checked_at_ms / 1000))}. Checks repeat
             every 10 minutes, or every minute while one fails.
             {uptime &&
               ' Uptime is a moving average of these checks, and a new outage lowers it again.'}
+            {pressureBars &&
+              ' Pressure is the share of time this host’s tasks waited for CPU or disk, as moving averages.'}
           </p>
         </>
       )}

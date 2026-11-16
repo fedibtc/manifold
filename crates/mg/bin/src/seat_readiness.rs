@@ -80,12 +80,18 @@ impl SeatReadiness {
         fleet: Arc<Fleet>,
         setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     ) -> tokio::task::JoinHandle<()> {
+        // A local end-to-end test runs every MG on one busy host's cgroup,
+        // as it skips relay and discovery, so it skips pressure too.
+        let read_pressure = self
+            .discovery
+            .is_some()
+            .then_some(mg_core::host_pressure::read_cgroup_pressure);
         tokio::spawn(seat_readiness::run(
             self,
             fleet,
             setup_payment_policy,
             SystemTime::now,
-            mg_core::host_pressure::read_cgroup_pressure,
+            read_pressure,
         ))
     }
 
@@ -120,7 +126,7 @@ impl SeatReadiness {
             version: Outcome::NotApplicable,
             pressure: Outcome::NotApplicable,
             host_pressure: None,
-            host_pressure_limit: None,
+            max_host_pressure: None,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }

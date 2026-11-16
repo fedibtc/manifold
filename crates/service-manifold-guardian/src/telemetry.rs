@@ -350,9 +350,9 @@ pub struct SeatCapacityEvent {
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
 /// ownership as [`SeatCapacityEvent`]. Releases before 0.1.4 journal no
 /// uptime outcome, scores or minimums, releases before 0.1.9 no version
-/// outcome, and releases before 0.1.16 no pressure outcome or figures. An
-/// average is absent where the MG cannot read the counters or has not yet
-/// sampled half its window, and the thresholds without a policy limit.
+/// outcome, and releases before 0.1.16 no pressure outcome or figures. The
+/// averages are absent where the MG cannot read the counters or has not yet
+/// measured an interval.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SeatReadinessEvent {
     pub ready: bool,
@@ -363,25 +363,25 @@ pub struct SeatReadinessEvent {
     pub version: Option<String>,
     #[serde(default)]
     pub pressure: Option<String>,
-    /// The MG cgroup's 6- and 24-hour average CPU and IO pressure (PSI
+    /// The MG cgroup's 6-hour and 3.5-day average CPU and IO pressure (PSI
     /// `some`), in percent of wall time.
     #[serde(default)]
     pub cpu_pressure_6h_pct: Option<f64>,
     #[serde(default)]
-    pub cpu_pressure_24h_pct: Option<f64>,
+    pub cpu_pressure_3_5d_pct: Option<f64>,
     #[serde(default)]
     pub io_pressure_6h_pct: Option<f64>,
     #[serde(default)]
-    pub io_pressure_24h_pct: Option<f64>,
-    /// The setup-payment policy's pressure thresholds, in the same unit.
+    pub io_pressure_3_5d_pct: Option<f64>,
+    /// The maximums those averages compared against, in the same unit.
     #[serde(default)]
-    pub cpu_pressure_block_above_pct: Option<f64>,
+    pub max_cpu_pressure_6h_pct: Option<f64>,
     #[serde(default)]
-    pub cpu_pressure_resume_below_pct: Option<f64>,
+    pub max_cpu_pressure_3_5d_pct: Option<f64>,
     #[serde(default)]
-    pub io_pressure_block_above_pct: Option<f64>,
+    pub max_io_pressure_6h_pct: Option<f64>,
     #[serde(default)]
-    pub io_pressure_resume_below_pct: Option<f64>,
+    pub max_io_pressure_3_5d_pct: Option<f64>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]

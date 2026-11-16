@@ -1331,7 +1331,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         version: ReadinessOutcome::NotApplicable,
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
-        host_pressure_limit: None,
+        max_host_pressure: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
     }
@@ -1533,10 +1533,9 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
 }
 
 /// The readiness worker follows the setup-payment policy's minimum release
-/// and pressure thresholds: raising the minimum above this release, or a
-/// threshold below the host's pressure, stops discovery and quoting at the
-/// next run, and undoing either restores them, the pressure check with
-/// hysteresis. The MG still serves its
+/// and maximum pressures: raising the minimum above this release, or a
+/// maximum below the host's pressure average, stops discovery and quoting at
+/// the next run, and undoing either restores them. The MG still serves its
 /// seats meanwhile, so every one of those runs records an up uptime slot.
 #[tokio::test]
 async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
@@ -1544,7 +1543,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
 
     use crate::host_pressure::{HostPressure, PressurePermille};
     use crate::seat_readiness::{ReadinessProbe, run};
-    use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+    use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MaxPressurePercent};
 
     /// Passing prerequisites, one run per step the test allows, each run in
     /// the next uptime slot.
@@ -1581,12 +1580,12 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     );
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
 
-    let policy = |min_mg_version: Option<&str>, pressure: Option<PressureLimit>| {
+    let policy = |min_mg_version: Option<&str>, pressure: Option<MaxPressure>| {
         let mut field = min_mg_version
             .map(|version| format!(r#","min_mg_version":"{version}""#))
             .unwrap_or_default();
-        if let Some(limit) = pressure {
-            field.push_str(&pressure_policy_field(limit));
+        if let Some(max) = pressure {
+            field.push_str(&pressure_policy_field(max));
         }
         AdmittedSetupPaymentFederations::parse(
             format!(
@@ -1605,13 +1604,13 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
                 + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
         }
     };
-    // A day of history at 12% CPU and 3% IO pressure, and readings that go on
-    // at the same rates.
+    // History at 8% CPU and 3% IO pressure, and readings that go on at the
+    // same rates, so every average stays at those shares.
     let origin = clock() - Duration::from_secs(25 * 60 * 60);
-    seed_pressure(&fleet, origin, clock()).await;
+    seed_pressure(&fleet, 8, origin, clock()).await;
     let read_pressure = {
         let clock = clock.clone();
-        move || Ok(pressure_totals(origin, clock()))
+        move || Ok(pressure_totals(8, origin, clock()))
     };
     let (step, steps) = tokio::sync::mpsc::channel(1);
     let (publish, policies) = tokio::sync::watch::channel(None);
@@ -1623,50 +1622,46 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         fleet.clone(),
         policies,
         clock,
-        read_pressure,
+        Some(read_pressure),
     ));
 
     let this = env!("CARGO_PKG_VERSION");
     let mut previous_day_score = None;
     let calm = (50, 50);
-    for (run_index, (min_mg_version, max_load, advertised)) in [
-        (None, None, true),
-        (Some("999.0.0"), None, false),
-        (Some(this), None, true),
-        (Some("999.0.0"), None, false),
-        (Some("0.0.1"), None, true),
-        (Some("999.0.0"), None, false),
-        (None, None, true),
-        // CPU alone above its block threshold, IO calm.
-        (None, Some(((11, 11), calm)), false),
-        // Hysteresis: a held MG stays held while its CPU day average is
-        // above the resume threshold, although the 6-hour one is under the
-        // block one.
-        (None, Some(((15, 10), calm)), false),
-        // An average equal to the resume threshold is within it.
-        (None, Some(((15, 12), calm)), true),
-        // IO alone above its block threshold, CPU calm; then held until IO
-        // is at its resume threshold.
-        (None, Some((calm, (2, 2))), false),
-        (None, Some((calm, (5, 2))), false),
-        (None, Some((calm, (5, 3))), true),
-        (None, Some(((11, 11), calm)), false),
-        // Removing the limit clears the hold, so a later limit starts from the
-        // averages alone.
-        (None, None, true),
-        (None, Some(((15, 5), calm)), true),
+    use ReadinessOutcome::{HalfWeekPressureHigh, Pass, SixHourPressureHigh};
+    for (run_index, (min_mg_version, max_pressure, pressure)) in [
+        // Without a policy maximum the defaults apply, which 8% and 3% pass.
+        (None, None, Pass),
+        (Some("999.0.0"), None, Pass),
+        (Some(this), None, Pass),
+        (Some("999.0.0"), None, Pass),
+        (Some("0.0.1"), None, Pass),
+        (Some("999.0.0"), None, Pass),
+        (None, None, Pass),
+        // One window over its maximum, every other one calm.
+        (None, Some(((7, 50), calm)), SixHourPressureHigh),
+        (None, Some(((50, 7), calm)), HalfWeekPressureHigh),
+        // An average equal to its maximum is within it.
+        (None, Some(((8, 8), calm)), Pass),
+        (None, Some((calm, (2, 50))), SixHourPressureHigh),
+        (None, Some((calm, (50, 2))), HalfWeekPressureHigh),
+        (None, Some((calm, (3, 3))), Pass),
+        (None, Some(((7, 50), calm)), SixHourPressureHigh),
+        // No hold: dropping the maximum passes at once.
+        (None, None, Pass),
     ]
     .into_iter()
     .enumerate()
     {
+        let advertised = pressure == Pass && min_mg_version != Some("999.0.0");
         // Each policy ends the worker's wait, and the step lets one run go.
         if run_index > 0 {
-            publish.send_replace(Some(policy(min_mg_version, max_load)));
+            publish.send_replace(Some(policy(min_mg_version, max_pressure)));
         }
         step.send(()).await.unwrap();
         let checked = first_slot + run_index as u64 + 1;
-        // The report is visible before its verdict is stored; the expected
-        // verdict alternates, so the previous run's cannot satisfy this wait.
+        // The report is visible before its verdict is stored, so wait for
+        // both this run's report and its verdict.
         tokio::time::timeout(Duration::from_secs(10), async {
             while fleet.seat_readiness().map(|report| report.checked_at_ms) != Some(checked)
                 || fleet.ready_for_new_seats().await != advertised
@@ -1678,31 +1673,27 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         .unwrap_or_else(|_| panic!("{min_mg_version:?}: the run's verdict was not applied"));
         let report = fleet.seat_readiness().unwrap();
         assert_eq!(
-            report.version == ReadinessOutcome::MgVersionTooOld
-                || report.pressure == ReadinessOutcome::HostPressureHigh,
-            !advertised,
-            "{min_mg_version:?} {max_load:?}"
+            report.pressure, pressure,
+            "{min_mg_version:?} {max_pressure:?}"
         );
         assert_eq!(
             report.host_pressure,
             Some(HostPressure {
                 cpu: PressurePermille {
-                    six_hours: Some(120),
-                    day: Some(120),
+                    six_hours: 80,
+                    three_and_a_half_days: 80,
                 },
                 io: PressurePermille {
-                    six_hours: Some(30),
-                    day: Some(30),
+                    six_hours: 30,
+                    three_and_a_half_days: 30,
                 },
             })
         );
         assert_eq!(
-            report.host_pressure_limit,
-            max_load.map(|limit| domain_limit(limit).into())
-        );
-        assert_eq!(
-            report.pressure == ReadinessOutcome::NotApplicable,
-            max_load.is_none()
+            report.max_host_pressure,
+            Some(HostPressure::from(
+                max_pressure.map_or_else(MaxPressurePercent::default, domain_max)
+            ))
         );
         assert_eq!(
             host.advertisement().await.is_some(),
@@ -1725,13 +1716,12 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     fleet.shutdown().await;
 }
 
-/// The pressure check's hold is durable: a held MG that restarts while its
-/// pressure is under the block thresholds stays held until its day averages
-/// reach the resume thresholds, instead of reopening for a window it likely
-/// should not. A cgroup recreated by the restart starts its counters again,
-/// which leaves the stored history intact.
+/// The pressure history is durable: a restart keeps the averages and the
+/// last reading, so the interval across a quick restart is measured; a
+/// cgroup recreated by the restart starts its counters again, which leaves
+/// the stored averages intact.
 #[tokio::test]
-async fn a_pressure_hold_survives_restart() {
+async fn the_pressure_history_survives_restart() {
     use crate::host_pressure::PressureTotals;
     use crate::seat_readiness::{ReadinessProbe, run};
     use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
@@ -1749,11 +1739,11 @@ async fn a_pressure_hold_survives_restart() {
         }
     }
 
-    let policy = |limit: PressureLimit| {
+    let policy = |max: MaxPressure| {
         AdmittedSetupPaymentFederations::parse(
             format!(
                 r#"{{"version":1,"fman_version":"999.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{}}}"#,
-                pressure_policy_field(limit)
+                pressure_policy_field(max)
             )
             .as_bytes(),
         )
@@ -1773,7 +1763,7 @@ async fn a_pressure_hold_survives_restart() {
             fleet.clone(),
             policies,
             move || now,
-            move || reading.lock().unwrap().take().expect("one run reads once"),
+            Some(move || reading.lock().unwrap().take().expect("one run reads once")),
         ));
         let report = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -1787,7 +1777,6 @@ async fn a_pressure_hold_survives_restart() {
         })
         .await
         .expect("the run completes");
-        // The report is set after the hold is stored.
         worker.abort();
         report
     }
@@ -1796,61 +1785,74 @@ async fn a_pressure_hold_survives_restart() {
     let config = config(&temp, 2, 31_600).await;
     let start = std::time::SystemTime::now();
     let origin = start - Duration::from_secs(25 * 60 * 60);
-    let fleet = Arc::new(
-        open_fleet(config.clone(), Arc::new(NoWallet))
-            .await
-            .unwrap(),
-    );
-    seed_pressure(&fleet, origin, start).await;
+    let minutes = |n: u64| Duration::from_secs(n * 60);
     let calm = (50, 50);
-    let held = one_run(
+    let defaults = ((15, 10), (10, 5));
+    let open = || async {
+        Arc::new(
+            open_fleet(config.clone(), Arc::new(NoWallet))
+                .await
+                .unwrap(),
+        )
+    };
+
+    // A fresh install has no interval yet and does not sell.
+    let fleet = open().await;
+    let fresh = one_run(
         &fleet,
-        policy(((11, 11), calm)),
-        start,
-        Ok(pressure_totals(origin, start)),
+        policy(defaults),
+        start - minutes(10),
+        Ok(pressure_totals(12, origin, start - minutes(10))),
     )
     .await;
-    assert_eq!(held.pressure, ReadinessOutcome::HostPressureHigh);
-    assert!(fleet.host_pressure().await.unwrap().1);
+    assert_eq!(fresh.pressure, ReadinessOutcome::HostPressureMeasuring);
+    assert_eq!(fresh.host_pressure, None);
     fleet.shutdown().await;
     drop(fleet);
 
-    // After a restart, 12% is under the new block threshold but above the
-    // resume one, and the recreated cgroup's counters went back to zero.
-    let later = start + Duration::from_secs(10 * 60);
-    let fleet = Arc::new(
-        open_fleet(config.clone(), Arc::new(NoWallet))
-            .await
-            .unwrap(),
-    );
-    assert!(fleet.host_pressure().await.unwrap().1);
-    let still_held = one_run(
+    // After a restart the stored reading measures the interval across it,
+    // which seeds the averages at 12%: under the 15% 6-hour maximum, over
+    // the 10% 3.5-day one.
+    let fleet = open().await;
+    let seeded = one_run(
         &fleet,
-        policy(((15, 10), calm)),
-        later,
+        policy(defaults),
+        start,
+        Ok(pressure_totals(12, origin, start)),
+    )
+    .await;
+    assert_eq!(seeded.pressure, ReadinessOutcome::HalfWeekPressureHigh);
+    assert!(!fleet.ready_for_new_seats().await);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // The recreated cgroup's counters went back to zero: the averages stay.
+    let fleet = open().await;
+    let reset = one_run(
+        &fleet,
+        policy(defaults),
+        start + minutes(10),
         Ok(PressureTotals {
             cpu_us: 1,
             io_us: 1,
         }),
     )
     .await;
-    assert_eq!(still_held.pressure, ReadinessOutcome::HostPressureHigh);
-    // The history from before the reset still decides the averages.
-    assert_eq!(still_held.host_pressure.unwrap().cpu.day, Some(120));
-    assert!(!fleet.ready_for_new_seats().await);
+    assert_eq!(reset.pressure, ReadinessOutcome::HalfWeekPressureHigh);
+    let averages = reset.host_pressure.unwrap();
+    assert_eq!(
+        (averages.cpu.six_hours, averages.cpu.three_and_a_half_days),
+        (120, 120)
+    );
     fleet.shutdown().await;
     drop(fleet);
 
-    // Counters that cannot be read fail the check and keep the hold.
-    let fleet = Arc::new(
-        open_fleet(config.clone(), Arc::new(NoWallet))
-            .await
-            .unwrap(),
-    );
+    // Counters that cannot be read fail the check.
+    let fleet = open().await;
     let unreadable = one_run(
         &fleet,
-        policy(((15, 12), calm)),
-        later + Duration::from_secs(10 * 60),
+        policy(defaults),
+        start + minutes(20),
         Err(anyhow::anyhow!("no cgroup pressure")),
     )
     .await;
@@ -1860,16 +1862,17 @@ async fn a_pressure_hold_survives_restart() {
     );
     assert_eq!(unreadable.host_pressure, None);
     assert!(!fleet.ready_for_new_seats().await);
-    assert!(fleet.host_pressure().await.unwrap().1);
     fleet.shutdown().await;
     drop(fleet);
 
-    let fleet = Arc::new(open_fleet(config, Arc::new(NoWallet)).await.unwrap());
-    let now = later + Duration::from_secs(20 * 60);
+    // 20 idle minutes after the reset reading: the 6-hour average falls to
+    // 12% * e^(-20/360) = 11.4% and the 3.5-day one to 12% * e^(-20/5040) =
+    // 12.0%, within a 12% maximum.
+    let fleet = open().await;
     let reopened = one_run(
         &fleet,
         policy(((15, 12), calm)),
-        now,
+        start + minutes(30),
         Ok(PressureTotals {
             cpu_us: 2,
             io_us: 2,
@@ -1877,66 +1880,74 @@ async fn a_pressure_hold_survives_restart() {
     )
     .await;
     assert_eq!(reopened.pressure, ReadinessOutcome::Pass);
-    assert!(!fleet.host_pressure().await.unwrap().1);
+    let averages = reopened.host_pressure.unwrap();
+    assert_eq!(
+        (averages.cpu.six_hours, averages.cpu.three_and_a_half_days),
+        (114, 120)
+    );
+    assert!(fleet.ready_for_new_seats().await);
     fleet.shutdown().await;
 }
 
-/// CPU and IO `(block_above, resume_below)` pressure thresholds.
-type PressureLimit = ((u8, u8), (u8, u8));
+/// CPU and IO `(6h, 3.5d)` maximum pressures, in percent.
+type MaxPressure = ((u8, u8), (u8, u8));
 
-fn domain_limit(
-    ((cpu_block, cpu_resume), (io_block, io_resume)): PressureLimit,
-) -> fedi_decentralized_domain::HostPressureLimit {
-    use fedi_decentralized_domain::{HostPressureLimit, PressureThresholds};
-    HostPressureLimit {
-        cpu: PressureThresholds {
-            block_above: cpu_block,
-            resume_below: cpu_resume,
+fn domain_max(
+    ((cpu_6h, cpu_3_5d), (io_6h, io_3_5d)): MaxPressure,
+) -> fedi_decentralized_domain::MaxPressurePercent {
+    use fedi_decentralized_domain::{MaxPressurePercent, MaxPressureWindows};
+    MaxPressurePercent {
+        cpu: MaxPressureWindows {
+            six_hours: cpu_6h,
+            three_and_a_half_days: cpu_3_5d,
         },
-        io: PressureThresholds {
-            block_above: io_block,
-            resume_below: io_resume,
+        io: MaxPressureWindows {
+            six_hours: io_6h,
+            three_and_a_half_days: io_3_5d,
         },
     }
 }
 
-/// The setup-payment policy field setting `limit`, with its leading comma.
-fn pressure_policy_field(limit: PressureLimit) -> String {
+/// The setup-payment policy field setting `max`, with its leading comma.
+fn pressure_policy_field(max: MaxPressure) -> String {
     format!(
-        r#","host_pressure_percent":{}"#,
-        serde_json::to_string(&domain_limit(limit)).unwrap()
+        r#","max_pressure_percent":{}"#,
+        serde_json::to_string(&domain_max(max)).unwrap()
     )
 }
 
-/// The counters of a cgroup that has stalled 12% of the time on CPU and 3% on
-/// IO since `origin`.
+/// The counters of a cgroup that has stalled `cpu_percent` of the time on CPU
+/// and 3% on IO since `origin`.
 fn pressure_totals(
+    cpu_percent: u64,
     origin: std::time::SystemTime,
     at: std::time::SystemTime,
 ) -> crate::host_pressure::PressureTotals {
     let elapsed_us = u64::try_from(at.duration_since(origin).unwrap().as_micros()).unwrap();
     crate::host_pressure::PressureTotals {
-        cpu_us: elapsed_us * 12 / 100,
+        cpu_us: elapsed_us * cpu_percent / 100,
         io_us: elapsed_us * 3 / 100,
     }
 }
 
-/// Store a day of 10-minute [`pressure_totals`] samples ending before `end`.
-async fn seed_pressure(fleet: &Fleet, origin: std::time::SystemTime, end: std::time::SystemTime) {
+/// Record two [`pressure_totals`] readings 10 minutes apart, the later one
+/// 10 minutes before `end`: one measured interval, which seeds every average
+/// with its shares.
+async fn seed_pressure(
+    fleet: &Fleet,
+    cpu_percent: u64,
+    origin: std::time::SystemTime,
+    end: std::time::SystemTime,
+) {
     let slot = Duration::from_secs(10 * 60);
-    let mut at = end - Duration::from_secs(24 * 60 * 60);
-    while at < end {
+    for at in [end - 2 * slot, end - slot] {
         fleet
-            .record_host_pressure(
-                Some(crate::host_pressure::PressureSample {
-                    at,
-                    totals: pressure_totals(origin, at),
-                }),
-                false,
-            )
+            .record_host_pressure(Some(crate::host_pressure::PressureSample {
+                at,
+                totals: pressure_totals(cpu_percent, origin, at),
+            }))
             .await
             .unwrap();
-        at += slot;
     }
 }
 

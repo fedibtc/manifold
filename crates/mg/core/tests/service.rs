@@ -109,7 +109,7 @@ async fn rpc_with_network(
             version: ReadinessOutcome::NotApplicable,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
-            host_pressure_limit: None,
+            max_host_pressure: None,
             uptime: ReadinessOutcome::Pass,
             uptime_comparison: None,
         })

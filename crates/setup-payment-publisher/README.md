@@ -79,18 +79,16 @@ understand the minimum, set
 Those MGs keep running their seats and show that an update is needed; their
 uptime is not affected. Omitted, there is no minimum.
 
-To stop MGs whose seats keep waiting for CPU or disk from taking more seats,
-set `host_pressure_percent`. Start from
-`{"cpu": {"block_above": 15, "resume_below": 10}, "io": {"block_above": 10, "resume_below": 5}}`.
-Each value is a percent of wall time (1 to 100) during which a task of the
-MG's cgroup stalled on that resource (Linux PSI `some`), and each resume
-value must be no higher than its block value. An MG whose 6-hour average for
-either resource goes above `block_above` stops advertising and quoting new
-seats until both 24-hour averages are at or below `resume_below`; an MG that
-cannot read its pressure stops too. It keeps running its seats, and its
-uptime is not affected. Omitted, there is no pressure limit. MGs journal
-their averages either way, so tune the values from the seat readiness
-telemetry.
+MGs from 0.1.16 on stop taking new seats while their seats keep waiting for
+CPU or disk. Omitted, `max_pressure_percent` means
+`{"cpu": {"6h": 15, "3.5d": 10}, "io": {"6h": 10, "3.5d": 5}}`: each value is
+the highest percent of wall time (1 to 100) during which a task of the MG's
+cgroup may have stalled on that resource (Linux PSI `some`), as a moving
+average with a 6-hour or a 3.5-day time constant. Set only the windows to
+change; the rest keep these values. An MG over any maximum, or that cannot
+read its pressure, stops advertising and quoting new seats. It keeps running
+its seats, and its uptime is not affected. MGs journal their averages and
+maximums, so tune the values from the seat readiness telemetry.
 
 To ask operators below a release to update without stopping their sales, set
 `"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).

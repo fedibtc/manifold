@@ -18,17 +18,17 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   discovery: 'not_applicable',
   bitcoin: 'pass',
   version: 'not_applicable',
-  pressure: 'not_applicable',
-  host_pressure: { cpu: { '6h': 12, '24h': 14 }, io: { '6h': null, '24h': null } },
-  host_pressure_limit: null,
+  pressure: 'pass',
+  host_pressure: null,
+  max_host_pressure: null,
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
 });
 
-const LIMIT = {
-  cpu: { block_above: 15, resume_below: 10 },
-  io: { block_above: 10, resume_below: 5 }
+const MAXIMUMS = {
+  cpu: { '6h': 150, '3.5d': 100 },
+  io: { '6h': 100, '3.5d': 50 }
 };
 
 const MINIMUMS = { '1d': 700, '7d': 900, '30d': 930 };
@@ -74,52 +74,61 @@ describe('SeatReadinessCard', () => {
     expect(screen.queryByText(guidance.uptime)).toBeNull();
   });
 
-  it('should show what a held host waits for and explain the hold', () => {
+  it('should show each pressure window against its maximum and explain a failing one', () => {
     render(
       <SeatReadinessCard
         readiness={{
           ready_for_new_seats: false,
           report: report({
-            pressure: 'host_pressure_high',
-            host_pressure: { cpu: { '6h': 92, '24h': 134 }, io: { '6h': 12, '24h': 18 } },
-            host_pressure_limit: LIMIT
+            pressure: 'host_pressure_3_5d_high',
+            host_pressure: { cpu: { '6h': 128, '3.5d': 117 }, io: { '6h': 21, '3.5d': 18 } },
+            max_host_pressure: MAXIMUMS
           })
         }}
       />
     );
 
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
-    expect(screen.getByText(labels.pressure)).toBeTruthy();
-    expect(screen.getByText(outcomes.host_pressure_high)).toBeTruthy();
-    // Held, the host waits on the 24-hour averages, whatever the 6-hour ones are.
-    expect(
-      screen.getByText(
-        '24-hour average: CPU 13.4%, disk 1.8%. New seats reopen at CPU 10% and disk 5% or less.'
-      )
-    ).toBeTruthy();
     expect(screen.getByText(pressureGuidance, { exact: false })).toBeTruthy();
+    const meters = screen.getAllByRole('meter');
+    expect(meters.map((m) => m.getAttribute('aria-label'))).toEqual([
+      'CPU, 6-hour average',
+      'CPU, 3.5-day average',
+      'Disk, 6-hour average',
+      'Disk, 3.5-day average'
+    ]);
+    expect(meters.map((m) => m.getAttribute('aria-valuenow'))).toEqual([
+      '12.8',
+      '11.7',
+      '2.1',
+      '1.8'
+    ]);
+    expect(screen.getByText('/ 15.0% maximum')).toBeTruthy();
+    expect(screen.getAllByText('/ 10.0% maximum')).toHaveLength(2);
+    expect(screen.getByText('/ 5.0% maximum')).toBeTruthy();
+    expect(screen.getByText(/once every average is within its maximum/)).toBeTruthy();
+    // The bars replace the one-line check, and its read-failure guidance.
+    expect(screen.queryByText(outcomes.host_pressure_3_5d_high)).toBeNull();
     expect(screen.queryByText(guidance.pressure)).toBeNull();
     expect(screen.queryByText(updateGuidance, { exact: false })).toBeNull();
   });
 
-  it('should say where new seats would stop, and mark a window without enough history', () => {
+  it('should show passing pressure windows without a not-ready banner', () => {
     render(
       <SeatReadinessCard
         readiness={{
           ready_for_new_seats: true,
           report: report({
-            pressure: 'pass',
-            host_pressure: { cpu: { '6h': 21, '24h': null }, io: { '6h': 4, '24h': null } },
-            host_pressure_limit: LIMIT
+            host_pressure: { cpu: { '6h': 41, '3.5d': 52 }, io: { '6h': 14, '3.5d': 11 } },
+            max_host_pressure: MAXIMUMS
           })
         }}
       />
     );
-    expect(
-      screen.getByText(
-        '6-hour average: CPU 2.1%, disk 0.4%. New seats stop above CPU 15% or disk 10%.'
-      )
-    ).toBeTruthy();
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
+    expect(screen.getAllByRole('meter')).toHaveLength(4);
+    expect(screen.getByText('Every average is within its maximum.')).toBeTruthy();
+    expect(screen.queryByText(pressureGuidance, { exact: false })).toBeNull();
   });
 
   it('should explain pressure that cannot be read', () => {
@@ -130,7 +139,7 @@ describe('SeatReadinessCard', () => {
           report: report({
             pressure: 'host_pressure_unavailable',
             host_pressure: null,
-            host_pressure_limit: LIMIT
+            max_host_pressure: MAXIMUMS
           })
         }}
       />
@@ -138,27 +147,29 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText(outcomes.host_pressure_unavailable)).toBeTruthy();
     expect(screen.getByText(guidance.pressure)).toBeTruthy();
     expect(screen.queryByText(pressureGuidance, { exact: false })).toBeNull();
-    expect(screen.queryByText(/6-hour average/)).toBeNull();
+    expect(screen.queryAllByRole('meter')).toHaveLength(0);
   });
 
-  it('should show the pressure without a limit, and nothing where it was not read', () => {
-    const { unmount } = render(
-      <SeatReadinessCard readiness={{ ready_for_new_seats: true, report: report() }} />
-    );
-    expect(screen.getByText('No limit set.')).toBeTruthy();
-    expect(screen.getByText('6-hour average: CPU 1.2%, disk not enough history yet.')).toBeTruthy();
-    unmount();
-
+  it('should say a fresh host is still measuring, without read-failure guidance', () => {
     render(
       <SeatReadinessCard
-        readiness={{ ready_for_new_seats: true, report: report({ host_pressure: null }) }}
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({
+            pressure: 'host_pressure_measuring',
+            host_pressure: null,
+            max_host_pressure: MAXIMUMS
+          })
+        }}
       />
     );
-    expect(screen.queryByText(/6-hour average/)).toBeNull();
+    expect(screen.getByText(outcomes.host_pressure_measuring)).toBeTruthy();
+    expect(screen.queryByText(guidance.pressure)).toBeNull();
+    expect(screen.queryByText(pressureGuidance, { exact: false })).toBeNull();
   });
 
   it('should leave out the pressure check for a daemon that predates it', () => {
-    const { pressure: _, host_pressure: __, host_pressure_limit: ___, ...older } = report();
+    const { pressure: _, host_pressure: __, max_host_pressure: ___, ...older } = report();
     render(
       <SeatReadinessCard
         readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}

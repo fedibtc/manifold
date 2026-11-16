@@ -10,13 +10,15 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MgVersion, MinUptimePercent};
+use fedi_decentralized_domain::{
+    AdmittedSetupPaymentFederations, MaxPressurePercent, MgVersion, MinUptimePercent,
+};
 use fedi_decentralized_nostr::mg::{AdvertisedUptime, Permille, PermilleOutOfRange};
 use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
 use tokio::sync::watch;
 
 use crate::fleet::Fleet;
-use crate::host_pressure::{self, HostPressure, PressureSample, PressureTotals};
+use crate::host_pressure::{HostPressure, PressureSample, PressureState, PressureTotals};
 
 /// One uptime slot: the daemon records one per readiness run, and runs at
 /// least once per slot while it is up.
@@ -39,12 +41,19 @@ pub enum ReadinessOutcome {
     BitcoinNoFeeRate,
     /// This MG's release is older than the setup-payment policy's minimum.
     MgVersionTooOld,
-    /// The MG's CPU or IO pressure went above a setup-payment policy block
-    /// threshold and has not yet come down to the resume thresholds.
-    HostPressureHigh,
-    /// The setup-payment policy sets pressure thresholds, but this host's
-    /// cgroup pressure counters cannot be read.
+    /// The 6-hour CPU or IO pressure average is over the setup-payment policy
+    /// maximum.
+    #[serde(rename = "host_pressure_6h_high")]
+    SixHourPressureHigh,
+    /// The 3.5-day CPU or IO pressure average is over the setup-payment
+    /// policy maximum.
+    #[serde(rename = "host_pressure_3_5d_high")]
+    HalfWeekPressureHigh,
+    /// This host's cgroup pressure counters cannot be read.
     HostPressureUnavailable,
+    /// No pressure interval has been measured yet: a fresh install measures
+    /// one before it sells.
+    HostPressureMeasuring,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -73,8 +82,10 @@ impl ReadinessOutcome {
             Self::BitcoinSyncing => "bitcoin_syncing",
             Self::BitcoinNoFeeRate => "bitcoin_no_fee_rate",
             Self::MgVersionTooOld => "mg_version_too_old",
-            Self::HostPressureHigh => "host_pressure_high",
+            Self::SixHourPressureHigh => "host_pressure_6h_high",
+            Self::HalfWeekPressureHigh => "host_pressure_3_5d_high",
             Self::HostPressureUnavailable => "host_pressure_unavailable",
+            Self::HostPressureMeasuring => "host_pressure_measuring",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -94,13 +105,15 @@ pub struct ReadinessReport {
     /// This MG's release against the setup-payment policy's minimum.
     pub version: ReadinessOutcome,
     /// The MG's CPU and IO pressure against the setup-payment policy's
-    /// thresholds.
+    /// maximums.
     pub pressure: ReadinessOutcome,
     /// The pressure averages this run compared; `None` where the counters
-    /// cannot be read.
+    /// cannot be read or no interval has been measured yet.
     pub host_pressure: Option<HostPressure>,
-    /// The setup-payment policy's pressure thresholds; `None` without them.
-    pub host_pressure_limit: Option<HostPressureThresholds>,
+    /// The maximum pressures this run compared against, from the
+    /// setup-payment policy or its defaults; `None` where the check does not
+    /// apply, and in a probe's report before the run compares.
+    pub max_host_pressure: Option<HostPressure>,
     pub uptime: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
@@ -216,68 +229,25 @@ pub fn this_mg_version() -> MgVersion {
         .expect("the workspace version is SemVer")
 }
 
-/// The setup-payment policy's pressure thresholds, as a report states them,
-/// in percent of wall time.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
-pub struct HostPressureThresholds {
-    pub cpu: PressureThresholdsReport,
-    pub io: PressureThresholdsReport,
-}
-
-/// One resource's thresholds in a report.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
-pub struct PressureThresholdsReport {
-    /// New seats stop when the 6-hour average goes above this.
-    pub block_above: u8,
-    /// A stopped MG accepts them again once the 24-hour average is at or
-    /// below this.
-    pub resume_below: u8,
-}
-
-impl From<fedi_decentralized_domain::HostPressureLimit> for HostPressureThresholds {
-    fn from(limit: fedi_decentralized_domain::HostPressureLimit) -> Self {
-        let resource =
-            |thresholds: fedi_decentralized_domain::PressureThresholds| PressureThresholdsReport {
-                block_above: thresholds.block_above,
-                resume_below: thresholds.resume_below,
-            };
-        Self {
-            cpu: resource(limit.cpu),
-            io: resource(limit.io),
-        }
-    }
-}
-
-/// The pressure check for one run, from the stored samples, whether it held
-/// new seats after the last run, this run's reading, and the policy's
-/// thresholds. Returns the outcome, the averages, and whether it holds new
-/// seats now. Without thresholds nothing is held, so a limit published later
-/// starts from the averages alone; with thresholds, a counter that cannot be
-/// read fails the check rather than passing it.
+/// The pressure check for one run, from the pressure history after it,
+/// whether this run read the counters, and the maximums it compares against.
+/// Returns the outcome and the averages to report. Counters that cannot be
+/// read, or no interval measured yet, fail the check rather than pass it.
 pub fn pressure_outcome(
-    stored: &[PressureSample],
-    held: bool,
-    reading: Option<PressureSample>,
-    limit: Option<fedi_decentralized_domain::HostPressureLimit>,
-) -> (ReadinessOutcome, Option<HostPressure>, bool) {
-    let pressure = reading.map(|reading| {
-        let mut samples = stored.to_vec();
-        samples.push(reading);
-        HostPressure::from_samples(&samples, reading.at)
-    });
-    match (limit, pressure) {
-        (None, pressure) => (ReadinessOutcome::NotApplicable, pressure, false),
-        (Some(_), None) => (ReadinessOutcome::HostPressureUnavailable, None, held),
-        (Some(limit), Some(pressure)) => {
-            let held = host_pressure::holds(held, pressure, limit);
-            let outcome = if held {
-                ReadinessOutcome::HostPressureHigh
-            } else {
-                ReadinessOutcome::Pass
-            };
-            (outcome, Some(pressure), held)
-        }
-    }
+    state: Option<PressureState>,
+    read: bool,
+    max: HostPressure,
+) -> (ReadinessOutcome, Option<HostPressure>) {
+    let pressure = state
+        .filter(|_| read)
+        .and_then(|state| state.averages)
+        .map(HostPressure::from);
+    let outcome = match pressure {
+        _ if !read => ReadinessOutcome::HostPressureUnavailable,
+        None => ReadinessOutcome::HostPressureMeasuring,
+        Some(pressure) => pressure.outcome(max),
+    };
+    (outcome, pressure)
 }
 
 /// How much of the recent past this MG was up: exponential moving averages
@@ -407,13 +377,15 @@ const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 /// `fleet`, journal it, and wait for the next slot while ready or a minute
 /// while failing, or until the setup-payment policy changes. `clock` is the
 /// wall clock slots are counted in, and `read_pressure` reads the cgroup's
-/// pressure counters ([`host_pressure::read_cgroup_pressure`]).
+/// pressure counters ([`host_pressure::read_cgroup_pressure`]); a deployment
+/// without it, such as a local end-to-end test whose MGs share one busy
+/// host's cgroup, does not apply the pressure check.
 pub async fn run(
     mut probe: impl ReadinessProbe,
     fleet: Arc<Fleet>,
     mut setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     clock: impl Fn() -> SystemTime + Send,
-    read_pressure: impl Fn() -> anyhow::Result<PressureTotals> + Send,
+    read_pressure: Option<impl Fn() -> anyhow::Result<PressureTotals> + Send>,
 ) {
     let this_release = this_mg_version();
     let mut warned_pressure = false;
@@ -437,7 +409,7 @@ pub async fn run(
             week: 0.0,
             month: 0.0,
         });
-        let reading = match read_pressure() {
+        let reading = read_pressure.as_ref().map(|read| match read() {
             Ok(totals) => {
                 warned_pressure = false;
                 Some(PressureSample {
@@ -452,8 +424,8 @@ pub async fn run(
                 }
                 None
             }
-        };
-        let (min, version, pressure_limit) = {
+        });
+        let (min, version, max_pressure) = {
             let policy = setup_payment_policy.borrow_and_update();
             let policy = policy.as_ref();
             (
@@ -464,22 +436,28 @@ pub async fn run(
                     &this_release,
                     policy.and_then(AdmittedSetupPaymentFederations::min_mg_version),
                 ),
-                policy.and_then(AdmittedSetupPaymentFederations::host_pressure_percent),
+                HostPressure::from(policy.map_or_else(MaxPressurePercent::default, |policy| {
+                    policy.max_pressure_percent()
+                })),
             )
         };
         report.version = version;
-        let (stored, held) = fleet.host_pressure().await.unwrap_or_else(|error| {
-            tracing::warn!(%error, "failed to read the stored pressure samples");
-            (Vec::new(), false)
-        });
-        let (pressure, host_pressure, held) =
-            pressure_outcome(&stored, held, reading, pressure_limit);
-        if let Err(error) = fleet.record_host_pressure(reading, held).await {
-            tracing::warn!(%error, "failed to record the pressure sample");
+        if let Some(reading) = reading {
+            let state = fleet
+                .record_host_pressure(reading)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "failed to record the pressure reading");
+                    None
+                });
+            let (pressure, host_pressure) =
+                pressure_outcome(state, reading.is_some(), max_pressure);
+            report.pressure = pressure;
+            report.host_pressure = host_pressure;
+            report.max_host_pressure = Some(max_pressure);
+        } else {
+            report.pressure = ReadinessOutcome::NotApplicable;
         }
-        report.pressure = pressure;
-        report.host_pressure = host_pressure;
-        report.host_pressure_limit = pressure_limit.map(HostPressureThresholds::from);
         report.uptime = scores.outcome(min);
         // The operator sees no figures rather than zeros it cannot trust.
         report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
@@ -531,9 +509,9 @@ fn until_slot_after(recorded_at: SystemTime, now: SystemTime) -> Duration {
 /// gate compares at.
 fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUptimePercent) {
     let pct = |score: f64| (score * 1000.0).round() / 10.0;
-    let pct_of = |permille: Option<u16>| permille.map(|permille| f64::from(permille) / 10.0);
+    let pct_of = |permille: u16| f64::from(permille) / 10.0;
     let pressure = report.host_pressure;
-    let limit = report.host_pressure_limit;
+    let max = report.max_host_pressure;
     tracing::info!(
         safe_to_share = true,
         ready = report.ready(),
@@ -542,14 +520,14 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
         bitcoin = report.bitcoin.as_str(),
         version = report.version.as_str(),
         pressure = report.pressure.as_str(),
-        cpu_pressure_6h_pct = pressure.and_then(|pressure| pct_of(pressure.cpu.six_hours)),
-        cpu_pressure_24h_pct = pressure.and_then(|pressure| pct_of(pressure.cpu.day)),
-        io_pressure_6h_pct = pressure.and_then(|pressure| pct_of(pressure.io.six_hours)),
-        io_pressure_24h_pct = pressure.and_then(|pressure| pct_of(pressure.io.day)),
-        cpu_pressure_block_above_pct = limit.map(|limit| f64::from(limit.cpu.block_above)),
-        cpu_pressure_resume_below_pct = limit.map(|limit| f64::from(limit.cpu.resume_below)),
-        io_pressure_block_above_pct = limit.map(|limit| f64::from(limit.io.block_above)),
-        io_pressure_resume_below_pct = limit.map(|limit| f64::from(limit.io.resume_below)),
+        cpu_pressure_6h_pct = pressure.map(|pressure| pct_of(pressure.cpu.six_hours)),
+        cpu_pressure_3_5d_pct = pressure.map(|pressure| pct_of(pressure.cpu.three_and_a_half_days)),
+        io_pressure_6h_pct = pressure.map(|pressure| pct_of(pressure.io.six_hours)),
+        io_pressure_3_5d_pct = pressure.map(|pressure| pct_of(pressure.io.three_and_a_half_days)),
+        max_cpu_pressure_6h_pct = max.map(|max| pct_of(max.cpu.six_hours)),
+        max_cpu_pressure_3_5d_pct = max.map(|max| pct_of(max.cpu.three_and_a_half_days)),
+        max_io_pressure_6h_pct = max.map(|max| pct_of(max.io.six_hours)),
+        max_io_pressure_3_5d_pct = max.map(|max| pct_of(max.io.three_and_a_half_days)),
         uptime = report.uptime.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
@@ -564,6 +542,7 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_pressure::{self, PressurePermille};
 
     const HOUR: u64 = 6;
     const DAY: u64 = 24 * HOUR;
@@ -858,7 +837,7 @@ mod tests {
             version: ReadinessOutcome::NotApplicable,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
-            host_pressure_limit: None,
+            max_host_pressure: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
@@ -884,7 +863,7 @@ mod tests {
                 "version": "not_applicable",
                 "pressure": "not_applicable",
                 "host_pressure": null,
-                "host_pressure_limit": null,
+                "max_host_pressure": null,
                 "uptime": "uptime_7d_low",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
@@ -905,7 +884,7 @@ mod tests {
             version: ReadinessOutcome::Pass,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
-            host_pressure_limit: None,
+            max_host_pressure: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -917,7 +896,7 @@ mod tests {
             version: ReadinessOutcome::MgVersionTooOld,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
-            host_pressure_limit: None,
+            max_host_pressure: None,
             uptime: ReadinessOutcome::Pass,
             ..report
         };
@@ -964,42 +943,51 @@ mod tests {
         assert_eq!(this_mg_version().to_string(), env!("CARGO_PKG_VERSION"));
     }
 
-    /// Without thresholds the check does not apply and holds nothing, even
-    /// with unreadable counters; with thresholds, unreadable counters fail it
-    /// and keep whatever hold there was.
+    /// Unreadable counters or no measured interval fail the check, and
+    /// otherwise the averages decide against the maximums.
     #[test]
-    fn unreadable_pressure_fails_only_under_a_limit() {
-        let limit = fedi_decentralized_domain::HostPressureLimit {
-            cpu: fedi_decentralized_domain::PressureThresholds {
-                block_above: 15,
-                resume_below: 10,
-            },
-            io: fedi_decentralized_domain::PressureThresholds {
-                block_above: 10,
-                resume_below: 5,
-            },
-        };
-        assert_eq!(
-            pressure_outcome(&[], true, None, None),
-            (ReadinessOutcome::NotApplicable, None, false)
-        );
-        for held in [false, true] {
-            assert_eq!(
-                pressure_outcome(&[], held, None, Some(limit)),
-                (ReadinessOutcome::HostPressureUnavailable, None, held)
-            );
-        }
-        // A first reading has no window yet: it neither blocks nor resumes.
-        let reading = PressureSample {
+    fn pressure_fails_closed() {
+        let max = HostPressure::from(MaxPressurePercent::default());
+        let last = PressureSample {
             at: UNIX_EPOCH + Duration::from_secs(1_000_000),
             totals: PressureTotals {
                 cpu_us: 5,
                 io_us: 5,
             },
         };
-        let (outcome, pressure, held) = pressure_outcome(&[], false, Some(reading), Some(limit));
-        assert_eq!((outcome, held), (ReadinessOutcome::Pass, false));
-        assert_eq!(pressure.unwrap().cpu.six_hours, None);
+        let averages = |cpu_6h: f64| host_pressure::PressureAverages {
+            cpu: host_pressure::ResourceAverages {
+                six_hours: cpu_6h,
+                three_and_a_half_days: 0.01,
+            },
+            io: host_pressure::ResourceAverages {
+                six_hours: 0.01,
+                three_and_a_half_days: 0.01,
+            },
+        };
+        let state = |averages| Some(PressureState { last, averages });
+        let (low, high) = (averages(0.01), averages(0.2));
+        let reported = |averages| Some(HostPressure::from(averages));
+        assert_eq!(
+            pressure_outcome(None, false, max),
+            (ReadinessOutcome::HostPressureUnavailable, None)
+        );
+        assert_eq!(
+            pressure_outcome(state(Some(low)), false, max),
+            (ReadinessOutcome::HostPressureUnavailable, None)
+        );
+        assert_eq!(
+            pressure_outcome(state(None), true, max),
+            (ReadinessOutcome::HostPressureMeasuring, None)
+        );
+        assert_eq!(
+            pressure_outcome(state(Some(high)), true, max),
+            (ReadinessOutcome::SixHourPressureHigh, reported(high))
+        );
+        assert_eq!(
+            pressure_outcome(state(Some(low)), true, max),
+            (ReadinessOutcome::Pass, reported(low))
+        );
     }
 
     /// The journaled run decodes as the telemetry collector reads it.
@@ -1017,26 +1005,25 @@ mod tests {
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
             version: ReadinessOutcome::MgVersionTooOld,
-            pressure: ReadinessOutcome::HostPressureHigh,
+            pressure: ReadinessOutcome::SixHourPressureHigh,
             host_pressure: Some(HostPressure {
-                cpu: host_pressure::PressurePermille {
-                    six_hours: Some(213),
-                    day: Some(87),
+                cpu: PressurePermille {
+                    six_hours: 213,
+                    three_and_a_half_days: 87,
                 },
-                // A day window not yet covered is absent, not zero.
-                io: host_pressure::PressurePermille {
-                    six_hours: Some(41),
-                    day: None,
+                io: PressurePermille {
+                    six_hours: 41,
+                    three_and_a_half_days: 30,
                 },
             }),
-            host_pressure_limit: Some(HostPressureThresholds {
-                cpu: PressureThresholdsReport {
-                    block_above: 15,
-                    resume_below: 10,
+            max_host_pressure: Some(HostPressure {
+                cpu: PressurePermille {
+                    six_hours: 150,
+                    three_and_a_half_days: 100,
                 },
-                io: PressureThresholdsReport {
-                    block_above: 10,
-                    resume_below: 5,
+                io: PressurePermille {
+                    six_hours: 100,
+                    three_and_a_half_days: 50,
                 },
             }),
             uptime: ReadinessOutcome::WeekUptimeLow,
@@ -1078,15 +1065,15 @@ mod tests {
                 discovery: "not_applicable".into(),
                 bitcoin: "pass".into(),
                 version: Some("mg_version_too_old".into()),
-                pressure: Some("host_pressure_high".into()),
+                pressure: Some("host_pressure_6h_high".into()),
                 cpu_pressure_6h_pct: Some(21.3),
-                cpu_pressure_24h_pct: Some(8.7),
+                cpu_pressure_3_5d_pct: Some(8.7),
                 io_pressure_6h_pct: Some(4.1),
-                io_pressure_24h_pct: None,
-                cpu_pressure_block_above_pct: Some(15.0),
-                cpu_pressure_resume_below_pct: Some(10.0),
-                io_pressure_block_above_pct: Some(10.0),
-                io_pressure_resume_below_pct: Some(5.0),
+                io_pressure_3_5d_pct: Some(3.0),
+                max_cpu_pressure_6h_pct: Some(15.0),
+                max_cpu_pressure_3_5d_pct: Some(10.0),
+                max_io_pressure_6h_pct: Some(10.0),
+                max_io_pressure_3_5d_pct: Some(5.0),
                 uptime: Some("uptime_7d_low".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),

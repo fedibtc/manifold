@@ -1,15 +1,20 @@
--- Pressure samples of the MG's cgroup that the readiness pressure check
--- averages: cumulative PSI `some` stall microseconds for CPU and IO, at most
--- one per 9 minutes, kept for a day.
-CREATE TABLE host_pressure_samples (
-    sampled_at_ms INTEGER PRIMARY KEY CHECK (sampled_at_ms >= 0),
-    cpu_some_us INTEGER NOT NULL CHECK (cpu_some_us >= 0),
-    io_some_us INTEGER NOT NULL CHECK (io_some_us >= 0)
-);
-
--- Whether the pressure check holds new seats, so a restart does not reopen
--- them. No row means not held.
-CREATE TABLE host_pressure_hold (
+-- The readiness pressure check's history of the MG's cgroup: the last
+-- cumulative PSI `some` stall microseconds for CPU and IO and when they were
+-- read, and the stall share averages over the intervals measured since
+-- (6-hour and 3.5-day exponential moving averages, each between 0 and 1, all
+-- NULL until an interval has been measured). No row means no reading yet.
+CREATE TABLE host_pressure (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    held INTEGER NOT NULL CHECK (held IN (0, 1))
+    sampled_at_ms INTEGER NOT NULL CHECK (sampled_at_ms >= 0),
+    cpu_some_us INTEGER NOT NULL CHECK (cpu_some_us >= 0),
+    io_some_us INTEGER NOT NULL CHECK (io_some_us >= 0),
+    cpu_6h REAL,
+    cpu_3_5d REAL,
+    io_6h REAL,
+    io_3_5d REAL,
+    CHECK (
+        (cpu_6h IS NULL AND cpu_3_5d IS NULL AND io_6h IS NULL AND io_3_5d IS NULL)
+        OR (cpu_6h IS NOT NULL AND cpu_3_5d IS NOT NULL
+            AND io_6h IS NOT NULL AND io_3_5d IS NOT NULL)
+    )
 );

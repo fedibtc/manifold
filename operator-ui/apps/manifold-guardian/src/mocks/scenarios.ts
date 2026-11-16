@@ -72,10 +72,10 @@ const READY: MockState['seatReadiness'] = {
   bitcoin: 'pass',
   version: 'pass',
   pressure: 'pass',
-  host_pressure: { cpu: { '6h': 21, '24h': 25 }, io: { '6h': 4, '24h': 6 } },
-  host_pressure_limit: {
-    cpu: { block_above: 15, resume_below: 10 },
-    io: { block_above: 10, resume_below: 5 }
+  host_pressure: { cpu: { '6h': 41, '3.5d': 52 }, io: { '6h': 14, '3.5d': 11 } },
+  max_host_pressure: {
+    cpu: { '6h': 150, '3.5d': 100 },
+    io: { '6h': 100, '3.5d': 50 }
   },
   uptime: 'pass',
   uptime_comparison: {
@@ -516,8 +516,8 @@ const builders = {
       version: 'mg_version_too_old'
     }
   }),
-  // The host was held for CPU pressure: its 6-hour average has come down,
-  // but the 24-hour one it reopens on has not.
+  // The host has been busy on CPU for days: its 6-hour average is within its
+  // maximum, but the 3.5-day one is not.
   'host-pressure-high': () => ({
     ...base(),
     seats: [],
@@ -527,8 +527,8 @@ const builders = {
     readyForNewSeats: false,
     seatReadiness: {
       ...READY,
-      pressure: 'host_pressure_high',
-      host_pressure: { cpu: { '6h': 92, '24h': 134 }, io: { '6h': 12, '24h': 18 } }
+      pressure: 'host_pressure_3_5d_high',
+      host_pressure: { cpu: { '6h': 128, '3.5d': 117 }, io: { '6h': 21, '3.5d': 18 } }
     }
   }),
   'uptime-low': () => ({
@@ -826,7 +826,7 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     affects: ['overview', 'health']
   },
   'host-pressure-high': {
-    desc: "Every prerequisite passes, but this host's 6-hour CPU pressure went above the setup-payment policy's block threshold and its 24-hour average is not yet back to the resume threshold, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
+    desc: "Every prerequisite passes, but this host's 3.5-day CPU pressure average is above the setup-payment policy's maximum, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
     affects: ['overview', 'health']
   },
   'uptime-low': {

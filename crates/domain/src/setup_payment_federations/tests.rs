@@ -53,7 +53,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
-        host_pressure_percent: None,
+        max_pressure_percent: None,
         guardian_transfer_v2: None,
         guardian_link: None,
         min_mg_version: None,
@@ -240,7 +240,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
-            host_pressure_percent: None,
+            max_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
             min_mg_version: None,
@@ -470,69 +470,71 @@ fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
 }
 
 #[test]
-fn host_pressure_limit_is_absent_by_default_and_must_be_ordered_and_bounded() {
-    let raw = |limit: &str| {
+fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
+    let raw = |field: &str| {
         format!(
-            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","host_pressure_percent":{limit}}}"#
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
         )
     };
-    let limit = |cpu: (u8, u8), io: (u8, u8)| {
-        format!(
-            r#"{{"cpu":{{"block_above":{},"resume_below":{}}},"io":{{"block_above":{},"resume_below":{}}}}}"#,
-            cpu.0, cpu.1, io.0, io.1
-        )
+    let parse = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    let windows = |six_hours, three_and_a_half_days| MaxPressureWindows {
+        six_hours,
+        three_and_a_half_days,
     };
-    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
-    assert_eq!(absent.host_pressure_percent(), None);
+    let defaults = MaxPressurePercent {
+        cpu: windows(15, 10),
+        io: windows(10, 5),
+    };
+    assert_eq!(MaxPressurePercent::default(), defaults);
+    assert_eq!(parse("").unwrap().max_pressure_percent(), defaults);
     assert!(
         !String::from_utf8(content(vec![]))
             .unwrap()
-            .contains("host_pressure_percent")
+            .contains("max_pressure_percent")
     );
-    let admitted =
-        AdmittedSetupPaymentFederations::parse(raw(&limit((15, 10), (10, 5))).as_bytes()).unwrap();
     assert_eq!(
-        admitted.host_pressure_percent(),
-        Some(HostPressureLimit {
-            cpu: PressureThresholds {
-                block_above: 15,
-                resume_below: 10
-            },
-            io: PressureThresholds {
-                block_above: 10,
-                resume_below: 5
-            },
-        })
+        parse(r#","max_pressure_percent":{"cpu":{"6h":30,"3.5d":20},"io":{"6h":40,"3.5d":25}}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        MaxPressurePercent {
+            cpu: windows(30, 20),
+            io: windows(40, 25),
+        }
     );
-    for (cpu, io) in [((1, 1), (100, 1)), ((100, 100), (7, 7))] {
-        assert!(
-            AdmittedSetupPaymentFederations::parse(raw(&limit(cpu, io)).as_bytes()).is_ok(),
-            "{cpu:?} {io:?}"
-        );
-    }
-    // Resuming above the block threshold would reopen a host the same run
-    // closed; zero would close every MG; a share of time cannot exceed 100%.
-    // Either resource alone being wrong refuses the publication.
-    for (cpu, io) in [
-        ((10, 15), (10, 5)),
-        ((15, 10), (5, 10)),
-        ((0, 0), (10, 5)),
-        ((15, 10), (101, 5)),
+    // An omitted window or resource takes its own default, which differs by
+    // resource, and an unknown window is ignored, as for min_uptime_percent.
+    assert_eq!(
+        parse(r#","max_pressure_percent":{"io":{"3.5d":8,"1h":1}}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        MaxPressurePercent {
+            cpu: windows(15, 10),
+            io: windows(10, 8),
+        }
+    );
+    assert_eq!(
+        parse(r#","max_pressure_percent":{}"#)
+            .unwrap()
+            .max_pressure_percent(),
+        defaults
+    );
+    // Windows are independent, and both ends of the range are admitted.
+    assert!(
+        parse(r#","max_pressure_percent":{"cpu":{"6h":1,"3.5d":100},"io":{"6h":100,"3.5d":1}}"#)
+            .is_ok()
+    );
+    // Zero would close every MG; a share of time cannot exceed 100%. Any one
+    // window being wrong refuses the publication.
+    for field in [
+        r#","max_pressure_percent":{"cpu":{"6h":0}}"#,
+        r#","max_pressure_percent":{"cpu":{"3.5d":0}}"#,
+        r#","max_pressure_percent":{"io":{"6h":101}}"#,
+        r#","max_pressure_percent":{"io":{"3.5d":101}}"#,
     ] {
         assert_eq!(
-            AdmittedSetupPaymentFederations::parse(raw(&limit(cpu, io)).as_bytes()),
-            Err(SetupPaymentFederationsContentError::InvalidHostPressureLimit),
-            "{cpu:?} {io:?}"
-        );
-    }
-    // Both resources, and both thresholds of each, are required.
-    for partial in [
-        r#"{"cpu":{"block_above":15,"resume_below":10}}"#,
-        r#"{"cpu":{"block_above":15},"io":{"block_above":10,"resume_below":5}}"#,
-    ] {
-        assert!(
-            AdmittedSetupPaymentFederations::parse(raw(partial).as_bytes()).is_err(),
-            "{partial}"
+            parse(field),
+            Err(SetupPaymentFederationsContentError::InvalidMaxPressure),
+            "{field}"
         );
     }
 }

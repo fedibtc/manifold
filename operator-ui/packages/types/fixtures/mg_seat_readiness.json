@@ -6,25 +6,25 @@
     "discovery": "discovery_record_missing",
     "host_pressure": {
       "cpu": {
-        "24h": 87,
+        "3.5d": 87,
         "6h": 213
       },
       "io": {
-        "24h": null,
+        "3.5d": 30,
         "6h": 41
       }
     },
-    "host_pressure_limit": {
+    "max_host_pressure": {
       "cpu": {
-        "block_above": 15,
-        "resume_below": 10
+        "3.5d": 100,
+        "6h": 150
       },
       "io": {
-        "block_above": 10,
-        "resume_below": 5
+        "3.5d": 50,
+        "6h": 100
       }
     },
-    "pressure": "host_pressure_high",
+    "pressure": "host_pressure_6h_high",
     "relay": "pass",
     "uptime": "uptime_7d_low",
     "uptime_comparison": {
