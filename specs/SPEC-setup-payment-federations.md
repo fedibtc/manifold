@@ -165,8 +165,8 @@ replacement ordering as the new shared high-water mark.
   or one newer than `fman_version`, rejects the publication like any other
   invalid field. MG and FA releases from 0.1.1 on admit unknown fields and
   ignore it;
-- `guardian_link`, a boolean that turns on the MG's phone link
-  ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-phone-link)).
+- `guardian_link`, a boolean that turns on the MG's guardian link (mobile notifications)
+  ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
   Optional: absent means the Manifold environment's default, on in
   development and staging and off in production. Older MGs and FAs that
   admit unknown fields ignore it; and

@@ -209,7 +209,7 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_transfer_v2: Option<bool>,
 
-    /// Whether MGs offer the guardian link: the dashboard's Phone link page
+    /// Whether MGs offer the guardian link: the dashboard's Mobile notifications page
     /// and notifications to a linked phone. Optional on the wire: absent, the
     /// Manifold environment's default applies (on in development and staging,
     /// off in production)

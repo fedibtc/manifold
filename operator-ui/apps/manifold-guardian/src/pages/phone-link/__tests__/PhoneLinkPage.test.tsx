@@ -43,7 +43,7 @@ const terminalLink: NonNullable<GuardianLinkResponse['link']> = {
   delivery: { state: 'terminal', reason: 'hook_expired_or_revoked' }
 };
 
-it('should send the host away and mint nothing where the policy keeps phone link off', async () => {
+it('should send the host away and mint nothing where the policy keeps mobile notifications off', async () => {
   const adminCall = vi
     .spyOn(adminCallModule, 'adminCall')
     .mockResolvedValue({ availability: 'disabled', link: null, offer: null });
@@ -51,9 +51,9 @@ it('should send the host away and mint nothing where the policy keeps phone link
   const router = createMemoryRouter(
     [
       { path: '/', element: <p>Overview</p> },
-      { path: '/phone-link', element: <PhoneLinkPage /> }
+      { path: '/mobile-notifications', element: <PhoneLinkPage /> }
     ],
-    { initialEntries: ['/phone-link'] }
+    { initialEntries: ['/mobile-notifications'] }
   );
   render(
     <QueryClientProvider client={client}>

@@ -54,7 +54,7 @@ transfers. If you omit the flag, each environment's default applies: on in
 development and staging, off in production. MGs continue transfers they
 already stored regardless of the flag.
 
-To turn on the MG's phone link, set `"guardian_link": true` in the policy
+To turn on the MG's mobile notifications (guardian link), set `"guardian_link": true` in the policy
 file; set `false` to hide it again. If you omit the flag, each environment's
 default applies: on in development and staging, off in production.
 

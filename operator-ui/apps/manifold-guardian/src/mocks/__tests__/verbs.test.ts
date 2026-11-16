@@ -251,10 +251,10 @@ describe('guardian link', () => {
     ]);
   });
 
-  it('should not create an offer where the policy keeps phone link off', () => {
+  it('should not create an offer where the policy keeps mobile notifications off', () => {
     resetState('fedi-app-disabled');
     expect(dispatch('CreateGuardianLinkOffer')).toEqual({
-      Err: { kind: 'other', message: 'phone link is not enabled' }
+      Err: { kind: 'other', message: 'mobile notifications are not enabled' }
     });
     expect(getState().guardianLink.offer).toBeNull();
   });

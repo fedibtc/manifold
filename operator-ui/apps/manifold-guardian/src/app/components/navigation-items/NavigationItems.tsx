@@ -9,14 +9,16 @@ export const NavigationItems = () => {
   const phone = useGuardianLink(GUARDIAN_LINK_NAV_POLL_MS).data;
   const phoneState = phone?.link?.delivery.state;
   const phoneNeedsAttention = phoneState === 'inactive' || phoneState === 'terminal';
-  // Phone link stays out of sight until the MG says the policy turns it on.
+  // Mobile notifications stay out of sight until the MG says the policy turns it on.
   const phoneLinkShown = phone !== undefined && phone.availability !== 'disabled';
-  return NAV_ITEMS.filter((item) => item.key !== 'phone-link' || phoneLinkShown).map((item) => (
-    <NavigationItem
-      key={item.key}
-      item={item}
-      count={item.key === 'support' ? unreadSupport : 0}
-      attention={item.key === 'phone-link' && phoneNeedsAttention}
-    />
-  ));
+  return NAV_ITEMS.filter((item) => item.key !== 'mobile-notifications' || phoneLinkShown).map(
+    (item) => (
+      <NavigationItem
+        key={item.key}
+        item={item}
+        count={item.key === 'support' ? unreadSupport : 0}
+        attention={item.key === 'mobile-notifications' && phoneNeedsAttention}
+      />
+    )
+  );
 };

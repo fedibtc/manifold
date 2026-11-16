@@ -164,7 +164,7 @@ impl Fleet {
     pub fn create_guardian_link_offer(&self) -> anyhow::Result<GuardianLinkInvite> {
         match self.guardian_link_availability() {
             GuardianLinkAvailability::Disabled => {
-                anyhow::bail!("phone link is not enabled on this network")
+                anyhow::bail!("mobile notifications are not enabled on this network")
             }
             GuardianLinkAvailability::NoPushGateway => anyhow::bail!(
                 "this host has no push gateway configured, so it cannot notify a phone"
@@ -343,7 +343,7 @@ impl Fleet {
     pub async fn test_guardian_link_notification(&self) -> anyhow::Result<CallbackAttemptOutcome> {
         anyhow::ensure!(
             self.guardian_link_enabled(),
-            "phone link is not enabled on this network"
+            "mobile notifications are not enabled on this network"
         );
         let link = self
             .db()

@@ -55,7 +55,7 @@ it('should show no dot once everything is read', () => {
   expect(document.querySelector('a [aria-hidden="true"]')).toBeNull();
 });
 
-it('should flag Phone link when notifications stopped', () => {
+it('should flag Mobile notifications when notifications stopped', () => {
   phoneStatus({
     availability: 'ready',
     link: { ...activePhone, delivery: { state: 'terminal', reason: 'hook_not_found' } },
@@ -63,12 +63,14 @@ it('should flag Phone link when notifications stopped', () => {
   });
   renderItems();
 
-  expect(screen.getByRole('link', { name: 'Phone link, needs attention' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('link', { name: 'Mobile notifications, needs attention' })
+  ).toBeInTheDocument();
   expect(document.querySelectorAll('a [aria-hidden="true"]')).toHaveLength(1);
   expect(useGuardianLink).toHaveBeenCalledWith(GUARDIAN_LINK_NAV_POLL_MS);
 });
 
-it('should flag Phone link while the phone is not reached', () => {
+it('should flag Mobile notifications while the phone is not reached', () => {
   phoneStatus({
     availability: 'ready',
     link: { ...activePhone, delivery: { state: 'inactive', reason: null } },
@@ -76,28 +78,30 @@ it('should flag Phone link while the phone is not reached', () => {
   });
   renderItems();
 
-  expect(screen.getByRole('link', { name: 'Phone link, needs attention' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('link', { name: 'Mobile notifications, needs attention' })
+  ).toBeInTheDocument();
 });
 
 it.each([
   ['a phone is active', { availability: 'ready', link: activePhone, offer: null }],
   ['no phone was ever linked', { availability: 'ready', link: null, offer: null }],
   ['this host cannot notify at all', { availability: 'no_push_gateway', link: null, offer: null }]
-])('should not flag Phone link when %s', (_name, data) => {
+])('should not flag Mobile notifications when %s', (_name, data) => {
   phoneStatus(data);
   renderItems();
 
-  expect(screen.getByRole('link', { name: 'Phone link' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Mobile notifications' })).toBeInTheDocument();
   expect(document.querySelector('a [aria-hidden="true"]')).toBeNull();
 });
 
 it.each([
   ['the policy keeps it off', { availability: 'disabled', link: null, offer: null }],
   ['the status has not loaded', undefined]
-])('should hide Phone link when %s', (_name, data) => {
+])('should hide Mobile notifications when %s', (_name, data) => {
   phoneStatus(data);
   renderItems();
 
-  expect(screen.queryByRole('link', { name: /Phone link/ })).toBeNull();
+  expect(screen.queryByRole('link', { name: /Mobile notifications/ })).toBeNull();
   expect(screen.getByRole('link', { name: 'Support' })).toBeInTheDocument();
 });

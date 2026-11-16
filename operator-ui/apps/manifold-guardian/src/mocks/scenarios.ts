@@ -675,33 +675,36 @@ export type ScenarioName = keyof typeof builders;
 // error rather than a control panel that silently drifts out of date.
 const notes: Record<ScenarioName, ScenarioNote> = {
   'fedi-app-disabled': {
-    desc: 'The setup-payment policy keeps phone link off; the nav item and page are hidden.',
-    affects: ['phone-link']
+    desc: 'The setup-payment policy keeps mobile notifications off; the nav item and page are hidden.',
+    affects: ['mobile-notifications']
   },
   'fedi-app-unavailable': {
     desc: 'No push gateway configured; linking is unavailable.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
-  'fedi-app-unlinked': { desc: 'No linked phone or open offer.', affects: ['phone-link'] },
+  'fedi-app-unlinked': {
+    desc: 'No linked phone or open offer.',
+    affects: ['mobile-notifications']
+  },
   'fedi-app-offer': {
     desc: 'An open, mock-only QR offer, expiring in ten minutes.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
   'fedi-app-active': {
     desc: 'A linked Pixel 8 receiving notifications.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
   'fedi-app-inactive': {
     desc: 'The gateway holds the phone until the Fedi app is opened; alerts are retried.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
   'fedi-app-terminal': {
     desc: 'The gateway rejected the phone hook; linking again is required.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
   'fedi-app-relinking': {
     desc: 'A stopped link and an open replacement offer coexist.',
-    affects: ['phone-link']
+    affects: ['mobile-notifications']
   },
   'fresh-fleet': {
     desc: 'Default. Onboarded and authorized, but nothing sold yet: no seats, no payment federations, no price.',
