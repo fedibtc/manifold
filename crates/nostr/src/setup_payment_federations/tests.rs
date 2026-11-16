@@ -29,6 +29,7 @@ fn content(invites: &[&str]) -> String {
         max_guardian_offline_secs: None,
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
+        seat_cpu_iterations_per_sec: None,
         max_seats_per_mg: None,
         seat_memory_budget_mib_v2: None,
         max_seats_per_mg_v2: None,

@@ -7,6 +7,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
@@ -44,6 +45,15 @@ pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_229;
 /// The bounds refuse a publisher mistake that would let MGs admit seats with
 /// almost no memory each, or would stop every MG from admitting any.
 pub const SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE: std::ops::RangeInclusive<u32> = 256..=16_384;
+
+/// Smallest and largest per-seat CPU budget a publication may set, in the MG
+/// CPU benchmark's iterations per second
+/// (`crates/mg/specs/REQ-seat-capacity-default.md`). One iteration is one
+/// second of a 10-guardian seat's consensus work, so 1 is the least a seat
+/// can need; 100,000 is over a hundred cores of a current server per seat,
+/// which would stop every MG.
+pub const SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE: std::ops::RangeInclusive<u32> =
+    1..=100_000;
 
 /// Seats one MG may host when a publication does not say.
 pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
@@ -312,6 +322,14 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg_v2: Option<u32>,
 
+    /// CPU capacity, in iterations per second of version 1 of the MG CPU
+    /// benchmark, an MG needs per seat. A later benchmark version needs its
+    /// own field. Optional on the wire: absent means no CPU seat limit. Unlike
+    /// the memory budget it has no default, so an MG applies no CPU limit
+    /// until Fedi publishes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_cpu_iterations_per_sec: Option<u32>,
+
     /// CPU, IO and memory pressure averages above which an MG stops accepting
     /// new seats. Optional on the wire: absent, [`MaxPressurePercent::default`]
     /// applies.
@@ -367,6 +385,7 @@ pub struct AdmittedSetupPaymentFederations {
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: u32,
     max_seats_per_mg: u32,
+    seat_cpu_iterations_per_sec: Option<NonZeroU32>,
     max_pressure_percent: MaxPressurePercent,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
@@ -409,6 +428,16 @@ impl AdmittedSetupPaymentFederations {
         {
             return Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange);
         }
+        let seat_cpu_iterations_per_sec = content
+            .seat_cpu_iterations_per_sec
+            .map(|iterations| {
+                SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE
+                    .contains(&iterations)
+                    .then(|| NonZeroU32::new(iterations))
+                    .flatten()
+                    .ok_or(SetupPaymentFederationsContentError::SeatCpuBudgetOutOfRange)
+            })
+            .transpose()?;
         if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
             .into_iter()
             .flatten()
@@ -502,6 +531,7 @@ impl AdmittedSetupPaymentFederations {
             max_seats_per_mg: content
                 .max_seats_per_mg_v2
                 .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
+            seat_cpu_iterations_per_sec,
             max_pressure_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
@@ -577,6 +607,13 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn seat_memory_budget_mib(&self) -> u32 {
         self.seat_memory_budget_mib
+    }
+
+    /// Return the per-seat CPU budget in benchmark iterations per second, or
+    /// `None` when the publication sets no CPU seat limit.
+    #[must_use]
+    pub fn seat_cpu_iterations_per_sec(&self) -> Option<NonZeroU32> {
+        self.seat_cpu_iterations_per_sec
     }
 
     /// Return how many seats one MG may host.
@@ -658,6 +695,9 @@ pub enum SetupPaymentFederationsContentError {
     /// The published per-seat memory budget is outside the admitted range.
     SeatMemoryBudgetOutOfRange,
 
+    /// The published per-seat CPU budget is outside the admitted range.
+    SeatCpuBudgetOutOfRange,
+
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
 
@@ -698,6 +738,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::SeatMemoryBudgetOutOfRange => {
                 "setup-payment federation set sets a per-seat memory budget outside the admitted range"
+            }
+            Self::SeatCpuBudgetOutOfRange => {
+                "setup-payment federation set sets a per-seat CPU budget outside the admitted range"
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"

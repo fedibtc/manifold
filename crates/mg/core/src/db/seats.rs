@@ -547,13 +547,14 @@ impl Db {
             tx.commit().await?;
             return Ok(SeatAdmissionResult::Existing(facts));
         }
-        let (epoch, max_seats, memory_max_seats, policy_max_seats): (
+        let (epoch, max_seats, memory_max_seats, policy_max_seats, cpu_max_seats): (
             Vec<u8>,
             Option<i64>,
             i64,
             i64,
+            Option<i64>,
         ) = sqlx::query_as(
-            "SELECT offer_epoch, max_seats, memory_max_seats, policy_max_seats \
+            "SELECT offer_epoch, max_seats, memory_max_seats, policy_max_seats, cpu_max_seats \
                  FROM offer_state WHERE id = 1",
         )
         .fetch_one(&mut *tx)
@@ -578,6 +579,7 @@ impl Db {
                 max_seats.map(super::stored_max_seats).transpose()?,
                 super::stored_max_seats(memory_max_seats)?,
                 super::stored_max_seats(policy_max_seats)?,
+                cpu_max_seats.map(super::stored_max_seats).transpose()?,
             ),
             first_port_base,
             active,

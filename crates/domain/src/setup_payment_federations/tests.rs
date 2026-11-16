@@ -52,6 +52,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         max_guardian_offline_secs: None,
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
+        seat_cpu_iterations_per_sec: None,
         max_seats_per_mg: None,
         seat_memory_budget_mib_v2: None,
         max_seats_per_mg_v2: None,
@@ -241,6 +242,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             max_guardian_offline_secs: None,
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
+            seat_cpu_iterations_per_sec: None,
             max_seats_per_mg: None,
             seat_memory_budget_mib_v2: None,
             max_seats_per_mg_v2: None,
@@ -463,6 +465,45 @@ fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
 }
 
 #[test]
+fn seat_cpu_budget_is_optional_with_no_default_and_bounded() {
+    let raw = |budget: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","seat_cpu_iterations_per_sec":{budget}}}"#
+        )
+    };
+    // Absent means no CPU limit, not a default budget.
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![]))
+        .expect("content without a CPU budget is admitted");
+    assert_eq!(absent.seat_cpu_iterations_per_sec(), None);
+
+    for budget in [1, 40, 100_000] {
+        let admitted = AdmittedSetupPaymentFederations::parse(raw(&budget.to_string()).as_bytes())
+            .expect("an in-range CPU budget is admitted");
+        assert_eq!(
+            admitted.seat_cpu_iterations_per_sec().map(NonZeroU32::get),
+            Some(budget)
+        );
+    }
+    for budget in ["0", "100001", "-1", "0.5", "null"] {
+        let parsed = AdmittedSetupPaymentFederations::parse(raw(budget).as_bytes());
+        match budget {
+            // `null` is the same as absent.
+            "null" => assert_eq!(parsed.unwrap().seat_cpu_iterations_per_sec(), None),
+            "-1" | "0.5" => assert_eq!(
+                parsed,
+                Err(SetupPaymentFederationsContentError::MalformedContent),
+                "{budget}"
+            ),
+            _ => assert_eq!(
+                parsed,
+                Err(SetupPaymentFederationsContentError::SeatCpuBudgetOutOfRange),
+                "{budget}"
+            ),
+        }
+    }
+}
+
+#[test]
 fn max_seats_per_mg_comes_from_v2_only_and_both_fields_are_bounded() {
     let seats = |fields: &str| parse_with_fields(fields).unwrap().max_seats_per_mg();
     assert_eq!(seats(""), 12);
@@ -577,6 +618,7 @@ fn unset_seat_limits_stay_off_the_wire() {
     // publication that carries one, so unset limits must not serialize.
     let encoded = String::from_utf8(content(vec![])).unwrap();
     assert!(!encoded.contains("seat_memory_budget_mib"));
+    assert!(!encoded.contains("seat_cpu_iterations_per_sec"));
     assert!(!encoded.contains("max_seats_per_mg"));
     assert!(!encoded.contains("guardian_transfer_v2"));
     assert!(!encoded.contains("min_mg_version"));

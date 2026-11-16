@@ -25,6 +25,7 @@ axum = "0.8.9"
 axum-extra = { version = "0.12.5", features = ["cookie"] }
 bip39 = { version = "2", features = ["rand"] }
 bitcoin = { version = "0.32.6", features = ["serde"] }
+bls12_381 = "0.8"
 constant_time_eq = "0.4.2"
 
 ciborium = { workspace = true }
@@ -42,6 +43,7 @@ fedimint-lnv2-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-meta-common = { workspace = true }
 fedimint-server = { workspace = true }
+fedimint-tbs = { workspace = true }
 hex = "0.4"
 hkdf = "0.12"
 iroh = { workspace = true }

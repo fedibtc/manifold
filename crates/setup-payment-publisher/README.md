@@ -90,6 +90,15 @@ read its pressure, stops advertising and quoting new seats. It keeps running
 its seats, and its uptime is not affected. MGs journal their averages and
 maximums, so tune the values from the seat readiness telemetry.
 
+MGs from 0.1.16 on measure their CPU capacity once, as a score of the MG's
+CPU benchmark in iterations per second summed over all CPUs, and journal it
+as `cpu_iterations_per_sec` (with `cpu_count` and
+`cpu_single_core_iterations_per_sec`) in the `seat capacity` telemetry. To
+limit seats by CPU, set `"seat_cpu_iterations_per_sec": 40` (from 1 to
+100,000): each MG then sells no more than its score divided by that budget,
+rounded down. Omitted, there is no CPU limit, and nothing defaults it; set it
+from the telemetry.
+
 To ask operators below a release to update without stopping their sales, set
 `"recommended_min_mg_version": "0.2.0"` (also no newer than `fman_version`).
 An MG below it sends its linked phone one notification. Omitted, nothing is

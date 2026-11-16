@@ -1,6 +1,7 @@
-# REQ-seat-capacity-default: Sell only the seats the host's RAM can carry
+# REQ-seat-capacity-default: Sell only the seats the host's RAM and CPU can carry
 
-Source: MG operator sizing and the measured per-seat memory budget.
+Source: MG operator sizing, the measured per-seat memory budget, and the
+seat cost simulation's CPU benchmark.
 
 The MG limits seats from **available** RAM at runtime: one seat per whole
 per-seat budget, by default 1,229 MiB (about 1.2 GiB). GB here means GiB (2³⁰
@@ -13,22 +14,77 @@ Available RAM is `MemAvailable`, lowered to the cgroup headroom
 
 ## Runtime limits
 
-Admission sells up to the lowest of three limits on total seats:
+Admission sells up to the lowest of four limits on total seats:
 
 - the operator's maximum, which only the operator writes. It may be
-  automatic: no operator cap, so the two runtime limits decide. Setup leaves
+  automatic: no operator cap, so the runtime limits decide. Setup leaves
   it automatic;
 - a memory limit: available RAM plus the anonymous resident memory of the
   MG's seat processes, divided by the budget. Running seats count toward
   their own budget, so they do not lower the limit as they grow. Until the
   first sample it is 4;
 - a policy limit, the setup-payment publication's `max_seats_per_mg_v2`
-  (default 12).
+  (default 12);
+- a CPU limit: the host's measured CPU capacity divided by the
+  publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
+  field there is no CPU limit.
 
 The publication's `seat_memory_budget_mib_v2` replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release.
+
+## CPU capacity
+
+The MG measures its CPU capacity as a score of a fixed benchmark, in
+**benchmark iterations per second**. One iteration is one second of a
+10-guardian seat's consensus at the production round delay: 20 rounds that
+each consensus-encode, hash and Schnorr-sign one unit and verify one peer
+signature, plus every 100th iteration a five-note mint-v2 reissue (5 blind
+signatures, 5 note verifications and 5 Schnorr verifications). It is
+CPU-only. The seat cost simulation's benchmark also exchanges the units over
+Iroh and commits them to RocksDB, but the readiness pressure check already
+gates the disk, and a startup benchmark must not open endpoints or write
+files.
+
+The capacity is the score summed over one worker per CPU the MG may use
+(`available_parallelism`, which follows the affinity mask and the cgroup CPU
+quota): the median of three 3-second runs after a 1-second warm-up.
+Simultaneous multithreading and a busy host lower it, which is what a seat
+would meet. A 3-second run of one worker follows; its score tells per-core
+speed apart from core count and is reported, not used. The benchmark takes
+about 13 seconds. On Fedi's devbox (an AMD EPYC 9454P with 96 CPUs, shared
+and busy) it scored 25,000 to 40,000 iterations per second, and 790 to 820
+for one worker.
+
+An iteration means the work of one benchmark version (`BENCHMARK_VERSION`,
+now 1), and so does the publication's `seat_cpu_iterations_per_sec`. A change
+that moves the score, such as to the benchmark's work, its constants, its
+crypto dependencies or the compiler settings, needs a new benchmark version.
+That version also needs a new policy field (`seat_cpu_iterations_per_sec_v2`)
+that only MGs of the new version read, because its budget is in other units;
+MGs of the old version keep reading the old field.
+
+The MG measures once, at daemon start before its seats start, when it has no
+measurement. It stores the result with the benchmark version, the CPU count
+and the CPU model (the first `model name` in `/proc/cpuinfo`, empty where
+there is none) it was taken at, and measures again only when a later start
+sees a different version, count or model, for example after an MG upgrade
+that changes the benchmark, a move to new hardware or a changed CPU quota. A
+measurement on a busy host stays until then. A measurement that fails, for
+example because a worker thread cannot be spawned, logs a warning and leaves
+the MG without a CPU limit until a later start measures; it does not stop the
+MG. Local E2E starts many
+MGs on one host and skips the benchmark, so it has no CPU limit, unless a
+test turns it on for one MG with `MG_E2E_CPU_BENCHMARK`.
+
+`seat_cpu_iterations_per_sec` has no default, unlike the memory budget:
+there are no fleet figures yet, and a guessed default could cut seats on
+every host. MGs journal their scores and CPU limit in the `seat capacity`
+event, and Fedi publishes a budget once that telemetry shows what seats
+need. The bounds, 1 to 100,000, refuse a budget below one iteration per
+second, the least a seat's own consensus can need, and one so large it would
+stop every MG.
 
 When the runtime limits shipped, a migration made the operator maximum
 automatic where it was from 1 to 8. The onboarding form had pre-filled a RAM
@@ -38,8 +94,9 @@ stay. The replaced value stays in `offer_state.pre_automatic_max_seats`, so it
 can be restored. The migration replaces the offer epoch, because the first
 memory value of 4 can take the last free slot.
 
-The MG writes both runtime limits at start, on each newly admitted
-publication, and every 5 minutes. The memory limit falls at once and rises
+The MG writes the runtime limits at start, on each newly admitted
+publication, and every 5 minutes. The CPU limit changes only with the
+publication. The memory limit falls at once and rises
 only after three consecutive samples allow it, so a transient spike does not
 open and close the offer. A runtime limit below the active seat count only
 stops new sales. It does not stop a seat. Each write keeps the offer-epoch

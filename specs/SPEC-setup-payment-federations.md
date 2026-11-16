@@ -141,6 +141,14 @@ replacement ordering as the new shared high-water mark.
 - `seat_memory_budget_mib_v2`, the RAM in MiB that each MG reserves per seat
   when it computes its memory seat limit, from 256 to 16,384. Optional:
   absent means 1,229 (about 1.2 GiB);
+- `seat_cpu_iterations_per_sec`, the CPU capacity, in iterations per second
+  of version 1 of the MG CPU benchmark, that each MG reserves per seat when
+  it computes its CPU seat limit, from 1 to 100,000
+  ([REQ-seat-capacity-default](../crates/mg/specs/REQ-seat-capacity-default.md#cpu-capacity)).
+  Optional, with no default: absent means no CPU seat limit. A later benchmark
+  version gets its own field, because its iterations are other work. Consumers that
+  admit unknown fields but predate this one, which includes every MG and FA
+  release from 0.1.1 to 0.1.15, ignore it and apply no CPU limit;
 - `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
 - `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
@@ -247,8 +255,9 @@ Admission performs all of these checks before the set influences policy:
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
-    256 to 16,384, a `max_seats_per_mg` or `max_seats_per_mg_v2` above 256, or
-    a `max_pressure_percent` window outside
+    256 to 16,384, a `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
+    `max_seats_per_mg` or `max_seats_per_mg_v2` above 256, or a
+    `max_pressure_percent` window outside
     1 to 100, where 0 would close every MG and no share of time exceeds 100;
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or

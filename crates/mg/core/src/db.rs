@@ -11,6 +11,7 @@ pub use seats::{
     NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,
 };
 
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +23,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
+use crate::cpu_capacity::CpuCapacity;
 use crate::host_pressure::{
     AverageWeights, PressureAverages, PressureSample, PressureState, PressureTotals,
     ResourceAverages,
@@ -141,6 +143,10 @@ pub(crate) struct OfferSnapshot {
     /// The runtime limits on total seats.
     pub(crate) memory_max_seats: u32,
     pub(crate) policy_max_seats: u32,
+    /// `None` while the publication sets no per-seat CPU budget.
+    pub(crate) cpu_max_seats: Option<u32>,
+    /// The CPU measurement the CPU limit divides; `None` before the first.
+    pub(crate) cpu_capacity: Option<CpuCapacity>,
     /// Free slots under the lowest limit.
     pub(crate) slots: u32,
     /// The last readiness verdict, read with the epoch it was drawn with.
@@ -207,19 +213,21 @@ impl Db {
             .into_iter()
             .map(|(id,)| FederationId(id))
             .collect();
-        let (epoch, price, max_seats, memory_max_seats, policy_max_seats, ready_for_new_seats): (
-            Vec<u8>,
-            Option<i64>,
-            Option<i64>,
-            i64,
-            i64,
-            bool,
-        ) = sqlx::query_as(
+        let (
+            epoch,
+            price,
+            max_seats,
+            memory_max_seats,
+            policy_max_seats,
+            cpu_max_seats,
+            ready_for_new_seats,
+        ): OfferStateRow = sqlx::query_as(
             "SELECT offer_epoch, price_msats, max_seats, memory_max_seats, policy_max_seats, \
-             ready_for_new_seats FROM offer_state WHERE id = 1",
+             cpu_max_seats, ready_for_new_seats FROM offer_state WHERE id = 1",
         )
         .fetch_one(&mut *tx)
         .await?;
+        let cpu_capacity = cpu_capacity_row(&mut tx).await?;
         let (active, next_no): (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
              COALESCE(MAX(s.seat_no) + 1, 0) \
@@ -233,6 +241,7 @@ impl Db {
         let max_seats = max_seats.map(stored_max_seats).transpose()?;
         let memory_max_seats = stored_max_seats(memory_max_seats)?;
         let policy_max_seats = stored_max_seats(policy_max_seats)?;
+        let cpu_max_seats = cpu_max_seats.map(stored_max_seats).transpose()?;
         Ok(OfferSnapshot {
             offer: Offer {
                 epoch,
@@ -244,8 +253,10 @@ impl Db {
             max_seats,
             memory_max_seats,
             policy_max_seats,
+            cpu_max_seats,
+            cpu_capacity,
             slots: available_slots(
-                effective_max_seats(max_seats, memory_max_seats, policy_max_seats),
+                effective_max_seats(max_seats, memory_max_seats, policy_max_seats, cpu_max_seats),
                 first_port_base,
                 active,
                 next_no,
@@ -548,22 +559,25 @@ impl Db {
         first_port_base: crate::facts::PortBase,
     ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
-        let (max_seats, memory, policy, ready): (Option<i64>, i64, i64, bool) = sqlx::query_as(
-            "SELECT max_seats, memory_max_seats, policy_max_seats, ready_for_new_seats \
-                 FROM offer_state WHERE id = 1",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let (max_seats, memory, policy, cpu, ready): (Option<i64>, i64, i64, Option<i64>, bool) =
+            sqlx::query_as(
+                "SELECT max_seats, memory_max_seats, policy_max_seats, cpu_max_seats, \
+                 ready_for_new_seats FROM offer_state WHERE id = 1",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
         let before = SeatsConfig {
             max_seats: max_seats.map(stored_max_seats).transpose()?,
             memory_max_seats: stored_max_seats(memory)?,
             policy_max_seats: stored_max_seats(policy)?,
+            cpu_max_seats: cpu.map(stored_max_seats).transpose()?,
             ready_for_new_seats: ready,
         };
         let after = SeatsConfig {
             max_seats: update.max_seats.unwrap_or(before.max_seats),
             memory_max_seats: update.memory_max_seats.unwrap_or(before.memory_max_seats),
             policy_max_seats: update.policy_max_seats.unwrap_or(before.policy_max_seats),
+            cpu_max_seats: update.cpu_max_seats.unwrap_or(before.cpu_max_seats),
             ready_for_new_seats: update
                 .ready_for_new_seats
                 .unwrap_or(before.ready_for_new_seats),
@@ -592,6 +606,7 @@ impl Db {
                     config.max_seats,
                     config.memory_max_seats,
                     config.policy_max_seats,
+                    config.cpu_max_seats,
                 ),
                 first_port_base,
                 active,
@@ -603,11 +618,12 @@ impl Db {
             || (slots(&before) > 0 && slots(&after) == 0);
         sqlx::query(
             "UPDATE offer_state SET max_seats = ?, memory_max_seats = ?, policy_max_seats = ?, \
-             ready_for_new_seats = ? WHERE id = 1",
+             cpu_max_seats = ?, ready_for_new_seats = ? WHERE id = 1",
         )
         .bind(after.max_seats.map(i64::from))
         .bind(i64::from(after.memory_max_seats))
         .bind(i64::from(after.policy_max_seats))
+        .bind(after.cpu_max_seats.map(i64::from))
         .bind(after.ready_for_new_seats)
         .execute(&mut *tx)
         .await?;
@@ -806,6 +822,37 @@ impl Db {
         Ok(next)
     }
 
+    /// The stored CPU measurement, or `None` before the first.
+    pub(crate) async fn cpu_capacity(&self) -> Result<Option<CpuCapacity>, DbError> {
+        let mut conn = self.pool.acquire().await?;
+        cpu_capacity_row(&mut conn).await
+    }
+
+    /// Replace the stored CPU measurement.
+    pub(crate) async fn record_cpu_capacity(&self, capacity: &CpuCapacity) -> Result<(), DbError> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO cpu_capacity (id, benchmark_version, cpu_count, cpu_model, \
+             iterations_per_sec, single_core_iterations_per_sec, measured_at_ms) \
+             VALUES (1, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET benchmark_version = excluded.benchmark_version, \
+             cpu_count = excluded.cpu_count, \
+             cpu_model = excluded.cpu_model, iterations_per_sec = excluded.iterations_per_sec, \
+             single_core_iterations_per_sec = excluded.single_core_iterations_per_sec, \
+             measured_at_ms = excluded.measured_at_ms",
+        )
+        .bind(i64::from(capacity.benchmark_version))
+        .bind(i64::from(capacity.cpu_count.get()))
+        .bind(&capacity.cpu_model)
+        .bind(i64::from(capacity.iterations_per_sec))
+        .bind(i64::from(capacity.single_core_iterations_per_sec))
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The uptime history, or `None` before the first up slot.
     pub(crate) async fn uptime(&self) -> Result<Option<Uptime>, DbError> {
         let mut conn = self.pool.acquire().await?;
@@ -887,6 +934,40 @@ async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>,
         scores: UptimeScores { day, week, month },
         slot: u64::try_from(slot).expect("slot is non-negative by schema CHECK"),
     }))
+}
+
+/// `offer_state` as [`Db::offer_snapshot`] reads it: epoch, price, the
+/// operator, memory, policy and CPU limits, and the readiness verdict.
+type OfferStateRow = (
+    Vec<u8>,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    i64,
+    Option<i64>,
+    bool,
+);
+
+async fn cpu_capacity_row(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Option<CpuCapacity>, DbError> {
+    let row: Option<(i64, i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT benchmark_version, cpu_count, cpu_model, iterations_per_sec, \
+         single_core_iterations_per_sec FROM cpu_capacity WHERE id = 1",
+    )
+    .fetch_optional(conn)
+    .await?;
+    row.map(|(benchmark_version, cpu_count, cpu_model, total, single)| {
+        Ok(CpuCapacity {
+            benchmark_version: stored_cpu_capacity_u32(benchmark_version)?,
+            cpu_count: NonZeroU32::new(stored_cpu_capacity_u32(cpu_count)?)
+                .expect("cpu_count is positive by schema CHECK"),
+            cpu_model,
+            iterations_per_sec: stored_cpu_capacity_u32(total)?,
+            single_core_iterations_per_sec: stored_cpu_capacity_u32(single)?,
+        })
+    })
+    .transpose()
 }
 
 type HostPressureRow = (
@@ -1000,6 +1081,9 @@ pub(crate) struct SeatsConfigUpdate {
     pub(crate) memory_max_seats: Option<u32>,
     /// Runtime limit from the setup-payment publication.
     pub(crate) policy_max_seats: Option<u32>,
+    /// Runtime limit from the measured CPU capacity and the publication's
+    /// per-seat CPU budget (`crate::seat_capacity`). `Some(None)` removes it.
+    pub(crate) cpu_max_seats: Option<Option<u32>>,
     /// The readiness verdict (`crate::seat_readiness`).
     pub(crate) ready_for_new_seats: Option<bool>,
 }
@@ -1009,16 +1093,24 @@ struct SeatsConfig {
     max_seats: Option<u32>,
     memory_max_seats: u32,
     policy_max_seats: u32,
+    cpu_max_seats: Option<u32>,
     ready_for_new_seats: bool,
 }
 
 /// The seat limit admission enforces: the lowest of the operator's and the
-/// runtime limits. An automatic operator limit does not bind.
-pub(super) fn effective_max_seats(max_seats: Option<u32>, memory: u32, policy: u32) -> u32 {
+/// runtime limits. An automatic operator limit and an absent CPU limit do not
+/// bind.
+pub(super) fn effective_max_seats(
+    max_seats: Option<u32>,
+    memory: u32,
+    policy: u32,
+    cpu: Option<u32>,
+) -> u32 {
     max_seats
-        .map_or(u32::MAX, |max| max)
+        .unwrap_or(u32::MAX)
         .min(memory)
         .min(policy)
+        .min(cpu.unwrap_or(u32::MAX))
 }
 
 pub(super) fn available_slots(
@@ -1050,6 +1142,15 @@ pub(super) fn stored_max_seats(max_seats: i64) -> Result<u32, DbError> {
         table: "offer_state",
         key: "1".into(),
         detail: "a seat limit is outside the u32 domain".into(),
+    })
+}
+
+/// The schema CHECKs keep every `cpu_capacity` number in the u32 domain.
+fn stored_cpu_capacity_u32(value: i64) -> Result<u32, DbError> {
+    u32::try_from(value).map_err(|_| DbError::CorruptRow {
+        table: "cpu_capacity",
+        key: "1".into(),
+        detail: "a CPU capacity value is outside the u32 domain".into(),
     })
 }
 

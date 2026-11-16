@@ -52,8 +52,8 @@ pub use setup_payment_federations::{
     MinUptimePercent, SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES,
     SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_COUNT,
     SETUP_PAYMENT_MAX_MIN_FEE_PPM, SETUP_PAYMENT_MAX_SEATS_PER_MG,
-    SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE, SetupPaymentFederationsContent,
-    SetupPaymentFederationsContentError,
+    SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE, SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE,
+    SetupPaymentFederationsContent, SetupPaymentFederationsContentError,
 };
 pub use signed_json::{
     PurposeTag, SIGNED_JSON_ENVELOPE_MAX_BYTES, SIGNED_JSON_PAYLOAD_MAX_BYTES, SignedJsonEnvelope,

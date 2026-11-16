@@ -1180,6 +1180,10 @@ mod tests {
                 "max_seats": null,
                 "memory_max_seats": 9,
                 "policy_max_seats": 12,
+                "cpu_max_seats": null,
+                "cpu_count": null,
+                "cpu_iterations_per_sec": null,
+                "cpu_single_core_iterations_per_sec": null,
                 "mg_version": "0.1.6",
             })
         );

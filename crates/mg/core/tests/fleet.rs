@@ -1264,8 +1264,20 @@ async fn advertisement_cycle_shares_seat_capacity() {
 
     create_free_seat(&fleet, 1).await;
     fleet
+        .db
+        .record_cpu_capacity(&crate::cpu_capacity::CpuCapacity {
+            benchmark_version: crate::cpu_capacity::BENCHMARK_VERSION,
+            cpu_count: std::num::NonZeroU32::new(4).unwrap(),
+            cpu_model: "Test CPU".to_owned(),
+            iterations_per_sec: 2_600,
+            single_core_iterations_per_sec: 700,
+        })
+        .await
+        .unwrap();
+    fleet
         .update_seats_config(crate::db::SeatsConfigUpdate {
             policy_max_seats: Some(2),
+            cpu_max_seats: Some(Some(3)),
             ..Default::default()
         })
         .await
@@ -1296,6 +1308,10 @@ async fn advertisement_cycle_shares_seat_capacity() {
             // Until the first memory sample the limit assumes 4 seats.
             "memory_max_seats": 4,
             "policy_max_seats": 2,
+            "cpu_max_seats": 3,
+            "cpu_count": 4,
+            "cpu_iterations_per_sec": 2_600,
+            "cpu_single_core_iterations_per_sec": 700,
             "available_seats": available,
             "accepting_seats": accepting,
         })
@@ -1312,9 +1328,89 @@ async fn advertisement_cycle_shares_seat_capacity() {
         max_seats: Some(max_seats),
         memory_max_seats: Some(4),
         policy_max_seats: Some(2),
+        cpu_max_seats: Some(3),
+        cpu_count: Some(4),
+        cpu_iterations_per_sec: Some(2_600),
+        cpu_single_core_iterations_per_sec: Some(700),
         mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
     assert_eq!(decoded, [capacity(3, 1, true), capacity(1, 0, false)]);
+}
+
+/// A setup-payment publication with a per-seat CPU budget, or without one.
+fn cpu_budget_policy(
+    budget: Option<u32>,
+) -> Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {
+    let mut content = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    if let Some(budget) = budget {
+        content["seat_cpu_iterations_per_sec"] = serde_json::json!(budget);
+    }
+    Some(
+        fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+            content.to_string().as_bytes(),
+        )
+        .expect("test policy parses"),
+    )
+}
+
+/// Wait until the stored CPU seat limit is `expected`.
+async fn cpu_limit_becomes(fleet: &Fleet, expected: Option<u32>) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fleet.availability_snapshot().await.cpu_max_seats != expected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("the CPU seat limit did not become {expected:?}");
+    });
+}
+
+#[tokio::test]
+async fn runtime_seat_limits_divide_the_total_iterations_by_the_published_budget() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 12, 31_800).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    // The single-worker rate divides to 1 seat, so a limit from it fails.
+    let cpu = crate::cpu_capacity::CpuCapacity {
+        benchmark_version: crate::cpu_capacity::BENCHMARK_VERSION,
+        cpu_count: std::num::NonZeroU32::new(5).unwrap(),
+        cpu_model: "Test CPU".to_owned(),
+        iterations_per_sec: 4_000,
+        single_core_iterations_per_sec: 800,
+    };
+    let (policy, receiver) = tokio::sync::watch::channel(cpu_budget_policy(Some(500)));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, Some(cpu));
+    cpu_limit_becomes(&fleet, Some(8)).await;
+    // A newer publication without a budget lifts the limit.
+    policy.send_replace(cpu_budget_policy(None));
+    cpu_limit_becomes(&fleet, None).await;
+    limits.abort();
+
+    // Without a measurement a budget sets no limit either: it clears one that
+    // is stored.
+    fleet
+        .update_seats_config(crate::db::SeatsConfigUpdate {
+            cpu_max_seats: Some(Some(3)),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    cpu_limit_becomes(&fleet, Some(3)).await;
+    let (_policy, receiver) = tokio::sync::watch::channel(cpu_budget_policy(Some(500)));
+    let limits = crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None);
+    cpu_limit_becomes(&fleet, None).await;
+    limits.abort();
+    fleet.shutdown().await;
 }
 
 /// A readiness report whose Bitcoin check passes or fails.

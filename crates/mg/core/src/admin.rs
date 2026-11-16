@@ -614,12 +614,20 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
 }
 
 /// `max_seats` is the operator's limit, `null` when automatic. Admission
-/// sells up to the lowest of it and the two runtime limits.
+/// sells up to the lowest of it and the runtime limits. `cpu_max_seats` is
+/// `null` while the publication sets no per-seat CPU budget, and
+/// `cpu_benchmark`, the measured CPU capacity, before the first measurement.
 pub(crate) fn capacity_json(snapshot: &crate::fleet::AvailabilitySnapshot) -> Value {
     json!({
         "max_seats": snapshot.max_seats,
         "memory_max_seats": snapshot.memory_max_seats,
         "policy_max_seats": snapshot.policy_max_seats,
+        "cpu_max_seats": snapshot.cpu_max_seats,
+        "cpu_benchmark": snapshot.cpu_capacity.as_ref().map(|cpu| json!({
+            "cpu_count": cpu.cpu_count,
+            "iterations_per_sec": cpu.iterations_per_sec,
+            "single_core_iterations_per_sec": cpu.single_core_iterations_per_sec,
+        })),
         "available_slots": snapshot.available_seats,
     })
 }

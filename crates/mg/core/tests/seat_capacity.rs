@@ -16,6 +16,21 @@ fn runtime_limit_counts_memory_the_seats_already_hold() {
 }
 
 #[test]
+fn cpu_limit_is_whole_budgets_of_the_measured_capacity() {
+    let budget = |iterations| NonZeroU32::new(iterations);
+    // Exactly k budgets give k seats; one iteration per second less gives
+    // k - 1.
+    assert_eq!(cpu_max_seats(3 * 40, budget(40)), Some(3));
+    assert_eq!(cpu_max_seats(3 * 40 - 1, budget(40)), Some(2));
+    assert_eq!(cpu_max_seats(3 * 40 + 39, budget(40)), Some(3));
+    assert_eq!(cpu_max_seats(39, budget(40)), Some(0));
+    assert_eq!(cpu_max_seats(27_123, budget(1)), Some(27_123));
+    // No published budget is no CPU limit, not zero seats.
+    assert_eq!(cpu_max_seats(0, None), None);
+    assert_eq!(cpu_max_seats(u32::MAX, None), None);
+}
+
+#[test]
 fn smoothing_lowers_at_once_and_raises_after_three_agreeing_samples() {
     let mut smoothed = Smoothed::starting_at(6);
     assert_eq!(smoothed.push(4), 4);

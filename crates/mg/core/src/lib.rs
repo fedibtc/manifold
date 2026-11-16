@@ -20,6 +20,7 @@ pub mod admin_http;
 pub mod backup;
 pub mod backup_worker;
 pub mod bundled_fedimintd;
+pub mod cpu_capacity;
 pub mod db;
 pub mod directory;
 pub mod facts;
