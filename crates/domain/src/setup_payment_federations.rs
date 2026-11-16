@@ -277,17 +277,31 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_nostr_pubkey: Option<nostr::PublicKey>,
 
-    /// Available memory, in MiB, an MG needs per seat. Optional on the
-    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`]. Omitted when
-    /// unset so that consumers that refuse unknown fields keep admitting
-    /// publications that do not use it.
+    /// Available memory, in MiB, an MG before 0.1.16 needs per seat. This
+    /// release ignores it and reads [`Self::seat_memory_budget_mib_v2`], so
+    /// Fedi can give older MGs a different budget. Admission still checks
+    /// its range, which older consumers enforce. Omitted when unset so that
+    /// consumers that refuse unknown fields keep admitting publications that
+    /// do not use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_memory_budget_mib: Option<u32>,
 
-    /// Seats one MG may host, below its operator's own limit. Optional on the
-    /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`].
+    /// Seats one MG before 0.1.16 may host. This release ignores it and
+    /// reads [`Self::max_seats_per_mg_v2`]. Admission still checks its bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
+
+    /// Available memory, in MiB, an MG needs per seat. Optional on the
+    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`], whatever
+    /// [`Self::seat_memory_budget_mib`] says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_memory_budget_mib_v2: Option<u32>,
+
+    /// Seats one MG may host, below its operator's own limit. Optional on the
+    /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`], whatever
+    /// [`Self::max_seats_per_mg`] says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seats_per_mg_v2: Option<u32>,
 
     /// CPU and IO pressure averages above which an MG stops accepting new
     /// seats. Optional on the wire: absent, [`MaxPressurePercent::default`]
@@ -342,8 +356,8 @@ pub struct AdmittedSetupPaymentFederations {
     min_uptime_percent: MinUptimePercent,
     max_guardian_offline_secs: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
-    seat_memory_budget_mib: Option<u32>,
-    max_seats_per_mg: Option<u32>,
+    seat_memory_budget_mib: u32,
+    max_seats_per_mg: u32,
     max_pressure_percent: MaxPressurePercent,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
@@ -376,15 +390,20 @@ impl AdmittedSetupPaymentFederations {
         if content.min_fee_ppm > SETUP_PAYMENT_MAX_MIN_FEE_PPM {
             return Err(SetupPaymentFederationsContentError::MinFeePpmTooHigh);
         }
-        if content
-            .seat_memory_budget_mib
-            .is_some_and(|mib| !SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE.contains(&mib))
+        if [
+            content.seat_memory_budget_mib,
+            content.seat_memory_budget_mib_v2,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|mib| !SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE.contains(&mib))
         {
             return Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange);
         }
-        if content
-            .max_seats_per_mg
-            .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
+        if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
+            .into_iter()
+            .flatten()
+            .any(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
         {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
         }
@@ -465,8 +484,12 @@ impl AdmittedSetupPaymentFederations {
             min_uptime_percent,
             max_guardian_offline_secs,
             support_nostr_pubkey: content.support_nostr_pubkey,
-            seat_memory_budget_mib: content.seat_memory_budget_mib,
-            max_seats_per_mg: content.max_seats_per_mg,
+            seat_memory_budget_mib: content
+                .seat_memory_budget_mib_v2
+                .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
+            max_seats_per_mg: content
+                .max_seats_per_mg_v2
+                .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
             max_pressure_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
@@ -542,13 +565,12 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn seat_memory_budget_mib(&self) -> u32 {
         self.seat_memory_budget_mib
-            .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB)
     }
 
     /// Return how many seats one MG may host.
     #[must_use]
     pub fn max_seats_per_mg(&self) -> u32 {
-        self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
+        self.max_seats_per_mg
     }
 
     /// Return the maximum CPU and IO pressure averages for new seats; an

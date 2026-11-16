@@ -22,10 +22,10 @@ Admission sells up to the lowest of three limits on total seats:
   MG's seat processes, divided by the budget. Running seats count toward
   their own budget, so they do not lower the limit as they grow. Until the
   first sample it is 4;
-- a policy limit, the setup-payment publication's `max_seats_per_mg`
+- a policy limit, the setup-payment publication's `max_seats_per_mg_v2`
   (default 12).
 
-The publication's `seat_memory_budget_mib` replaces the default budget
+The publication's `seat_memory_budget_mib_v2` replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release.
