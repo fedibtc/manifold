@@ -1,0 +1,71 @@
+diff --git a/fedimint-server/src/consensus/aleph_bft/backup.rs b/fedimint-server/src/consensus/aleph_bft/backup.rs
+index 0ef76ac..8500af1 100644
+--- a/fedimint-server/src/consensus/aleph_bft/backup.rs
++++ b/fedimint-server/src/consensus/aleph_bft/backup.rs
+@@ -98,16 +98,28 @@ impl BackupWriter {
+ #[async_trait]
+ impl aleph_bft::BackupWriter for BackupWriter {
+     async fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
+-        if !self.stored.insert(unit_digest(data)) {
++        self.append_batch(&[data.to_owned()]).await
++    }
++
++    /// Stores the new units of the batch in one synced commit. AlephBFT
++    /// passes every unit it adds to its DAG through here, so committing each
++    /// unit alone costs one disk sync per unit, many per round.
++    async fn append_batch(&mut self, items: &[Vec<u8>]) -> std::io::Result<()> {
++        let new_units: Vec<&Vec<u8>> = items
++            .iter()
++            .filter(|unit| self.stored.insert(unit_digest(unit)))
++            .collect();
++        if new_units.is_empty() {
+             return Ok(());
+         }
+ 
+         let mut dbtx = self.db.begin_transaction().await;
+ 
+-        dbtx.insert_new_entry(&AlephUnitsKey(self.units_index), &data.to_owned())
+-            .await;
+-
+-        self.units_index += 1;
++        for unit in new_units {
++            dbtx.insert_new_entry(&AlephUnitsKey(self.units_index), unit)
++                .await;
++            self.units_index += 1;
++        }
+ 
+         dbtx.commit_tx_result()
+             .await
+diff --git a/fedimint-server/src/consensus/aleph_bft/backup/tests.rs b/fedimint-server/src/consensus/aleph_bft/backup/tests.rs
+index 4461e3b..ec0b296 100644
+--- a/fedimint-server/src/consensus/aleph_bft/backup/tests.rs
++++ b/fedimint-server/src/consensus/aleph_bft/backup/tests.rs
+@@ -82,3 +82,28 @@ async fn units_stored_more_than_once_are_loaded_once() {
+     assert_eq!(rows.len(), 9);
+     assert_eq!(rows.last(), Some(&(8, unit(4))));
+ }
++
++/// The saver hands over every unit queued at once, replayed ones included.
++#[tokio::test]
++async fn a_batch_stores_its_new_units_once_and_in_order() {
++    let db: Database = MemDatabase::new().into();
++
++    let mut writer = BackupWriter::new(db.clone()).await;
++    writer.append(&unit(1)).await.unwrap();
++    writer
++        .append_batch(&[unit(3), unit(1), unit(2), unit(3), unit(4)])
++        .await
++        .unwrap();
++    // A batch of units that are all stored already writes nothing.
++    writer.append_batch(&[unit(2), unit(4)]).await.unwrap();
++
++    assert_eq!(
++        stored_rows(&db).await,
++        vec![(0, unit(1)), (1, unit(3)), (2, unit(2)), (3, unit(4))]
++    );
++
++    // A writer opened after a restart continues after the last key.
++    let mut writer = BackupWriter::new(db.clone()).await;
++    writer.append_batch(&[unit(4), unit(5)]).await.unwrap();
++    assert_eq!(stored_rows(&db).await.last(), Some(&(4, unit(5))));
++}

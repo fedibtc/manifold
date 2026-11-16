@@ -1,0 +1,531 @@
+diff --git a/src/backup/saver.rs b/src/backup/saver.rs
+index 6835ae5..8c40d1a 100644
+--- a/src/backup/saver.rs
++++ b/src/backup/saver.rs
+@@ -1,17 +1,32 @@
+ use async_trait::async_trait;
+ 
+-use crate::{units::UncheckedSignedUnit, Data, Hasher, Receiver, Sender, Signature, Terminator};
++use crate::{
++    units::UncheckedSignedUnit, Data, Hasher, NodeIndex, Receiver, Sender, Signature, Terminator,
++};
+ use codec::Encode;
+ use futures::{AsyncWrite, AsyncWriteExt, FutureExt, StreamExt};
++use futures_timer::Delay;
++use std::time::Duration;
+ use log::{debug, error};
+ 
+ const LOG_TARGET: &str = "AlephBFT-backup-saver";
+ 
+ #[async_trait]
+ /// Write backups to peristent storage.
+-pub trait BackupWriter {
++pub trait BackupWriter: Send {
+     /// Append new data to the backup.
+     async fn append(&mut self, data: &[u8]) -> std::io::Result<()>;
++
++    /// Durably append several items, in order, as one write where the
++    /// backend allows. The saver hands over every unit already queued, so a
++    /// backend that makes each write durable pays that cost once per batch
++    /// instead of once per unit.
++    async fn append_batch(&mut self, items: &[Vec<u8>]) -> std::io::Result<()> {
++        for item in items {
++            self.append(item).await?;
++        }
++        Ok(())
++    }
+ }
+ 
+ #[async_trait]
+@@ -20,6 +35,31 @@ impl<W: AsyncWrite + Send + Unpin> BackupWriter for W {
+         self.write_all(data).await?;
+         self.flush().await
+     }
++
++    async fn append_batch(&mut self, items: &[Vec<u8>]) -> std::io::Result<()> {
++        for item in items {
++            self.write_all(item).await?;
++        }
++        self.flush().await
++    }
++}
++
++/// Most units the saver stores in one batch.
++const MAX_BATCH: usize = 1024;
++
++/// Longest time the saver holds a peer's unit while it waits for this node's
++/// next unit. It binds only when this node creates units more slowly, for
++/// example while it lacks parents or during a session's slowdown phase, so it
++/// must stay several round delays long. Holding a peer's unit delays only its
++/// re-gossip, which the member schedules seconds later anyway.
++const MAX_HOLD: Duration = Duration::from_millis(500);
++
++/// Why the saver stopped collecting a batch before its usual end.
++enum Stop {
++    /// The terminator asked the saver to exit.
++    Exit,
++    /// The runway closed the channel of units to save.
++    Closed,
+ }
+ 
+ /// Component responsible for saving units into backup.
+@@ -29,6 +69,7 @@ pub struct BackupSaver<H: Hasher, D: Data, S: Signature, W: BackupWriter> {
+     units_from_runway: Receiver<UncheckedSignedUnit<H, D, S>>,
+     responses_for_runway: Sender<UncheckedSignedUnit<H, D, S>>,
+     backup: W,
++    index: NodeIndex,
+ }
+ 
+ impl<H: Hasher, D: Data, S: Signature, W: BackupWriter> BackupSaver<H, D, S, W> {
+@@ -36,19 +77,59 @@ impl<H: Hasher, D: Data, S: Signature, W: BackupWriter> BackupSaver<H, D, S, W>
+         units_from_runway: Receiver<UncheckedSignedUnit<H, D, S>>,
+         responses_for_runway: Sender<UncheckedSignedUnit<H, D, S>>,
+         backup: W,
++        index: NodeIndex,
+     ) -> BackupSaver<H, D, S, W> {
+         BackupSaver {
+             units_from_runway,
+             responses_for_runway,
+             backup,
++            index,
+         }
+     }
+ 
+-    pub async fn save_item(
++    /// Store `first` and the units after it up to and including this node's
++    /// next unit in one batch, then pass them on in order. A unit still
++    /// reaches the runway only after it is stored.
++    ///
++    /// Each batch costs the backend one durable write, typically a disk sync.
++    /// This node's unit must be stored before it is broadcast, so it ends the
++    /// batch at once; peers' units only wait for it, at most about one round
++    /// and never longer than [`MAX_HOLD`]. That turns one sync per unit into
++    /// about one per round. The runway only re-gossips a stored peer unit, so
++    /// holding it delays nothing that its creator does not already send.
++    ///
++    /// An exit signal or the runway closing its channel also ends the batch,
++    /// and is returned so the run loop stops after passing the batch on.
++    async fn save_queued(
+         &mut self,
+-        item: &UncheckedSignedUnit<H, D, S>,
+-    ) -> Result<(), std::io::Error> {
+-        self.backup.append(&item.encode()).await
++        first: UncheckedSignedUnit<H, D, S>,
++        terminator: &mut Terminator,
++    ) -> Result<(Vec<UncheckedSignedUnit<H, D, S>>, Option<Stop>), std::io::Error> {
++        let mut batch = vec![first];
++        let mut stop = None;
++        let mut hold = Delay::new(MAX_HOLD).fuse();
++        while batch.len() < MAX_BATCH
++            && batch.last().is_some_and(|unit| unit.as_signable().creator() != self.index)
++        {
++            futures::select! {
++                unit = self.units_from_runway.next() => match unit {
++                    Some(unit) => batch.push(unit),
++                    None => {
++                        stop = Some(Stop::Closed);
++                        break;
++                    }
++                },
++                _ = hold => break,
++                _ = terminator.get_exit().fuse() => {
++                    debug!(target: LOG_TARGET, "backup saver received exit signal.");
++                    stop = Some(Stop::Exit);
++                    break;
++                }
++            }
++        }
++        let encoded: Vec<Vec<u8>> = batch.iter().map(|unit| unit.encode()).collect();
++        self.backup.append_batch(&encoded).await?;
++        Ok((batch, stop))
+     }
+ 
+     pub async fn run(&mut self, mut terminator: Terminator) {
+@@ -63,14 +144,28 @@ impl<H: Hasher, D: Data, S: Signature, W: BackupWriter> BackupSaver<H, D, S, W>
+                             break;
+                         },
+                     };
+-                    if let Err(e) = self.save_item(&item).await {
+-                        error!(target: LOG_TARGET, "couldn't save item to backup: {:?}", e);
+-                        break;
+-                    }
+-                    if self.responses_for_runway.unbounded_send(item).is_err() {
++                    let (saved, stop) = match self.save_queued(item, &mut terminator).await {
++                        Ok(result) => result,
++                        Err(e) => {
++                            error!(target: LOG_TARGET, "couldn't save item to backup: {:?}", e);
++                            break;
++                        }
++                    };
++                    if saved
++                        .into_iter()
++                        .any(|unit| self.responses_for_runway.unbounded_send(unit).is_err())
++                    {
+                         error!(target: LOG_TARGET, "couldn't respond with saved unit to runway");
+                         break;
+                     }
++                    match stop {
++                        None => {}
++                        Some(Stop::Exit) => terminator_exit = true,
++                        Some(Stop::Closed) => {
++                            error!(target: LOG_TARGET, "receiver of units to save closed early");
++                            break;
++                        }
++                    }
+                 },
+                 _ = terminator.get_exit().fuse() => {
+                     debug!(target: LOG_TARGET, "backup saver received exit signal.");
+@@ -89,21 +184,34 @@ impl<H: Hasher, D: Data, S: Signature, W: BackupWriter> BackupSaver<H, D, S, W>
+ 
+ #[cfg(test)]
+ mod tests {
++    use std::{sync::Arc, time::Duration};
++
++    use async_trait::async_trait;
++    use codec::Encode;
+     use futures::{
+         channel::{mpsc, oneshot},
+         StreamExt,
+     };
++    use parking_lot::Mutex;
+ 
+     use aleph_bft_mock::{Data, Hasher64, Keychain, Saver, Signature};
+ 
++    use super::{MAX_BATCH, MAX_HOLD};
+     use crate::{
+-        backup::BackupSaver,
++        backup::{BackupSaver, BackupWriter},
+         units::{creator_set, preunit_to_unchecked_signed_unit, UncheckedSignedUnit},
+         NodeCount, NodeIndex, Terminator,
+     };
+ 
+-    type TestBackupSaver = BackupSaver<Hasher64, Data, Signature, Saver>;
+     type TestUnit = UncheckedSignedUnit<Hasher64, Data, Signature>;
++
++    /// Units in these tests come from creators 0 to 4.
++    const N_MEMBERS: usize = 5;
++    /// The saver's own index when the test sends this node's unit last.
++    const OWN: NodeIndex = NodeIndex(N_MEMBERS - 1);
++    /// An index that created none of the test units.
++    const NOT_A_CREATOR: NodeIndex = NodeIndex(N_MEMBERS);
++
+     struct PrepareSaverResponse<F: futures::Future> {
+         task: F,
+         units_for_saver: mpsc::UnboundedSender<TestUnit>,
+@@ -111,15 +219,17 @@ mod tests {
+         exit_tx: oneshot::Sender<()>,
+     }
+ 
+-    fn prepare_saver() -> PrepareSaverResponse<impl futures::Future> {
++    fn prepare_saver<W: BackupWriter + Send + 'static>(
++        backup: W,
++        index: NodeIndex,
++    ) -> PrepareSaverResponse<impl futures::Future> {
+         let (units_for_saver, units_from_runway) = mpsc::unbounded();
+         let (units_for_runway, units_from_saver) = mpsc::unbounded();
+         let (exit_tx, exit_rx) = oneshot::channel();
+-        let backup = Saver::new();
+ 
+         let task = {
+-            let mut saver: TestBackupSaver =
+-                BackupSaver::new(units_from_runway, units_for_runway, backup);
++            let mut saver: BackupSaver<Hasher64, Data, Signature, W> =
++                BackupSaver::new(units_from_runway, units_for_runway, backup, index);
+ 
+             async move {
+                 saver.run(Terminator::create_root(exit_rx, "saver")).await;
+@@ -134,6 +244,58 @@ mod tests {
+         }
+     }
+ 
++    /// Records each batch it is asked to store, or fails every write.
++    #[derive(Clone, Default)]
++    struct BatchRecorder {
++        batches: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
++        fail: bool,
++    }
++
++    impl BatchRecorder {
++        fn batches(&self) -> Vec<Vec<Vec<u8>>> {
++            self.batches.lock().clone()
++        }
++    }
++
++    #[async_trait]
++    impl BackupWriter for BatchRecorder {
++        async fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
++            self.append_batch(&[data.to_vec()]).await
++        }
++
++        async fn append_batch(&mut self, items: &[Vec<u8>]) -> std::io::Result<()> {
++            if self.fail {
++                return Err(std::io::Error::other("disk full"));
++            }
++            self.batches.lock().push(items.to_vec());
++            Ok(())
++        }
++    }
++
++    /// `count` distinct units; unit `i` is created by node `i % N_MEMBERS`.
++    fn test_units(count: usize) -> Vec<TestUnit> {
++        let n_members = NodeCount(N_MEMBERS);
++        let creators = creator_set(n_members);
++        let keychains: Vec<_> = (0..N_MEMBERS)
++            .map(|id| Keychain::new(n_members, NodeIndex(id)))
++            .collect();
++        (0..count)
++            .map(|i| {
++                let k = i % N_MEMBERS;
++                // The session id keeps units of the same creator distinct.
++                preunit_to_unchecked_signed_unit(
++                    creators[k].create_unit(0).unwrap().0,
++                    (i / N_MEMBERS) as u64,
++                    &keychains[k],
++                )
++            })
++            .collect()
++    }
++
++    fn encoded(units: &[TestUnit]) -> Vec<Vec<u8>> {
++        units.iter().map(|u| u.encode()).collect()
++    }
++
+     #[tokio::test]
+     async fn test_proper_relative_responses_ordering() {
+         let PrepareSaverResponse {
+@@ -141,26 +303,13 @@ mod tests {
+             units_for_saver,
+             mut units_from_saver,
+             exit_tx,
+-        } = prepare_saver();
++        } = prepare_saver(Saver::new(), OWN);
+ 
+         let handle = tokio::spawn(async {
+             task.await;
+         });
+ 
+-        let creators = creator_set(NodeCount(5));
+-        let keychains: Vec<_> = (0..5)
+-            .map(|id| Keychain::new(NodeCount(5), NodeIndex(id)))
+-            .collect();
+-        let units: Vec<TestUnit> = (0..5)
+-            .map(|k| {
+-                preunit_to_unchecked_signed_unit(
+-                    creators[k].create_unit(0).unwrap().0,
+-                    0,
+-                    &keychains[k],
+-                )
+-            })
+-            .collect();
+-
++        let units = test_units(N_MEMBERS);
+         for u in units.iter() {
+             units_for_saver.unbounded_send(u.clone()).unwrap();
+         }
+@@ -173,4 +322,194 @@ mod tests {
+         exit_tx.send(()).unwrap();
+         handle.await.unwrap();
+     }
++
++    #[tokio::test]
++    async fn peer_units_wait_for_the_own_unit_and_share_its_batch() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx,
++        } = prepare_saver(backup.clone(), OWN);
++        let handle = tokio::spawn(async {
++            task.await;
++        });
++
++        // Units 0 to 3 are peers', unit 4 is this node's.
++        let units = test_units(N_MEMBERS);
++        for u in &units[..N_MEMBERS - 1] {
++            units_for_saver.unbounded_send(u.clone()).unwrap();
++        }
++        tokio::time::sleep(MAX_HOLD / 4).await;
++        assert!(backup.batches().is_empty());
++        assert!(units_from_saver.try_next().is_err(), "a peer unit was passed on");
++
++        units_for_saver.unbounded_send(units[N_MEMBERS - 1].clone()).unwrap();
++        for u in units.iter() {
++            assert_eq!(&units_from_saver.next().await.unwrap(), u);
++        }
++        assert_eq!(backup.batches(), vec![encoded(&units)]);
++
++        exit_tx.send(()).unwrap();
++        handle.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn the_own_unit_is_stored_at_once() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx,
++        } = prepare_saver(backup.clone(), NodeIndex(0));
++        let handle = tokio::spawn(async {
++            task.await;
++        });
++
++        // Unit 0 is this node's; unit 1, a peer's, arrives right behind it.
++        let units = test_units(2);
++        units_for_saver.unbounded_send(units[0].clone()).unwrap();
++        units_for_saver.unbounded_send(units[1].clone()).unwrap();
++        let started = std::time::Instant::now();
++        assert_eq!(units_from_saver.next().await.unwrap(), units[0]);
++        assert!(started.elapsed() < MAX_HOLD / 2);
++        assert_eq!(backup.batches()[0], encoded(&units[..1]));
++
++        exit_tx.send(()).unwrap();
++        handle.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn peer_units_are_not_held_past_max_hold() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx,
++        } = prepare_saver(backup.clone(), NOT_A_CREATOR);
++        let handle = tokio::spawn(async {
++            task.await;
++        });
++
++        let units = test_units(3);
++        for u in units.iter() {
++            units_for_saver.unbounded_send(u.clone()).unwrap();
++        }
++        let started = std::time::Instant::now();
++        for u in units.iter() {
++            assert_eq!(&units_from_saver.next().await.unwrap(), u);
++        }
++        let waited = started.elapsed();
++        assert!(waited >= MAX_HOLD && waited < MAX_HOLD * 3, "waited {waited:?}");
++        assert_eq!(backup.batches(), vec![encoded(&units)]);
++
++        exit_tx.send(()).unwrap();
++        handle.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn a_batch_holds_at_most_max_batch_units() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx,
++        } = prepare_saver(backup.clone(), NOT_A_CREATOR);
++
++        let units = test_units(MAX_BATCH + 1);
++        for u in units.iter() {
++            units_for_saver.unbounded_send(u.clone()).unwrap();
++        }
++        let handle = tokio::spawn(async {
++            task.await;
++        });
++
++        for u in units.iter() {
++            assert_eq!(&units_from_saver.next().await.unwrap(), u);
++        }
++        let sizes: Vec<usize> = backup.batches().iter().map(Vec::len).collect();
++        assert_eq!(sizes, vec![MAX_BATCH, 1]);
++        assert_eq!(backup.batches().concat(), encoded(&units));
++
++        exit_tx.send(()).unwrap();
++        handle.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn units_are_not_passed_on_when_the_batch_fails() {
++        let backup = BatchRecorder {
++            fail: true,
++            ..Default::default()
++        };
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx: _exit_tx,
++        } = prepare_saver(backup, OWN);
++
++        for u in test_units(N_MEMBERS) {
++            units_for_saver.unbounded_send(u).unwrap();
++        }
++        // The saver stops on the failed write and drops its sender.
++        task.await;
++        assert_eq!(units_from_saver.next().await, None);
++    }
++
++    #[tokio::test]
++    async fn an_exit_signal_ends_the_hold_and_stores_what_arrived() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx,
++        } = prepare_saver(backup.clone(), NOT_A_CREATOR);
++        let handle = tokio::spawn(async {
++            task.await;
++        });
++
++        let units = test_units(2);
++        for u in units.iter() {
++            units_for_saver.unbounded_send(u.clone()).unwrap();
++        }
++        tokio::time::sleep(MAX_HOLD / 10).await;
++        let started = std::time::Instant::now();
++        exit_tx.send(()).unwrap();
++        handle.await.unwrap();
++        assert!(started.elapsed() < MAX_HOLD / 2);
++        assert_eq!(backup.batches(), vec![encoded(&units)]);
++        for u in units.iter() {
++            assert_eq!(&units_from_saver.next().await.unwrap(), u);
++        }
++    }
++
++    #[tokio::test]
++    async fn the_hold_ends_early_when_the_runway_closes() {
++        let backup = BatchRecorder::default();
++        let PrepareSaverResponse {
++            task,
++            units_for_saver,
++            mut units_from_saver,
++            exit_tx: _exit_tx,
++        } = prepare_saver(backup.clone(), NOT_A_CREATOR);
++
++        let units = test_units(2);
++        for u in units.iter() {
++            units_for_saver.unbounded_send(u.clone()).unwrap();
++        }
++        drop(units_for_saver);
++        let started = std::time::Instant::now();
++        task.await;
++        assert!(started.elapsed() < Duration::from_millis(50));
++        // What arrived is still stored and passed on.
++        assert_eq!(backup.batches(), vec![encoded(&units)]);
++        for u in units.iter() {
++            assert_eq!(&units_from_saver.next().await.unwrap(), u);
++        }
++    }
+ }
+diff --git a/src/runway/mod.rs b/src/runway/mod.rs
+index ffa90ce..24700b5 100644
+--- a/src/runway/mod.rs
++++ b/src/runway/mod.rs
+@@ -945,6 +945,7 @@ pub(crate) async fn run<H, D, US, UL, MK, DP, FH, SH>(
+             backup_units_from_runway,
+             backup_units_for_runway,
+             runway_io.backup_write,
++            keychain.index(),
+         );
+         async move {
+             backup_saver.run(backup_saver_terminator).await;

@@ -153,14 +153,17 @@
         # the upstream payment retry site cannot format payment authorization,
         # invoice metadata, gateway metadata, or remote error text. Keep the
         # patch adjacent to the pinned input and make every Cargo consumer use
-        # the same patched source. The other patches change only Fedimint's
-        # test environment: an E2E DKG pause point, and a 5s instead of 60s
-        # wait after a scheduled shutdown's last session.
+        # the same patched source. The AlephBFT backup patch stores each batch
+        # of units from `alephBftPatched`'s saver in one synced commit. The
+        # other patches change only Fedimint's test environment: an E2E DKG
+        # pause point, and a 5s instead of 60s wait after a scheduled
+        # shutdown's last session.
         fedimintPatched = pkgs.applyPatches {
           name = "fedimint-redacted-lightning-payment-logs";
           src = fedimint;
           patches = [
             ./patches/fedimint-redact-lightning-payment-logs.patch
+            ./patches/fedimint-aleph-backup-batch.patch
             ./patches/fedimint-dkg-test-pause.patch
             ./patches/fedimint-test-scheduled-shutdown-wait.patch
           ];
@@ -184,6 +187,14 @@
         # the forker as contributing. Emit a safe event when a forker is
         # marked, so a federation stalled on too few honest creators is
         # visible in seat telemetry.
+        #
+        # AlephBFT's backup saver stores every unit, the guardian's own and
+        # its peers', before passing it on, and fedimint commits each one with
+        # a disk sync: about 20 syncs per second per peer, even while the
+        # federation is idle, which wears out host SSDs. The saver now holds
+        # peers' units until the guardian's own next unit, which is never
+        # delayed, and stores them together in one `append_batch` call: about
+        # one sync per round at any federation size.
         alephBftPatched = pkgs.applyPatches {
           name = "fedimint-aleph-bft-forker-safe-event";
           src = pkgs.fetchCrate {
@@ -191,7 +202,10 @@
             version = "0.36.0";
             hash = "sha256-cg3E1x+N55JOe+q6eJW7gzy/e+IhSJbcpihcKta1D8Q=";
           };
-          patches = [ ./patches/fedimint-aleph-bft-forker-safe-event.patch ];
+          patches = [
+            ./patches/fedimint-aleph-bft-forker-safe-event.patch
+            ./patches/fedimint-aleph-bft-backup-batch.patch
+          ];
         };
         # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
