@@ -84,6 +84,8 @@ fn report_cgroup() {
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
     let cpu_pressure = cgroup_file("cpu.pressure").and_then(|path| read(&path, Pressure::parse));
     let io_pressure = cgroup_file("io.pressure").and_then(|path| read(&path, Pressure::parse));
+    let memory_pressure =
+        cgroup_file("memory.pressure").and_then(|path| read(&path, Pressure::parse));
     let network = read("/proc/self/net/dev", NetnsTraffic::parse);
     tracing::info!(
         safe_to_share = true,
@@ -96,6 +98,10 @@ fn report_cgroup() {
         cgroup_cpu_pressure_us = cpu_pressure.as_ref().map(|pressure| pressure.some_us),
         cgroup_io_pressure_us = io_pressure.as_ref().map(|pressure| pressure.some_us),
         cgroup_io_full_pressure_us = io_pressure.as_ref().and_then(|pressure| pressure.full_us),
+        cgroup_memory_pressure_us = memory_pressure.as_ref().map(|pressure| pressure.some_us),
+        cgroup_memory_full_pressure_us = memory_pressure
+            .as_ref()
+            .and_then(|pressure| pressure.full_us),
         netns_rx_bytes = network.as_ref().map(|network| network.rx_bytes),
         netns_tx_bytes = network.as_ref().map(|network| network.tx_bytes),
         "cgroup resource sample"

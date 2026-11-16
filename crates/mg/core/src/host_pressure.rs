@@ -46,8 +46,9 @@ pub struct Pressure {
 }
 
 impl Pressure {
-    /// Parse a PSI file such as `cpu.pressure` or `io.pressure`: the `total=`
-    /// counters, not the kernel's decaying averages.
+    /// Parse a PSI file such as `cpu.pressure`, `io.pressure` or
+    /// `memory.pressure`: the `total=` counters, not the kernel's decaying
+    /// averages.
     pub fn parse(pressure: &str) -> Option<Self> {
         let total = |kind: &str| {
             pressure
