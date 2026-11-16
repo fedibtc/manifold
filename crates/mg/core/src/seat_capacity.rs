@@ -1,11 +1,13 @@
 //! How many seats this host's memory and CPU carry
 //! (`crates/mg/specs/REQ-seat-capacity-default.md`).
 //!
-//! One task writes three limits beside the operator's: one from sampled
-//! memory, one from the measured CPU capacity ([`crate::cpu_capacity`]) and
-//! one from the setup-payment publication. Admission uses the lowest, and the
-//! database applies each write without breaking the offer-epoch invariant
-//! ([`crate::db::Db::update_seats_config`]).
+//! One task writes the runtime inputs beside the operator's limits: a limit
+//! from sampled memory, one from the measured CPU capacity
+//! ([`crate::cpu_capacity`]), and the publication's seat limit and per-seat
+//! monthly data, which the operator's data budget is divided by
+//! ([`crate::db::SeatLimits::data_max_seats`]). Admission uses the lowest
+//! limit, and the database applies each write without breaking the
+//! offer-epoch invariant ([`crate::db::Db::update_seats_config`]).
 
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
@@ -15,6 +17,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use fedi_decentralized_domain::{
     AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_MEMORY_BUDGET_MIB,
+    DEFAULT_SEAT_MONTHLY_DATA_GB,
 };
 use tokio::sync::watch;
 
@@ -27,6 +30,9 @@ use crate::fleet::Fleet;
 mod tests;
 
 const MIB: u64 = 1024 * 1024;
+/// The publication's default data per seat, for when there is no publication.
+const DEFAULT_SEAT_MONTHLY_DATA: std::num::NonZeroU32 =
+    std::num::NonZeroU32::new(DEFAULT_SEAT_MONTHLY_DATA_GB).expect("the default is nonzero");
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// A raised limit takes effect only once this many consecutive samples agree,
 /// while a lowered one takes effect at once.
@@ -77,21 +83,23 @@ pub fn spawn_runtime_seat_limits(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut smoothed =
-            Smoothed::starting_at(fleet.availability_snapshot().await.memory_max_seats);
+            Smoothed::starting_at(fleet.availability_snapshot().await.limits.memory_max_seats);
         let mut sample_memory = true;
         loop {
-            let (policy_max_seats, budget_mib, cpu_budget) =
+            let (policy_max_seats, budget_mib, cpu_budget, seat_monthly_data_gb) =
                 policy.borrow_and_update().as_ref().map_or(
                     (
                         DEFAULT_MAX_SEATS_PER_MG,
                         DEFAULT_SEAT_MEMORY_BUDGET_MIB,
                         None,
+                        DEFAULT_SEAT_MONTHLY_DATA,
                     ),
                     |policy| {
                         (
                             policy.max_seats_per_mg(),
                             policy.seat_memory_budget_mib(),
                             policy.seat_cpu_iterations_per_sec(),
+                            policy.seat_monthly_data_gb(),
                         )
                     },
                 );
@@ -118,6 +126,7 @@ pub fn spawn_runtime_seat_limits(
                     cpu.as_ref()
                         .and_then(|cpu| cpu_max_seats(cpu.iterations_per_sec, cpu_budget)),
                 ),
+                policy_seat_monthly_data_gb: Some(seat_monthly_data_gb),
                 ..SeatsConfigUpdate::default()
             };
             if let Err(error) = fleet.update_seats_config(update).await {

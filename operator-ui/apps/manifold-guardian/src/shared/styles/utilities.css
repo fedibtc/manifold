@@ -34,6 +34,13 @@
   .uKvRow {
     @apply flex items-baseline gap-3;
   }
+  /* A row of small bordered facts, as the Health page cards show them. */
+  .uTileGrid {
+    @apply grid gap-3 md:grid-cols-[repeat(auto-fit,minmax(10rem,1fr))];
+  }
+  .uTile {
+    @apply flex flex-col gap-1 rounded-lg border p-3 text-sm;
+  }
   .uMonoValue {
     @apply break-all font-mono text-xs text-ink;
   }

@@ -164,7 +164,9 @@ entry per active, unexpired MG that has a stored report:
 - `/v1/seat-capacity`: `mg_pubkey`, `observed_at`, `available_seats`,
   `accepting_seats`, `max_seats`, `memory_max_seats`, `policy_max_seats`,
   `cpu_max_seats`, `cpu_count`, `cpu_iterations_per_sec`,
-  `cpu_single_core_iterations_per_sec` and `mg_version`.
+  `cpu_single_core_iterations_per_sec`, `monthly_data_budget` (`"not_set"`,
+  `"unlimited"`, or the operator's GB as a decimal string; `null` before
+  0.1.16 or for a token the collector does not know) and `mg_version`.
 - `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
   `discovery`, `bitcoin`, `version`, `pressure`, `cpu_pressure_6h_pct`,
   `cpu_pressure_3_5d_pct`, `io_pressure_6h_pct`, `io_pressure_3_5d_pct`,

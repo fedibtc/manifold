@@ -23,6 +23,7 @@ use crate::onboarding::Onboarding;
 use crate::seat_process::SeatProcessSpawner;
 use crate::seat_process::fake::{block_forever, write_fake_fedimintd};
 use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig};
+use fedi_decentralized_service_manifold_guardian::MonthlyDataBudget;
 
 /// A restore reaches no relay in these tests: the phase under test is the
 /// listener, not the documents.
@@ -197,11 +198,13 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
         &AdminRequest::ConfigureInitialOffer {
             max_seats: Some(1),
             price_msats: None,
+            monthly_data_budget: MonthlyDataBudget::Gb(std::num::NonZeroU32::new(500).unwrap()),
         },
     )
     .await
     .unwrap();
     assert_eq!(completed["onboarding"], "complete");
+    assert_eq!(completed["monthly_data_budget"], "500");
 
     // The daemon's startup observes durable completion, opens the fleet from
     // the database, and hands this already-serving listener over to it.
@@ -231,7 +234,71 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
         post_admin(addr, &AdminRequest::ShowMnemonic).await.unwrap()["mnemonic"],
         fleet.identity().phrase()
     );
+    // The budget set during setup is the operator's to read and change.
+    // Before any publication it divides by the default 65 GB a seat: 500 / 65
+    // is 7.7, so seven seats.
+    let capacity = post_admin(addr, &AdminRequest::ShowCapacity).await.unwrap();
+    assert_eq!(
+        (
+            &capacity["monthly_data_budget"],
+            &capacity["seat_monthly_data_gb"],
+            &capacity["data_max_seats"],
+        ),
+        (
+            &serde_json::json!("500"),
+            &serde_json::json!(65),
+            &serde_json::json!(7)
+        )
+    );
+    let unlimited = post_admin(
+        addr,
+        &AdminRequest::SetDataBudget {
+            monthly_data_budget: MonthlyDataBudget::Unlimited,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(unlimited["monthly_data_budget"], "unlimited");
+    // `not_set` is no answer, so an operator cannot go back to it.
+    assert!(
+        post_admin(
+            addr,
+            &AdminRequest::SetDataBudget {
+                monthly_data_budget: MonthlyDataBudget::NotSet,
+            },
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        post_admin(addr, &AdminRequest::ShowCapacity).await.unwrap()["monthly_data_budget"],
+        "unlimited"
+    );
     fleet.shutdown().await;
+}
+
+/// Setup needs the monthly data answer: a request without one does not
+/// parse, and `not_set` is not an answer.
+#[test]
+fn an_initial_offer_needs_a_data_answer() {
+    let offer = |budget: Option<&str>| {
+        let mut offer = serde_json::json!({ "max_seats": null, "price_msats": 1000 });
+        if let Some(budget) = budget {
+            offer["monthly_data_budget"] = budget.into();
+        }
+        serde_json::from_value::<AdminRequest>(serde_json::json!({
+            "ConfigureInitialOffer": offer
+        }))
+    };
+    assert!(offer(None).is_err());
+    assert!(matches!(
+        offer(Some("unlimited")).unwrap(),
+        AdminRequest::ConfigureInitialOffer {
+            monthly_data_budget: MonthlyDataBudget::Unlimited,
+            ..
+        }
+    ));
+    assert!(crate::admin::answered_data_budget(MonthlyDataBudget::NotSet).is_err());
 }
 
 /// The refusal a browser reads is a value, not a sentence.

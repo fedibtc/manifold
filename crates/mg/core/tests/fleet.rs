@@ -2,7 +2,8 @@ use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_NAME_META_FIELD_KEY,
     FederationName, FederationSize, FormationSeatBinding, GetQuoteRequest, GuardianCode,
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatCapacityEvent, SeatHealth, ServiceStatus,
+    MetaFieldKey, MetaFieldValue, MonthlyDataBudget, OfferEpoch, SeatCapacityEvent, SeatHealth,
+    ServiceStatus,
 };
 use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
@@ -1237,6 +1238,60 @@ fn journaled_seat_capacity(directory: &std::path::Path) -> Vec<serde_json::Value
         .collect()
 }
 
+/// The runtime-limit task carries the publication's data per seat into the
+/// limit the operator's data budget makes, and falls back to the default
+/// 65 GB when a later publication drops the figure.
+#[tokio::test]
+async fn runtime_limits_divide_the_data_budget_by_the_published_data_per_seat() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 20, 31_700).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let policy = |field: &str| {
+        fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+            format!(
+                r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    fleet
+        .set_monthly_data_budget(MonthlyDataBudget::Gb(
+            std::num::NonZeroU32::new(180).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let (publish, policies) =
+        tokio::sync::watch::channel(Some(policy(r#","seat_monthly_data_gb":60"#)));
+    let task = crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), policies, None);
+    let data_max_seats = || async { fleet.availability_snapshot().await.limits.data_max_seats() };
+    let wait_for = |seats: u32, why: &'static str| {
+        let data_max_seats = &data_max_seats;
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while data_max_seats().await != Some(seats) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect(why);
+        }
+    };
+
+    wait_for(3, "180 GB covers three published 60 GB seats").await;
+    publish.send_replace(Some(policy("")));
+    wait_for(
+        2,
+        "without the figure, 180 GB covers two default 65 GB seats",
+    )
+    .await;
+    task.abort();
+    fleet.shutdown().await;
+}
+
 /// Every advertisement cycle journals capacity, even without publication.
 #[tokio::test]
 async fn advertisement_cycle_shares_seat_capacity() {
@@ -1284,6 +1339,12 @@ async fn advertisement_cycle_shares_seat_capacity() {
         .unwrap();
     assert!(host.advertisement().await.is_some());
     fleet.set_max_seats(Some(1)).await.unwrap();
+    fleet
+        .set_monthly_data_budget(MonthlyDataBudget::Gb(
+            std::num::NonZeroU32::new(179).unwrap(),
+        ))
+        .await
+        .unwrap();
     assert!(host.advertisement().await.is_none());
 
     fleet.shutdown().await;
@@ -1299,7 +1360,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
         .iter()
         .map(|record| record["fields"].clone())
         .collect::<Vec<_>>();
-    let shared = |max: u32, available: u32, accepting: bool| {
+    let shared = |max: u32, budget: &str, available: u32, accepting: bool| {
         serde_json::json!({
             "message": SEAT_CAPACITY_EVENT,
             "safe_to_share": true,
@@ -1312,17 +1373,22 @@ async fn advertisement_cycle_shares_seat_capacity() {
             "cpu_count": 4,
             "cpu_iterations_per_sec": 2_600,
             "cpu_single_core_iterations_per_sec": 700,
+            // A token, so the collector tells no cap from no answer.
+            "monthly_data_budget": budget,
             "available_seats": available,
             "accepting_seats": accepting,
         })
     };
-    assert_eq!(fields, [shared(3, 1, true), shared(1, 0, false)]);
+    assert_eq!(
+        fields,
+        [shared(3, "not_set", 1, true), shared(1, "179", 0, false)]
+    );
     // The journaled fields decode as the telemetry collector reads them.
     let decoded = fields
         .into_iter()
         .map(|fields| serde_json::from_value::<SeatCapacityEvent>(fields).unwrap())
         .collect::<Vec<_>>();
-    let capacity = |max_seats, available_seats, accepting_seats| SeatCapacityEvent {
+    let capacity = |max_seats, budget, available_seats, accepting_seats| SeatCapacityEvent {
         available_seats,
         accepting_seats,
         max_seats: Some(max_seats),
@@ -1332,9 +1398,21 @@ async fn advertisement_cycle_shares_seat_capacity() {
         cpu_count: Some(4),
         cpu_iterations_per_sec: Some(2_600),
         cpu_single_core_iterations_per_sec: Some(700),
+        monthly_data_budget: Some(budget),
         mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
-    assert_eq!(decoded, [capacity(3, 1, true), capacity(1, 0, false)]);
+    assert_eq!(
+        decoded,
+        [
+            capacity(3, MonthlyDataBudget::NotSet, 1, true),
+            capacity(
+                1,
+                MonthlyDataBudget::Gb(std::num::NonZeroU32::new(179).unwrap()),
+                0,
+                false
+            )
+        ]
+    );
 }
 
 /// A setup-payment publication with a per-seat CPU budget, or without one.
@@ -1361,7 +1439,7 @@ fn cpu_budget_policy(
 /// Wait until the stored CPU seat limit is `expected`.
 async fn cpu_limit_becomes(fleet: &Fleet, expected: Option<u32>) {
     tokio::time::timeout(Duration::from_secs(10), async {
-        while fleet.availability_snapshot().await.cpu_max_seats != expected {
+        while fleet.availability_snapshot().await.limits.cpu_max_seats != expected {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

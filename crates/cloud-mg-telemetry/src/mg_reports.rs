@@ -8,7 +8,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use fedi_decentralized_domain::SETUP_PAYMENT_MAX_SEATS_PER_MG;
 use fedi_decentralized_service_manifold_guardian::{
-    SEAT_CAPACITY_EVENT, SEAT_READINESS_EVENT, SeatCapacityEvent, SeatReadinessEvent,
+    MonthlyDataBudget, SEAT_CAPACITY_EVENT, SEAT_READINESS_EVENT, SeatCapacityEvent,
+    SeatReadinessEvent,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -56,6 +57,7 @@ pub(crate) struct SeatCapacity {
     pub(crate) cpu_count: Option<u32>,
     pub(crate) cpu_iterations_per_sec: Option<u32>,
     pub(crate) cpu_single_core_iterations_per_sec: Option<u32>,
+    pub(crate) monthly_data_budget: Option<MonthlyDataBudget>,
     pub(crate) mg_version: Option<MgVersion>,
 }
 
@@ -82,6 +84,7 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
             cpu_count,
             cpu_iterations_per_sec,
             cpu_single_core_iterations_per_sec,
+            monthly_data_budget,
             mg_version,
         } = event;
         if policy_max_seats.is_some_and(|limit| limit > SETUP_PAYMENT_MAX_SEATS_PER_MG) {
@@ -107,6 +110,7 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
             cpu_count,
             cpu_iterations_per_sec,
             cpu_single_core_iterations_per_sec,
+            monthly_data_budget,
             mg_version: mg_version.map(MgVersion::try_from).transpose()?,
         })
     }

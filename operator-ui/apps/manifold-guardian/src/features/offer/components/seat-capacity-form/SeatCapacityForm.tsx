@@ -35,17 +35,45 @@ export const parseSeatCapacity = (value: string, activeSeats: number | null = nu
 
 const seats = (count: number) => `${count} ${count === 1 ? 'seat' : 'seats'}`;
 
-/** What the runtime limits allow together. Only while a CPU limit applies, it
- *  also names memory's and CPU's share side by side, so an operator sees why
- *  the host sells fewer seats than memory allows. */
+/** What the runtime and data limits allow together. While a CPU or data
+ *  limit applies, it also names each applying limit's share side by side, so
+ *  an operator sees why the host sells fewer seats than memory allows. */
 export const describeAutomaticLimit = (capacity: CapacityResponse) => {
-  const cpu = capacity.cpu_max_seats;
-  const memory = capacity.memory_max_seats;
-  if (cpu === null) {
-    return `Up to ${seats(Math.min(capacity.policy_max_seats, memory))} for this host now.`;
-  }
-  const limit = Math.min(capacity.policy_max_seats, memory, cpu);
-  return `Up to ${seats(limit)} for this host now. Memory allows ${seats(memory)}, CPU ${seats(cpu)}.`;
+  const { memory_max_seats: memory, cpu_max_seats: cpu, data_max_seats: data } = capacity;
+  const limit = Math.min(
+    capacity.policy_max_seats,
+    memory,
+    cpu ?? Number.POSITIVE_INFINITY,
+    data ?? Number.POSITIVE_INFINITY
+  );
+  const head = `Up to ${seats(limit)} for this host now.`;
+  if (cpu === null && data === null) return head;
+  const shares = [
+    `Memory allows ${seats(memory)}`,
+    ...(cpu === null ? [] : [`CPU ${seats(cpu)}`]),
+    ...(data === null ? [] : [`monthly data ${seats(data)}`])
+  ];
+  return `${head} ${shares.join(', ')}.`;
+};
+
+/** Why a saved limit sells fewer seats than it says, when monthly data is
+ *  below it and no runtime limit is lower; otherwise null. */
+export const describeDataLimit = ({
+  max_seats,
+  memory_max_seats,
+  policy_max_seats,
+  cpu_max_seats,
+  data_max_seats
+}: CapacityResponse): string | null => {
+  if (max_seats === null || data_max_seats === null) return null;
+  if (data_max_seats >= max_seats) return null;
+  const runtime = Math.min(
+    memory_max_seats,
+    policy_max_seats,
+    cpu_max_seats ?? Number.POSITIVE_INFINITY
+  );
+  if (data_max_seats > runtime) return null;
+  return `Your limit is ${seats(max_seats)}. Monthly data allows ${seats(data_max_seats)}.`;
 };
 
 export const SeatCapacityForm = () => {
@@ -116,6 +144,9 @@ export const SeatCapacityForm = () => {
 
   const automaticHint = capacity.data ? describeAutomaticLimit(capacity.data) : undefined;
 
+  // A saved limit above what monthly data allows sells only the data's seats.
+  const dataLimitNote = capacity.data ? describeDataLimit(capacity.data) : null;
+
   return (
     <SectionCard title="Seat capacity">
       <QuerySurface disposition={disposition} onRetry={retry}>
@@ -137,6 +168,10 @@ export const SeatCapacityForm = () => {
               error={error}
               disabled={setCapacity.isPending}
             />
+          )}
+
+          {automatic || dataLimitNote === null ? null : (
+            <p className={styles.note}>{dataLimitNote}</p>
           )}
 
           {automatic && error ? <span className={styles.error}>{error}</span> : null}

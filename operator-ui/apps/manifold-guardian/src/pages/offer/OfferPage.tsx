@@ -1,5 +1,6 @@
 import { Banner } from '@operator-ui/common-ui';
 import { Link } from 'react-router-dom';
+import { DataBudgetForm } from '@/features/offer/components/data-budget-form/DataBudgetForm';
 import { SeatCapacityForm } from '@/features/offer/components/seat-capacity-form/SeatCapacityForm';
 import { useOfferForm } from '@/features/offer/hooks/use-offer-form/useOfferForm';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
@@ -26,12 +27,9 @@ export const OfferPage = () => {
 
       <SeatCapacityForm />
 
-      <QuerySurface disposition={disposition} onRetry={retry}>
-        <Banner variant="info">
-          Leave the field blank to stop selling seats. A price of zero keeps this host advertised
-          and gives seats away free.
-        </Banner>
+      <DataBudgetForm />
 
+      <QuerySurface disposition={disposition} onRetry={retry}>
         <form className={styles.form} onSubmit={onSubmit}>
           <label className={styles.label} htmlFor="price-sats">
             Price per seat (sats)
@@ -50,6 +48,13 @@ export const OfferPage = () => {
           <em id="price-sats-hint" className={styles.hint}>
             We suggest the equivalent of $2–$3. A lower price fills your seats sooner.
           </em>
+
+          <div className={styles.priceNote}>
+            <Banner variant="info">
+              Leave the price blank to stop selling seats. A price of zero keeps this host
+              advertised and gives seats away free.
+            </Banner>
+          </div>
 
           {error ? <span className={styles.error}>{error}</span> : null}
 

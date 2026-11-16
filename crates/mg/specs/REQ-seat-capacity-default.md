@@ -1,23 +1,26 @@
-# REQ-seat-capacity-default: Sell only the seats the host's RAM and CPU can carry
+# REQ-seat-capacity-default: Sell only the seats the host can carry
 
-Source: MG operator sizing, the measured per-seat memory budget, and the
-seat cost simulation's CPU benchmark.
+Source: MG operator sizing, the measured per-seat memory budget, the seat
+cost simulation's CPU benchmark, and operators whose hosts share a capped
+internet plan.
 
 The MG limits seats from **available** RAM at runtime: one seat per whole
-per-seat budget, by default 1,229 MiB (about 1.2 GiB). GB here means GiB (2³⁰
-bytes, the kernel's binary units). A fractional budget truncates toward fewer
+per-seat budget, by default 1,229 MiB (about 1.2 GiB). For memory, GB means
+GiB (2³⁰ bytes, the kernel's binary units); for data it means 10⁹ bytes. A fractional budget truncates toward fewer
 seats. Onboarding asks for no seat count: the operator limit starts
-automatic, and the operator can set one later.
+automatic, and the operator can set one later. It does ask whether the
+host's internet has a monthly data cap ([Data budget](#data-budget)), and
+setup does not finish without an answer.
 
 Available RAM is `MemAvailable`, lowered to the cgroup headroom
 (`memory.max` − `memory.current`) when the MG runs under a cgroup limit.
 
 ## Runtime limits
 
-Admission sells up to the lowest of four limits on total seats:
+Admission sells up to the lowest of five limits on total seats:
 
 - the operator's maximum, which only the operator writes. It may be
-  automatic: no operator cap, so the runtime limits decide. Setup leaves
+  automatic: no operator cap, so the other limits decide. Setup leaves
   it automatic;
 - a memory limit: available RAM plus the anonymous resident memory of the
   MG's seat processes, divided by the budget. Running seats count toward
@@ -27,7 +30,10 @@ Admission sells up to the lowest of four limits on total seats:
   (default 12);
 - a CPU limit: the host's measured CPU capacity divided by the
   publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
-  field there is no CPU limit.
+  field there is no CPU limit;
+- a data limit: the operator's monthly data budget divided by the
+  publication's `seat_monthly_data_gb` (default 65 GB), rounded down. It
+  binds only when the operator gave a budget in GB.
 
 The publication's `seat_memory_budget_mib_v2` replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
@@ -94,13 +100,60 @@ stay. The replaced value stays in `offer_state.pre_automatic_max_seats`, so it
 can be restored. The migration replaces the offer epoch, because the first
 memory value of 4 can take the last free slot.
 
-The MG writes the runtime limits at start, on each newly admitted
-publication, and every 5 minutes. The CPU limit changes only with the
-publication. The memory limit falls at once and rises
+The MG writes the runtime limits and the publication's inputs at start, on
+each newly admitted publication, and every 5 minutes. The CPU limit changes
+only with the publication. The memory limit falls at once and rises
 only after three consecutive samples allow it, so a transient spike does not
-open and close the offer. A runtime limit below the active seat count only
-stops new sales. It does not stop a seat. Each write keeps the offer-epoch
+open and close the offer. A runtime or data limit below the active seat count
+only stops new sales. It does not stop a seat. Each write keeps the offer-epoch
 invariants of [SPEC-quote-settlement](./SPEC-quote-settlement.md).
+
+## Data budget
+
+Some hosts run on home internet with a monthly data cap that the household
+shares. The MG cannot know how much of that cap the operator wants to give
+it, so the operator states it. The answer is one of three values, stored
+with the operator maximum and the price:
+
+- **not set**: no answer. Every MG set up before the question existed
+  starts here, and so applies no data limit. The dashboard asks the
+  operator to answer, without a warning: nothing is wrong;
+- **unlimited**: the host's internet has no monthly data cap. No data
+  limit applies;
+- **a budget** in GB per 30 days, from 1.
+
+Setup requires unlimited or a budget, and an operator can change between
+them later but cannot go back to not set. An operator who does not know is
+pointed to their internet plan or bill, not to an answer: a host with a cap
+that answers unlimited could use up the household's cap. Unlimited and not set limit seats
+alike; they are separate so that the `seat capacity` telemetry event can tell
+a host without a cap from one whose operator never answered.
+
+The MG does not estimate what a seat costs from its own seats. The figure is
+the publication's `seat_monthly_data_gb`
+([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
+and like the memory budget it has a built-in default: 65 GB per seat a month.
+Fedi can move it from its fleet-wide view of the guardians'
+`fm_peer_transport_bytes_total` without a release. So a budget limits seats
+from the release that brings it, without waiting for a publication. This
+replaces an earlier decision that an absent figure applied no data limit: a
+host that gave a budget would then sell without one until Fedi published.
+
+A budget below one seat's figure, such as 50 GB at 65 GB a seat, covers no
+seat. It is accepted, because it is the operator's honest answer, and the
+MG then sells no new seat. The dashboard and the CLI say so when it is set,
+and do not call the host full, since it may run no seat at all.
+
+The budget is a sales limit, not a meter. Running seats keep running, and a
+busy federation can use more than the figure. The MG does not count
+month-to-date use against the budget, so it does not stop selling when a
+month's use runs high.
+
+Across production seats a guardian's peer traffic averaged about 22 KB/s,
+sent plus received: about 57 GB per 30 days on nearly idle federations. It
+grows about 2 KB/s with each peer, from about 14 KB/s with 7 peers to about
+26 KB/s with 12. The default of 65 GB sits a little above the idle average,
+so it suits typical federation sizes and underestimates large or busy ones.
 
 ## Measurement basis
 

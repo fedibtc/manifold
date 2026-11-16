@@ -9,3 +9,7 @@
 .error {
   @apply uFieldError;
 }
+
+.note {
+  @apply uFieldHint;
+}

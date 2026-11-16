@@ -1165,6 +1165,7 @@ mod tests {
                 "mg_version": "0.1.6",
                 "memory_max_seats": 9,
                 "policy_max_seats": 12,
+                "monthly_data_budget": "unlimited",
                 "available_seats": 6,
                 "accepting_seats": true,
             }))
@@ -1184,6 +1185,7 @@ mod tests {
                 "cpu_count": null,
                 "cpu_iterations_per_sec": null,
                 "cpu_single_core_iterations_per_sec": null,
+                "monthly_data_budget": "unlimited",
                 "mg_version": "0.1.6",
             })
         );

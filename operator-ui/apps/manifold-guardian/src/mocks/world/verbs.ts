@@ -5,6 +5,7 @@ import type {
   AdminRequestPayload,
   AdminResponseByName,
   AdminResult,
+  MonthlyDataBudget,
   PayoutJob,
   Plan
 } from '@operator-ui/types';
@@ -317,13 +318,19 @@ const MOCK_CPU_BENCHMARK = {
   single_core_iterations_per_sec: 810
 };
 
+// The daemon's SeatLimits::data_max_seats: whole seats a GB budget covers.
+const dataMaxSeats = (budget: MonthlyDataBudget, perSeat: number): number | null =>
+  budget === 'not_set' || budget === 'unlimited' ? null : Math.floor(Number(budget) / perSeat);
+
 const capacity = () => {
-  const { maxSeats, cpuMaxSeats } = getState();
+  const { maxSeats, cpuMaxSeats, monthlyDataBudget, seatMonthlyDataGb } = getState();
+  const dataLimit = dataMaxSeats(monthlyDataBudget, seatMonthlyDataGb);
   const limit = Math.min(
     maxSeats ?? Infinity,
     MOCK_MEMORY_MAX_SEATS,
     MOCK_POLICY_MAX_SEATS,
-    cpuMaxSeats ?? Infinity
+    cpuMaxSeats ?? Infinity,
+    dataLimit ?? Infinity
   );
   return {
     max_seats: maxSeats,
@@ -331,6 +338,9 @@ const capacity = () => {
     policy_max_seats: MOCK_POLICY_MAX_SEATS,
     cpu_max_seats: cpuMaxSeats,
     cpu_benchmark: MOCK_CPU_BENCHMARK,
+    monthly_data_budget: monthlyDataBudget,
+    seat_monthly_data_gb: seatMonthlyDataGb,
+    data_max_seats: dataLimit,
     available_slots: Math.max(0, limit - activeSeatCount())
   };
 };
@@ -358,8 +368,42 @@ const setCapacity: Verb<'SetCapacity'> = ({ max_seats }) => {
   return capacity();
 };
 
-const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({ max_seats, price_msats }) => {
+// The tokens MonthlyDataBudget::from_str admits: only the canonical decimal
+// of a GB budget from 1 to u32::MAX, so 0, "012", "1.5" and 2^32 fail to parse.
+const isToken = (budget: string): boolean => {
+  if (budget === 'not_set' || budget === 'unlimited') return true;
+  return /^[1-9][0-9]*$/.test(budget) && Number(budget) <= 4_294_967_295;
+};
+
+// `not_set` is no answer, as admin::answered_data_budget refuses it.
+const answered = (budget: MonthlyDataBudget): MonthlyDataBudget => {
+  if (!isToken(budget)) {
+    throw new Error(
+      'a monthly data budget is `not_set`, `unlimited`, or a whole number of GB from 1'
+    );
+  }
+  if (budget === 'not_set') {
+    throw new Error(
+      "say whether this host's internet has a monthly data cap: `unlimited`, or the GB this guardian may use a month"
+    );
+  }
+  return budget;
+};
+
+// Unlike the seat limit, the budget may fall below what running seats use: it
+// only stops new sales.
+const setDataBudget: Verb<'SetDataBudget'> = ({ monthly_data_budget }) => {
+  getState().monthlyDataBudget = answered(monthly_data_budget);
+  return capacity();
+};
+
+const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({
+  max_seats,
+  price_msats,
+  monthly_data_budget
+}) => {
   const state = getState();
+  const budget = answered(monthly_data_budget);
   // The same floor Db::configure_initial_offer holds: a restore's recovered
   // seats are already active, and the initial ceiling may not undercut them.
   const active = activeSeatCount();
@@ -368,6 +412,7 @@ const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({ max_seats, price
   }
   state.price = price_msats;
   state.maxSeats = max_seats;
+  state.monthlyDataBudget = budget;
   // The final stage is durable, but the daemon reports `starting` until its
   // fleet opens; arm one more `starting` status read before `ready`.
   state.onboarding = { ...state.onboarding, stage: 'complete', runtime: 'starting' };
@@ -375,6 +420,7 @@ const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({ max_seats, price
   return {
     onboarding: 'complete',
     max_seats,
+    monthly_data_budget: budget,
     plans: price_msats === null ? [] : [{ InfiniteBestEffort: { price_msats } }]
   };
 };
@@ -559,6 +605,7 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   ShowCapacity: showCapacity,
   ShowSeatReadiness: showSeatReadiness,
   SetCapacity: setCapacity,
+  SetDataBudget: setDataBudget,
   ListPaymentFederations: listPaymentFederations,
   PayoutDestination: payoutDestination,
   SetPayoutDestination: setPayoutDestination,
@@ -590,6 +637,7 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'RefreshHolderAuthorizations',
   'ConfigureInitialOffer',
   'SetCapacity',
+  'SetDataBudget',
   'SendSupportMessage',
   'MarkSupportRead',
   'CreateGuardianLinkOffer',

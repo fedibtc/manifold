@@ -31,12 +31,15 @@ sells on. A quote whose epoch differs from the current epoch is refused,
 permanently. These replace it with fresh randomness, each in the
 transaction of the write that motivates it: the acceptance that takes the last
 free slot, a change to `QuoteSettings`, a change to the operator's maximum
-seat count or the readiness verdict, and a runtime seat limit write that takes
-the last free slot.
+seat count, to the seats the operator's monthly data answer covers, or to the
+readiness verdict, and a runtime seat limit write that takes the last free
+slot. A monthly data answer that covers the same seats, such as `not_set` to
+`unlimited`, stores the answer and keeps the epoch.
 
-Admission sells up to the lowest of four limits: the operator's maximum and
+Admission sells up to the lowest of five limits: the operator's maximum,
 runtime limits from host memory, the setup-payment publication and the
-measured CPU capacity
+measured CPU capacity, and the limit the operator's data budget makes at the
+publication's data per seat
 ([REQ-seat-capacity-default](./REQ-seat-capacity-default.md)). One SQLite write
 transaction applies every change to them and to readiness, and compares free
 slots before and after. A runtime limit change that leaves a free slot keeps

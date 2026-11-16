@@ -257,7 +257,13 @@ async fn completion_is_observed_across_a_restart() {
         db.replace_holder_authorization_event(1, "{}", 1)
             .await
             .unwrap();
-        db.configure_initial_offer(None, Some(1)).await.unwrap();
+        db.configure_initial_offer(
+            None,
+            Some(1),
+            fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Unlimited,
+        )
+        .await
+        .unwrap();
         drop(phase);
     }
 

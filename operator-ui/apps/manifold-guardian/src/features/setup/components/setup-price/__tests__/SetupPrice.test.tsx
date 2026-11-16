@@ -16,6 +16,9 @@ const renderPrice = (onDone = vi.fn()) => {
 
 const priceField = () => screen.getByLabelText('Price per seat (sats)');
 const finishButton = () => screen.getByRole('button', { name: 'Finish setup' });
+const dataField = () => screen.getByLabelText('Monthly data for this guardian (GB)');
+const noLimit = () => screen.getByLabelText('No monthly limit');
+const limited = () => screen.getByLabelText('Yes, my plan has a monthly limit');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,11 +30,16 @@ describe('SetupPrice', () => {
     renderPrice();
 
     fireEvent.change(priceField(), { target: { value: '50000' } });
+    fireEvent.click(noLimit());
     fireEvent.click(finishButton());
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({
-        ConfigureInitialOffer: { max_seats: null, price_msats: 50_000_000 }
+        ConfigureInitialOffer: {
+          max_seats: null,
+          price_msats: 50_000_000,
+          monthly_data_budget: 'unlimited'
+        }
       })
     );
   });
@@ -40,11 +48,16 @@ describe('SetupPrice', () => {
     const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
     renderPrice();
 
+    fireEvent.click(noLimit());
     fireEvent.click(finishButton());
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({
-        ConfigureInitialOffer: { max_seats: null, price_msats: null }
+        ConfigureInitialOffer: {
+          max_seats: null,
+          price_msats: null,
+          monthly_data_budget: 'unlimited'
+        }
       })
     );
   });
@@ -53,6 +66,7 @@ describe('SetupPrice', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
     const { onDone } = renderPrice();
 
+    fireEvent.click(noLimit());
     fireEvent.click(finishButton());
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
@@ -78,11 +92,16 @@ describe('SetupPrice', () => {
     renderPrice();
 
     fireEvent.change(priceField(), { target: { value: '2,587' } });
+    fireEvent.click(noLimit());
     fireEvent.click(finishButton());
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({
-        ConfigureInitialOffer: { max_seats: null, price_msats: 2_587_000 }
+        ConfigureInitialOffer: {
+          max_seats: null,
+          price_msats: 2_587_000,
+          monthly_data_budget: 'unlimited'
+        }
       })
     );
   });
@@ -92,13 +111,94 @@ describe('SetupPrice', () => {
     renderPrice();
 
     expect(screen.queryByLabelText('Maximum active seats')).toBeNull();
+    fireEvent.click(noLimit());
     fireEvent.click(finishButton());
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({
-        ConfigureInitialOffer: { max_seats: null, price_msats: null }
+        ConfigureInitialOffer: {
+          max_seats: null,
+          price_msats: null,
+          monthly_data_budget: 'unlimited'
+        }
       })
     );
+  });
+
+  it('should write a monthly data budget given beside the price', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice();
+
+    expect(screen.queryByLabelText('Monthly data for this guardian (GB)')).toBeNull();
+    fireEvent.click(limited());
+    fireEvent.change(dataField(), { target: { value: '1,500' } });
+    fireEvent.click(finishButton());
+
+    await waitFor(() =>
+      expect(adminCallSpy).toHaveBeenCalledWith({
+        ConfigureInitialOffer: { max_seats: null, price_msats: null, monthly_data_budget: '1500' }
+      })
+    );
+  });
+
+  it('should not finish setup until the data question is answered', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    const { onDone } = renderPrice();
+
+    expect(noLimit()).not.toBeChecked();
+    expect(limited()).not.toBeChecked();
+    fireEvent.change(priceField(), { target: { value: '50000' } });
+    fireEvent.click(finishButton());
+
+    await screen.findByText('Choose whether your internet plan has a monthly data limit.');
+    expect(adminCallSpy).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // Zero would read as "sell nothing", and a limited plan needs an amount.
+  it.each([
+    '',
+    '0',
+    '2.5',
+    'lots'
+  ])('should refuse a monthly data budget of %j without calling the daemon', async (value) => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    const { onDone } = renderPrice();
+
+    fireEvent.click(limited());
+    fireEvent.change(dataField(), { target: { value } });
+    fireEvent.click(finishButton());
+
+    await screen.findByText('Enter a whole number of GB, such as 500.');
+    expect(adminCallSpy).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('should say the monthly data is not a hard limit, and how to answer when unsure', () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice();
+
+    const question = screen.getByRole('radiogroup', {
+      name: 'Does your internet plan limit how much data you can use each month?'
+    });
+    expect(question).toHaveAccessibleDescription(/It is not a hard limit/);
+    // An unsure host may have a cap, so it is sent to its plan, not to "no limit".
+    expect(question).toHaveAccessibleDescription(/Not sure\? Check your internet plan or bill\.$/);
+    expect(question).not.toHaveAccessibleDescription(/Choose “No monthly limit”/);
+  });
+
+  it('should give the amount in GB per 30 days, said once', () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice();
+
+    fireEvent.click(screen.getByLabelText('Yes, my plan has a monthly limit'));
+
+    expect(
+      screen.getByLabelText('Monthly data for this guardian (GB)')
+    ).toHaveAccessibleDescription(
+      'How much of your plan this guardian may use, in GB per 30 days (1 GB is 1,000,000,000 bytes).'
+    );
+    expect(screen.getAllByText(/1,000,000,000 bytes/)).toHaveLength(1);
   });
 
   it('should keep browser autofill out of the price field', () => {

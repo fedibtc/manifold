@@ -55,6 +55,21 @@ pub const SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE: std::ops::RangeInclusive<u
 pub const SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE: std::ops::RangeInclusive<u32> =
     1..=100_000;
 
+/// Network data one seat uses, in GB (10^9 bytes) per 30 days, when a
+/// publication does not say: a little above the about 57 GB a guardian's
+/// peer traffic averaged on nearly idle production federations.
+pub const DEFAULT_SEAT_MONTHLY_DATA_GB: u32 = 65;
+
+/// Smallest and largest per-seat monthly data figure a publication may set,
+/// in GB (10^9 bytes) per 30 days. The bounds refuse a publisher mistake that
+/// would let a data budget admit seats that cost almost nothing, or would
+/// stop every MG with a budget from admitting any. A publication that omits
+/// the figure gets [`DEFAULT_SEAT_MONTHLY_DATA_GB`].
+pub const SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE: std::ops::RangeInclusive<u32> = 1..=10_000;
+
+const DEFAULT_SEAT_MONTHLY_DATA: NonZeroU32 =
+    NonZeroU32::new(DEFAULT_SEAT_MONTHLY_DATA_GB).expect("the default is nonzero");
+
 /// Seats one MG may host when a publication does not say.
 pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
 
@@ -305,6 +320,14 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_memory_budget_mib: Option<u32>,
 
+    /// Network data one seat uses, in GB (10^9 bytes) per 30 days. An MG
+    /// whose operator set a monthly data budget sells at most the budget
+    /// divided by this. Optional on the wire: absent means
+    /// [`DEFAULT_SEAT_MONTHLY_DATA_GB`]. Omitted when unset, like
+    /// [`Self::seat_memory_budget_mib_v2`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_monthly_data_gb: Option<u32>,
+
     /// Seats one MG before 0.1.16 may host. This release ignores it and
     /// reads [`Self::max_seats_per_mg_v2`]. Admission still checks its bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +407,7 @@ pub struct AdmittedSetupPaymentFederations {
     max_guardian_offline_secs: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: u32,
+    seat_monthly_data_gb: NonZeroU32,
     max_seats_per_mg: u32,
     seat_cpu_iterations_per_sec: Option<NonZeroU32>,
     max_pressure_percent: MaxPressurePercent,
@@ -438,6 +462,15 @@ impl AdmittedSetupPaymentFederations {
                     .ok_or(SetupPaymentFederationsContentError::SeatCpuBudgetOutOfRange)
             })
             .transpose()?;
+
+        // The range starts at 1, so an admitted figure is never zero.
+        let seat_monthly_data_gb = match content.seat_monthly_data_gb {
+            None => DEFAULT_SEAT_MONTHLY_DATA,
+            Some(gb) if SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE.contains(&gb) => {
+                NonZeroU32::new(gb).expect("the range starts at 1")
+            }
+            Some(_) => return Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
+        };
         if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
             .into_iter()
             .flatten()
@@ -528,6 +561,7 @@ impl AdmittedSetupPaymentFederations {
             seat_memory_budget_mib: content
                 .seat_memory_budget_mib_v2
                 .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
+            seat_monthly_data_gb,
             max_seats_per_mg: content
                 .max_seats_per_mg_v2
                 .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
@@ -616,6 +650,12 @@ impl AdmittedSetupPaymentFederations {
         self.seat_cpu_iterations_per_sec
     }
 
+    /// Return the network data one seat uses, in GB per 30 days.
+    #[must_use]
+    pub fn seat_monthly_data_gb(&self) -> NonZeroU32 {
+        self.seat_monthly_data_gb
+    }
+
     /// Return how many seats one MG may host.
     #[must_use]
     pub fn max_seats_per_mg(&self) -> u32 {
@@ -698,6 +738,9 @@ pub enum SetupPaymentFederationsContentError {
     /// The published per-seat CPU budget is outside the admitted range.
     SeatCpuBudgetOutOfRange,
 
+    /// The published per-seat monthly data figure is outside the admitted range.
+    SeatMonthlyDataOutOfRange,
+
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
 
@@ -741,6 +784,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::SeatCpuBudgetOutOfRange => {
                 "setup-payment federation set sets a per-seat CPU budget outside the admitted range"
+            }
+            Self::SeatMonthlyDataOutOfRange => {
+                "setup-payment federation set sets a per-seat monthly data figure outside the admitted range"
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"

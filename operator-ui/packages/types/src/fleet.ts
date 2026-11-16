@@ -287,17 +287,28 @@ export interface ShowPlansResponse {
 // SetPrice answers with the offer it just stored, in the same shape ShowPlans
 // reads it back — so a write needs no follow-up read.
 export type SetPriceResponse = ShowPlansResponse;
-/** Admission sells up to the lowest of the operator's limit and the runtime
- *  limits. `max_seats` is null when automatic: no operator cap.
- *  `cpu_max_seats` is null while the setup-payment policy sets no per-seat CPU
- *  budget. `cpu_benchmark` is the host's CPU capacity, measured at start; null
- *  only where the daemon skips the benchmark (local end-to-end tests). */
+/** The operator's answer about monthly data, as the daemon's
+ *  `MonthlyDataBudget` token: `not_set` before the operator answers (an MG
+ *  set up before the question), `unlimited` for an internet plan without a
+ *  monthly data cap, or the GB this guardian may use as a decimal string. */
+export type MonthlyDataBudget = 'not_set' | 'unlimited' | `${number}`;
+/** Admission sells up to the lowest of the operator's limit, the runtime
+ *  limits, and the data limit. `max_seats` is null when automatic: no
+ *  operator cap. `cpu_max_seats` is null while the setup-payment policy sets
+ *  no per-seat CPU budget. `cpu_benchmark` is the host's CPU capacity,
+ *  measured at start; null only where the daemon skips the benchmark (local
+ *  end-to-end tests). `data_max_seats` is the GB of `monthly_data_budget`
+ *  divided by `seat_monthly_data_gb` (the publication's, or its default of
+ *  65), rounded down; null without a GB budget. */
 export interface CapacityResponse {
   max_seats: number | null;
   memory_max_seats: number;
   policy_max_seats: number;
   cpu_max_seats: number | null;
   cpu_benchmark: CpuBenchmark | null;
+  monthly_data_budget: MonthlyDataBudget;
+  seat_monthly_data_gb: number;
+  data_max_seats: number | null;
   available_slots: number;
 }
 /** The MG CPU benchmark's result: iterations per second summed over one
@@ -316,9 +327,11 @@ export interface ShowSeatReadinessResponse {
   report: ReadinessReport | null;
 }
 export type SetCapacityResponse = CapacityResponse;
+export type SetDataBudgetResponse = CapacityResponse;
 export interface ConfigureInitialOfferResponse extends ShowPlansResponse {
   onboarding: 'complete';
   max_seats: number | null;
+  monthly_data_budget: MonthlyDataBudget;
 }
 export interface ListPaymentFederationsResponse {
   federations: PaymentFederation[];
@@ -519,6 +532,7 @@ export interface AdminResponseByName {
   ShowCapacity: ShowCapacityResponse;
   ShowSeatReadiness: ShowSeatReadinessResponse;
   SetCapacity: SetCapacityResponse;
+  SetDataBudget: SetDataBudgetResponse;
   ListPaymentFederations: ListPaymentFederationsResponse;
   PayoutDestination: PayoutDestinationResponse;
   SetPayoutDestination: SetPayoutDestinationResponse;

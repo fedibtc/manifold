@@ -149,6 +149,13 @@ replacement ordering as the new shared high-water mark.
   version gets its own field, because its iterations are other work. Consumers that
   admit unknown fields but predate this one, which includes every MG and FA
   release from 0.1.1 to 0.1.15, ignore it and apply no CPU limit;
+- `seat_monthly_data_gb`, the network data one seat uses, in GB (10^9 bytes)
+  per 30 days, from 1 to 10,000. An MG whose operator set a monthly data
+  budget sells at most that budget divided by this figure. Optional: absent
+  means 65. Fedi sets it from the fleet's guardian peer transport counters.
+  The field is new in 0.1.16, so it has no `_v2` twin. Consumers that admit
+  unknown fields but predate it, which includes every MG and FA release
+  from 0.1.1 to 0.1.15, ignore it and apply no data limit;
 - `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
 - `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
@@ -213,11 +220,11 @@ replacement ordering as the new shared high-water mark.
   activation; the minimum version is not a transfer protocol handshake or
   recovery mechanism for existing mixed-version transfers.
 
-Neither seat field changes the operator's own maximum. Each MG sells up to
+No seat field changes the operator's own maximum. Each MG sells up to
 the lowest of the operator maximum and its runtime limits
 ([REQ-seat-capacity-default](../crates/mg/specs/REQ-seat-capacity-default.md)).
 MG releases older than unknown-field tolerance reject a publication that sets
-either field, so Fedi sets them only after enough consumers have upgraded.
+any of them, so Fedi sets them only after enough consumers have upgraded.
 
 Consumers ignore unknown content fields so optional additions remain admissible
 without a coordinated upgrade. A policy change that consumers must understand
@@ -256,9 +263,10 @@ Admission performs all of these checks before the set influences policy:
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
     256 to 16,384, a `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
-    `max_seats_per_mg` or `max_seats_per_mg_v2` above 256, or a
-    `max_pressure_percent` window outside
-    1 to 100, where 0 would close every MG and no share of time exceeds 100;
+    `seat_monthly_data_gb` outside 1 to 10,000, a `max_seats_per_mg` or
+    `max_seats_per_mg_v2` above 256, or a `max_pressure_percent` window
+    outside 1 to 100, where 0 would close every MG and no share of time
+    exceeds 100;
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could

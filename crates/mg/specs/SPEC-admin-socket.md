@@ -62,8 +62,10 @@ event must be durably retained before the stage advances; there is no skip. An
 empty or failed fetch leaves it at this stage. Issuer trust, credential proof,
 revocation, and relying-party policy remain consumer responsibilities.
 
-At `initial_offer`, `ConfigureInitialOffer` atomically records the first price
-and maximum seat count, rotates the offer epoch, and advances to `complete`.
+At `initial_offer`, `ConfigureInitialOffer` atomically records the first price,
+maximum seat count and the operator's monthly data answer, rotates the offer
+epoch, and advances to `complete`. The answer is required, with the values
+`SetDataBudget` takes.
 The publisher gate applied to later price changes also applies here. Every
 unrelated verb is refused with `not_onboarded`, because the browser setup wizard
 branches on that discriminant rather than error prose.
@@ -114,11 +116,22 @@ the fleet.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.
-  `ShowCapacity` also returns the runtime limits and the CPU benchmark
+  `ShowCapacity` also returns the runtime limits, the CPU benchmark
   measurement (`cpu_benchmark`: `cpu_count`, `iterations_per_sec`,
-  `single_core_iterations_per_sec`, or `null` before one); `cpu_max_seats` is
+  `single_core_iterations_per_sec`, or `null` before one), the monthly data
+  budget (`"not_set"`, `"unlimited"`, or the GB as a decimal string such as
+  `"500"`), the data per seat (the publication's or its default), and the
+  data limit they make (`null` without a GB budget). `cpu_max_seats` is
   `null` while the policy sets no per-seat CPU budget. A real change rotates the offer epoch,
   invalidating outstanding quotes; a no-op does not.
+- `SetDataBudget` replaces the operator's monthly data answer: `"unlimited"`
+  for an internet plan without a monthly data cap, or the GB this guardian
+  may use a month as a decimal string. `"not_set"` is refused: it is the
+  state of an MG whose operator has not answered. A budget only limits new
+  sales, so unlike `SetCapacity` it may fall below what the active seats
+  need. It rotates the offer epoch only when it changes how many seats the
+  answer covers: `"not_set"` to `"unlimited"`, or 130 to 140 GB at 65 GB a
+  seat, keeps open quotes valid.
 - `SetPrice` atomically replaces the offer with a price in millisatoshis, or
   with no price — the offer of a fleet that sells nothing, and the state a
   fresh or restored MG starts in. It returns the plan list the new offer

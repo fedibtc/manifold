@@ -387,9 +387,13 @@ async fn onboarding_progress_is_durable_and_ordered() {
         db.onboarding_stage().await.unwrap(),
         crate::db::OnboardingStage::InitialOffer
     );
-    db.configure_initial_offer(Some(Msats(12)), Some(3))
-        .await
-        .unwrap();
+    db.configure_initial_offer(
+        Some(Msats(12)),
+        Some(3),
+        fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Unlimited,
+    )
+    .await
+    .unwrap();
     drop(db);
 
     let reopened = Db::open(&path).await.unwrap();
@@ -489,6 +493,89 @@ async fn stored_price_msats(db: &Db) -> Option<i64> {
         .fetch_one(db.pool())
         .await
         .unwrap()
+}
+
+/// The data columns arrive empty, so the upgrade moves no limit and keeps
+/// open quotes valid.
+#[tokio::test]
+async fn data_budget_migration_is_additive() {
+    let dir = tempfile::tempdir().unwrap();
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(dir.path().join("mg.sqlite"))
+        .create_if_missing(true);
+    let pool = SqlitePool::connect_with(options).await.unwrap();
+    for migration in [
+        include_str!("../migrations/0001_initial.sql"),
+        include_str!("../migrations/0002_wallet_origin.sql"),
+        include_str!("../migrations/0003_payout_destination_cap.sql"),
+        include_str!("../migrations/0004_dkg_inputs.sql"),
+        include_str!("../migrations/0005_single_holder_authorization.sql"),
+        include_str!("../migrations/0006_seat_readiness.sql"),
+        include_str!("../migrations/0007_support_chat.sql"),
+        include_str!("../migrations/0008_runtime_seat_limits.sql"),
+        include_str!("../migrations/0009_uptime.sql"),
+        include_str!("../migrations/0010_guardian_transfers.sql"),
+        include_str!("../migrations/0011_payable_price.sql"),
+        include_str!("../migrations/0012_guardian_link.sql"),
+        include_str!("../migrations/0013_host_pressure.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+    sqlx::query(
+        "UPDATE offer_state SET max_seats = 3, price_msats = 1280, memory_max_seats = 7 \
+         WHERE id = 1",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let read = "SELECT offer_epoch, price_msats, max_seats, memory_max_seats, policy_max_seats \
+                FROM offer_state WHERE id = 1";
+    let before: (Vec<u8>, Option<i64>, Option<i64>, i64, i64) =
+        sqlx::query_as(read).fetch_one(&pool).await.unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0014_monthly_data_budget.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let after: (Vec<u8>, Option<i64>, Option<i64>, i64, i64) =
+        sqlx::query_as(read).fetch_one(&pool).await.unwrap();
+    assert_eq!(after, before);
+    // An MG from before the question has not answered it.
+    let data: (String, i64) = sqlx::query_as(
+        "SELECT monthly_data_budget, policy_seat_monthly_data_gb FROM offer_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // ... and the data per seat starts at the publication's default.
+    assert_eq!(data, ("not_set".to_owned(), 65));
+    // The column holds exactly the tokens `MonthlyDataBudget` parses.
+    for (token, stored) in [
+        ("unlimited", true),
+        ("1", true),
+        ("4294967295", true),
+        ("0", false),
+        ("0179", false),
+        ("4294967296", false),
+        ("-1", false),
+        ("1.5", false),
+        ("none", false),
+        ("", false),
+    ] {
+        let result = sqlx::query("UPDATE offer_state SET monthly_data_budget = ? WHERE id = 1")
+            .bind(token)
+            .execute(&pool)
+            .await;
+        assert_eq!(result.is_ok(), stored, "{token:?}");
+        assert_eq!(
+            token
+                .parse::<fedi_decentralized_service_manifold_guardian::MonthlyDataBudget>()
+                .is_ok(),
+            stored,
+            "{token:?}"
+        );
+    }
 }
 
 #[tokio::test]

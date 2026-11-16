@@ -201,7 +201,9 @@ impl Onboarding {
             AdminRequest::ConfigureInitialOffer {
                 max_seats,
                 price_msats,
+                monthly_data_budget,
             } => {
+                let monthly_data_budget = crate::admin::answered_data_budget(monthly_data_budget)?;
                 if price_msats.is_some_and(|price| price > 0) && !self.setup_payments_configured {
                     anyhow::bail!(
                         "this environment has no setup-payment publisher, so a paid seat could never be paid for"
@@ -209,13 +211,14 @@ impl Onboarding {
                 }
                 let price = self
                     .db
-                    .configure_initial_offer(price_msats.map(Msats), max_seats)
+                    .configure_initial_offer(price_msats.map(Msats), max_seats, monthly_data_budget)
                     .await?;
                 // Raised only after the final stage is durable.
                 self.completed.send_replace(true);
                 Ok(json!({
                     "onboarding": "complete",
                     "max_seats": max_seats,
+                    "monthly_data_budget": monthly_data_budget,
                     "plans": price.map(|Msats(price_msats)| json!({
                         "InfiniteBestEffort": { "price_msats": price_msats }
                     })).into_iter().collect::<Vec<_>>(),

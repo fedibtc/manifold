@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use fedi_decentralized_domain::MgVersion;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, MgName, Plan, SeatHealth, SeatId,
+    FederationId, MgName, MonthlyDataBudget, Plan, SeatHealth, SeatId,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -64,6 +64,15 @@ pub enum AdminRequest {
     SetCapacity {
         #[ts(type = "number | null")]
         max_seats: Option<u32>,
+    },
+    /// Record the operator's answer about monthly data: `"unlimited"` when
+    /// the host's internet has no monthly data cap, or the GB this guardian
+    /// may use a month as a decimal string, such as `"500"`. Only a GB budget
+    /// limits seats, and only new sales. `"not_set"` is refused: it is the
+    /// state of an MG whose operator has not answered.
+    SetDataBudget {
+        #[ts(type = "\"not_set\" | \"unlimited\" | `${number}`")]
+        monthly_data_budget: MonthlyDataBudget,
     },
     /// Payment federations with wallet health and balance: the accepted
     /// common setup-payment set plus wallet-only leftovers of removed
@@ -157,12 +166,16 @@ pub enum AdminRequest {
     RefreshHolderAuthorizations,
     /// Finish first-run setup with the admission limit and initial price. This
     /// is accepted only after a Holder authorization has been retained.
-    /// `max_seats` `null` is automatic.
+    /// `max_seats` `null` is automatic. `monthly_data_budget` is the answer
+    /// [`AdminRequest::SetDataBudget`] takes; setup does not finish without
+    /// one.
     ConfigureInitialOffer {
         #[ts(type = "number | null")]
         max_seats: Option<u32>,
         #[ts(type = "number | null")]
         price_msats: Option<u64>,
+        #[ts(type = "\"not_set\" | \"unlimited\" | `${number}`")]
+        monthly_data_budget: MonthlyDataBudget,
     },
     /// The root mnemonic phrase, for the operator's backup. Returned to
     /// the connected operator only — never logged, never persisted
@@ -489,6 +502,14 @@ pub(crate) async fn dispatch(
             fleet.set_max_seats(max_seats).await?;
             Ok(capacity_json(&fleet.availability_snapshot().await))
         }
+        AdminRequest::SetDataBudget {
+            monthly_data_budget,
+        } => {
+            fleet
+                .set_monthly_data_budget(answered_data_budget(monthly_data_budget)?)
+                .await?;
+            Ok(capacity_json(&fleet.availability_snapshot().await))
+        }
         AdminRequest::ListPaymentFederations => Ok(payment_federations_json(
             fleet.payment_federation_statuses().await,
         )),
@@ -614,22 +635,41 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
 }
 
 /// `max_seats` is the operator's limit, `null` when automatic. Admission
-/// sells up to the lowest of it and the runtime limits. `cpu_max_seats` is
-/// `null` while the publication sets no per-seat CPU budget, and
-/// `cpu_benchmark`, the measured CPU capacity, before the first measurement.
+/// sells up to the lowest of it, the runtime limits, and `data_max_seats`:
+/// the operator's `monthly_data_budget` in GB divided by the publication's
+/// `seat_monthly_data_gb` (or its default), `null` without a GB budget.
+/// `monthly_data_budget` is `"not_set"`, `"unlimited"` or the GB as a decimal
+/// string. `cpu_max_seats` is `null` while the publication sets no per-seat
+/// CPU budget, and `cpu_benchmark`, the measured CPU capacity, before the
+/// first measurement.
 pub(crate) fn capacity_json(snapshot: &crate::fleet::AvailabilitySnapshot) -> Value {
+    let limits = &snapshot.limits;
     json!({
-        "max_seats": snapshot.max_seats,
-        "memory_max_seats": snapshot.memory_max_seats,
-        "policy_max_seats": snapshot.policy_max_seats,
-        "cpu_max_seats": snapshot.cpu_max_seats,
+        "max_seats": limits.max_seats,
+        "memory_max_seats": limits.memory_max_seats,
+        "policy_max_seats": limits.policy_max_seats,
+        "cpu_max_seats": limits.cpu_max_seats,
         "cpu_benchmark": snapshot.cpu_capacity.as_ref().map(|cpu| json!({
             "cpu_count": cpu.cpu_count,
             "iterations_per_sec": cpu.iterations_per_sec,
             "single_core_iterations_per_sec": cpu.single_core_iterations_per_sec,
         })),
+        "monthly_data_budget": limits.monthly_data_budget,
+        "seat_monthly_data_gb": limits.policy_seat_monthly_data_gb,
+        "data_max_seats": limits.data_max_seats(),
         "available_slots": snapshot.available_seats,
     })
+}
+
+/// The operator's answer to the monthly data question. `not_set` is not an
+/// answer, so an operator cannot move back to it.
+pub(crate) fn answered_data_budget(budget: MonthlyDataBudget) -> anyhow::Result<MonthlyDataBudget> {
+    if budget == MonthlyDataBudget::NotSet {
+        anyhow::bail!(
+            "say whether this host's internet has a monthly data cap: `unlimited`, or the GB this guardian may use a month"
+        );
+    }
+    Ok(budget)
 }
 
 pub fn seat_readiness_json(ready_for_new_seats: bool, report: Option<ReadinessReport>) -> Value {
