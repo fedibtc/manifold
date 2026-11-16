@@ -51,7 +51,7 @@ const router = createBrowserRouter([
                   { path: 'backup/phrase', element: <BackupPhrasePage /> },
                   { path: 'health', element: <HealthPage /> },
                   { path: 'support', element: <SupportPage /> },
-                  { path: 'phone-link', element: <PhoneLinkPage /> }
+                  { path: 'mobile-notifications', element: <PhoneLinkPage /> }
                 ]
               }
             ]

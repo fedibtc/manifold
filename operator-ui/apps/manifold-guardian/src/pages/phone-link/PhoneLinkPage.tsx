@@ -7,7 +7,7 @@ interface PhoneLinkPageProps extends Record<string, never> {}
 
 export const PhoneLinkPage = (_props: PhoneLinkPageProps) => {
   const status = useGuardianLink();
-  // Where the policy keeps phone link off, the page does not exist.
+  // Where the policy keeps mobile notifications off, the page does not exist.
   if (status.data?.availability === 'disabled') return <Navigate to="/" replace />;
   return (
     <div className={styles.root}>
