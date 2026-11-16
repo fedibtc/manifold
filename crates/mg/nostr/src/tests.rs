@@ -955,3 +955,32 @@ fn out_of_range_uptime_is_not_advertised() {
     let reported = build_payload(test_snapshot(), Vec::new()).uptime_permille;
     assert_eq!(reported.map(|uptime| uptime.day.get()), Some(998));
 }
+
+#[test]
+fn an_authorization_lookup_reports_none_only_after_a_quorum_of_reads() {
+    // One relay that returned the authorization is enough, even while the
+    // other relays never finished their reads.
+    assert_eq!(
+        found_or_absent_by_quorum(Some(7), 1, 2, 3).unwrap(),
+        Some(7)
+    );
+    // None needs a majority of complete reads; one short of it is an
+    // incomplete lookup, not an absent authorization.
+    assert_eq!(
+        found_or_absent_by_quorum::<u8>(None, 2, 2, 3).unwrap(),
+        None
+    );
+    assert_eq!(
+        found_or_absent_by_quorum::<u8>(None, 3, 2, 3).unwrap(),
+        None
+    );
+    for complete_reads in [0, 1] {
+        let error = found_or_absent_by_quorum::<u8>(None, complete_reads, 2, 3).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("only {complete_reads} of 3 relays")),
+            "{error}"
+        );
+    }
+}

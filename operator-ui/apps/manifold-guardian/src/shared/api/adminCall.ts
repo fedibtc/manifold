@@ -20,9 +20,12 @@ export const ADMIN_ROUTE = '/api/admin';
 //
 // Longer than any healthy admin response and shorter than the browser's own
 // patience, so the failure is ours to classify rather than something the
-// operator waits out. React Query does not start a second fetch for a key while
-// one is in flight, so this cannot stack up behind the 5-second seat cadence.
-export const ADMIN_REQUEST_TIMEOUT_MS = 15_000;
+// operator waits out. Some verbs, such as RefreshHolderAuthorizations, wait on
+// public relays inside the request, so healthy can mean several seconds; the
+// daemon bounds those reads well inside this limit. React Query does not start
+// a second fetch for a key while one is in flight, so this cannot stack up
+// behind the 5-second seat cadence.
+export const ADMIN_REQUEST_TIMEOUT_MS = 60_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
