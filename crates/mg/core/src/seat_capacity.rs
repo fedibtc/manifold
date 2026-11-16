@@ -1,12 +1,14 @@
-//! How many seats this host's memory carries
+//! How many seats this host's memory and CPU carry
 //! (`crates/mg/specs/REQ-seat-capacity-default.md`).
 //!
-//! One task writes two limits beside the operator's: one from sampled memory
-//! and one from the setup-payment publication. Admission uses the lowest, and the
+//! One task writes three limits beside the operator's: one from sampled
+//! memory, one from the measured CPU capacity ([`crate::cpu_capacity`]) and
+//! one from the setup-payment publication. Admission uses the lowest, and the
 //! database applies each write without breaking the offer-epoch invariant
 //! ([`crate::db::Db::update_seats_config`]).
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +18,7 @@ use fedi_decentralized_domain::{
 };
 use tokio::sync::watch;
 
+use crate::cpu_capacity::CpuCapacity;
 use crate::db::SeatsConfigUpdate;
 use crate::fleet::Fleet;
 
@@ -35,6 +38,12 @@ const RAISE_AFTER_SAMPLES: usize = 3;
 fn memory_max_seats(available_ram_bytes: u64, seat_process_bytes: u64, budget_bytes: u64) -> u32 {
     let seats = available_ram_bytes.saturating_add(seat_process_bytes) / budget_bytes;
     u32::try_from(seats).unwrap_or(u32::MAX)
+}
+
+/// The runtime limit from CPU: one seat per whole per-seat budget of the
+/// measured capacity, or none while the publication sets no budget.
+fn cpu_max_seats(iterations_per_sec: u32, budget: Option<NonZeroU32>) -> Option<u32> {
+    budget.map(|budget| iterations_per_sec / budget)
 }
 
 /// Lower at once; raise only after [`RAISE_AFTER_SAMPLES`] samples.
@@ -59,20 +68,33 @@ impl Smoothed {
 /// Write the runtime seat limits until the runtime shuts down: at once, on
 /// every newly admitted publication, and every [`SAMPLE_INTERVAL`]. On a host
 /// without procfs the memory limit keeps its stored value (4 seats until a
-/// first sample).
+/// first sample). The CPU limit divides `cpu`, measured once at start;
+/// without a measurement (local E2E) there is no CPU limit.
 pub fn spawn_runtime_seat_limits(
     fleet: Arc<Fleet>,
     mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    cpu: Option<CpuCapacity>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut smoothed =
             Smoothed::starting_at(fleet.availability_snapshot().await.memory_max_seats);
         let mut sample_memory = true;
         loop {
-            let (policy_max_seats, budget_mib) = policy.borrow_and_update().as_ref().map_or(
-                (DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_MEMORY_BUDGET_MIB),
-                |policy| (policy.max_seats_per_mg(), policy.seat_memory_budget_mib()),
-            );
+            let (policy_max_seats, budget_mib, cpu_budget) =
+                policy.borrow_and_update().as_ref().map_or(
+                    (
+                        DEFAULT_MAX_SEATS_PER_MG,
+                        DEFAULT_SEAT_MEMORY_BUDGET_MIB,
+                        None,
+                    ),
+                    |policy| {
+                        (
+                            policy.max_seats_per_mg(),
+                            policy.seat_memory_budget_mib(),
+                            policy.seat_cpu_iterations_per_sec(),
+                        )
+                    },
+                );
             let mut memory_limit = None;
             if sample_memory {
                 match detect_available_ram_bytes() {
@@ -92,6 +114,10 @@ pub fn spawn_runtime_seat_limits(
             let update = SeatsConfigUpdate {
                 memory_max_seats: memory_limit,
                 policy_max_seats: Some(policy_max_seats),
+                cpu_max_seats: Some(
+                    cpu.as_ref()
+                        .and_then(|cpu| cpu_max_seats(cpu.iterations_per_sec, cpu_budget)),
+                ),
                 ..SeatsConfigUpdate::default()
             };
             if let Err(error) = fleet.update_seats_config(update).await {

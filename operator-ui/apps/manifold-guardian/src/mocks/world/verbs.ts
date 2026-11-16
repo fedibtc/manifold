@@ -305,18 +305,32 @@ const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
   return state.onboarding;
 };
 
-// The runtime limits the daemon writes: from sampled host memory, and from the
-// setup-payment publication (default 12).
+// The runtime limits the daemon writes: from sampled host memory, from the
+// setup-payment publication (default 12), and from the measured CPU capacity
+// (the scenario's, none while the publication sets no per-seat CPU budget).
+// The dashboard does not show the benchmark itself.
 const MOCK_MEMORY_MAX_SEATS = 9;
 const MOCK_POLICY_MAX_SEATS = 12;
+const MOCK_CPU_BENCHMARK = {
+  cpu_count: 16,
+  iterations_per_sec: 12_600,
+  single_core_iterations_per_sec: 810
+};
 
 const capacity = () => {
-  const maxSeats = getState().maxSeats;
-  const limit = Math.min(maxSeats ?? Infinity, MOCK_MEMORY_MAX_SEATS, MOCK_POLICY_MAX_SEATS);
+  const { maxSeats, cpuMaxSeats } = getState();
+  const limit = Math.min(
+    maxSeats ?? Infinity,
+    MOCK_MEMORY_MAX_SEATS,
+    MOCK_POLICY_MAX_SEATS,
+    cpuMaxSeats ?? Infinity
+  );
   return {
     max_seats: maxSeats,
     memory_max_seats: MOCK_MEMORY_MAX_SEATS,
     policy_max_seats: MOCK_POLICY_MAX_SEATS,
+    cpu_max_seats: cpuMaxSeats,
+    cpu_benchmark: MOCK_CPU_BENCHMARK,
     available_slots: Math.max(0, limit - activeSeatCount())
   };
 };

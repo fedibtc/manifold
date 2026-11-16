@@ -34,8 +34,9 @@ free slot, a change to `QuoteSettings`, a change to the operator's maximum
 seat count or the readiness verdict, and a runtime seat limit write that takes
 the last free slot.
 
-Admission sells up to the lowest of three limits: the operator's maximum and
-two runtime limits from host memory and the setup-payment publication
+Admission sells up to the lowest of four limits: the operator's maximum and
+runtime limits from host memory, the setup-payment publication and the
+measured CPU capacity
 ([REQ-seat-capacity-default](./REQ-seat-capacity-default.md)). One SQLite write
 transaction applies every change to them and to readiness, and compares free
 slots before and after. A runtime limit change that leaves a free slot keeps

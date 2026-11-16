@@ -114,7 +114,10 @@ the fleet.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.
-  `ShowCapacity` also returns both runtime limits. A real change rotates the offer epoch,
+  `ShowCapacity` also returns the runtime limits and the CPU benchmark
+  measurement (`cpu_benchmark`: `cpu_count`, `iterations_per_sec`,
+  `single_core_iterations_per_sec`, or `null` before one); `cpu_max_seats` is
+  `null` while the policy sets no per-seat CPU budget. A real change rotates the offer epoch,
   invalidating outstanding quotes; a no-op does not.
 - `SetPrice` atomically replaces the offer with a price in millisatoshis, or
   with no price — the offer of a fleet that sells nothing, and the state a

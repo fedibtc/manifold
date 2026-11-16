@@ -854,6 +854,50 @@ async fn admission_uses_the_lowest_of_operator_memory_and_policy_limits() {
 }
 
 #[tokio::test]
+async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    let cpu = |limit| crate::db::SeatsConfigUpdate {
+        cpu_max_seats: Some(limit),
+        ..Default::default()
+    };
+    set_max_seats(&db, 5).await.unwrap();
+    // A fresh store has no CPU limit and no measurement.
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (snapshot.cpu_max_seats, snapshot.cpu_capacity),
+        (None, None)
+    );
+    // Memory's first value of 4 binds below the operator's 5.
+    assert_eq!(snapshot.slots, 4);
+
+    assert!(db.update_seats_config(cpu(Some(2)), base).await.unwrap());
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!((snapshot.cpu_max_seats, snapshot.slots), (Some(2), 2));
+    assert!(!db.update_seats_config(cpu(Some(2)), base).await.unwrap());
+
+    // Admission counts the CPU limit too: the second seat takes the last
+    // slot under it, which retires the epoch it was quoted under.
+    let epoch = db.offer_epoch().await.unwrap();
+    assert!(matches!(
+        db.admit_seat(new_seat(70), epoch, base).await.unwrap(),
+        SeatAdmissionResult::Inserted(_)
+    ));
+    let epoch = db.offer_epoch().await.unwrap();
+    assert!(matches!(
+        db.admit_seat(new_seat(71), epoch, base).await.unwrap(),
+        SeatAdmissionResult::Inserted(_)
+    ));
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 0);
+
+    // A publication without a CPU budget removes the limit; memory binds again.
+    assert!(db.update_seats_config(cpu(None), base).await.unwrap());
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!((snapshot.cpu_max_seats, snapshot.slots), (None, 2));
+}
+
+#[tokio::test]
 async fn readiness_changes_rotate_and_repeats_do_not() {
     let (_dir, db) = open_db().await;
     set_max_seats(&db, 2).await.unwrap();

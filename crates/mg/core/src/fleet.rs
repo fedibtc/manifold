@@ -188,6 +188,10 @@ pub(crate) struct AvailabilitySnapshot {
     pub(crate) max_seats: Option<u32>,
     pub(crate) memory_max_seats: u32,
     pub(crate) policy_max_seats: u32,
+    /// `None` while the publication sets no per-seat CPU budget.
+    pub(crate) cpu_max_seats: Option<u32>,
+    /// `None` before the first CPU measurement.
+    pub(crate) cpu_capacity: Option<crate::cpu_capacity::CpuCapacity>,
     pub(crate) available_seats: u32,
     pub(crate) plans: Vec<Plan>,
 }
@@ -226,6 +230,19 @@ impl FleetNostrHost {
             max_seats = snapshot.max_seats,
             memory_max_seats = snapshot.memory_max_seats,
             policy_max_seats = snapshot.policy_max_seats,
+            cpu_max_seats = snapshot.cpu_max_seats,
+            cpu_count = snapshot
+                .cpu_capacity
+                .as_ref()
+                .map(|cpu| cpu.cpu_count.get()),
+            cpu_iterations_per_sec = snapshot
+                .cpu_capacity
+                .as_ref()
+                .map(|cpu| cpu.iterations_per_sec),
+            cpu_single_core_iterations_per_sec = snapshot
+                .cpu_capacity
+                .as_ref()
+                .map(|cpu| cpu.single_core_iterations_per_sec),
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,
             "{SEAT_CAPACITY_EVENT}"
@@ -953,6 +970,8 @@ impl Fleet {
             max_seats: snapshot.max_seats,
             memory_max_seats: snapshot.memory_max_seats,
             policy_max_seats: snapshot.policy_max_seats,
+            cpu_max_seats: snapshot.cpu_max_seats,
+            cpu_capacity: snapshot.cpu_capacity,
             available_seats: snapshot.slots,
             plans: settings.plans(),
         }

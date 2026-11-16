@@ -162,8 +162,9 @@ Each returns `{"schema_version":1,"generated_at","reports":[...]}`, with one
 entry per active, unexpired MG that has a stored report:
 
 - `/v1/seat-capacity`: `mg_pubkey`, `observed_at`, `available_seats`,
-  `accepting_seats`, `max_seats`, `memory_max_seats`, `policy_max_seats` and
-  `mg_version`.
+  `accepting_seats`, `max_seats`, `memory_max_seats`, `policy_max_seats`,
+  `cpu_max_seats`, `cpu_count`, `cpu_iterations_per_sec`,
+  `cpu_single_core_iterations_per_sec` and `mg_version`.
 - `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
   `discovery`, `bitcoin`, `version`, `pressure`, `cpu_pressure_6h_pct`,
   `cpu_pressure_3_5d_pct`, `io_pressure_6h_pct`, `io_pressure_3_5d_pct`,
@@ -179,10 +180,16 @@ Times are RFC 3339 UTC. A field that the MG's release does not journal is
 `null`: releases before 0.1.4 journal only `available_seats`,
 `accepting_seats` and `max_seats`, and no readiness uptime fields, and
 releases before 0.1.9 no readiness `version`, and releases before 0.1.16 no
-`pressure` or pressure fields. A pressure average is also `null` where the MG
+`pressure` or pressure fields and no CPU fields. A pressure average is also `null` where the MG
 cannot read its counters or has not yet sampled half its window, and the
 thresholds without a policy limit.
-`max_seats` is also `null` while the operator limit is automatic. A store
+`max_seats` is also `null` while the operator limit is automatic, and
+`cpu_max_seats` while the setup-payment policy sets no per-seat CPU budget.
+`cpu_iterations_per_sec` is the MG's measured CPU capacity, the score of
+its CPU benchmark summed over `cpu_count` workers, and
+`cpu_single_core_iterations_per_sec` the score of one worker; all three are
+`null` before the MG's first measurement, after a failed one and in local
+E2E. A store
 failure answers 503. Only `policy_max_seats` is capped, at the setup-payment
 maximum of 256 seats per MG; before 0.1.4 the operator limit is the only one
 and has no upper bound. The values are MG-asserted and checked

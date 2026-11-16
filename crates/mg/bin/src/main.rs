@@ -457,6 +457,19 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Before the fleet opens, so no seat competes with the benchmark, and
+    // after the duplicate-instance veto, so a duplicate does not measure. E2E
+    // starts many MGs side by side on one host; it skips the 13-second
+    // benchmark, and with it the CPU seat limit, unless a test turns it on.
+    // A failed measurement is no CPU limit, not a failed start.
+    let cpu_capacity = if local_e2e
+        && std::env::var_os(mg_core::cpu_capacity::MG_E2E_CPU_BENCHMARK_ENV).is_none()
+    {
+        None
+    } else {
+        mg_core::cpu_capacity::measure_at_start(&db).await
+    };
+
     // Reuse the one service endpoint for outbound transfer pulls. It is bound
     // only after the duplicate-instance veto and before fleet workers start.
     let endpoint_builder = if local_e2e {
@@ -633,6 +646,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let runtime_seat_limits = mg_core::seat_capacity::spawn_runtime_seat_limits(
         fleet.clone(),
         nostr.subscribe_setup_payment_federations(),
+        cpu_capacity,
     );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),

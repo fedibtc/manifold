@@ -178,6 +178,7 @@ const base = (): Pick<
   | 'payoutDestination'
   | 'relayAuthorization'
   | 'maxSeats'
+  | 'cpuMaxSeats'
   | 'readyForNewSeats'
   | 'seatReadiness'
   | 'guardianLink'
@@ -188,6 +189,8 @@ const base = (): Pick<
 > => ({
   onboarded: true,
   maxSeats: 3,
+  // The setup-payment policy sets no per-seat CPU budget, so CPU sets no limit.
+  cpuMaxSeats: null,
   readyForNewSeats: true,
   seatReadiness: READY,
   guardianLink: { availability: 'ready', link: null, offer: null },
@@ -562,6 +565,15 @@ const builders = {
       }
     }
   }),
+  'cpu-limited': () => ({
+    ...base(),
+    maxSeats: null,
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    cpuMaxSeats: 2
+  }),
   'uptime-low': () => ({
     ...base(),
     seats: [],
@@ -863,6 +875,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'host-memory-pressure-high': {
     desc: "Every prerequisite passes, but this host's 6-hour memory pressure average is above the setup-payment policy's maximum, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
     affects: ['overview', 'health']
+  },
+  'cpu-limited': {
+    desc: "The setup-payment policy sets a per-seat CPU budget that this host's CPU fills at 2 seats, below memory's 9. The operator limit is automatic.",
+    affects: ['offer']
   },
   'uptime-low': {
     desc: 'Every prerequisite passes, but this host was online less than 90% of the past week (the 7-day uptime minimum), so the daemon has stopped advertising and quoting new seats.',

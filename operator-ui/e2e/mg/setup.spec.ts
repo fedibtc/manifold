@@ -66,7 +66,18 @@ test('should take a new fleet from the doors through to a priced offer', async (
     return response.json();
   });
   expect(capacity).toEqual({
-    Ok: { max_seats: null, memory_max_seats: 9, policy_max_seats: 12, available_slots: 9 }
+    Ok: {
+      max_seats: null,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: null,
+      cpu_benchmark: {
+        cpu_count: 16,
+        iterations_per_sec: 12_600,
+        single_core_iterations_per_sec: 810
+      },
+      available_slots: 9
+    }
   });
 });
 

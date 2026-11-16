@@ -331,7 +331,8 @@ pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
 /// shape and the telemetry collector decodes it from archived journals, so a
 /// field keeps its name and meaning once released. The collector also uses
 /// these field names for its stored reports and private exports. Releases before 0.1.4
-/// journal only the seat counts, the accepting flag and the operator limit.
+/// journal only the seat counts, the accepting flag and the operator limit,
+/// and releases before 0.1.16 no CPU limit or CPU capacity.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SeatCapacityEvent {
     pub available_seats: u32,
@@ -343,6 +344,21 @@ pub struct SeatCapacityEvent {
     pub memory_max_seats: Option<u32>,
     #[serde(default)]
     pub policy_max_seats: Option<u32>,
+    /// The CPU limit; absent while the publication sets no per-seat CPU
+    /// budget.
+    #[serde(default)]
+    pub cpu_max_seats: Option<u32>,
+    /// The CPUs the MG's CPU benchmark measured with, one worker each;
+    /// absent before the first measurement, like the two scores.
+    #[serde(default)]
+    pub cpu_count: Option<u32>,
+    /// The measured CPU capacity, in benchmark iterations per second summed
+    /// over all workers.
+    #[serde(default)]
+    pub cpu_iterations_per_sec: Option<u32>,
+    /// The benchmark iterations per second of one worker alone.
+    #[serde(default)]
+    pub cpu_single_core_iterations_per_sec: Option<u32>,
     #[serde(default)]
     pub mg_version: Option<String>,
 }

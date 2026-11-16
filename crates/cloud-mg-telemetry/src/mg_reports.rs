@@ -52,6 +52,10 @@ pub(crate) struct SeatCapacity {
     pub(crate) max_seats: Option<u32>,
     pub(crate) memory_max_seats: Option<u32>,
     pub(crate) policy_max_seats: Option<u32>,
+    pub(crate) cpu_max_seats: Option<u32>,
+    pub(crate) cpu_count: Option<u32>,
+    pub(crate) cpu_iterations_per_sec: Option<u32>,
+    pub(crate) cpu_single_core_iterations_per_sec: Option<u32>,
     pub(crate) mg_version: Option<MgVersion>,
 }
 
@@ -64,7 +68,7 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
     type Error = &'static str;
 
     /// Every release states at least one limit, and free seats must not
-    /// exceed any of them. Only the policy limit has an upper bound: the most
+    /// exceed any of them, the CPU limit included. Only the policy limit has an upper bound: the most
     /// seats a setup-payment policy allows one MG. Releases before 0.1.4
     /// state only the operator limit, which has none.
     fn try_from(event: SeatCapacityEvent) -> Result<Self, Self::Error> {
@@ -74,12 +78,16 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
             max_seats,
             memory_max_seats,
             policy_max_seats,
+            cpu_max_seats,
+            cpu_count,
+            cpu_iterations_per_sec,
+            cpu_single_core_iterations_per_sec,
             mg_version,
         } = event;
         if policy_max_seats.is_some_and(|limit| limit > SETUP_PAYMENT_MAX_SEATS_PER_MG) {
             return Err("policy limit above the setup-payment maximum");
         }
-        let Some(smallest_limit) = [max_seats, memory_max_seats, policy_max_seats]
+        let Some(smallest_limit) = [max_seats, memory_max_seats, policy_max_seats, cpu_max_seats]
             .into_iter()
             .flatten()
             .min()
@@ -95,6 +103,10 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
             max_seats,
             memory_max_seats,
             policy_max_seats,
+            cpu_max_seats,
+            cpu_count,
+            cpu_iterations_per_sec,
+            cpu_single_core_iterations_per_sec,
             mg_version: mg_version.map(MgVersion::try_from).transpose()?,
         })
     }
