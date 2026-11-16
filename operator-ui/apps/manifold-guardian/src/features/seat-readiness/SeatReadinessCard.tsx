@@ -141,7 +141,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
           )}
 
           {pressureBars && (
-            <section className={styles.uptime} aria-label="CPU and disk pressure">
+            <section className={styles.uptime} aria-label={labels.pressure}>
               <div className={styles.uptimeHead}>
                 <strong>{labels.pressure}</strong>
 
@@ -200,7 +200,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
             {uptime &&
               ' Uptime is a moving average of these checks, and a new outage lowers it again.'}
             {pressureBars &&
-              ' Pressure is the share of time this host’s tasks waited for CPU or disk, as moving averages.'}
+              ' Pressure is the share of time this host’s tasks waited for CPU, disk or memory, as moving averages.'}
           </p>
         </>
       )}

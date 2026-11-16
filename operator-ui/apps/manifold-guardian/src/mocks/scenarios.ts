@@ -1,5 +1,5 @@
 import type { ScenarioNote } from '@operator-ui/mock-devtools';
-import type { MgVersionReport } from '@operator-ui/types';
+import type { HostPressure, MgVersionReport } from '@operator-ui/types';
 import type { MockGuardianFees, MockSeat, MockState } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -64,6 +64,13 @@ const onboarding = (
 
 const authorized = onboarding(authorizationObserved);
 
+// The setup-payment policy's default maximums.
+const DEFAULT_MAX_PRESSURE: HostPressure = {
+  cpu: { '6h': 150, '3.5d': 100 },
+  io: { '6h': 250, '3.5d': 150 },
+  memory: { '6h': 700, '3.5d': 700 }
+};
+
 // `checked_at_ms` is restamped on every read by the ShowSeatReadiness verb.
 const READY: MockState['seatReadiness'] = {
   checked_at_ms: LAST_READ_AT * 1000,
@@ -72,11 +79,12 @@ const READY: MockState['seatReadiness'] = {
   bitcoin: 'pass',
   version: 'pass',
   pressure: 'pass',
-  host_pressure: { cpu: { '6h': 41, '3.5d': 52 }, io: { '6h': 14, '3.5d': 11 } },
-  max_host_pressure: {
-    cpu: { '6h': 150, '3.5d': 100 },
-    io: { '6h': 250, '3.5d': 150 }
+  host_pressure: {
+    cpu: { '6h': 41, '3.5d': 52 },
+    io: { '6h': 14, '3.5d': 11 },
+    memory: { '6h': 63, '3.5d': 47 }
   },
+  max_host_pressure: DEFAULT_MAX_PRESSURE,
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -528,7 +536,30 @@ const builders = {
     seatReadiness: {
       ...READY,
       pressure: 'host_pressure_3_5d_high',
-      host_pressure: { cpu: { '6h': 128, '3.5d': 117 }, io: { '6h': 21, '3.5d': 18 } }
+      host_pressure: {
+        cpu: { '6h': 128, '3.5d': 117 },
+        io: { '6h': 21, '3.5d': 18 },
+        memory: { '6h': 63, '3.5d': 47 }
+      }
+    }
+  }),
+  // This host has been swapping for hours: its 6-hour memory average is over the maximum, while
+  // CPU and disk are calm.
+  'host-memory-pressure-high': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      pressure: 'host_pressure_6h_high',
+      host_pressure: {
+        cpu: { '6h': 41, '3.5d': 52 },
+        io: { '6h': 14, '3.5d': 11 },
+        memory: { '6h': 742, '3.5d': 512 }
+      }
     }
   }),
   'uptime-low': () => ({
@@ -827,6 +858,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'host-pressure-high': {
     desc: "Every prerequisite passes, but this host's 3.5-day CPU pressure average is above the setup-payment policy's maximum, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
+    affects: ['overview', 'health']
+  },
+  'host-memory-pressure-high': {
+    desc: "Every prerequisite passes, but this host's 6-hour memory pressure average is above the setup-payment policy's maximum, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
     affects: ['overview', 'health']
   },
   'uptime-low': {

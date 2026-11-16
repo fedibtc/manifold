@@ -1534,8 +1534,8 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
 
 /// The readiness worker follows the setup-payment policy's minimum release
 /// and maximum pressures: raising the minimum above this release, or a
-/// maximum below the host's pressure average, stops discovery and quoting at
-/// the next run, and undoing either restores them. The MG still serves its
+/// maximum below the host's CPU, IO or memory pressure average, stops
+/// discovery and quoting at the next run, and undoing either restores them. The MG still serves its
 /// seats meanwhile, so every one of those runs records an up uptime slot.
 #[tokio::test]
 async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
@@ -1604,8 +1604,8 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
                 + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
         }
     };
-    // History at 8% CPU and 3% IO pressure, and readings that go on at the
-    // same rates, so every average stays at those shares.
+    // History at 8% CPU, 3% IO and 20% memory pressure, and readings that go
+    // on at the same rates, so every average stays at those shares.
     let origin = clock() - Duration::from_secs(25 * 60 * 60);
     seed_pressure(&fleet, 8, origin, clock()).await;
     let read_pressure = {
@@ -1630,7 +1630,8 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     let calm = (50, 50);
     use ReadinessOutcome::{HalfWeekPressureHigh, Pass, SixHourPressureHigh};
     for (run_index, (min_mg_version, max_pressure, pressure)) in [
-        // Without a policy maximum the defaults apply, which 8% and 3% pass.
+        // Without a policy maximum the defaults apply, which 8%, 3% and 20%
+        // pass.
         (None, None, Pass),
         (Some("999.0.0"), None, Pass),
         (Some(this), None, Pass),
@@ -1639,14 +1640,17 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         (Some("999.0.0"), None, Pass),
         (None, None, Pass),
         // One window over its maximum, every other one calm.
-        (None, Some(((7, 50), calm)), SixHourPressureHigh),
-        (None, Some(((50, 7), calm)), HalfWeekPressureHigh),
+        (None, Some(((7, 50), calm, calm)), SixHourPressureHigh),
+        (None, Some(((50, 7), calm, calm)), HalfWeekPressureHigh),
         // An average equal to its maximum is within it.
-        (None, Some(((8, 8), calm)), Pass),
-        (None, Some((calm, (2, 50))), SixHourPressureHigh),
-        (None, Some((calm, (50, 2))), HalfWeekPressureHigh),
-        (None, Some((calm, (3, 3))), Pass),
-        (None, Some(((7, 50), calm)), SixHourPressureHigh),
+        (None, Some(((8, 8), calm, calm)), Pass),
+        (None, Some((calm, (2, 50), calm)), SixHourPressureHigh),
+        (None, Some((calm, (50, 2), calm)), HalfWeekPressureHigh),
+        (None, Some((calm, (3, 3), calm)), Pass),
+        (None, Some((calm, calm, (19, 50))), SixHourPressureHigh),
+        (None, Some((calm, calm, (50, 19))), HalfWeekPressureHigh),
+        (None, Some((calm, calm, (20, 20))), Pass),
+        (None, Some(((7, 50), calm, calm)), SixHourPressureHigh),
         // No hold: dropping the maximum passes at once.
         (None, None, Pass),
     ]
@@ -1686,6 +1690,10 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
                 io: PressurePermille {
                     six_hours: 30,
                     three_and_a_half_days: 30,
+                },
+                memory: PressurePermille {
+                    six_hours: 200,
+                    three_and_a_half_days: 200,
                 },
             })
         );
@@ -1795,7 +1803,7 @@ async fn the_pressure_history_survives_restart() {
     let origin = start - Duration::from_secs(25 * 60 * 60);
     let minutes = |n: u64| Duration::from_secs(n * 60);
     let calm = (50, 50);
-    let defaults = ((15, 10), (25, 15));
+    let defaults = ((15, 10), (25, 15), (70, 70));
     let open = || async {
         Arc::new(
             open_fleet(config.clone(), Arc::new(NoWallet))
@@ -1843,6 +1851,7 @@ async fn the_pressure_history_survives_restart() {
         Ok(PressureTotals {
             cpu_us: 1,
             io_us: 1,
+            memory_us: 1,
         }),
     )
     .await;
@@ -1887,6 +1896,7 @@ async fn the_pressure_history_survives_restart() {
         Ok(PressureTotals {
             cpu_us: 2,
             io_us: 2,
+            memory_us: 2,
         }),
     )
     .await;
@@ -1900,11 +1910,11 @@ async fn the_pressure_history_survives_restart() {
     fleet.shutdown().await;
 }
 
-/// CPU and IO `(6h, 3.5d)` maximum pressures, in percent.
-type MaxPressure = ((u8, u8), (u8, u8));
+/// CPU, IO and memory `(6h, 3.5d)` maximum pressures, in percent.
+type MaxPressure = ((u8, u8), (u8, u8), (u8, u8));
 
 fn domain_max(
-    ((cpu_6h, cpu_3_5d), (io_6h, io_3_5d)): MaxPressure,
+    ((cpu_6h, cpu_3_5d), (io_6h, io_3_5d), (memory_6h, memory_3_5d)): MaxPressure,
 ) -> fedi_decentralized_domain::MaxPressurePercent {
     use fedi_decentralized_domain::{MaxPressurePercent, MaxPressureWindows};
     MaxPressurePercent {
@@ -1915,6 +1925,10 @@ fn domain_max(
         io: MaxPressureWindows {
             six_hours: io_6h,
             three_and_a_half_days: io_3_5d,
+        },
+        memory: MaxPressureWindows {
+            six_hours: memory_6h,
+            three_and_a_half_days: memory_3_5d,
         },
     }
 }
@@ -1927,8 +1941,8 @@ fn pressure_policy_field(max: MaxPressure) -> String {
     )
 }
 
-/// The counters of a cgroup that has stalled `cpu_percent` of the time on CPU
-/// and 3% on IO since `origin`.
+/// The counters of a cgroup that has stalled `cpu_percent` of the time on CPU,
+/// 3% on IO and 20% on memory since `origin`.
 fn pressure_totals(
     cpu_percent: u64,
     origin: std::time::SystemTime,
@@ -1938,6 +1952,7 @@ fn pressure_totals(
     crate::host_pressure::PressureTotals {
         cpu_us: elapsed_us * cpu_percent / 100,
         io_us: elapsed_us * 3 / 100,
+        memory_us: elapsed_us * 20 / 100,
     }
 }
 

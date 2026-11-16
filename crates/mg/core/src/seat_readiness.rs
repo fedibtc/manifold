@@ -41,12 +41,12 @@ pub enum ReadinessOutcome {
     BitcoinNoFeeRate,
     /// This MG's release is older than the setup-payment policy's minimum.
     MgVersionTooOld,
-    /// The 6-hour CPU or IO pressure average is over the setup-payment policy
-    /// maximum.
+    /// The 6-hour CPU, IO or memory pressure average is over the
+    /// setup-payment policy maximum.
     #[serde(rename = "host_pressure_6h_high")]
     SixHourPressureHigh,
-    /// The 3.5-day CPU or IO pressure average is over the setup-payment
-    /// policy maximum.
+    /// The 3.5-day CPU, IO or memory pressure average is over the
+    /// setup-payment policy maximum.
     #[serde(rename = "host_pressure_3_5d_high")]
     HalfWeekPressureHigh,
     /// This host's cgroup pressure counters cannot be read.
@@ -104,8 +104,8 @@ pub struct ReadinessReport {
     pub bitcoin: ReadinessOutcome,
     /// This MG's release against the setup-payment policy's minimum.
     pub version: ReadinessOutcome,
-    /// The MG's CPU and IO pressure against the setup-payment policy's
-    /// maximums.
+    /// The MG's CPU, IO and memory pressure against the setup-payment
+    /// policy's maximums.
     pub pressure: ReadinessOutcome,
     /// The pressure averages this run compared; `None` where the counters
     /// cannot be read or no interval has been measured yet.
@@ -531,6 +531,11 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
         max_cpu_pressure_3_5d_pct = max.map(|max| pct_of(max.cpu.three_and_a_half_days)),
         max_io_pressure_6h_pct = max.map(|max| pct_of(max.io.six_hours)),
         max_io_pressure_3_5d_pct = max.map(|max| pct_of(max.io.three_and_a_half_days)),
+        memory_pressure_6h_pct = pressure.map(|pressure| pct_of(pressure.memory.six_hours)),
+        memory_pressure_3_5d_pct =
+            pressure.map(|pressure| pct_of(pressure.memory.three_and_a_half_days)),
+        max_memory_pressure_6h_pct = max.map(|max| pct_of(max.memory.six_hours)),
+        max_memory_pressure_3_5d_pct = max.map(|max| pct_of(max.memory.three_and_a_half_days)),
         uptime = report.uptime.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
@@ -957,6 +962,7 @@ mod tests {
             totals: PressureTotals {
                 cpu_us: 5,
                 io_us: 5,
+                memory_us: 5,
             },
         };
         let averages = |cpu_6h: f64| host_pressure::PressureAverages {
@@ -965,6 +971,10 @@ mod tests {
                 three_and_a_half_days: 0.01,
             },
             io: host_pressure::ResourceAverages {
+                six_hours: 0.01,
+                three_and_a_half_days: 0.01,
+            },
+            memory: host_pressure::ResourceAverages {
                 six_hours: 0.01,
                 three_and_a_half_days: 0.01,
             },
@@ -1029,6 +1039,10 @@ mod tests {
                     six_hours: 41,
                     three_and_a_half_days: 30,
                 },
+                memory: PressurePermille {
+                    six_hours: 62,
+                    three_and_a_half_days: 18,
+                },
             }),
             max_host_pressure: Some(HostPressure {
                 cpu: PressurePermille {
@@ -1038,6 +1052,10 @@ mod tests {
                 io: PressurePermille {
                     six_hours: 100,
                     three_and_a_half_days: 50,
+                },
+                memory: PressurePermille {
+                    six_hours: 700,
+                    three_and_a_half_days: 650,
                 },
             }),
             uptime: ReadinessOutcome::WeekUptimeLow,
@@ -1088,6 +1106,10 @@ mod tests {
                 max_cpu_pressure_3_5d_pct: Some(10.0),
                 max_io_pressure_6h_pct: Some(10.0),
                 max_io_pressure_3_5d_pct: Some(5.0),
+                memory_pressure_6h_pct: Some(6.2),
+                memory_pressure_3_5d_pct: Some(1.8),
+                max_memory_pressure_6h_pct: Some(70.0),
+                max_memory_pressure_3_5d_pct: Some(65.0),
                 uptime: Some("uptime_7d_low".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),

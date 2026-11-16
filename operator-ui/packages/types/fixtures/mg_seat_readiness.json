@@ -12,6 +12,10 @@
       "io": {
         "3.5d": 30,
         "6h": 41
+      },
+      "memory": {
+        "3.5d": 18,
+        "6h": 62
       }
     },
     "max_host_pressure": {
@@ -22,6 +26,10 @@
       "io": {
         "3.5d": 50,
         "6h": 100
+      },
+      "memory": {
+        "3.5d": 650,
+        "6h": 700
       }
     },
     "pressure": "host_pressure_6h_high",

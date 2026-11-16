@@ -28,7 +28,8 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
 
 const MAXIMUMS = {
   cpu: { '6h': 150, '3.5d': 100 },
-  io: { '6h': 250, '3.5d': 150 }
+  io: { '6h': 250, '3.5d': 150 },
+  memory: { '6h': 700, '3.5d': 700 }
 };
 
 const MINIMUMS = { '1d': 700, '7d': 900, '30d': 930 };
@@ -81,7 +82,11 @@ describe('SeatReadinessCard', () => {
           ready_for_new_seats: false,
           report: report({
             pressure: 'host_pressure_3_5d_high',
-            host_pressure: { cpu: { '6h': 128, '3.5d': 117 }, io: { '6h': 21, '3.5d': 18 } },
+            host_pressure: {
+              cpu: { '6h': 128, '3.5d': 117 },
+              io: { '6h': 21, '3.5d': 18 },
+              memory: { '6h': 742, '3.5d': 512 }
+            },
             max_host_pressure: MAXIMUMS
           })
         }}
@@ -95,14 +100,19 @@ describe('SeatReadinessCard', () => {
       'CPU, 6-hour average',
       'CPU, 3.5-day average',
       'Disk, 6-hour average',
-      'Disk, 3.5-day average'
+      'Disk, 3.5-day average',
+      'Memory, 6-hour average',
+      'Memory, 3.5-day average'
     ]);
     expect(meters.map((m) => m.getAttribute('aria-valuenow'))).toEqual([
       '12.8',
       '11.7',
       '2.1',
-      '1.8'
+      '1.8',
+      '74.2',
+      '51.2'
     ]);
+    expect(screen.getAllByText('/ 70.0% maximum')).toHaveLength(2);
     expect(screen.getAllByText('/ 15.0% maximum')).toHaveLength(2);
     expect(screen.getByText('/ 10.0% maximum')).toBeTruthy();
     expect(screen.getByText('/ 25.0% maximum')).toBeTruthy();
@@ -119,14 +129,18 @@ describe('SeatReadinessCard', () => {
         readiness={{
           ready_for_new_seats: true,
           report: report({
-            host_pressure: { cpu: { '6h': 41, '3.5d': 52 }, io: { '6h': 14, '3.5d': 11 } },
+            host_pressure: {
+              cpu: { '6h': 41, '3.5d': 52 },
+              io: { '6h': 14, '3.5d': 11 },
+              memory: { '6h': 63, '3.5d': 47 }
+            },
             max_host_pressure: MAXIMUMS
           })
         }}
       />
     );
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
-    expect(screen.getAllByRole('meter')).toHaveLength(4);
+    expect(screen.getAllByRole('meter')).toHaveLength(6);
     expect(screen.getByText('Every average is within its maximum.')).toBeTruthy();
     expect(screen.queryByText(pressureGuidance, { exact: false })).toBeNull();
   });

@@ -142,10 +142,15 @@ const failingReport = {
   bitcoin: 'bitcoin_no_fee_rate',
   version: 'mg_version_too_old',
   pressure: 'host_pressure_6h_high',
-  host_pressure: { cpu: { '6h': 213, '3.5d': 87 }, io: { '6h': 41, '3.5d': 30 } },
+  host_pressure: {
+    cpu: { '6h': 213, '3.5d': 87 },
+    io: { '6h': 41, '3.5d': 30 },
+    memory: { '6h': 62, '3.5d': 18 }
+  },
   max_host_pressure: {
     cpu: { '6h': 150, '3.5d': 100 },
-    io: { '6h': 250, '3.5d': 150 }
+    io: { '6h': 250, '3.5d': 150 },
+    memory: { '6h': 700, '3.5d': 700 }
   },
   uptime: 'pass',
   uptime_comparison: null
@@ -162,7 +167,7 @@ it('should send the operator to Health when a readiness check fails, naming only
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
       detail:
-        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU and disk pressure. Open Health for what to check.',
+        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU, disk and memory pressure. Open Health for what to check.',
       path: '/health'
     }
   ]);
