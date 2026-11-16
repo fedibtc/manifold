@@ -329,7 +329,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
     #[cfg(target_os = "linux")]
-    resource_report::spawn(resource_report::Role::Daemon);
+    resource_report::spawn(resource_report::Role::Daemon {
+        data_filesystem: resource_report::DataFilesystem::of(&args.data_dir),
+    });
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
         "selected Manifold environment profile"

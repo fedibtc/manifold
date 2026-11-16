@@ -5,7 +5,8 @@
 //! to their own safe-event journal, so a seat's samples arrive in that seat's
 //! journal without the daemon tracking child process ids. The daemon also
 //! samples the cgroup and the network namespace that it shares with its
-//! seats.
+//! seats, the whole host's pressure (to tell the MG's own contention from
+//! other services'), and names the filesystem of its data directory.
 //!
 //! Counters are cumulative. A consumer derives rates from the deltas between
 //! two samples. A counter whose source the kernel does not provide is omitted
@@ -25,8 +26,9 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     /// The MG daemon. It also samples the cgroup and network namespace it
-    /// shares with its seats.
-    Daemon,
+    /// shares with its seats, the host's pressure, and names the filesystem
+    /// that holds the data directory.
+    Daemon { data_filesystem: DataFilesystem },
     /// One bundled `fedimintd` seat process.
     Fedimintd,
 }
@@ -34,7 +36,7 @@ pub(crate) enum Role {
 impl Role {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Daemon => "mg",
+            Self::Daemon { .. } => "mg",
             Self::Fedimintd => "fedimintd",
         }
     }
@@ -68,8 +70,8 @@ pub(crate) fn spawn(role: Role) {
                 io_write_bytes = io.as_ref().map(|io| io.write_bytes),
                 "process resource sample"
             );
-            if let Role::Daemon = role {
-                report_cgroup();
+            if let Role::Daemon { data_filesystem } = role {
+                report_cgroup(data_filesystem);
             }
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
@@ -77,8 +79,9 @@ pub(crate) fn spawn(role: Role) {
 }
 
 /// Report the cgroup and the network namespace that the daemon shares with
-/// its seats. The cgroup path and interface names stay local.
-fn report_cgroup() {
+/// its seats, and the host's pressure. The cgroup path, device numbers and
+/// interface names stay local.
+fn report_cgroup(data_filesystem: DataFilesystem) {
     let cgroup = read("/proc/self/cgroup", cgroup_v2_dir);
     let cgroup_file = |name: &str| cgroup.as_ref().map(|dir| dir.join(name));
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
@@ -86,6 +89,10 @@ fn report_cgroup() {
     let io_pressure = cgroup_file("io.pressure").and_then(|path| read(&path, Pressure::parse));
     let memory_pressure =
         cgroup_file("memory.pressure").and_then(|path| read(&path, Pressure::parse));
+    let block_io = cgroup_file("io.stat").and_then(|path| read(&path, CgroupBlockIo::parse));
+    let host_pressure = |resource: &str| {
+        read(format!("/proc/pressure/{resource}"), Pressure::parse).map(|pressure| pressure.some_us)
+    };
     let network = read("/proc/self/net/dev", NetnsTraffic::parse);
     tracing::info!(
         safe_to_share = true,
@@ -102,6 +109,13 @@ fn report_cgroup() {
         cgroup_memory_full_pressure_us = memory_pressure
             .as_ref()
             .and_then(|pressure| pressure.full_us),
+        cgroup_block_read_bytes = block_io.as_ref().map(|io| io.read_bytes),
+        cgroup_block_write_bytes = block_io.as_ref().map(|io| io.write_bytes),
+        cgroup_block_write_ios = block_io.as_ref().map(|io| io.write_ios),
+        host_cpu_pressure_us = host_pressure("cpu"),
+        host_io_pressure_us = host_pressure("io"),
+        host_memory_pressure_us = host_pressure("memory"),
+        data_filesystem = %data_filesystem,
         netns_rx_bytes = network.as_ref().map(|network| network.rx_bytes),
         netns_tx_bytes = network.as_ref().map(|network| network.tx_bytes),
         "cgroup resource sample"
@@ -223,6 +237,108 @@ impl CgroupCpu {
     }
 }
 
+/// Block-layer IO of the cgroup that holds the daemon and its seats, summed
+/// over devices: what reached the disks, including writeback the kernel
+/// charges to the cgroup, unlike the per-process `write_bytes`, which counts
+/// pages as they are dirtied and so depends on the filesystem.
+#[derive(Debug, PartialEq, Eq)]
+struct CgroupBlockIo {
+    read_bytes: u64,
+    write_bytes: u64,
+    write_ios: u64,
+}
+
+impl CgroupBlockIo {
+    /// Parse cgroup v2 `io.stat`: one `MAJ:MIN key=value ...` line per
+    /// device. A cgroup without IO yet has an empty file.
+    fn parse(stat: &str) -> Option<Self> {
+        let mut io = Self {
+            read_bytes: 0,
+            write_bytes: 0,
+            write_ios: 0,
+        };
+        for line in stat.lines() {
+            let mut fields = line.split_ascii_whitespace();
+            fields.next()?;
+            for pair in fields {
+                let (key, value) = pair.split_once('=')?;
+                let total = match key {
+                    "rbytes" => &mut io.read_bytes,
+                    "wbytes" => &mut io.write_bytes,
+                    "wios" => &mut io.write_ios,
+                    _ => continue,
+                };
+                *total = total.checked_add(value.parse().ok()?)?;
+            }
+        }
+        Some(io)
+    }
+}
+
+/// The kind of filesystem that holds the MG data directory, where the seats'
+/// databases sync every consensus unit. Filesystems count and write those
+/// small synced writes differently, so storage figures compare only within
+/// one kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DataFilesystem {
+    Known(&'static str),
+    /// A filesystem not in [`FILESYSTEM_MAGICS`], by its `statfs` magic.
+    Other(u32),
+    /// `statfs` failed.
+    Unknown,
+}
+
+/// `statfs` `f_type` magics, from Linux `include/uapi/linux/magic.h` and
+/// OpenZFS.
+const FILESYSTEM_MAGICS: &[(u32, &str)] = &[
+    (0xEF53, "ext4"),
+    (0x9123_683E, "btrfs"),
+    (0x5846_5342, "xfs"),
+    (0x2FC1_2FC1, "zfs"),
+    (0xF2F5_2010, "f2fs"),
+    (0xCA45_1A4E, "bcachefs"),
+    (0x794C_7630, "overlayfs"),
+    (0x0102_1994, "tmpfs"),
+    (0x6573_5546, "fuse"),
+    (0x6969, "nfs"),
+];
+
+impl DataFilesystem {
+    /// The filesystem that holds `path`.
+    pub(crate) fn of(path: &Path) -> Self {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return Self::Unknown;
+        };
+        // SAFETY: `statfs` writes only into `stat`, which outlives the call,
+        // and reads the NUL-terminated `path`.
+        let mut stat = unsafe { std::mem::zeroed::<libc::statfs>() };
+        if unsafe { libc::statfs(path.as_ptr(), &raw mut stat) } != 0 {
+            return Self::Unknown;
+        }
+        // `f_type` is a signed word on some targets; the magics are 32-bit.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Self::from_magic(stat.f_type as u32)
+    }
+
+    fn from_magic(magic: u32) -> Self {
+        FILESYSTEM_MAGICS
+            .iter()
+            .find(|(known, _)| *known == magic)
+            .map_or(Self::Other(magic), |(_, name)| Self::Known(name))
+    }
+}
+
+impl std::fmt::Display for DataFilesystem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(name) => formatter.write_str(name),
+            Self::Other(magic) => write!(formatter, "0x{magic:x}"),
+            Self::Unknown => formatter.write_str("unknown"),
+        }
+    }
+}
+
 /// Bytes received and sent on every interface of this process's network
 /// namespace except loopback.
 ///
@@ -273,7 +389,52 @@ impl NetnsTraffic {
 
 #[cfg(test)]
 mod tests {
-    use super::{CgroupCpu, NetnsTraffic, ProcessCpu, ProcessIo, ProcessMemory};
+    use super::{
+        CgroupBlockIo, CgroupCpu, DataFilesystem, NetnsTraffic, ProcessCpu, ProcessIo,
+        ProcessMemory,
+    };
+
+    #[test]
+    fn sums_cgroup_block_io_over_devices() {
+        // Two devices; discard bytes (dbytes) and read IOs are not reported.
+        let stat = "259:0 rbytes=4096 wbytes=1000000 rios=1 wios=244 dbytes=99999 dios=3\n\
+            8:16 rbytes=8192 wbytes=24576 rios=2 wios=6 dbytes=0 dios=0\n";
+        assert_eq!(
+            CgroupBlockIo::parse(stat),
+            Some(CgroupBlockIo {
+                read_bytes: 12_288,
+                write_bytes: 1_024_576,
+                write_ios: 250,
+            })
+        );
+        assert_eq!(
+            CgroupBlockIo::parse(""),
+            Some(CgroupBlockIo {
+                read_bytes: 0,
+                write_bytes: 0,
+                write_ios: 0,
+            })
+        );
+        assert_eq!(CgroupBlockIo::parse("259:0 rbytes=4096 wbytes=x\n"), None);
+    }
+
+    #[test]
+    fn names_filesystems_by_statfs_magic() {
+        assert_eq!(DataFilesystem::from_magic(0x9123_683E).to_string(), "btrfs");
+        assert_eq!(DataFilesystem::from_magic(0x2FC1_2FC1).to_string(), "zfs");
+        assert_eq!(
+            DataFilesystem::from_magic(0x1234_5678).to_string(),
+            "0x12345678"
+        );
+        assert_ne!(
+            DataFilesystem::of(&std::env::temp_dir()),
+            DataFilesystem::Unknown
+        );
+        assert_eq!(
+            DataFilesystem::of(std::path::Path::new("/nonexistent/mg-data")),
+            DataFilesystem::Unknown
+        );
+    }
 
     #[test]
     fn parses_linux_status_fields_in_bytes() {
