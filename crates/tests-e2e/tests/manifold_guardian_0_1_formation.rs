@@ -5242,19 +5242,19 @@ async fn complete_onboarding_stages(
     // Offer free seats right at onboarding so the daemon is accepting seats
     // — and therefore advertising — from its first Nostr cycle. Every test
     // either wants free seats or re-prices immediately after startup.
-    let mut offer = vec![
+    // `fman-cli` is always the candidate's, which requires the monthly data
+    // answer. A previous-release daemon in the upgrade test ignores the field
+    // it does not know, as serde does by default.
+    let offer = [
         "onboard",
         "offer",
         "--max-seats",
         &max_seats,
         "--price-msats",
         "0",
+        "--monthly-data",
+        "unlimited",
     ];
-    // The candidate requires the monthly data answer. The upgrade test
-    // onboards with the previous release, which has no such flag.
-    if manifold_guardian_bin == locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")? {
-        offer.extend(["--monthly-data", "unlimited"]);
-    }
     manifold_guardian_admin(manifold_guardian_bin, data_dir, &offer).await?;
     Ok(())
 }
