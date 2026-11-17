@@ -34,6 +34,21 @@ it('should flag a non-receivable federation as an attention item linking to payo
   });
 });
 
+it('should say a recovering wallet is recovering rather than not accepting payments', () => {
+  const model = deriveOverview({
+    paymentFederations: [
+      federation({ receivable: false, wallet: { ...walletStatus(null), recovering: true } })
+    ]
+  });
+
+  expect(model.attention).toContainEqual({
+    key: 'fed1',
+    title: 'Wallet recovering; balance temporarily unavailable',
+    detail: 'fed1',
+    path: '/payouts'
+  });
+});
+
 it('should not flag a former member that stopped receiving', () => {
   const model = deriveOverview({
     paymentFederations: [federation({ accepted: false, receivable: false })]

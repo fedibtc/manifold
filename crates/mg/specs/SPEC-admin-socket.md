@@ -168,7 +168,10 @@ the fleet.
   lazily reopens its wallet from the durable prefix rather than hiding it.
   While another task is opening that wallet, which can be a recovery scan
   with no time bound, the query reports the wallet unreadable instead of
-  waiting; so do the guardian-fee reads behind `GuardianFees`.
+  waiting; so do the guardian-fee reads behind `GuardianFees`. When the
+  stored client is a recovery the MG has not marked ready, that unreadable
+  `wallet` carries `recovering: true`, so the dashboard can say the balance
+  returns when the recovery finishes; otherwise `recovering` is `false`.
 
   The wallet projection keeps monetary meanings separate:
   `available_ecash_msat` is only notes currently available to a new

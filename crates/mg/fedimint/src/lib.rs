@@ -157,6 +157,9 @@ pub enum WalletError {
     ClientOpening {
         /// Federation whose client is being opened.
         federation_id: FederationId,
+        /// The stored client is a recovery that has not finished, so the
+        /// open is that recovery's scan.
+        recovering: bool,
     },
 
     /// Any other client failure (open, join, spend, balance).
@@ -683,13 +686,28 @@ impl Wallet {
         match wait {
             OpenWait::Wait => Ok(self.join_exclusion(scope).await),
             OpenWait::Refuse => {
-                let federation_id = scope.federation_id();
-                self.join_lock(scope)
-                    .await
-                    .try_lock_owned()
-                    .map_err(|_| WalletError::ClientOpening { federation_id })
+                let lock = self.join_lock(scope.clone()).await;
+                match lock.try_lock_owned() {
+                    Ok(guard) => Ok(guard),
+                    Err(_) => Err(WalletError::ClientOpening {
+                        federation_id: scope.federation_id(),
+                        recovering: self.stored_recovery_unfinished(&scope).await,
+                    }),
+                }
             }
         }
+    }
+
+    /// Whether `scope`'s stored client is a recovery the MG has not marked
+    /// ready. Reads the stored state only; a scope with none is not recovering.
+    async fn stored_recovery_unfinished(&self, scope: &ClientScope) -> bool {
+        let Some(prefix) = self.prefixes.read().await.get(scope).copied() else {
+            return false;
+        };
+        let database = self.database.with_prefix(prefix.consensus_encode_to_vec());
+        recovery_needs_ready_marker(&database)
+            .await
+            .unwrap_or(false)
     }
 
     async fn join_lock(&self, scope: ClientScope) -> Arc<Mutex<()>> {

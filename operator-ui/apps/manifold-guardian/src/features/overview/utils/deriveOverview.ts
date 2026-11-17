@@ -7,6 +7,8 @@ import type {
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
 import { failedChecks, labels } from '@/shared/utils/seatReadiness';
 
+export const WALLET_RECOVERING = 'Wallet recovering; balance temporarily unavailable';
+
 export interface AttentionItem {
   key: string;
   title: string;
@@ -49,7 +51,10 @@ export const deriveOverview = ({
     .filter((federation) => federation.accepted && !federation.receivable)
     .map((federation) => ({
       key: federation.federation_id,
-      title: 'Payment federation not accepting payments',
+      // A recovering wallet is closed only until its scan finishes.
+      title: federation.wallet.recovering
+        ? WALLET_RECOVERING
+        : 'Payment federation not accepting payments',
       detail: federation.federation_id,
       // No screen can make a federation receivable again, so this points at the
       // only screen that lists it and offers an action on it.

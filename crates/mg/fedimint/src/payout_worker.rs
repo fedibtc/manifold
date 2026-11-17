@@ -133,6 +133,9 @@ impl EcashPayoutWorker for PayoutWorker {
         let status = match (self.wallet.as_ref(), federation_id.0.parse()) {
             (Some(wallet), Ok(id)) => match wallet.client_with(id, OpenWait::Refuse).await {
                 Ok(c) => crate::drain_status::wallet_drain_status(&c).await,
+                Err(crate::WalletError::ClientOpening {
+                    recovering: true, ..
+                }) => return WalletDrainStatusWire::recovering(),
                 Err(_) => WalletDrainStatus::unavailable(),
             },
             (_, Err(_)) | (None, Ok(_)) => WalletDrainStatus::unavailable(),
@@ -163,6 +166,17 @@ impl EcashPayoutWorker for PayoutWorker {
             .await
         {
             Ok(c) => Ok(crate::drain_status::wallet_drain_status(&c).await.to_wire()),
+            Err(error)
+                if matches!(
+                    error.downcast_ref(),
+                    Some(crate::WalletError::ClientOpening {
+                        recovering: true,
+                        ..
+                    })
+                ) =>
+            {
+                Ok(WalletDrainStatusWire::recovering())
+            }
             Err(_) => Ok(WalletDrainStatus::unavailable().to_wire()),
         }
     }

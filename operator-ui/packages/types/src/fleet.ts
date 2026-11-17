@@ -173,6 +173,8 @@ export interface WalletDrainStatus {
   active_operation_count: number;
   query_errors: WalletDrainQuery[];
   drain_state: WalletDrainState;
+  // Unreadable because the wallet's recovery scan is still running.
+  recovering: boolean;
 }
 
 // --- guardian fees (crates/mg/core/src/guardian_fee.rs) ---

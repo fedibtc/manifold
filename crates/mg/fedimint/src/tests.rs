@@ -1006,7 +1006,8 @@ async fn status_reads_refuse_while_another_task_opens_the_client() {
             .expect("a status read does not wait for the open");
     assert!(matches!(
         payment,
-        Err(WalletError::ClientOpening { federation_id: id }) if id == federation_id
+        Err(WalletError::ClientOpening { federation_id: id, recovering: false })
+            if id == federation_id
     ));
     let guardian = tokio::time::timeout(
         quickly,
@@ -1025,6 +1026,58 @@ async fn status_reads_refuse_while_another_task_opens_the_client() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_status_read_says_when_the_open_is_an_unfinished_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let recovering = federation_id(1);
+    let fresh = federation_id(2);
+    for (federation_id, prefix, state) in [
+        (
+            recovering,
+            1u64,
+            InitState::Pending(InitMode::Recover { snapshot: None }),
+        ),
+        (fresh, 2u64, InitState::Complete(InitModeComplete::Fresh)),
+    ] {
+        let scope = ClientScope::Payment(federation_id);
+        wallet.prefixes.write().await.insert(scope, prefix);
+        let database = wallet
+            .database
+            .with_prefix(prefix.consensus_encode_to_vec());
+        let mut dbtx = database.begin_transaction().await;
+        dbtx.insert_entry(&ClientInitStateKey, &state).await;
+        dbtx.commit_tx().await;
+    }
+    let _opening = [
+        wallet
+            .join_exclusion(ClientScope::Payment(recovering))
+            .await,
+        wallet.join_exclusion(ClientScope::Payment(fresh)).await,
+    ];
+
+    assert!(matches!(
+        wallet.client_with(recovering, OpenWait::Refuse).await,
+        Err(WalletError::ClientOpening {
+            recovering: true,
+            ..
+        })
+    ));
+    assert!(matches!(
+        wallet.client_with(fresh, OpenWait::Refuse).await,
+        Err(WalletError::ClientOpening {
+            recovering: false,
+            ..
+        })
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

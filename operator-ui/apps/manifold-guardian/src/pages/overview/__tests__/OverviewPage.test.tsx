@@ -124,6 +124,36 @@ it('should list a non-receivable federation as an attention item', async () => {
   screen.getByRole('link', { name: 'Review' });
 });
 
+it('should explain the missing balance while a wallet recovers', async () => {
+  vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) => {
+    if (request === 'ListSeats') return Promise.resolve({ seats: [] });
+    if (request === 'ListPaymentFederations') {
+      return Promise.resolve({
+        federations: [
+          {
+            federation_id: 'fed1',
+            accepted: true,
+            receivable: false,
+            wallet: { ...walletStatus(null), recovering: true }
+          }
+        ]
+      });
+    }
+    if (request === 'ShowPlans') return Promise.resolve({ plans: [] });
+    return Promise.resolve({
+      fman_name: 'blissful-chiffchaff',
+      service_pubkey: 'abc',
+      service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+      nostr: AUTHORIZED_NOSTR
+    });
+  });
+  renderPage();
+
+  await waitFor(() => screen.getByText('Wallet recovering; balance temporarily unavailable.'));
+  screen.getByText('Wallet recovering; balance temporarily unavailable');
+  expect(screen.queryByText('Payment federation not accepting payments')).toBeNull();
+});
+
 it('should signpost an unapproved fleet to the Authorization screen', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) => {
     if (request === 'ListSeats') return Promise.resolve({ seats: [] });
