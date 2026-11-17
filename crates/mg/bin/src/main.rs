@@ -328,9 +328,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
+    // Measured once: the disk seat limit divides it, and the resource sample
+    // reports it.
+    let data_filesystem_bytes = mg_core::seat_capacity::data_filesystem_bytes(&args.data_dir)
+        .inspect_err(|error| {
+            tracing::warn!(%error, "cannot measure the data filesystem; no disk seat limit");
+        })
+        .ok();
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon {
         data_filesystem: resource_report::DataFilesystem::of(&args.data_dir),
+        data_filesystem_bytes,
     });
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
@@ -471,6 +479,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     } else {
         mg_core::cpu_capacity::measure_at_start(&db).await
     };
+    // E2E starts many MGs on one host's filesystem, often a small temporary
+    // one, so it skips the disk seat limit as it skips the CPU one. A failed
+    // measurement is no disk limit, not a failed start.
+    let disk_seat_limit_bytes = data_filesystem_bytes.filter(|_| !local_e2e);
 
     // Reuse the one service endpoint for outbound transfer pulls. It is bound
     // only after the duplicate-instance veto and before fleet workers start.
@@ -649,6 +661,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet.clone(),
         nostr.subscribe_setup_payment_federations(),
         cpu_capacity,
+        disk_seat_limit_bytes,
     );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),

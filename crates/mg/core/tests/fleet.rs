@@ -1266,7 +1266,7 @@ async fn runtime_limits_divide_the_data_budget_by_the_published_data_per_seat() 
         .unwrap();
     let (publish, policies) =
         tokio::sync::watch::channel(Some(policy(r#","seat_monthly_data_gb":60"#)));
-    let task = crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), policies, None);
+    let task = crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), policies, None, None);
     let data_max_seats = || async { fleet.availability_snapshot().await.limits.data_max_seats() };
     let wait_for = |seats: u32, why: &'static str| {
         let data_max_seats = &data_max_seats;
@@ -1333,6 +1333,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
         .update_seats_config(crate::db::SeatsConfigUpdate {
             policy_max_seats: Some(2),
             cpu_max_seats: Some(Some(3)),
+            disk_max_seats: Some(Some(5)),
             ..Default::default()
         })
         .await
@@ -1373,6 +1374,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
             "cpu_count": 4,
             "cpu_iterations_per_sec": 2_600,
             "cpu_single_core_iterations_per_sec": 700,
+            "disk_max_seats": 5,
             // A token, so the collector tells no cap from no answer.
             "monthly_data_budget": budget,
             "available_seats": available,
@@ -1398,6 +1400,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
         cpu_count: Some(4),
         cpu_iterations_per_sec: Some(2_600),
         cpu_single_core_iterations_per_sec: Some(700),
+        disk_max_seats: Some(5),
         monthly_data_budget: Some(budget),
         mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
@@ -1467,7 +1470,7 @@ async fn runtime_seat_limits_divide_the_total_iterations_by_the_published_budget
     };
     let (policy, receiver) = tokio::sync::watch::channel(cpu_budget_policy(Some(500)));
     let limits =
-        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, Some(cpu));
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, Some(cpu), None);
     cpu_limit_becomes(&fleet, Some(8)).await;
     // A newer publication without a budget lifts the limit.
     policy.send_replace(cpu_budget_policy(None));
@@ -1485,8 +1488,68 @@ async fn runtime_seat_limits_divide_the_total_iterations_by_the_published_budget
         .unwrap();
     cpu_limit_becomes(&fleet, Some(3)).await;
     let (_policy, receiver) = tokio::sync::watch::channel(cpu_budget_policy(Some(500)));
-    let limits = crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None);
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, None);
     cpu_limit_becomes(&fleet, None).await;
+    limits.abort();
+    fleet.shutdown().await;
+}
+
+async fn disk_limit_becomes(fleet: &Fleet, expected: Option<u32>) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fleet.availability_snapshot().await.limits.disk_max_seats != expected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("the disk seat limit did not become {expected:?}");
+    });
+}
+
+#[tokio::test]
+async fn runtime_seat_limits_divide_the_data_filesystem_by_the_published_disk_figure() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 12, 31_900).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let policy = |figure: Option<u32>| {
+        let mut content = serde_json::json!({
+            "version": 1,
+            "fman_version": "0.1.0",
+            "federations": [],
+            "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+        });
+        if let Some(figure) = figure {
+            content["seat_disk_gb"] = serde_json::json!(figure);
+        }
+        Some(
+            fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+                content.to_string().as_bytes(),
+            )
+            .expect("test policy parses"),
+        )
+    };
+    // A 1 TB drive's ext4 size: 12 seats at the default 80 GB, 6 at 160 GB.
+    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
+    let limits = crate::seat_capacity::spawn_runtime_seat_limits(
+        fleet.clone(),
+        receiver,
+        None,
+        Some(984_000_000_000),
+    );
+    disk_limit_becomes(&fleet, Some(6)).await;
+    publish.send_replace(policy(None));
+    disk_limit_becomes(&fleet, Some(12)).await;
+    limits.abort();
+
+    // Without a measurement there is no disk limit: it clears a stored one.
+    let (_publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, None);
+    disk_limit_becomes(&fleet, None).await;
     limits.abort();
     fleet.shutdown().await;
 }

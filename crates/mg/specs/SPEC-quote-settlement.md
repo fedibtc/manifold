@@ -36,9 +36,9 @@ readiness verdict, and a runtime seat limit write that takes the last free
 slot. A monthly data answer that covers the same seats, such as `not_set` to
 `unlimited`, stores the answer and keeps the epoch.
 
-Admission sells up to the lowest of five limits: the operator's maximum,
-runtime limits from host memory, the setup-payment publication and the
-measured CPU capacity, and the limit the operator's data budget makes at the
+Admission sells up to the lowest of six limits: the operator's maximum,
+runtime limits from host memory, the setup-payment publication, the
+measured CPU capacity and the data filesystem's size, and the limit the operator's data budget makes at the
 publication's data per seat
 ([REQ-seat-capacity-default](./REQ-seat-capacity-default.md)). One SQLite write
 transaction applies every change to them and to readiness, and compares free

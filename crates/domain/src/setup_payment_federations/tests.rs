@@ -54,6 +54,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         seat_memory_budget_mib: None,
         seat_cpu_iterations_per_sec: None,
         seat_monthly_data_gb: None,
+        seat_disk_gb: None,
         max_seats_per_mg: None,
         seat_memory_budget_mib_v2: None,
         max_seats_per_mg_v2: None,
@@ -245,6 +246,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             seat_memory_budget_mib: None,
             seat_cpu_iterations_per_sec: None,
             seat_monthly_data_gb: None,
+            seat_disk_gb: None,
             max_seats_per_mg: None,
             seat_memory_budget_mib_v2: None,
             max_seats_per_mg_v2: None,
@@ -489,6 +491,31 @@ fn seat_monthly_data_defaults_to_65_and_is_bounded() {
         assert_eq!(
             AdmittedSetupPaymentFederations::parse(raw(gb).as_bytes()),
             Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
+            "{gb}"
+        );
+    }
+}
+
+/// Like the data figure, an absent disk figure takes the built-in default.
+#[test]
+fn seat_disk_defaults_to_80_and_is_bounded() {
+    let raw = |gb: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","seat_disk_gb":{gb}}}"#
+        )
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.seat_disk_gb().get(), 80);
+    assert_eq!(DEFAULT_SEAT_DISK_GB, 80);
+    for gb in [1, 75, 100_000] {
+        let admitted = AdmittedSetupPaymentFederations::parse(raw(&gb.to_string()).as_bytes())
+            .expect("an in-range figure is admitted");
+        assert_eq!(admitted.seat_disk_gb().get(), gb);
+    }
+    for gb in ["0", "100001"] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(raw(gb).as_bytes()),
+            Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
             "{gb}"
         );
     }

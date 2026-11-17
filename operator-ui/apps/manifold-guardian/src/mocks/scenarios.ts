@@ -179,6 +179,7 @@ const base = (): Pick<
   | 'relayAuthorization'
   | 'maxSeats'
   | 'cpuMaxSeats'
+  | 'diskMaxSeats'
   | 'monthlyDataBudget'
   | 'seatMonthlyDataGb'
   | 'readyForNewSeats'
@@ -193,6 +194,8 @@ const base = (): Pick<
   maxSeats: 3,
   // The setup-payment policy sets no per-seat CPU budget, so CPU sets no limit.
   cpuMaxSeats: null,
+  // As in local end-to-end tests, which do not measure the data filesystem.
+  diskMaxSeats: null,
   // An MG set up before the question, as every upgrade from 0.1.15 is.
   monthlyDataBudget: 'not_set',
   // The built-in default while the publication states no figure.
@@ -580,6 +583,15 @@ const builders = {
     onboarding: authorized,
     cpuMaxSeats: 2
   }),
+  'disk-limited': () => ({
+    ...base(),
+    maxSeats: null,
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    diskMaxSeats: 6
+  }),
   'uptime-low': () => ({
     ...base(),
     seats: [],
@@ -884,6 +896,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'cpu-limited': {
     desc: "The setup-payment policy sets a per-seat CPU budget that this host's CPU fills at 2 seats, below memory's 9. The operator limit is automatic.",
+    affects: ['offer']
+  },
+  'disk-limited': {
+    desc: "This host's data disk holds 6 seats at the setup-payment policy's disk per seat (a 512 GB drive at the default 80 GB), below memory's 9. The operator limit is automatic.",
     affects: ['offer']
   },
   'uptime-low': {

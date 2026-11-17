@@ -17,7 +17,7 @@ Available RAM is `MemAvailable`, lowered to the cgroup headroom
 
 ## Runtime limits
 
-Admission sells up to the lowest of five limits on total seats:
+Admission sells up to the lowest of six limits on total seats:
 
 - the operator's maximum, which only the operator writes. It may be
   automatic: no operator cap, so the other limits decide. Setup leaves
@@ -31,6 +31,9 @@ Admission sells up to the lowest of five limits on total seats:
 - a CPU limit: the host's measured CPU capacity divided by the
   publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
   field there is no CPU limit;
+- a disk limit: the size of the filesystem holding the MG data directory
+  divided by the publication's `seat_disk_gb` (default 80 GB), rounded down
+  ([Disk](#disk)). Without a measurement there is no disk limit;
 - a data limit: the operator's monthly data budget divided by the
   publication's `seat_monthly_data_gb` (default 65 GB), rounded down. It
   binds only when the operator gave a budget in GB.
@@ -101,12 +104,45 @@ can be restored. The migration replaces the offer epoch, because the first
 memory value of 4 can take the last free slot.
 
 The MG writes the runtime limits and the publication's inputs at start, on
-each newly admitted publication, and every 5 minutes. The CPU limit changes
-only with the publication. The memory limit falls at once and rises
+each newly admitted publication, and every 5 minutes. The CPU and disk
+limits change only with the publication. The memory limit falls at once and rises
 only after three consecutive samples allow it, so a transient spike does not
 open and close the offer. A runtime or data limit below the active seat count
 only stops new sales. It does not stop a seat. Each write keeps the offer-epoch
 invariants of [SPEC-quote-settlement](./SPEC-quote-settlement.md).
+
+## Disk
+
+Every seat syncs its consensus database many times a second, so seats wear
+the drive that holds them. Drive wear, not space, is what bounds seats on
+disk: a seat's database stays small while its writes add up to many times the
+drive's size over its life. The MG cannot read a drive's rated endurance
+(TBW) or its wear: containers have no device access, and ratings vary widely
+between drives of one size. So it uses the size of the data filesystem as
+the proxy, since endurance grows with capacity, and sells one seat per
+`seat_disk_gb` of it. An MG acts as a hosting provider here: the figure sets
+how hard the fleet may work a drive, and the host chooses hardware for that.
+
+The size is the filesystem's total size, used or not (`statvfs` blocks times
+fragment size, what `df` shows as its size), not its free space. GB means
+10^9 bytes, as drives are sold. The default of 80 GB sells 6 seats on a
+512 GB drive and 12 on a 1 TB drive, whose ext4 filesystems report about 503
+and 984 GB after the filesystem's own overhead. On a pool spanning several
+drives, or a data directory on a shared host filesystem, the MG sees that
+filesystem's size, which is still the drive capacity behind its seats.
+
+The MG measures once, at daemon start. A failed measurement logs a warning
+and leaves the MG without a disk limit; it does not stop the MG. Local E2E
+starts many MGs on one host's filesystem, often a small temporary one, and
+skips the measurement, so it has no disk limit. MGs journal the disk limit in
+the `seat capacity` event and the filesystem's kind and size in the `cgroup
+resource sample`, so Fedi can tune `seat_disk_gb` without a release. The
+bounds, 1 to 100,000 GB, refuse a figure that would let a small drive sell
+seats that cost almost nothing, and one that would stop every MG.
+
+The figure does not model writes per seat. Fedi measures those across the
+fleet (`cgroup_block_write_bytes` in the resource sample) and moves the
+figure when they change, for example when seats sync less often.
 
 ## Data budget
 
@@ -164,7 +200,8 @@ that resting per-seat cost: headroom for DKG and chain-scan spikes and for
 `fedimintd` growth as a federation accumulates history.
 
 The policy limit (default 12) bounds what RAM does not: concurrent-ceremony
-CPU and disk IO, for which no evidence exists yet. The readiness pressure
+CPU and disk IO, for which no evidence exists yet. The disk limit bounds
+drive wear, not IO contention. The readiness pressure
 check ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate)) stops
 new sales on a host whose seats keep waiting for CPU or disk, at maximums
 Fedi can publish and that otherwise default; every MG journals its pressure

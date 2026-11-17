@@ -238,6 +238,7 @@ impl FleetNostrHost {
                 .cpu_capacity
                 .as_ref()
                 .map(|cpu| cpu.single_core_iterations_per_sec),
+            disk_max_seats = snapshot.limits.disk_max_seats,
             monthly_data_budget = %snapshot.limits.monthly_data_budget,
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,

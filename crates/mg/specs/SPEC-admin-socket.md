@@ -122,7 +122,8 @@ the fleet.
   budget (`"not_set"`, `"unlimited"`, or the GB as a decimal string such as
   `"500"`), the data per seat (the publication's or its default), and the
   data limit they make (`null` without a GB budget). `cpu_max_seats` is
-  `null` while the policy sets no per-seat CPU budget. A real change rotates the offer epoch,
+  `null` while the policy sets no per-seat CPU budget, and `disk_max_seats`
+  while the MG has not measured its data filesystem. A real change rotates the offer epoch,
   invalidating outstanding quotes; a no-op does not.
 - `SetDataBudget` replaces the operator's monthly data answer: `"unlimited"`
   for an internet plan without a monthly data cap, or the GB this guardian

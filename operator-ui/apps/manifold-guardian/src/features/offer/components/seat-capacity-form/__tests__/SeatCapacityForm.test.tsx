@@ -34,6 +34,7 @@ const mockDaemon = () =>
           iterations_per_sec: 12_600,
           single_core_iterations_per_sec: 810
         },
+        disk_max_seats: null,
         monthly_data_budget: dataMaxSeats === null ? 'unlimited' : String(dataMaxSeats * 65),
         seat_monthly_data_gb: 65,
         data_max_seats: dataMaxSeats,
@@ -78,6 +79,7 @@ const limits = {
   max_seats: null,
   available_slots: 0,
   cpu_benchmark: { cpu_count: 16, iterations_per_sec: 12_600, single_core_iterations_per_sec: 810 },
+  disk_max_seats: null,
   monthly_data_budget: 'unlimited' as const,
   seat_monthly_data_gb: 65,
   data_max_seats: null
@@ -136,6 +138,40 @@ it('should name the CPU limit beside memory only while a CPU limit applies', () 
       cpu_max_seats: null
     })
   ).toBe('Up to 1 seat for this host now.');
+});
+
+it('should name the disk limit beside memory and CPU only while a disk limit applies', () => {
+  // A 512 GB drive's 6 seats bind below memory's 9 and CPU's 8.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: 8,
+      disk_max_seats: 6
+    })
+  ).toBe('Up to 6 seats for this host now. Memory allows 9 seats, CPU 8 seats, disk 6 seats.');
+  // Without a CPU limit the disk limit alone joins memory, and is named even
+  // where memory binds below it.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 4,
+      policy_max_seats: 12,
+      cpu_max_seats: null,
+      disk_max_seats: 12
+    })
+  ).toBe('Up to 4 seats for this host now. Memory allows 4 seats, disk 12 seats.');
+  // A disk limit of zero stops sales; it is not an absent limit.
+  expect(
+    describeAutomaticLimit({
+      ...limits,
+      memory_max_seats: 9,
+      policy_max_seats: 12,
+      cpu_max_seats: null,
+      disk_max_seats: 0
+    })
+  ).toBe('Up to 0 seats for this host now. Memory allows 9 seats, disk 0 seats.');
 });
 
 it('should name monthly data beside memory and CPU while a data limit applies', () => {
@@ -365,6 +401,12 @@ it.each([
   [{ ...withData(10, 9, 12, 2), cpu_max_seats: 1 }, null],
   [
     { ...withData(10, 9, 12, 2), cpu_max_seats: 2 },
+    'Your limit is 10 seats. Monthly data allows 2 seats.'
+  ],
+  // Nor is the disk limit below it.
+  [{ ...withData(10, 9, 12, 2), disk_max_seats: 1 }, null],
+  [
+    { ...withData(10, 9, 12, 2), disk_max_seats: 6 },
     'Your limit is 10 seats. Monthly data allows 2 seats.'
   ]
 ])('should describe the data limit of %o as %j', (capacity, expected) => {

@@ -31,6 +31,32 @@ fn cpu_limit_is_whole_budgets_of_the_measured_capacity() {
 }
 
 #[test]
+fn disk_limit_is_whole_per_seat_figures_of_the_filesystem_size() {
+    let gb = |gb| NonZeroU32::new(gb).unwrap();
+    // What ext4 reports as the size of a 1 TB and a 512 GB drive, after its
+    // own overhead: 12 and 6 seats at the default 80 GB.
+    assert_eq!(disk_max_seats(984_000_000_000, DEFAULT_SEAT_DISK), 12);
+    assert_eq!(disk_max_seats(503_000_000_000, DEFAULT_SEAT_DISK), 6);
+    // GB are 10^9 bytes: one byte short of k figures gives k - 1.
+    assert_eq!(disk_max_seats(3 * 80 * GB, gb(80)), 3);
+    assert_eq!(disk_max_seats(3 * 80 * GB - 1, gb(80)), 2);
+    assert_eq!(disk_max_seats(80 * GB - 1, gb(80)), 0);
+    assert_eq!(disk_max_seats(u64::MAX, gb(1)), u32::MAX);
+}
+
+#[test]
+fn data_filesystem_size_is_the_whole_filesystem_not_its_free_space() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let size = data_filesystem_bytes(dir.path()).unwrap();
+    let stat = rustix::fs::statvfs(dir.path()).unwrap();
+    let used = (stat.f_blocks - stat.f_bfree) * stat.f_frsize;
+    let free = stat.f_bavail * stat.f_frsize;
+    // Space in use and space reserved for root count toward the size too.
+    assert!(size >= used + free, "size {size}, used {used}, free {free}");
+    assert!(data_filesystem_bytes(&dir.path().join("missing")).is_err());
+}
+
+#[test]
 fn smoothing_lowers_at_once_and_raises_after_three_agreeing_samples() {
     let mut smoothed = Smoothed::starting_at(6);
     assert_eq!(smoothed.push(4), 4);

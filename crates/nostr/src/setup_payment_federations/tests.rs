@@ -31,6 +31,7 @@ fn content(invites: &[&str]) -> String {
         seat_memory_budget_mib: None,
         seat_cpu_iterations_per_sec: None,
         seat_monthly_data_gb: None,
+        seat_disk_gb: None,
         max_seats_per_mg: None,
         seat_memory_budget_mib_v2: None,
         max_seats_per_mg_v2: None,

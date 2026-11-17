@@ -111,6 +111,7 @@ fn reports_from_releases_with_fewer_fields_decode() {
             cpu_count: None,
             cpu_iterations_per_sec: None,
             cpu_single_core_iterations_per_sec: None,
+            disk_max_seats: None,
             monthly_data_budget: None,
             mg_version: None,
         }
@@ -177,6 +178,10 @@ fn seat_counts_must_agree_with_every_stated_limit() {
     assert_eq!(with_cpu.cpu_iterations_per_sec, Some(2600));
     assert_eq!(with_cpu.cpu_single_core_iterations_per_sec, Some(700));
     assert_eq!(with_cpu.cpu_count, Some(4));
+    let with_disk = capacity(&format!("\"disk_max_seats\":6,{CAPACITY}"))
+        .expect("free seats within every limit")
+        .report;
+    assert_eq!(with_disk.disk_max_seats, Some(6));
     for fields in [
         // More free seats than the memory limit, or than the operator limit.
         CAPACITY.replace("\"available_seats\":6", "\"available_seats\":10"),
@@ -185,6 +190,8 @@ fn seat_counts_must_agree_with_every_stated_limit() {
         format!(
             "\"cpu_max_seats\":5,\"cpu_count\":4,\"cpu_iterations_per_sec\":2600,\"cpu_single_core_iterations_per_sec\":700,{CAPACITY}"
         ),
+        // More free seats than the disk limit, the smallest stated one.
+        format!("\"disk_max_seats\":5,{CAPACITY}"),
         // A policy limit above the policy maximum.
         CAPACITY.replace(
             "\"policy_max_seats\":12",

@@ -10,6 +10,7 @@ const capacity = (overrides: Partial<CapacityResponse> = {}): CapacityResponse =
   policy_max_seats: 12,
   cpu_max_seats: null,
   cpu_benchmark: null,
+  disk_max_seats: null,
   monthly_data_budget: '500',
   seat_monthly_data_gb: 65,
   data_max_seats: 7,
