@@ -10,6 +10,7 @@ mod guardian_reports;
 mod mg_federation_directory;
 mod mg_peer_attestation;
 mod mg_seat_bindings;
+mod rollout;
 mod setup_payment_federations;
 mod signed_json;
 pub mod test_support;
@@ -46,6 +47,11 @@ pub use mg_seat_bindings::{
     MgSeatBindings, MgSeatBindingsError, VerifiedSeatBinding,
 };
 pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
+pub use rollout::{
+    InvalidRolloutFeature, InvalidRolloutSchedule, ROLLOUT_FEATURE_NAME_MAX_BYTES,
+    ROLLOUT_MAX_FEATURES, ROLLOUT_MAX_POINTS, RolloutDraw, RolloutFeature, RolloutPoint,
+    RolloutSchedule, Rollouts, TooManyRolloutFeatures,
+};
 pub use setup_payment_federations::{
     AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
     DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,

@@ -483,6 +483,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // one, so it skips the disk seat limit as it skips the CPU one. A failed
     // measurement is no disk limit, not a failed start.
     let disk_seat_limit_bytes = data_filesystem_bytes.filter(|_| !local_e2e);
+    let rollout_seed = mg_core::rollout::RolloutSeed::load(&db).await?;
 
     // Reuse the one service endpoint for outbound transfer pulls. It is bound
     // only after the duplicate-instance veto and before fleet workers start.
@@ -663,6 +664,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         cpu_capacity,
         disk_seat_limit_bytes,
     );
+    let rollout_log = mg_core::rollout::spawn_rollout_log(
+        fleet.clone(),
+        nostr.subscribe_setup_payment_federations(),
+        rollout_seed,
+    );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),
         nostr.subscribe_setup_payment_federations(),
@@ -698,6 +704,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     };
     seat_readiness.abort();
     runtime_seat_limits.abort();
+    rollout_log.abort();
     guardian_link_notifier.shutdown().await;
     telemetry_registration.shutdown().await;
     router.shutdown().await?;

@@ -1146,6 +1146,17 @@ impl Fleet {
         Ok(Some((self.seat_summary(&seat).await?, report)))
     }
 
+    /// The seats not decommissioned, in no particular order.
+    pub(crate) fn live_seat_ids(&self) -> Vec<SeatId> {
+        self.seats
+            .read()
+            .expect("seat registry lock is never poisoned")
+            .values()
+            .filter(|seat| !seat.is_decommissioned())
+            .map(|seat| seat.facts().seat_id.clone())
+            .collect()
+    }
+
     /// Operator listing of every durable seat.
     pub async fn seat_summaries(&self) -> anyhow::Result<Vec<SeatSummary>> {
         let seats: Vec<_> = self
