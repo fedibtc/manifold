@@ -83,9 +83,15 @@ it('should flag Mobile notifications while the phone is not reached', () => {
   ).toBeInTheDocument();
 });
 
+it('should mark Mobile notifications new while no phone is linked', () => {
+  phoneStatus({ availability: 'ready', link: null, offer: null });
+  renderItems();
+
+  expect(screen.getByRole('link', { name: 'Mobile notifications, new' })).toBeInTheDocument();
+});
+
 it.each([
   ['a phone is active', { availability: 'ready', link: activePhone, offer: null }],
-  ['no phone was ever linked', { availability: 'ready', link: null, offer: null }],
   ['this host cannot notify at all', { availability: 'no_push_gateway', link: null, offer: null }]
 ])('should not flag Mobile notifications when %s', (_name, data) => {
   phoneStatus(data);

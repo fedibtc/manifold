@@ -4,12 +4,14 @@ import { EarningsTimeline } from '@/features/overview/components/earnings-timeli
 import { OfferSummary } from '@/features/overview/components/offer-summary/OfferSummary';
 import { useOverviewEarnings } from '@/features/overview/hooks/use-overview-earnings/useOverviewEarnings';
 import { deriveOverview } from '@/features/overview/utils/deriveOverview';
+import { useMobileNotificationsNews } from '@/features/phone-link/hooks/use-mobile-notifications-news/useMobileNotificationsNews';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { usePaymentFederations } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
 import { useSeatReadiness } from '@/shared/api/hooks/use-seat-readiness/useSeatReadiness';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
+import { WhatsNew } from '@/shared/components/whats-new/WhatsNew';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
 import { formatSats } from '@/shared/utils/format';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
@@ -19,6 +21,8 @@ const toneVariant = { success: 'success', warn: 'warn' } as const;
 
 export const OverviewPage = () => {
   const seats = useSeats();
+  // Announcements for the "What's new" slot, newest first.
+  const whatsNew = [useMobileNotificationsNews()].filter((item) => item !== null);
   const paymentFederations = usePaymentFederations();
   const offer = useOffer();
   const earnings = useOverviewEarnings();
@@ -50,6 +54,8 @@ export const OverviewPage = () => {
   return (
     <div className={styles.root}>
       <h1 className={styles.heading}>Overview</h1>
+
+      <WhatsNew items={whatsNew} />
 
       <QuerySurface disposition={disposition} onRetry={retry}>
         <Banner variant={readinessUnavailable ? 'warn' : toneVariant[model.tone]}>

@@ -46,8 +46,9 @@ it('should render the brand and every nav item', () => {
 
   screen.getByText('Manifold Fedimint Guardian');
   screen.getByText('blissful-chiffchaff');
+  // Mobile notifications reads "…, new" while no phone is linked.
   for (const item of NAV_ITEMS) {
-    screen.getByRole('link', { name: item.label });
+    screen.getByRole('link', { name: (name) => name.startsWith(item.label) });
   }
 });
 
