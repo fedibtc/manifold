@@ -21,7 +21,9 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi29";
+    # fedi30 is fedi29 plus the batched AlephBFT backup write (with
+    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -201,21 +203,6 @@
           };
           patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
         };
-        # AlephBFT marks a peer as a forker when it proves the peer signed two
-        # units for one round, but reports the fact only in an info-level log
-        # that fedimintd's filter hides, while fedimint's `status` still shows
-        # the forker as contributing. Emit a safe event when a forker is
-        # marked, so a federation stalled on too few honest creators is
-        # visible in seat telemetry.
-        alephBftPatched = pkgs.applyPatches {
-          name = "fedimint-aleph-bft-forker-safe-event";
-          src = pkgs.fetchCrate {
-            pname = "fedimint-aleph-bft";
-            version = "0.36.0";
-            hash = "sha256-cg3E1x+N55JOe+q6eJW7gzy/e+IhSJbcpihcKta1D8Q=";
-          };
-          patches = [ ./patches/fedimint-aleph-bft-forker-safe-event.patch ];
-        };
         # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
         # agree on the DKG consensus checksum. Votes still activate 2.2.
@@ -256,7 +243,6 @@
           link_dependency fedimint ${fedimintPatched}
           link_dependency fedi ${fediPatched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
-          link_dependency fedimint-aleph-bft ${alephBftPatched}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
@@ -309,7 +295,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi29.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1016,12 +1002,12 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi29";
+        fedimintdRelease = "0.12.0-fedi30";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "4679cb5a02adeeefca3cce0a6b02fa19ed39777f";
+        fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1233,7 +1219,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi29.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fediPatched}
