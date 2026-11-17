@@ -6,7 +6,7 @@ import styles from './UptimeTitle.module.css';
 
 /** Taps on the title that open the uptime reset. A badge issuer tells the
  *  operator the count; nobody resets by accident. */
-export const RESET_UPTIME_TAPS = 21;
+export const RESET_UPTIME_TAPS = 10;
 
 /**
  * The Uptime section's title, and the hidden way to `ResetUptime`. Uptime is

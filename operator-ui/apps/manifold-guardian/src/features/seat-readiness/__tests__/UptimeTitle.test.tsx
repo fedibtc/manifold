@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe('UptimeTitle', () => {
-  it('should open the reset only on the 21st tap', () => {
+  it('should open the reset only on the 10th tap', () => {
     renderTitle();
 
     tap(RESET_UPTIME_TAPS - 1);
@@ -32,7 +32,7 @@ describe('UptimeTitle', () => {
 
     tap(1);
     expect(dialog()).toBeInTheDocument();
-    expect(RESET_UPTIME_TAPS).toBe(21);
+    expect(RESET_UPTIME_TAPS).toBe(10);
     expect(screen.getByText('Only do this if your badge issuer asked you to.')).toBeInTheDocument();
     // Enter on the opened dialog must not reset.
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
