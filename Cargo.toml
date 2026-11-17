@@ -298,6 +298,16 @@ netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd66
 iroh = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
 iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
 iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+# iroh 1.4.1 (MG endpoint, Fedimint) with bounded waits in the relay actor
+# (fedibtc/iroh `roboman/relay-actor-bounded-waits-1.4.1`). Without it, a relay
+# that goes silent while an idle relay connection closes wedges the relay
+# actor: the endpoint never reaches a relay again until restart.
+# n0-computer/iroh#4476 tracks the upstream bug. `iroh` uses the other crates
+# by path, so all four come from this checkout.
+iroh-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh" }
+iroh-base-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh-base" }
+iroh-dns-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh-dns" }
+iroh-relay-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh-relay" }
 
 # Still load-bearing after workspace crates dropped their direct Fedimint git
 # deps: `stability-pool-client`/`stability-pool-common` (a git dependency of
