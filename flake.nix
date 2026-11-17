@@ -154,16 +154,18 @@
         # invoice metadata, gateway metadata, or remote error text. Keep the
         # patch adjacent to the pinned input and make every Cargo consumer use
         # the same patched source. The AlephBFT backup patch stores each batch
-        # of units from `alephBftPatched`'s saver in one synced commit. The
-        # other patches change only Fedimint's test environment: an E2E DKG
-        # pause point, and a 5s instead of 60s wait after a scheduled
-        # shutdown's last session.
+        # of units from `alephBftPatched`'s saver in one synced commit, and the
+        # RocksDB patch sets a larger write buffer, WAL file recycling and a
+        # flush before each checkpoint; both cut SSD wear. The other patches
+        # change only Fedimint's test environment: an E2E DKG pause point, and
+        # a 5s instead of 60s wait after a scheduled shutdown's last session.
         fedimintPatched = pkgs.applyPatches {
           name = "fedimint-redacted-lightning-payment-logs";
           src = fedimint;
           patches = [
             ./patches/fedimint-redact-lightning-payment-logs.patch
             ./patches/fedimint-aleph-backup-batch.patch
+            ./patches/fedimint-rocksdb-wal-wear.patch
             ./patches/fedimint-dkg-test-pause.patch
             ./patches/fedimint-test-scheduled-shutdown-wait.patch
           ];
