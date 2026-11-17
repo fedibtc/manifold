@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use crate::payout_job::{Payout, PayoutJob, PayoutScope};
 use crate::payout_job_status::PayoutJobStatus;
 use crate::wallet_drain::{OutgoingOperation, WalletDrainStatus};
-use crate::{ClientScope, Wallet};
+use crate::{ClientScope, OpenWait, Wallet};
 
 pub(crate) struct PayoutWorker {
     wallet: Option<Arc<Wallet>>,
@@ -131,7 +131,7 @@ impl EcashPayoutWorker for PayoutWorker {
     }
     async fn payment_drain_status(&self, federation_id: &FederationId) -> WalletDrainStatusWire {
         let status = match (self.wallet.as_ref(), federation_id.0.parse()) {
-            (Some(wallet), Ok(id)) => match wallet.client(id).await {
+            (Some(wallet), Ok(id)) => match wallet.client_with(id, OpenWait::Refuse).await {
                 Ok(c) => crate::drain_status::wallet_drain_status(&c).await,
                 Err(_) => WalletDrainStatus::unavailable(),
             },
@@ -158,7 +158,10 @@ impl EcashPayoutWorker for PayoutWorker {
         };
         validate_scope(&scope)?;
         let key = (self.guardian_key)(seat_id);
-        match wallet.guardian_fee_client(&invite, seat_id, &key).await {
+        match wallet
+            .guardian_fee_client(&invite, seat_id, &key, OpenWait::Refuse)
+            .await
+        {
             Ok(c) => Ok(crate::drain_status::wallet_drain_status(&c).await.to_wire()),
             Err(_) => Ok(WalletDrainStatus::unavailable().to_wire()),
         }
@@ -597,7 +600,7 @@ impl PayoutNative for WalletPayoutNative {
                     .await;
                 let client = self
                     .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
+                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
                     .await?;
                 if let Some(payout) =
                     crate::payout_for_request(&client, &job.request_id, &job.destination).await?
@@ -624,7 +627,7 @@ impl PayoutNative for WalletPayoutNative {
                 let key = (self.guardian_key)(seat_id);
                 let client = self
                     .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
+                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
                     .await?;
                 crate::payout_for_request(&client, &job.request_id, &job.destination).await
             }
@@ -648,7 +651,7 @@ impl PayoutNative for WalletPayoutNative {
             } => {
                 let key = (self.guardian_key)(seat_id);
                 self.wallet
-                    .guardian_fee_client(invite_code, seat_id, &key)
+                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
                     .await?
             }
         };

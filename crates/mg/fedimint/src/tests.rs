@@ -868,6 +868,7 @@ async fn preview_timeout_does_not_fence_same_process_retry() {
                     scope.clone(),
                     std::time::Duration::from_millis(10),
                     None,
+                    OpenWait::Wait,
                 )
                 .await,
             Err(WalletError::JoinTimedOut { .. })
@@ -966,6 +967,84 @@ async fn same_federation_join_is_excluded_while_unrelated_join_progresses() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_reads_refuse_while_another_task_opens_the_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let federation_id = federation_id(1);
+    let invite = InviteCode::new(
+        fedimint_core::util::SafeUrl::parse("https://example.com").unwrap(),
+        fedimint_core::PeerId::from(0),
+        federation_id,
+        None,
+    );
+    let seat_id =
+        fedi_decentralized_service_manifold_guardian::SeatId::new("01".repeat(32)).unwrap();
+    let key = GuardianFeeAccountKey::from_secret_bytes(&[7; 32]);
+    let _payment_opening = wallet
+        .join_exclusion(ClientScope::Payment(federation_id))
+        .await;
+    let _guardian_opening = wallet
+        .join_exclusion(ClientScope::Guardian {
+            federation_id,
+            seat_id: seat_id.to_string(),
+        })
+        .await;
+    let quickly = std::time::Duration::from_millis(100);
+
+    let payment =
+        tokio::time::timeout(quickly, wallet.client_with(federation_id, OpenWait::Refuse))
+            .await
+            .expect("a status read does not wait for the open");
+    assert!(matches!(
+        payment,
+        Err(WalletError::ClientOpening { federation_id: id }) if id == federation_id
+    ));
+    let guardian = tokio::time::timeout(
+        quickly,
+        wallet.guardian_fee_client(&invite, &seat_id, &key, OpenWait::Refuse),
+    )
+    .await
+    .expect("a guardian-fee status read does not wait for the open");
+    assert!(matches!(
+        guardian.unwrap_err().downcast_ref::<WalletError>(),
+        Some(WalletError::ClientOpening { .. })
+    ));
+
+    // Acting on the client still waits for the open to finish.
+    assert!(
+        tokio::time::timeout(quickly, wallet.client_with(federation_id, OpenWait::Wait))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_reads_open_the_client_when_no_open_is_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let federation_id = federation_id(1);
+
+    // Nothing holds the exclusion, so the read goes on to look the
+    // federation up rather than reporting an open in progress.
+    assert!(matches!(
+        wallet.client_with(federation_id, OpenWait::Refuse).await,
+        Err(WalletError::UnknownFederation(id)) if id == federation_id
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

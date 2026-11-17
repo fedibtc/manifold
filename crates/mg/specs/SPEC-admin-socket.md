@@ -166,6 +166,9 @@ the fleet.
   durable leftovers of removed members, each with an `accepted` flag, its
   current receivable flag, and a `wallet` projection. Querying a retained scope
   lazily reopens its wallet from the durable prefix rather than hiding it.
+  While another task is opening that wallet, which can be a recovery scan
+  with no time bound, the query reports the wallet unreadable instead of
+  waiting; so do the guardian-fee reads behind `GuardianFees`.
 
   The wallet projection keeps monetary meanings separate:
   `available_ecash_msat` is only notes currently available to a new

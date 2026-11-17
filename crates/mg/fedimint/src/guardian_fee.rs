@@ -27,7 +27,7 @@ use stability_pool_client::api::StabilityPoolApiExt as _;
 use stability_pool_client::common::{Account, AccountHistoryItem, AccountType, FiatOrAll};
 use stability_pool_client::{StabilityPoolClientModule, StabilityPoolWithdrawalOperationState};
 
-use crate::Wallet;
+use crate::{OpenWait, Wallet};
 
 #[cfg(test)]
 mod tests;
@@ -77,7 +77,9 @@ impl Wallet {
         seat_id: &SeatId,
         key: &GuardianFeeAccountKey,
     ) -> anyhow::Result<RemittanceHistory> {
-        let client = self.guardian_fee_client(invite_code, seat_id, key).await?;
+        let client = self
+            .guardian_fee_client(invite_code, seat_id, key, OpenWait::Refuse)
+            .await?;
         sp_module(&client)?;
         Ok(RemittanceHistory {
             client,
@@ -97,7 +99,9 @@ impl GuardianFeeVault for Wallet {
         seat_id: &SeatId,
         key: &GuardianFeeAccountKey,
     ) -> anyhow::Result<FederationFeeStatus> {
-        let client = self.guardian_fee_client(invite_code, seat_id, key).await?;
+        let client = self
+            .guardian_fee_client(invite_code, seat_id, key, OpenWait::Refuse)
+            .await?;
         let module = sp_module(&client)?;
         let account = key.account();
         let sync = module
@@ -156,7 +160,9 @@ impl GuardianFeeVault for Wallet {
         seat_id: &SeatId,
         key: &GuardianFeeAccountKey,
     ) -> anyhow::Result<Collected> {
-        let client = self.guardian_fee_client(invite_code, seat_id, key).await?;
+        let client = self
+            .guardian_fee_client(invite_code, seat_id, key, OpenWait::Wait)
+            .await?;
         let module = sp_module(&client)?;
         let account = signing_account(&module, key)?;
         collect_operations(&FedimintCollectionOperations {
@@ -174,7 +180,9 @@ impl GuardianFeeVault for Wallet {
         seat_id: &SeatId,
         key: &GuardianFeeAccountKey,
     ) -> anyhow::Result<Amount> {
-        let client = self.guardian_fee_client(invite_code, seat_id, key).await?;
+        let client = self
+            .guardian_fee_client(invite_code, seat_id, key, OpenWait::Refuse)
+            .await?;
         client.get_balance_for_btc().await
     }
 }
