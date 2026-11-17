@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
+    AdmittedFeaturePolicy, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
     DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,
 };
 use tokio::sync::watch;
@@ -104,7 +104,7 @@ impl Smoothed {
 /// likewise absent without it.
 pub fn spawn_runtime_seat_limits(
     fleet: Arc<Fleet>,
-    mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    mut policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     cpu: Option<CpuCapacity>,
     data_filesystem_bytes: Option<u64>,
 ) -> tokio::task::JoinHandle<()> {

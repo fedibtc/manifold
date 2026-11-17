@@ -6,7 +6,7 @@
 transfer's seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
 `fa-client` drives the FA side of every step. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart. Whether an MG
-starts a new transfer is decided by the signed setup-payment policy it
+starts a new transfer is decided by the signed feature policy it
 holds, with a per-environment default when the policy does not say (see
 [Enabling transfer](#enabling-transfer)). A production release therefore
 ships this code with transfer off, and Fedi turns it on by republishing the
@@ -26,7 +26,7 @@ vote, so no single implementation artifact can own it coherently.
 
 ## Enabling transfer
 
-The setup-payment policy
+The feature policy
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
 carries an optional `guardian_transfer_v2` flag. An MG may start a new transfer
 only while transfer is on: the latest policy it admitted sets the flag to

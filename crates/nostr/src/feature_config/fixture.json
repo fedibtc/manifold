@@ -1,0 +1,14 @@
+{
+  "id": "2c2a617be8a03a25a43bf8ee7d9fdb9aa29fe2e22a220b81fe9e2bda50d7a9fc",
+  "pubkey": "825c0488aee6594d6bd57b75a4658d183afcf98a66e0d8e1d0ead2efbeb26b63",
+  "created_at": 100,
+  "kind": 37710,
+  "tags": [
+    [
+      "d",
+      "manifold-feature-config"
+    ]
+  ],
+  "content": "{\"version\":1,\"fman_version\":\"1.2.3\",\"guardian_link\":true}",
+  "sig": "55aa829328671f54af7f51e7ded7a75673cd7d9f4218ea7da516c65db529ce22454417af38f6d4b32a0d9f0f448fe5262fb5a579db2c05703046a899deaa096d"
+}

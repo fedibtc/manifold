@@ -468,6 +468,7 @@ async fn only_a_policy_that_enables_transfer_lets_an_mg_start_one() {
             secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[83; 32]).unwrap();
         let rpc = crate::service::ManifoldGuardianRpc::new(
             fleet.clone(),
+            tokio::sync::watch::channel(None).1,
             match field {
                 Some(field) => policy_with_transfer_flag(field, flag),
                 None => tokio::sync::watch::channel(None).1,

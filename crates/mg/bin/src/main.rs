@@ -567,12 +567,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let policy_store = Arc::new(FleetSetupPaymentPolicyStore::new(fleet.clone()));
     // Revalidate retained authority before exposing the RPC router. A publisher
     // rotation must fail startup without a window serving the old policy.
-    let retained_setup_payment_federations = match setup_payment_publisher {
-        Some(publisher) => {
-            mg_nostr::load_retained_setup_payment_policy(&policy_store, publisher).await?
-        }
-        None => None,
-    };
+    let retained_setup_payment_federations = mg_nostr::load_retained_setup_payment_policy(
+        &policy_store,
+        setup_payment_publisher,
+        manifold_environment.feature_config_publisher().copied(),
+        &db,
+    )
+    .await?;
     let keys = identity.derive_service_nostr_keys();
     let telemetry_registration_keys = keys.clone();
     let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::for_fleet(&fleet));
@@ -590,10 +591,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         holder_authorization_store,
         db,
     );
-    fleet.bind_guardian_link_policy(nostr.subscribe_setup_payment_federations());
+    fleet.bind_guardian_link_policy(nostr.subscribe_features());
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
-    let rpc = ManifoldGuardianRpc::new(fleet.clone(), nostr.subscribe_setup_payment_federations());
+    let rpc = ManifoldGuardianRpc::new(
+        fleet.clone(),
+        nostr.subscribe_setup_payment_federations(),
+        nostr.subscribe_features(),
+    );
     let server = ManifoldGuardianServiceServer::new(rpc.clone());
     let telemetry = GuardianTelemetryApiServer::new(GuardianTelemetryRpc::new(fleet.clone())?);
     let router = Router::builder(endpoint)
@@ -631,14 +636,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .spawn();
     fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());
-    let guardian_link_notifier = mg_core::guardian_link::spawn_notifier(
-        fleet.clone(),
-        nostr.subscribe_setup_payment_federations(),
-    );
+    let guardian_link_notifier =
+        mg_core::guardian_link::spawn_notifier(fleet.clone(), nostr.subscribe_features());
 
     let mut seat_readiness =
         seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
-            .spawn(fleet.clone(), nostr.subscribe_setup_payment_federations());
+            .spawn(fleet.clone(), nostr.subscribe_features());
     let host = Arc::new(FleetNostrHost::new(
         fleet.clone(),
         router.endpoint().id().to_string(),
@@ -659,7 +662,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     let runtime_seat_limits = mg_core::seat_capacity::spawn_runtime_seat_limits(
         fleet.clone(),
-        nostr.subscribe_setup_payment_federations(),
+        nostr.subscribe_features(),
         cpu_capacity,
         disk_seat_limit_bytes,
     );

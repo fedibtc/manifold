@@ -155,7 +155,7 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
-Each run also requires this MG's release to be at least the setup-payment
+Each run also requires this MG's release to be at least the feature
 policy's `min_mg_version` by SemVer precedence (a pre-release ranks below its
 release; build metadata does not count); without one the check does not
 apply. An MG below it stops selling new seats until it is updated, but it
@@ -167,7 +167,7 @@ reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
 Each run also requires CPU, IO and memory pressure averages of at most the
-setup-payment policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
+feature policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
 over 3.5 days, IO 25% and 15%, memory 70% and 70%, when absent or before a
 policy is admitted;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
@@ -205,7 +205,7 @@ it is not a prerequisite and never marks a slot down. Local E2E, whose MGs
 all share one busy test host's cgroup, skips the pressure check as it skips
 the relay and discovery checks.
 
-Each run also requires three uptime scores of at least the setup-payment
+Each run also requires three uptime scores of at least the feature
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).

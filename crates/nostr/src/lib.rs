@@ -1,6 +1,7 @@
 //! Nostr protocol constants and event admission shared by decentralized federation components.
 
 pub mod attester;
+pub mod feature_config;
 pub mod flip;
 pub mod mg;
 pub mod setup_payment_federations;

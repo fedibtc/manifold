@@ -161,6 +161,9 @@ pub const DEV_NOSTR_RELAYS_ENV: &str = "MANIFOLD_DEV_NOSTR_RELAYS";
 /// replacing the built-in development placeholder publisher.
 pub const DEV_SETUP_PAYMENT_PUBLISHER_ENV: &str = "MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER";
 
+/// Development-only pin for the independently signed feature snapshot.
+pub const DEV_FEATURE_CONFIG_PUBLISHER_ENV: &str = "MANIFOLD_DEV_FEATURE_CONFIG_PUBLISHER";
+
 /// Development-only push-gateway override: the origin of a local gateway.
 /// Development has no built-in gateway.
 pub const DEV_PUSH_GATEWAY_ORIGIN_ENV: &str = "MANIFOLD_DEV_PUSH_GATEWAY_ORIGIN";
@@ -218,10 +221,12 @@ impl ManifoldEnvironment {
         env: impl Fn(&'static str) -> Option<String>,
     ) -> Result<ManifoldEnvironmentProfile, ManifoldEnvironmentProfileError> {
         let relays_override = env(DEV_NOSTR_RELAYS_ENV);
+        let feature_override = env(DEV_FEATURE_CONFIG_PUBLISHER_ENV);
         let publisher_override = env(DEV_SETUP_PAYMENT_PUBLISHER_ENV);
         let push_gateway_override = env(DEV_PUSH_GATEWAY_ORIGIN_ENV);
         if self != Self::Development {
             for (variable, value) in [
+                (DEV_FEATURE_CONFIG_PUBLISHER_ENV, &feature_override),
                 (DEV_NOSTR_RELAYS_ENV, &relays_override),
                 (DEV_SETUP_PAYMENT_PUBLISHER_ENV, &publisher_override),
                 (DEV_PUSH_GATEWAY_ORIGIN_ENV, &push_gateway_override),
@@ -292,6 +297,23 @@ impl ManifoldEnvironment {
                 PublicKey::parse(publisher).expect("built-in publisher identity is valid")
             }),
         };
+        let feature_config_publisher = feature_override
+            .map(|value| {
+                PublicKey::parse(value.trim()).map_err(|error| {
+                    ManifoldEnvironmentProfileError::InvalidOverride {
+                        variable: DEV_FEATURE_CONFIG_PUBLISHER_ENV,
+                        detail: error.to_string(),
+                    }
+                })
+            })
+            .transpose()?;
+        if feature_config_publisher.is_some() && feature_config_publisher == setup_payment_publisher
+        {
+            return Err(ManifoldEnvironmentProfileError::InvalidOverride {
+                variable: DEV_FEATURE_CONFIG_PUBLISHER_ENV,
+                detail: "feature and payment publishers must be distinct".into(),
+            });
+        }
         let nostr_relays = match relays_override {
             Some(value) => CanonicalNostrRelays::parse_override(&value)?,
             None => CanonicalNostrRelays::from_static(relays),
@@ -318,6 +340,7 @@ impl ManifoldEnvironment {
             nostr_relays,
             peer_badge_issuer_identities,
             minimum_peer_badge_trust_level: TRUSTED_PEER_BADGE_TRUST_LEVEL,
+            feature_config_publisher,
             setup_payment_publisher,
             guardian_verification_fee_account,
             support: support.map(|support| {
@@ -414,6 +437,7 @@ pub struct ManifoldEnvironmentProfile {
     peer_badge_issuer_identities: Vec<PublicKey>,
     minimum_peer_badge_trust_level: u64,
     setup_payment_publisher: Option<PublicKey>,
+    feature_config_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
     support: Option<PublicKey>,
     bitcoin_network: Network,
@@ -498,6 +522,12 @@ impl ManifoldEnvironmentProfile {
             ManifoldEnvironment::Staging => &[STAGING_ISSUER_AUTHORITY_JSON],
             ManifoldEnvironment::Production => PRODUCTION_ISSUER_AUTHORITIES,
         }
+    }
+
+    /// Return the separate authority for feature snapshots, if configured.
+    #[must_use]
+    pub fn feature_config_publisher(&self) -> Option<&PublicKey> {
+        self.feature_config_publisher.as_ref()
     }
 
     /// Return the environment-default setup-payment federation-list

@@ -1,4 +1,4 @@
-# SPEC-setup-payment-federations: Common setup-payment federation publication
+# SPEC-setup-payment-federations: Payment and feature policy publications
 
 ## Status
 
@@ -22,8 +22,27 @@ mnemonic restore rejoins it from the backed-up claim evidence
 ([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
 so it is listed and sweepable there too.
 
-The parser does not yet know `unbadged_telemetry_registration_url`; it is
-ignored like any unknown field.
+Current readers ignore `unbadged_telemetry_registration_url` in either publication.
+The field is reserved for a future design and is not a supported enrollment setting.
+
+Deployment has two stages. First deploy readers that understand both addresses.
+Continue to publish a compatible `37707` manifest: **keep `fman_version`** or
+old readers reject even the payment fields. Preserve optional legacy settings
+(including explicit false, zero, version bounds and legacy resource limits)
+whenever omission would change an old reader's behavior. Old readers only see
+this projection. Do not enable a feature requiring agreement from both sides
+of a protocol until both have upgraded. Feature updates for upgraded readers
+require neither a payment publication nor its key.
+
+Then activate the feature address with a reviewed public key, provision its
+separate signer out of band, and publish a complete initial snapshot based on
+the effective legacy policy. Development can test this with an explicit
+`MANIFOLD_DEV_FEATURE_CONFIG_PUBLISHER` pin distinct from its payment key.
+Staging and Production reject that override and have no feature pin yet. The
+payment publisher continues to emit compatible version 1. Removing its required
+release or dropping still-effective optional settings is **not** part of this
+rollout; doing so while old readers remain would need explicit approval under
+[GATE-production-compatibility](GATE-production-compatibility.md).
 
 ## Record justification
 
@@ -105,6 +124,32 @@ this key across all custodians and hosts. Relay preflight is not a distributed
 lock. After each operation, the custodian retains the one receipt that wins
 replacement ordering as the new shared high-water mark.
 
+## Independent feature policy and rollout
+
+Kind `37710`, identifier `manifold-feature-config`, carries a complete version-1
+feature snapshot under a separate deployment-pinned Nostr author. Its content
+contains `version: 1`, the required `fman_version`, and the optional feature
+fields listed below for the legacy wire format. It has **no** payment fields.
+Only the old address can authorize `federations`, `telemetry_registration_url`, or
+`min_fee_ppm`. Additional fields in either snapshot never extend its authority.
+For example, the feature key can stop MGs from taking new seats, but cannot lower
+the fee floor or redirect telemetry enrollment.
+
+The feature event follows the same signature, exact identifier, future-skew and
+NIP-01 replacement rules as the payment event, with its own 16 KiB content
+limit and independent durable high-water mark. Once admitted, the complete
+feature snapshot wins over *all* legacy feature values, regardless of relative
+timestamps. Omitted optional features resolve to their documented defaults;
+they do not inherit old settings. Failed queries, invalid signatures and older
+snapshots do not reset feature policy. Without a feature snapshot, use the
+legacy projection, then the existing defaults if there is no payment snapshot.
+
+Select retained feature events by the configured publisher. A changed pin does
+not use another signer's event; switching back restores that signer's floor.
+An authentic but unsupported retained snapshot supplies no interpreted values
+but still orders replacements. Failure to authenticate the selected record is
+an integrity error, not an empty cache. Payment rotation is unchanged.
+
 ## Content and admission
 
 `content` is strict JSON with these known fields:
@@ -115,10 +160,11 @@ replacement ordering as the new shared high-water mark.
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
   username, password, query, or fragment;
-- `unbadged_telemetry_registration_url`, a URL of the same form for MGs without
-  a Holder authorization
+- Reserved and not implemented: `unbadged_telemetry_registration_url` would be
+  a URL of the same form for MGs without a Holder authorization
   ([SPEC-guardian-telemetry-proxy](../crates/mg/specs/SPEC-guardian-telemetry-proxy.md)).
-  Optional: absent means such MGs do not register;
+  Under that design, omitting it would disable registration for those MGs. Neither
+  signer can set this endpoint today; the feature signer cannot redirect enrollment;
 - `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already

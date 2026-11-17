@@ -24,9 +24,10 @@ authorizations and policy through every profile relay, while backup and restore
 use the first canonical relay only.
 
 The profile also supplies one optional setup-payment federation-list publisher
-identity for kind-37707 publications
+identity for kind-37707 publications and a separate optional feature publisher
+for kind 37710
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
-MG consumes that identity directly. Development resolves its relay and
+MG consumes those identities directly. Development resolves its relay and
 publisher overrides inside the profile; staging and production provide no
 runtime or CLI override. Development and staging use distinct unsafe
 known-secret placeholders for issuer, publisher, and fee-account data.

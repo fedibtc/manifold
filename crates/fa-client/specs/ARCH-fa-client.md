@@ -664,7 +664,7 @@ observes success or replays the idempotent typed mutation.
 ## Replacement eligibility
 
 The FA checks the other guardians' public reports and authenticated MG trust
-material against the signed setup-payment policy. It recommends replacement
+material against the effective feature policy (37710, or the legacy projection before admission). It recommends replacement
 for prolonged absence, a low weekly or monthly peer score, or confirmed holder
 credential revocation. Absence is judged from last-seen timestamps and needs
 f+1 other reporters. Without enough of those, as just after a guardian transfer
@@ -753,8 +753,8 @@ are unknown, so the preview excludes their MGs but not their holders.
 explicit payer. Before it asks any MG, it refuses an approval previewed for
 another federation, checks the same custody rule, checks that the destination
 shares no service key with a current guardian, and refuses a priced preview
-without a payer. It then refreshes the setup-payment policy, falling back to
-the retained one on a relay timeout, and refuses with
+without a payer. It then refreshes payment and feature policy, falling back to
+the retained policies on a relay timeout, and refuses with
 `FaError::GuardianTransferDisabled` (category `capability_unavailable`)
 unless transfer is enabled: the policy's `guardian_transfer_v2` flag, or, when
 the policy omits it, the default of the client's Manifold environment, the

@@ -256,7 +256,11 @@ async fn worker_pull_authenticates_imports_and_retries_without_refetching_accept
         Arc::new(crate::transfer_native::tests::CoreConfigValidator),
     )
     .await;
-    let rpc = crate::service::ManifoldGuardianRpc::new(d.fleet.clone(), transfer_policy());
+    let rpc = crate::service::ManifoldGuardianRpc::new(
+        d.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
+        transfer_policy(),
+    );
     let request = PullSeatRequest {
         ts: Timestamp((crate::db::now_ms() / 1000) as u64),
         fa_id: d.grant.fa_id,

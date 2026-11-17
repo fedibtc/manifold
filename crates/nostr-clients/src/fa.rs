@@ -103,6 +103,13 @@ pub trait FaNostrClient {
         timeout: Duration,
     ) -> NostrClientResult<Vec<Event>>;
 
+    /// Fetch untrusted feature candidates under the same transport bounds as setup payments.
+    async fn fetch_feature_config(
+        &self,
+        publisher: PublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>>;
+
     /// Fetch hard-bounded MG advertisement candidates of both formats from
     /// every author.
     ///
@@ -211,6 +218,18 @@ impl FaNostrClient for NostrFaClient {
         timeout: Duration,
     ) -> NostrClientResult<Vec<Event>> {
         let filter = setup_payment_federations_filter(publisher);
+        self.relay
+            .fetch_events_capped(filter, timeout, SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT)
+            .await
+    }
+
+    async fn fetch_feature_config(
+        &self,
+        publisher: PublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        let filter = fedi_decentralized_nostr::feature_config::feature_config_filter(publisher)
+            .limit(usize::from(SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT));
         self.relay
             .fetch_events_capped(filter, timeout, SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT)
             .await

@@ -690,6 +690,14 @@ impl FaNostrClient for SlowRegistry {
             .await
     }
 
+    async fn fetch_feature_config(
+        &self,
+        publisher: PublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        self.registry.fetch_feature_config(publisher, timeout).await
+    }
+
     async fn fetch_mg_advertisements(&self, timeout: Duration) -> NostrClientResult<Vec<Event>> {
         tokio::time::sleep(self.delay).await;
         self.registry.fetch_mg_advertisements(timeout).await

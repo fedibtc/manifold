@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fedi_decentralized_domain::AdmittedSetupPaymentFederations;
+use fedi_decentralized_domain::AdmittedFeaturePolicy;
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_bitcoin_rpc::bitcoind::BitcoindClient;
@@ -78,7 +78,7 @@ impl SeatReadiness {
     pub(super) fn spawn(
         self,
         fleet: Arc<Fleet>,
-        setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+        feature_policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     ) -> tokio::task::JoinHandle<()> {
         // A local end-to-end test runs every MG on one busy host's cgroup,
         // as it skips relay and discovery, so it skips pressure too.
@@ -89,7 +89,7 @@ impl SeatReadiness {
         tokio::spawn(seat_readiness::run(
             self,
             fleet,
-            setup_payment_policy,
+            feature_policy,
             SystemTime::now,
             read_pressure,
         ))

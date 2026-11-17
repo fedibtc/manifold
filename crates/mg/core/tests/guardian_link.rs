@@ -145,7 +145,7 @@ fn readiness(failing: &[&str]) -> ReadinessReport {
 }
 
 /// A setup-payment policy that recommends `recommended`, if any.
-fn policy(recommended: Option<&str>) -> AdmittedSetupPaymentFederations {
+fn policy(recommended: Option<&str>) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
     let field = recommended
         .map(|version| format!(r#","recommended_min_mg_version":"{version}""#))
         .unwrap_or_default();
@@ -153,18 +153,18 @@ fn policy(recommended: Option<&str>) -> AdmittedSetupPaymentFederations {
 }
 
 /// A setup-payment policy that publishes the `guardian_link` flag.
-fn flagged(enabled: bool) -> AdmittedSetupPaymentFederations {
+fn flagged(enabled: bool) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
     policy_with(&format!(r#","guardian_link":{enabled}"#))
 }
 
-fn policy_with(field: &str) -> AdmittedSetupPaymentFederations {
+fn policy_with(field: &str) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
     AdmittedSetupPaymentFederations::parse(
         format!(
             r#"{{"version":1,"fman_version":"99.0.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
         )
         .as_bytes(),
     )
-    .unwrap()
+    .unwrap().features().clone()
 }
 
 async fn support_message(fleet: &Fleet, id: char) {

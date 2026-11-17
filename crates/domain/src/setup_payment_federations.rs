@@ -291,9 +291,9 @@ pub struct SetupPaymentFederationsContent {
     /// Wire-format version.
     pub version: ProtocolV1,
 
-    /// Latest Manifold Guardian release published by the authority.
-    #[serde(rename = "fman_version")]
-    pub mg_version: MgVersion,
+    /// Frozen version-1 compatibility projection for readers without feature configuration.
+    #[serde(flatten)]
+    pub legacy_features: FeaturePolicy,
 
     /// Public Fedimint invites forming the unordered common set.
     pub federations: Vec<InviteCode>,
@@ -310,6 +310,24 @@ pub struct SetupPaymentFederationsContent {
     /// stay admissible.
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
+}
+
+/// A complete feature snapshot. It has no authority over payment policy.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FeatureConfigContent {
+    /// Version of the independent feature event schema.
+    pub version: ProtocolV1,
+    /// Complete replacement, not a patch to previous snapshots.
+    #[serde(flatten)]
+    pub features: FeaturePolicy,
+}
+
+/// Release, resource limits and feature switches shared with legacy readers.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FeaturePolicy {
+    /// Latest Manifold Guardian release published by the authority.
+    #[serde(rename = "fman_version")]
+    pub mg_version: MgVersion,
 
     /// Uptime scores below which an MG stops accepting new seats. Optional on
     /// the wire: absent, [`MinUptimePercent::default`] applies.
@@ -419,13 +437,19 @@ pub struct SetupPaymentFederationsContent {
 /// Semantically admitted common payment-federation set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdmittedSetupPaymentFederations {
-    /// Latest Manifold Guardian release published with this set.
-    mg_version: MgVersion,
-
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
+    features: AdmittedFeaturePolicy,
+}
+
+/// Semantically checked feature snapshot. Contains no payment fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedFeaturePolicy {
+    /// Latest Manifold Guardian release published with this set.
+    mg_version: MgVersion,
+
     min_uptime_percent: MinUptimePercent,
     max_guardian_offline_secs: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
@@ -466,6 +490,94 @@ impl AdmittedSetupPaymentFederations {
         if content.min_fee_ppm > SETUP_PAYMENT_MAX_MIN_FEE_PPM {
             return Err(SetupPaymentFederationsContentError::MinFeePpmTooHigh);
         }
+        let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
+            .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
+        if registration_url.scheme() != "https"
+            || !registration_url.has_host()
+            || !registration_url.username().is_empty()
+            || registration_url.password().is_some()
+            || registration_url.query().is_some()
+            || registration_url.fragment().is_some()
+        {
+            return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
+        }
+
+        let mut federations = BTreeMap::new();
+        for invite_code in content.federations {
+            if invite_code.0.is_empty() {
+                return Err(SetupPaymentFederationsContentError::InvalidInvite);
+            }
+            if invite_code.0.len() > SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES {
+                return Err(SetupPaymentFederationsContentError::InviteTooLarge);
+            }
+
+            let parsed = FedimintInviteCode::from_str(&invite_code.0)
+                .map_err(|_| SetupPaymentFederationsContentError::InvalidInvite)?;
+            if parsed.api_secret().is_some() {
+                return Err(SetupPaymentFederationsContentError::SecretInvite);
+            }
+            let federation_id = FederationId(parsed.federation_id().to_string());
+            if federations.insert(federation_id, invite_code).is_some() {
+                return Err(SetupPaymentFederationsContentError::DuplicateFederation);
+            }
+        }
+
+        Ok(Self {
+            federations,
+            telemetry_registration_url: content.telemetry_registration_url,
+            min_fee_ppm: content.min_fee_ppm,
+            features: content.legacy_features.admit()?,
+        })
+    }
+
+    /// Read the non-payment projection of this legacy event.
+    pub fn features(&self) -> &AdmittedFeaturePolicy {
+        &self.features
+    }
+
+    /// Return the number of unique admitted federations.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.federations.len()
+    }
+
+    /// Return whether the admitted set stops all new paid setup.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.federations.is_empty()
+    }
+
+    /// Look up the signed public invite for one canonical federation ID.
+    #[must_use]
+    pub fn invite(&self, federation_id: &FederationId) -> Option<&InviteCode> {
+        self.federations.get(federation_id)
+    }
+
+    /// Iterate over canonical federation IDs and their signed public invites.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&FederationId, &InviteCode)> {
+        self.federations.iter()
+    }
+
+    /// Return the authenticated Fedi telemetry-registration endpoint.
+    #[must_use]
+    pub fn telemetry_registration_url(&self) -> &Url {
+        &self.telemetry_registration_url
+    }
+
+    /// Return the smallest guardian fee rate a proposal may carry, in ppm.
+    ///
+    /// Never zero unless Fedi published zero: an event that omits the field
+    /// yields [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`].
+    #[must_use]
+    pub fn min_fee_ppm(&self) -> u64 {
+        self.min_fee_ppm
+    }
+}
+
+impl FeaturePolicy {
+    /// Validate feature limits and release relationships and resolve defaults.
+    pub fn admit(self) -> Result<AdmittedFeaturePolicy, SetupPaymentFederationsContentError> {
+        let content = self;
         if [
             content.seat_memory_budget_mib,
             content.seat_memory_budget_mib_v2,
@@ -534,18 +646,6 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::MinUptimeTooHigh);
         }
 
-        let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
-            .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
-        if registration_url.scheme() != "https"
-            || !registration_url.has_host()
-            || !registration_url.username().is_empty()
-            || registration_url.password().is_some()
-            || registration_url.query().is_some()
-            || registration_url.fragment().is_some()
-        {
-            return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
-        }
-
         let mg_version = content.mg_version;
         if content
             .min_mg_version
@@ -561,31 +661,8 @@ impl AdmittedSetupPaymentFederations {
         {
             return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
         }
-        let mut federations = BTreeMap::new();
-        for invite_code in content.federations {
-            if invite_code.0.is_empty() {
-                return Err(SetupPaymentFederationsContentError::InvalidInvite);
-            }
-            if invite_code.0.len() > SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES {
-                return Err(SetupPaymentFederationsContentError::InviteTooLarge);
-            }
-
-            let parsed = FedimintInviteCode::from_str(&invite_code.0)
-                .map_err(|_| SetupPaymentFederationsContentError::InvalidInvite)?;
-            if parsed.api_secret().is_some() {
-                return Err(SetupPaymentFederationsContentError::SecretInvite);
-            }
-            let federation_id = FederationId(parsed.federation_id().to_string());
-            if federations.insert(federation_id, invite_code).is_some() {
-                return Err(SetupPaymentFederationsContentError::DuplicateFederation);
-            }
-        }
-
-        Ok(Self {
+        Ok(AdmittedFeaturePolicy {
             mg_version,
-            federations,
-            telemetry_registration_url: content.telemetry_registration_url,
-            min_fee_ppm: content.min_fee_ppm,
             min_uptime_percent,
             max_guardian_offline_secs,
             support_nostr_pubkey: content.support_nostr_pubkey,
@@ -605,49 +682,21 @@ impl AdmittedSetupPaymentFederations {
             recommended_min_mg_version: content.recommended_min_mg_version,
         })
     }
+}
+
+impl AdmittedFeaturePolicy {
+    /// Select one complete snapshot, using the legacy projection only before feature admission.
+    pub fn resolve(
+        snapshot: Option<Self>,
+        legacy: Option<&AdmittedSetupPaymentFederations>,
+    ) -> Option<Self> {
+        snapshot.or_else(|| legacy.map(|payment| payment.features().clone()))
+    }
 
     /// Return the latest Manifold Guardian release published with this set.
     #[must_use]
     pub fn mg_version(&self) -> &MgVersion {
         &self.mg_version
-    }
-
-    /// Return the number of unique admitted federations.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.federations.len()
-    }
-
-    /// Return whether the admitted set stops all new paid setup.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.federations.is_empty()
-    }
-
-    /// Look up the signed public invite for one canonical federation ID.
-    #[must_use]
-    pub fn invite(&self, federation_id: &FederationId) -> Option<&InviteCode> {
-        self.federations.get(federation_id)
-    }
-
-    /// Iterate over canonical federation IDs and their signed public invites.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&FederationId, &InviteCode)> {
-        self.federations.iter()
-    }
-
-    /// Return the authenticated Fedi telemetry-registration endpoint.
-    #[must_use]
-    pub fn telemetry_registration_url(&self) -> &Url {
-        &self.telemetry_registration_url
-    }
-
-    /// Return the smallest guardian fee rate a proposal may carry, in ppm.
-    ///
-    /// Never zero unless Fedi published zero: an event that omits the field
-    /// yields [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`].
-    #[must_use]
-    pub fn min_fee_ppm(&self) -> u64 {
-        self.min_fee_ppm
     }
 
     /// Return the uptime scores an MG needs to accept new seats. An event
@@ -740,7 +789,7 @@ impl AdmittedSetupPaymentFederations {
 
 /// Failure while parsing or semantically admitting publication content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetupPaymentFederationsContentError {
+pub enum PolicyContentError {
     /// Event content exceeds the pre-parse byte limit.
     ContentTooLarge,
 
@@ -802,7 +851,10 @@ pub enum SetupPaymentFederationsContentError {
     ZeroOfflineDuration,
 }
 
-impl core::fmt::Display for SetupPaymentFederationsContentError {
+/// Backward-compatible name for payment-content callers.
+pub use PolicyContentError as SetupPaymentFederationsContentError;
+
+impl core::fmt::Display for PolicyContentError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let message = match self {
             Self::ContentTooLarge => "setup-payment federation content is too large",
@@ -853,4 +905,4 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
     }
 }
 
-impl std::error::Error for SetupPaymentFederationsContentError {}
+impl std::error::Error for PolicyContentError {}

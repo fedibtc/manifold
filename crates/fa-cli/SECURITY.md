@@ -331,3 +331,8 @@ The atomic no-replace operation is platform-specific: Linux and Android use
 `renameatx_np(RENAME_EXCL)`. Other Unix targets fail closed as unsupported.
 Any platform-support change must preserve the no-clobber and retained-inode
 contract and run the funding-token journal tests on that platform.
+
+When testing independent feature snapshots, configure both public keys through
+the Development environment profile. The standalone `--setup-payment-publisher`
+flag selects the legacy payment-only constructor and cannot be combined with a
+feature pin.

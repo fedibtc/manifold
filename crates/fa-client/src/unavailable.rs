@@ -136,6 +136,16 @@ impl FaNostrClient for UnavailableRegistry {
         })
     }
 
+    async fn fetch_feature_config(
+        &self,
+        _publisher: PublicKey,
+        _timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        Err(NostrClientError::MissingEvent {
+            context: "FA feature registry capability unavailable",
+        })
+    }
+
     async fn fetch_mg_advertisements(&self, _timeout: Duration) -> NostrClientResult<Vec<Event>> {
         Err(NostrClientError::MissingEvent {
             context: "FA registry capability unavailable",
