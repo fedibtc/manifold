@@ -48,13 +48,11 @@ fn disk_limit_is_whole_per_seat_figures_of_the_filesystem_size() {
 fn data_filesystem_size_is_the_whole_filesystem_not_its_free_space() {
     let dir = tempfile::TempDir::new().unwrap();
     let size = data_filesystem_bytes(dir.path()).unwrap();
-    // SAFETY: as in `data_filesystem_bytes`.
-    let mut stat = unsafe { std::mem::zeroed::<libc::statvfs>() };
-    let path = std::ffi::CString::new(dir.path().to_str().unwrap()).unwrap();
-    assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &raw mut stat) }, 0);
-    #[allow(clippy::useless_conversion)]
-    let free = u64::from(stat.f_bavail) * u64::from(stat.f_frsize);
-    assert!(size > 0 && size >= free, "size {size}, free {free}");
+    let stat = rustix::fs::statvfs(dir.path()).unwrap();
+    let used = (stat.f_blocks - stat.f_bfree) * stat.f_frsize;
+    let free = stat.f_bavail * stat.f_frsize;
+    // Space in use and space reserved for root count toward the size too.
+    assert!(size >= used + free, "size {size}, used {used}, free {free}");
     assert!(data_filesystem_bytes(&dir.path().join("missing")).is_err());
 }
 

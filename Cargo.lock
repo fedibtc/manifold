@@ -6397,6 +6397,7 @@ dependencies = [
  "peerbadge-protocol",
  "rand 0.8.6",
  "reqwest 0.12.28",
+ "rustix",
  "safe-tracing",
  "secp256k1 0.30.0",
  "serde",

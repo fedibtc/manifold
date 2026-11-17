@@ -54,6 +54,7 @@ mg-meta-fields = { path = "../meta-fields" }
 nostr-sdk = "0.44"
 operator-ui-auth = { path = "../../operator-ui-auth" }
 rand = "0.8"
+rustix = { version = "1", features = ["fs"] }
 secp256k1 = "0.30"
 serde = { workspace = true }
 serde_json = "1"

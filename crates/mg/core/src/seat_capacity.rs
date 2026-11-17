@@ -71,19 +71,9 @@ fn disk_max_seats(filesystem_bytes: u64, seat_disk_gb: NonZeroU32) -> u32 {
 /// times their size, which is what `df` reports as its size. Free space does
 /// not enter, since the limit is about how much writing the drive takes.
 pub fn data_filesystem_bytes(path: &Path) -> anyhow::Result<u64> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .context("the data directory path holds a NUL byte")?;
-    // SAFETY: `statvfs` writes only into `stat`, which outlives the call, and
-    // reads the NUL-terminated `path`.
-    let mut stat = unsafe { std::mem::zeroed::<libc::statvfs>() };
-    if unsafe { libc::statvfs(path.as_ptr(), &raw mut stat) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("statvfs the data directory to derive a seat capacity");
-    }
-    #[allow(clippy::useless_conversion)] // The field widths vary by target.
-    let (blocks, fragment) = (u64::from(stat.f_blocks), u64::from(stat.f_frsize));
-    Ok(blocks.saturating_mul(fragment))
+    let stat = rustix::fs::statvfs(path)
+        .context("statvfs the data directory to derive a seat capacity")?;
+    Ok(stat.f_blocks.saturating_mul(stat.f_frsize))
 }
 
 /// Lower at once; raise only after [`RAISE_AFTER_SAMPLES`] samples.
