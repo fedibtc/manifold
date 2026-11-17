@@ -13,6 +13,8 @@ ships this code with transfer off, and Fedi turns it on by republishing the
 policy. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
+Destinations supplied through a SeatGrant are not implemented: every
+destination still needs a PeerBadge.
 
 ## Record justification
 
@@ -122,7 +124,11 @@ online once. The FA does not have to be online at the same time.
    that the FA owns the source seat, and that the grant names this seat and
    its federation. It also independently verifies a destination-bound
    PeerBadge against its own environment's issuer roots and minimum trust
-   level, including fresh revocation checks. The source fails closed if it
+   level, including fresh revocation checks. A source seat that came from a
+   SeatGrant instead admits a destination the FA obtained through a SeatGrant,
+   without a badge, because its operator delegated replacement to the FA
+   ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md),
+   [SPEC-seat-grant](./SPEC-seat-grant.md)). The source fails closed if it
    cannot verify that trust, before stopping the guardian or releasing its
    package. The source bounds concurrent admissions and rejects excess requests
    without waiting, so slow revocation queries cannot occupy all shared RPC handlers.
@@ -204,8 +210,8 @@ online once. The FA does not have to be online at the same time.
   including a shutdown an operator schedules through the older `shutdown`
   endpoint, restarts and keeps its seat.
 - The grant authorizes the move but cannot bypass destination PeerBadge
-  admission. Possession of a grant gives no access to
-  the guardian, because the source answers only the destination the grant
+  admission, except for a source seat that came from a SeatGrant (step 3).
+  Possession of a grant gives no access to the guardian, because the source answers only the destination the grant
   names, authenticated by its service-key signature.
 - The moved guardian keeps its peer id, consensus keys, and Iroh node ids.
   Network checks cannot tell the two hosts apart.
@@ -294,7 +300,10 @@ The FA chooses the destination. Before it signs a grant, it refuses a
 destination whose MG or verified badge holder hosts, or ever hosted, a peer of
 the federation. A past host may still
 hold its old key share, and no credential proves that it deleted it. The FA
-keeps past hosts in its own backup for this check. Independently of the FA,
+keeps past hosts in its own backup for this check. An MG without a badge has no
+holder to compare, so in a code-based federation the check covers only the MG
+identity; that is within what the operators delegated to the FA.
+Independently of the FA, except for a source seat that came from a SeatGrant,
 the source verifies the destination's PeerBadge on every `TransferSeat`,
 including retries after retirement or a prior package release, using the
 complete shared verifier and its own canonical environment profile. Direct

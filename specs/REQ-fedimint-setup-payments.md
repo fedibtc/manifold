@@ -12,6 +12,10 @@ routing and liquidity failures are common enough to put the complete setup at
 risk. Paid FA-to-MG setup therefore uses Fedimint ecash rather than direct
 Lightning payments.
 
+Code-based setup
+([REQ-bring-your-own-guardians](./REQ-bring-your-own-guardians.md)) is free
+and makes none of these payments.
+
 The common federation set used to make the ecash payer and payee interoperable
 is chosen by
 [SPEC-locked-payment](../crates/mg/specs/SPEC-locked-payment.md).

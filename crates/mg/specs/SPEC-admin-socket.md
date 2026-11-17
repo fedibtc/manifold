@@ -4,7 +4,9 @@
 
 Payment-federation acceptance is the authenticated common setup-payment set; the
 admin surface only observes it. Removed payment scopes stay durable and lazily
-reopen on the first wallet query or payout after restart.
+reopen on the first wallet query or payout after restart. Skipping the
+`holder_authorization` stage and the SeatGrant verbs are not implemented yet:
+the stage still requires an authorization.
 
 ## Record justification
 
@@ -57,9 +59,14 @@ At `identity` it answers two choosing verbs:
   ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)).
 
 At `holder_authorization`, `RefreshHolderAuthorizations` performs and awaits one
-bounded Nostr fetch. At least one structurally verified, subject-bound complete
-event must be durably retained before the stage advances; there is no skip. An
-empty or failed fetch leaves it at this stage. Issuer trust, credential proof,
+bounded Nostr fetch. The stage advances once at least one structurally
+verified, subject-bound complete event is durably retained, or when the
+operator explicitly skips it to run without a badge
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+An MG without a badge publishes no advertisement and takes seats only through
+SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)); a later enrolled
+authorization makes it discoverable. An empty or failed fetch without a skip
+leaves it at this stage. Issuer trust, credential proof,
 revocation, and relying-party policy remain consumer responsibilities.
 
 At `initial_offer`, `ConfigureInitialOffer` atomically records the first price,

@@ -1,5 +1,9 @@
 # SPEC-locked-payment: Key-locked ecash seat payment
 
+## Status
+
+Free quotes redeemed from a SeatGrant are not implemented.
+
 ## Record justification
 
 The contract spans FA payment construction, MG quote signing and offline
@@ -27,7 +31,10 @@ required.
 
 ## Quote
 
-`GetQuote` is a pure function; the MG stores nothing. The response is
+`GetQuote` is a pure function; the MG stores nothing. A `GetQuote` that
+presents a SeatGrant yields a free quote under
+[SPEC-seat-grant](./SPEC-seat-grant.md); everything below about payment applies
+only to paid quotes. The response is
 a signed quote: public terms (plan, price, offer epoch, a random quote
 nonce, and — for paid quotes — the payment terms: the payment
 federation and the issuance set of blinded nonces covering the price in

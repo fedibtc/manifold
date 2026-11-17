@@ -1,5 +1,10 @@
 # SPEC-flip-federation-trust: Federation eligibility verification
 
+## Status
+
+Policy evaluation still counts distinct MG identities; distinct holders are
+not enforced yet.
+
 ## Record justification
 
 The eligibility contract spans the shared `domain` attestation types, MG
@@ -89,6 +94,16 @@ identity trusted; `consensus_majority_trusted` requires at least the
 consensus-majority threshold derived from the final peer set, counting each
 identity once regardless of how many peers it operates. If the threshold cannot
 be determined, the request is rejected.
+
+Trusted identities whose verified badges name the same holder count as one
+operator. `all_trusted` rejects a federation in which two operating identities
+share a holder, and `consensus_majority_trusted` counts distinct holders toward
+its threshold. This is the FA's one-seat-per-holder rule
+([ARCH-fa-client-discovery-selection](../../fa-client/specs/ARCH-fa-client-discovery-selection.md)),
+applied where FLIP can check it. Eligibility does not depend on how the
+federation was formed: a code-based federation whose operators are distinct
+trusted holders is eligible
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
 
 Pooling is what keeps FLIP reachable for the federations the FA builds. The FA
 admits a seat on a badge from any configured trusted issuer root, then fills

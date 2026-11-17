@@ -2,14 +2,34 @@
 
 Source: Fedi product requirement, required for MVP.
 
+## Status
+
+Each MG does not yet verify the other guardians' badges before a
+Fedi-verified DKG; FA selection is currently the only enforcement point.
+Doing it in MG needs MG-signed DKG codes bound to MG identities, because the
+setup codes the FA relays today are unsigned. The code-based exceptions below
+are not implemented yet
+([REQ-bring-your-own-guardians](./REQ-bring-your-own-guardians.md)).
+
+## Requirement
+
 A badge from a configured issuer is not sufficient on its own to admit an
 MG operator. Every relying decision that accepts an MG identity must also
 require the badge's authenticated `fedi-trust-score-v1.0` `trust_level` to meet
 the selected environment profile's minimum. This includes FA seat selection;
+each MG's check of the other guardians before a Fedi-verified DKG;
 FLIP liquidity-request endorsement and federation-policy evaluation;
 push-gateway guardian-telemetry registration; cloud MG telemetry collector
 registration; and the old MG's independent admission of a guardian-replacement
 destination.
+
+Code-based federations
+([REQ-bring-your-own-guardians](./REQ-bring-your-own-guardians.md)) are the
+exception. Their seats come from operator-issued grants, not from badges, so
+no badge is required to form them, and the old MG admits a replacement
+destination that the FA supplies through a grant. An MG without a badge
+reports telemetry to a separate collector that admits it without a badge
+([ARCH-cloud-mg-telemetry](./ARCH-cloud-mg-telemetry.md)).
 
 The current profile minimum is `9`. Manifold interprets the schema's bounded
 numeric `trust_level` as ordered relying-party policy and therefore accepts

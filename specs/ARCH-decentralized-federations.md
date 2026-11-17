@@ -17,7 +17,10 @@ TLS certificate.
   [ARCH-manifold-guardian](../crates/mg/specs/ARCH-manifold-guardian.md).
 - **FA (Federation Ambassador)** — the user-side orchestrator that
   discovers MGs, evaluates trust, creates operator seats, and drives the
-  formation ceremony without being a guardian itself. The production
+  formation ceremony without being a guardian itself. For a code-based
+  federation it takes every seat from operator-issued SeatGrants instead of
+  discovery
+  ([REQ-bring-your-own-guardians](./REQ-bring-your-own-guardians.md)). The production
   consumer is the Fedi app via `crates/fa-client`; `crates/fa-cli` is its
   development/test-only terminal and end-to-end consumer, carrying the FA
   side of the MG key-locked payment protocol (its own wallet plus a
