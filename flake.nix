@@ -153,7 +153,10 @@
         # the upstream payment retry site cannot format payment authorization,
         # invoice metadata, gateway metadata, or remote error text. Keep the
         # patch adjacent to the pinned input and make every Cargo consumer use
-        # the same patched source. The other patches change only Fedimint's
+        # the same patched source. Mint recovery retries slice and hash
+        # fetches forever without logging, so a stalled recovery is silent;
+        # its patch warns on each failed slice download and while a slice
+        # hash stays pending. The other patches change only Fedimint's
         # test environment: an E2E DKG pause point, and a 5s instead of 60s
         # wait after a scheduled shutdown's last session.
         fedimintPatched = pkgs.applyPatches {
@@ -161,6 +164,7 @@
           src = fedimint;
           patches = [
             ./patches/fedimint-redact-lightning-payment-logs.patch
+            ./patches/fedimint-mint-recovery-stall-logs.patch
             ./patches/fedimint-dkg-test-pause.patch
             ./patches/fedimint-test-scheduled-shutdown-wait.patch
           ];
