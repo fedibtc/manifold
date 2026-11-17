@@ -169,7 +169,7 @@ entry per active, unexpired MG that has a stored report:
   `"unlimited"`, or the operator's GB as a decimal string; `null` before
   0.1.16 or for a token the collector does not know) and `mg_version`.
 - `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
-  `discovery`, `bitcoin`, `version`, `pressure`, `cpu_pressure_6h_pct`,
+  `discovery`, `bitcoin`, `ceremonies`, `version`, `pressure`, `cpu_pressure_6h_pct`,
   `cpu_pressure_3_5d_pct`, `io_pressure_6h_pct`, `io_pressure_3_5d_pct`,
   `max_cpu_pressure_6h_pct`, `max_cpu_pressure_3_5d_pct`,
   `max_io_pressure_6h_pct`, `max_io_pressure_3_5d_pct`,
@@ -184,7 +184,7 @@ Times are RFC 3339 UTC. A field that the MG's release does not journal is
 `accepting_seats` and `max_seats`, and no readiness uptime fields, and
 releases before 0.1.9 no readiness `version`, and releases before 0.1.16 no
 `pressure` or pressure fields and no CPU fields, and releases before 0.1.17
-no `disk_max_seats`. A pressure average is also `null` where the MG
+no `disk_max_seats` and no readiness `ceremonies`. A pressure average is also `null` where the MG
 cannot read its counters or has not yet sampled half its window, and the
 thresholds without a policy limit.
 `max_seats` is also `null` while the operator limit is automatic, and

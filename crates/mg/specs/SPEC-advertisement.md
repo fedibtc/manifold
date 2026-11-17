@@ -152,6 +152,22 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
+Each run also requires that no seat without a federation yet had its own
+`fedimintd` fail since the previous run. A failure counts when the child
+exited, or closed or broke its control channel, without first reporting
+`DkgFailed` or `ParamsRejected`. It also counts when the child could not be
+started, or did not acknowledge the ceremony parameters it was sent. A
+federation whose key ceremony waits on that seat has lost this MG, so the
+check (`ceremony_child_failed`) is a prerequisite: the run closes admission
+and, as the first run of its slot, counts the slot as down. A ceremony
+that fails between the guardians, such as configs that differ or guardians
+retrying out of step, ends with the child reporting the failure, so it does
+not count. Neither does a formed seat's child, whatever ends it. Each
+failure fails only the next run, so a single crash costs one slot, while a
+child that keeps failing keeps its slots down. Failures are counted in
+memory, so a restart forgets those since the last run, but the downtime
+itself counts as down.
+
 Each run also requires this MG's release to be at least the setup-payment
 policy's `min_mg_version` by SemVer precedence (a pre-release ranks below its
 release; build metadata does not count); without one the check does not
@@ -233,7 +249,7 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check, the three uptime scores, the minimums they were held to,
+fixed code per check, including `ceremonies`, the three uptime scores, the minimums they were held to,
 and the pressure averages and thresholds for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page

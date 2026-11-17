@@ -6,12 +6,20 @@ import type {
 } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'pressure' | 'uptime';
+export type ReadinessCheck =
+  | 'relay'
+  | 'discovery'
+  | 'bitcoin'
+  | 'ceremonies'
+  | 'version'
+  | 'pressure'
+  | 'uptime';
 
 export const CHECKS: readonly ReadinessCheck[] = [
   'relay',
   'discovery',
   'bitcoin',
+  'ceremonies',
   'version',
   'pressure',
   'uptime'
@@ -21,6 +29,7 @@ export const labels: Record<ReadinessCheck, string> = {
   relay: 'Relay connection',
   discovery: 'Guardian discovery',
   bitcoin: 'Bitcoin backend',
+  ceremonies: 'Key setup',
   version: 'Software version',
   pressure: 'CPU, disk and memory pressure',
   uptime: 'Uptime'
@@ -36,6 +45,7 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_wrong_network: 'The configured Bitcoin backend is on a different network.',
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
   bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
+  ceremony_child_failed: 'A guardian process stopped while setting up keys.',
   mg_version_too_old: 'Update required.',
   host_pressure_6h_high: 'Too busy over the last 6 hours.',
   host_pressure_3_5d_high: 'Too busy over the last 3.5 days.',
@@ -65,6 +75,8 @@ export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
     'Check outbound DNS and HTTPS from this host. A new record can take a minute to publish after a relay change.',
   bitcoin:
     'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
+  ceremonies:
+    'Its federation’s other guardians waited on this host. This counts against uptime: check this host’s memory and disk.',
   pressure:
     'Manifold Fedimint Guardian reads pressure from its cgroup, which needs Linux 4.20 or later with cgroup v2. Contact support if this persists.',
   uptime: 'Keep this host online.'

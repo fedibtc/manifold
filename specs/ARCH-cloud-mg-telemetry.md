@@ -196,7 +196,8 @@ before 0.1.4 journal only the free seats, the accepting flag and the operator
 limit, and no uptime outcome, scores or minimums; releases before 0.1.9
 journal no `version` outcome, and releases before 0.1.16 no `pressure`
 outcome or pressure figures, no CPU limit or CPU capacity, and no
-`monthly_data_budget`; releases before 0.1.17 journal no disk limit. Absent fields stay absent. A `monthly_data_budget`
+`monthly_data_budget`; releases before 0.1.17 journal no disk limit and no
+`ceremonies` outcome. Absent fields stay absent. A `monthly_data_budget`
 token the collector does not know is dropped as if absent, so a later
 release's answer does not cost the rest of the record.
 

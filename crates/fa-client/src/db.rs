@@ -61,7 +61,31 @@ enum FaDbPrefix {
     GuardianTransfer = 0x09,
     MgTrustMaterial = 0x0a,
     MgTrustMaterialRefreshRequired = 0x0b,
+    MgCeremonyFailure = 0x0c,
 }
+
+/// When an MG last failed a key ceremony this FA drove, as Unix seconds
+/// ([`crate::ceremony_failures`]). Disposable selection memory, outside
+/// recovery records and backup formats.
+#[derive(Clone, Debug, Decodable, Encodable)]
+struct MgCeremonyFailureKey {
+    /// The MG's badge-vouched Nostr identity, in hex.
+    mg_id: String,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct MgCeremonyFailureKeyPrefix;
+
+impl_db_record!(
+    key = MgCeremonyFailureKey,
+    value = u64,
+    db_prefix = FaDbPrefix::MgCeremonyFailure
+);
+
+impl_db_lookup!(
+    key = MgCeremonyFailureKey,
+    query_prefix = MgCeremonyFailureKeyPrefix
+);
 
 /// Disposable signed evidence, outside recovery records and backup formats.
 #[derive(Clone, Debug, Decodable, Encodable)]
@@ -975,6 +999,81 @@ pub(crate) struct FaStore {
 }
 
 impl FaStore {
+    /// Remember that `mg_ids` failed a key ceremony at `now` (Unix seconds),
+    /// and forget failures no longer skipped.
+    pub(crate) async fn record_ceremony_failures(
+        &self,
+        mg_ids: &[PublicKey],
+        now: u64,
+    ) -> FaResult<()> {
+        let mg_ids = mg_ids.iter().map(PublicKey::to_hex).collect::<Vec<_>>();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let mg_ids = mg_ids.clone();
+                    Box::pin(async move {
+                        let expired = dbtx
+                            .find_by_prefix(&MgCeremonyFailureKeyPrefix)
+                            .await
+                            .filter_map(|(key, failed_at)| async move {
+                                (!crate::ceremony_failures::skips(failed_at, now)).then_some(key)
+                            })
+                            .collect::<Vec<_>>()
+                            .await;
+                        for key in expired {
+                            dbtx.remove_entry(&key).await;
+                        }
+                        for mg_id in mg_ids {
+                            dbtx.insert_entry(&MgCeremonyFailureKey { mg_id }, &now)
+                                .await;
+                        }
+                        Ok::<_, FaError>(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|_| FaError::Storage("recording MG ceremony failures failed".to_owned()))
+    }
+
+    /// Forget the ceremony failures of `mg_ids`, whose ceremony has since
+    /// completed.
+    pub(crate) async fn forget_ceremony_failures(&self, mg_ids: &[PublicKey]) -> FaResult<()> {
+        let mg_ids = mg_ids.iter().map(PublicKey::to_hex).collect::<Vec<_>>();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let mg_ids = mg_ids.clone();
+                    Box::pin(async move {
+                        for mg_id in mg_ids {
+                            dbtx.remove_entry(&MgCeremonyFailureKey { mg_id }).await;
+                        }
+                        Ok::<_, FaError>(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|_| FaError::Storage("forgetting MG ceremony failures failed".to_owned()))
+    }
+
+    /// The MGs selection skips at `now` (Unix seconds) for a recent ceremony
+    /// failure. A key that is not an MG identity skips nobody.
+    pub(crate) async fn ceremony_failure_skips(&self, now: u64) -> BTreeSet<PublicKey> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .find_by_prefix(&MgCeremonyFailureKeyPrefix)
+            .await
+            .filter_map(|(key, failed_at)| async move {
+                crate::ceremony_failures::skips(failed_at, now)
+                    .then(|| PublicKey::from_hex(&key.mg_id).ok())
+                    .flatten()
+            })
+            .collect()
+            .await
+    }
+
     /// Read optional evidence; malformed JSON is a cache miss, not lost recovery.
     pub(crate) async fn mg_trust_material(
         &self,

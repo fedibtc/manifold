@@ -140,6 +140,7 @@ const failingReport = {
   relay: 'pass',
   discovery: 'discovery_record_missing',
   bitcoin: 'bitcoin_no_fee_rate',
+  ceremonies: 'pass',
   version: 'mg_version_too_old',
   pressure: 'host_pressure_6h_high',
   host_pressure: {
@@ -185,6 +186,7 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     relay: 'not_applicable',
     discovery: 'not_applicable',
     bitcoin: 'pass',
+    ceremonies: 'pass',
     version: 'not_applicable',
     pressure: 'pass',
     host_pressure: null,

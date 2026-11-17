@@ -145,6 +145,43 @@ returns `SelectionPreviewTimeout`; it cannot preempt synchronous verifier work
 between yield points or executor starvation. Pool exhaustion before expiry is
 the typed `InsufficientMgSeats` partial failure.
 
+## Ceremony failures
+
+An MG can pass the live probe and still fail the key ceremony it sold a
+seat for. The FA remembers such an MG and selection, replacement and guardian
+transfer previews skip it for one day after its last failure
+(`CEREMONY_FAILURE_SKIP`), with the static rejection
+`RecentCeremonyFailure`. It is skipped before any badge check or dial. The
+MG then becomes selectable again on its own, without a revocation.
+Independently, the MG's own readiness gate counts its own failed ceremonies
+as down time ([SPEC-advertisement](../../mg/specs/SPEC-advertisement.md),
+*Readiness gate*).
+
+Only a failure that is clearly one MG's own counts. Each ceremony step,
+`GetDkgCode`, `StartDkg` and every `GetStatus` poll until the federation
+runs, asks every seat in one round. A seat is absent when its MG's request
+fails or times out, or when the MG has no running guardian process for it
+(`SeatUnavailable`). A seat that still has no code at the run deadline counts
+as absent. When a round ends the run with a failure, its absent seats are
+remembered only while fewer than half of the seats are absent: this FA
+reached the others, so the fault is not its own connection. A seat that
+answers counts as present, even while its ceremony does not progress or it
+refuses a request. Ceremonies that every guardian takes part in but that do
+not finish fall in this case, such as guardians retrying out of step or
+running builds whose configs differ. So does a guardian's own report that
+its ceremony failed. These failures are no single MG's fault, and nobody is
+remembered. Recording completed DKG forgets every MG of that formation, so
+an absence the ceremony recovered from does not count against the MG. A
+round after DKG completed is not a ceremony's.
+
+The memory is per FA, so it protects the user who retries after a failed
+formation, not other FAs. It is disposable local data under its own database
+prefix, keyed by the MG's badge-vouched identity and holding the time of the
+last failure. Recovery and backup records do not include it. A failure dated
+after the current time skips nobody. A failure to store it is logged and
+never fails the formation. The transport-less `MgSelectionQuery` has no
+durable state and skips nobody.
+
 ## Approval and replacement
 
 The preview is read-only: it returns selected seats, their locators, advertised

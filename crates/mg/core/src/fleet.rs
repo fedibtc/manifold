@@ -51,7 +51,9 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{
+    CeremonyChildFailures, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores,
+};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -376,6 +378,9 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// Ceremony failures of the seats' own fedimintd since the last
+    /// readiness run.
+    ceremony_child_failures: CeremonyChildFailures,
     /// Edge trigger for the readiness loop to run now rather than at its next
     /// slot, after the operator reset the uptime history.
     readiness_rerun: Notify,
@@ -528,6 +533,7 @@ impl Fleet {
                 .await
                 .context("bind native Fedimint API connectors")?;
         let transfer_wake = crate::transfer_worker::TransferWake::default();
+        let ceremony_child_failures = CeremonyChildFailures::default();
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {
@@ -558,6 +564,7 @@ impl Fleet {
                     fedimint_connectors: fedimint_connectors.clone(),
                     backup: backup.clone(),
                     completion_hooks: completion_hooks.wake_handle(),
+                    ceremony_child_failures: ceremony_child_failures.clone(),
                     transfer_wake: transfer_wake.clone(),
                     process_spawner: config.process_spawner.clone(),
                 },
@@ -592,6 +599,7 @@ impl Fleet {
             advertisement_changed,
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
+            ceremony_child_failures,
             readiness_rerun: Notify::new(),
             guardian_link: Default::default(),
             iroh_endpoint_id: std::sync::OnceLock::new(),
@@ -949,6 +957,12 @@ impl Fleet {
         Ok(())
     }
 
+    /// Ceremony failures of this MG's own fedimintd, which the readiness run
+    /// takes.
+    pub fn ceremony_child_failures(&self) -> &CeremonyChildFailures {
+        &self.ceremony_child_failures
+    }
+
     /// Wait until the readiness checks should run before their next slot.
     pub async fn readiness_rerun_requested(&self) {
         self.readiness_rerun.notified().await;
@@ -1147,6 +1161,7 @@ impl Fleet {
                 fedimint_connectors: self.fedimint_connectors.clone(),
                 backup: self.backup.clone(),
                 completion_hooks: self.completion_hooks.wake_handle(),
+                ceremony_child_failures: self.ceremony_child_failures.clone(),
                 transfer_wake: self.transfers.wake_handle(),
                 process_spawner: self.config.process_spawner.clone(),
             },

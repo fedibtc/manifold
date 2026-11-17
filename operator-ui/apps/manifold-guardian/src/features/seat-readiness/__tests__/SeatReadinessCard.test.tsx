@@ -23,6 +23,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   relay: 'pass',
   discovery: 'not_applicable',
   bitcoin: 'pass',
+  ceremonies: 'pass',
   version: 'not_applicable',
   pressure: 'pass',
   host_pressure: null,
@@ -62,6 +63,22 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Bitcoin Core is still in initial block download.')).toBeTruthy();
     expect(screen.getByText(guidance.bitcoin)).toBeTruthy();
     expect(screen.queryByText(updateGuidance, { exact: false })).toBeNull();
+  });
+
+  it('should say that a failed key ceremony counts against uptime', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({ ceremonies: 'ceremony_child_failed' })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText(labels.ceremonies)).toBeTruthy();
+    expect(screen.getByText(outcomes.ceremony_child_failed)).toBeTruthy();
+    expect(screen.getByText(guidance.ceremonies)).toBeTruthy();
   });
 
   it('should tell the host to update when its version is below the minimum', () => {

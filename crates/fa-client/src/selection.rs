@@ -932,6 +932,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             request,
+            &self.inner.store.ceremony_failure_skips(now).await,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -973,6 +974,8 @@ where
             },
             self.peer_badge_verifier.provenance(),
             request,
+            // A query holds no durable state, so it remembers no ceremony.
+            &BTreeSet::new(),
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -986,12 +989,14 @@ where
 /// Accepts an inner result only when observed strictly before the deadline.
 /// Returns [`FaError::SelectionPreviewTimeout`] when the operation starts,
 /// remains pending, or completes at or after the deadline.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn preview_mg_selection_until(
     registry: &impl FaNostrClient,
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
     request: &MgSelectionRequest,
+    ceremony_failure_skips: &BTreeSet<PublicKey>,
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
@@ -1006,6 +1011,7 @@ pub(crate) async fn preview_mg_selection_until(
         prober,
         verifier_provenance,
         request,
+        ceremony_failure_skips,
         deadline,
         now,
         completed_at,
@@ -1034,12 +1040,14 @@ pub(crate) fn preview_result_before_deadline(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn preview_mg_selection_with(
     registry: &impl FaNostrClient,
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
     request: &MgSelectionRequest,
+    ceremony_failure_skips: &BTreeSet<PublicKey>,
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
@@ -1048,7 +1056,8 @@ pub(crate) async fn preview_mg_selection_with(
         federation_size: request.federation_size,
         fedimintd_versions: request.fedimintd_versions.clone(),
     };
-    let discovery = discover_mg_candidates_with(registry, &requirements, deadline, now).await?;
+    let mut discovery = discover_mg_candidates_with(registry, &requirements, deadline, now).await?;
+    skip_recent_ceremony_failures(&mut discovery, ceremony_failure_skips);
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let mut cohorts = BTreeMap::<FedimintdDkgVersion, Vec<EligibleMgCandidate>>::new();
@@ -1135,6 +1144,7 @@ pub(crate) async fn preview_mg_replacements_with(
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
+    ceremony_failure_skips: &BTreeSet<PublicKey>,
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
@@ -1148,6 +1158,7 @@ pub(crate) async fn preview_mg_replacements_with(
     discovery
         .candidates
         .retain(|candidate| !excluded.contains(&candidate.mg_id));
+    skip_recent_ceremony_failures(&mut discovery, ceremony_failure_skips);
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let requested = u16::try_from(requirements.seats.len())
@@ -1271,6 +1282,23 @@ impl TransferDestinationApproval {
     }
 }
 
+/// Move every candidate this FA skips for a recent ceremony failure
+/// ([`crate::ceremony_failures`]) to the rejections, before any badge check
+/// or dial.
+fn skip_recent_ceremony_failures(discovery: &mut crate::MgDiscovery, skips: &BTreeSet<PublicKey>) {
+    let rejected = &mut discovery.rejected;
+    discovery.candidates.retain(|candidate| {
+        let skipped = skips.contains(&candidate.mg_id);
+        if skipped {
+            rejected.push(RejectedAdvertisement {
+                author: candidate.mg_id,
+                reason: AdvertisementRejection::RecentCeremonyFailure,
+            });
+        }
+        !skipped
+    });
+}
+
 /// Every release of the Fedimint major/minor line a DKG identity names.
 pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdVersionRange> {
     let (major, minor) = dkg_version.major_minor();
@@ -1302,6 +1330,7 @@ pub(crate) async fn preview_transfer_destination_with(
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
+    ceremony_failure_skips: &BTreeSet<PublicKey>,
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
@@ -1322,6 +1351,7 @@ pub(crate) async fn preview_transfer_destination_with(
         !excluded.contains(&candidate.mg_id)
             && candidate.fedimintd_dkg_version == fedimintd_dkg_version
     });
+    skip_recent_ceremony_failures(&mut discovery, ceremony_failure_skips);
     // Skip, before any dial, an MG whose advertisement reports an API version
     // without the guardian transfer. One that reports none, a legacy
     // advertisement or an MG from before the field, is left to the live

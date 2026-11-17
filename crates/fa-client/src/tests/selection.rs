@@ -311,6 +311,7 @@ async fn replacement_preview_excludes_every_persisted_sibling_locator() {
         BTreeSet::from([excluded_service_key]),
         BTreeMap::new(),
         BTreeSet::new(),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -373,6 +374,7 @@ async fn replacement_preview_skips_a_retained_service_key_and_continues_the_buck
         BTreeSet::new(),
         BTreeMap::from([(retained_service_pubkey, retained_mg)]),
         BTreeSet::new(),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -452,6 +454,7 @@ async fn replacement_preview_for_version(
         excluded,
         BTreeMap::new(),
         BTreeSet::new(),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || completed_at,
@@ -769,6 +772,7 @@ async fn verified_zero_price_selection_approval() -> MgSelectionApproval {
         &AdOnlySelection,
         test_peer_badge_verifier().provenance(),
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         test_now_secs,
@@ -779,6 +783,58 @@ async fn verified_zero_price_selection_approval() -> MgSelectionApproval {
     preview
         .approve(0)
         .expect("a zero cap seals an all-zero bootstrap estimate")
+}
+
+/// An MG this FA skips for a recent ceremony failure is not selected, even
+/// as the cheapest candidate, and the preview says why; another MG fills
+/// its seat.
+#[tokio::test]
+async fn an_mg_skipped_for_a_ceremony_failure_is_not_selected() {
+    let issuer = issuer_keys(1);
+    let size = usize::from(MIN_FEDERATION_SIZE);
+    let events = (0..=size)
+        .map(|index| {
+            issuer_ad_with_service_pubkey(
+                &super::mg_keys(index),
+                &issuer,
+                // The skipped MG is the cheapest.
+                if index == 0 { 0 } else { 1_000 },
+                1,
+                manager_key(index).x_only_public_key().0,
+            )
+        })
+        .collect::<Vec<_>>();
+    let skipped = super::mg_keys(0).public_key();
+    let preview = preview_mg_selection_with(
+        &registry(events),
+        &StubBadgeVerifier::default(),
+        &AdOnlySelection,
+        test_peer_badge_verifier().provenance(),
+        &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::from([skipped]),
+        generous_deadline(),
+        NOW,
+        test_now_secs,
+    )
+    .await
+    .expect("the other MGs fill the federation");
+    assert_eq!(preview.seats().len(), size);
+    assert!(
+        preview
+            .seats()
+            .iter()
+            .all(|seat| seat.candidate().mg_id() != skipped)
+    );
+    assert!(
+        preview
+            .rejected()
+            .iter()
+            .any(|rejected| rejected.author == skipped
+                && matches!(
+                    rejected.reason,
+                    AdvertisementRejection::RecentCeremonyFailure
+                ))
+    );
 }
 
 #[tokio::test]
@@ -945,6 +1001,7 @@ async fn preview_deadline_cancels_an_in_flight_verification() {
             &AdOnlySelection,
             PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
             &preview_request(MIN_FEDERATION_SIZE),
+            &BTreeSet::new(),
             deadline,
             NOW,
             || NOW,
@@ -979,6 +1036,7 @@ async fn already_expired_preview_returns_timeout_before_inner_shortfall() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         Instant::now(),
         NOW,
         || NOW,
@@ -1077,6 +1135,7 @@ async fn preview_completing_before_the_deadline_preserves_selection() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         deadline,
         NOW,
         || NOW,
@@ -1232,6 +1291,7 @@ async fn preview_estimate_overflow_is_a_typed_selection_error() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -1952,6 +2012,7 @@ async fn probing_preview_backfills_stale_ads_from_the_pool() {
         &prober,
         test_peer_badge_verifier().provenance(),
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -2025,6 +2086,7 @@ async fn cheap_slow_spam_times_out_before_honest_badge_verification() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         Instant::now() + Duration::from_secs(10),
         NOW,
         || NOW,
@@ -2060,6 +2122,7 @@ async fn cheap_slow_spam_times_out_before_honest_badge_verification() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         Instant::now() + Duration::from_secs(7),
         NOW,
         || NOW,
@@ -2118,6 +2181,7 @@ async fn preview_cohorts(events: Vec<Event>) -> FaResult<MgSelectionPreview> {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &multi_release_preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -2199,6 +2263,7 @@ async fn preview_returns_selected_seats_estimate_and_summary() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -2258,6 +2323,7 @@ async fn preview_validity_starts_when_the_verified_walk_completes() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || completed_at,
@@ -2299,6 +2365,7 @@ async fn preview_shortfall_is_a_typed_partial_failure() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -2330,6 +2397,7 @@ async fn preview_shortfall_is_a_typed_partial_failure() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -2353,6 +2421,7 @@ async fn preview_relay_failure_is_a_typed_registry_error() {
         &AdOnlySelection,
         PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
         &preview_request(MIN_FEDERATION_SIZE),
+        &BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,

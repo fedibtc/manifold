@@ -21,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
+use crate::ceremony_failures;
 use crate::db::{
     ActiveFormationRecovery, AdmissionEffect, DriverLease, FaRecovery, FaStore,
     FormationMetaTarget, InitialSeat, MgAdmission, QuoteAuthorization, StoredVerifierProvenance,
@@ -900,6 +901,7 @@ where
             excluded,
             retained_service_pubkeys,
             retained_holders,
+            &self.inner.store.ceremony_failure_skips(now).await,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -2989,33 +2991,42 @@ where
             let federation_name =
                 (position == 0).then(|| recovery.snapshot.intent.federation_name.clone());
             pending_codes.push(async move {
-                let code = self
-                    .get_dkg_code_with_retry(
-                        formation_id,
-                        session,
-                        fa_id,
-                        federation_name,
-                        existing.clone(),
-                        run,
-                    )
-                    .await?;
-                if let Some(recorded) = existing.as_ref()
-                    && recorded != &code
-                {
-                    return Err(FaError::InvalidManifoldGuardians(format!(
-                        "Manifold Guardian {} changed its deterministic guardian code",
-                        position + 1
-                    )));
+                let result = async {
+                    let code = self
+                        .get_dkg_code_with_retry(
+                            formation_id,
+                            session,
+                            fa_id,
+                            federation_name,
+                            existing.clone(),
+                            run,
+                        )
+                        .await?;
+                    if let Some(recorded) = existing.as_ref()
+                        && recorded != &code
+                    {
+                        return Err(FaError::InvalidManifoldGuardians(format!(
+                            "Manifold Guardian {} changed its deterministic guardian code",
+                            position + 1
+                        )));
+                    }
+                    Ok((code, existing.is_none()))
                 }
-                Ok((position, code, existing.is_none()))
+                .await;
+                (position, result)
             });
         }
         let mut guardian_codes = (0..sessions.len())
             .map(|_| None)
             .collect::<Vec<Option<GuardianCode>>>();
         let mut first_error = None;
-        while let Some(result) = pending_codes.next().await {
-            let (position, code, newly_generated) = match result {
+        let mut round = Vec::with_capacity(sessions.len());
+        while let Some((position, result)) = pending_codes.next().await {
+            round.push((
+                position,
+                result.as_ref().is_err_and(ceremony_failures::is_absence),
+            ));
+            let (code, newly_generated) = match result {
                 Ok(value) => value,
                 Err(error) => {
                     if first_error.is_some() {
@@ -3043,6 +3054,7 @@ where
             guardian_codes[position] = Some(code);
         }
         if let Some(error) = first_error {
+            self.remember_ceremony_absences(recovery, &round).await;
             return Err(error);
         }
         let guardian_codes = guardian_codes
@@ -3069,22 +3081,41 @@ where
                     guardian_codes,
                     completion_callback,
                 };
-                let request = run
-                    .construct("signing StartDkg request", || self.sign(&request))
-                    .await?;
-                match session.client.call(run, MgOperation::StartDkg, |client| client.start_dkg(request)).await {
-                    Ok(_) | Err(FaError::Mg(MgFailure {
-                        cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
-                        ..
-                    })) => Ok::<_, FaError>((position, false)),
-                    Err(error) => Err(error),
+                let result = async {
+                    let request = run
+                        .construct("signing StartDkg request", || self.sign(&request))
+                        .await?;
+                    match session
+                        .client
+                        .call(run, MgOperation::StartDkg, |client| {
+                            client.start_dkg(request)
+                        })
+                        .await
+                    {
+                        Ok(_)
+                        | Err(FaError::Mg(MgFailure {
+                            cause:
+                                MgCause::WrongState(
+                                    ServiceStatus::DkgInProcess | ServiceStatus::Running,
+                                ),
+                            ..
+                        })) => Ok::<_, FaError>(()),
+                        Err(error) => Err(error),
+                    }
                 }
+                .await;
+                (position, result)
             });
         }
         let mut first_error = None;
-        while let Some(result) = pending_starts.next().await {
+        let mut round = Vec::with_capacity(sessions.len());
+        while let Some((position, result)) = pending_starts.next().await {
+            round.push((
+                position,
+                result.as_ref().is_err_and(ceremony_failures::is_absence),
+            ));
             match result {
-                Ok((position, _)) => {
+                Ok(()) => {
                     recovery.seats[position].progress.phase = SeatPhase::DkgUnderway;
                     recovery.seats[position].progress.freshness = FormationFreshness::Fresh;
                     recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
@@ -3098,6 +3129,7 @@ where
             }
         }
         if let Some(error) = first_error {
+            self.remember_ceremony_absences(recovery, &round).await;
             return Err(error);
         }
         recovery.snapshot.phase = FormationPhase::DkgUnderway;
@@ -3113,6 +3145,7 @@ where
             .store
             .record_dkg_complete(formation_id, invite.clone())
             .await?;
+        self.forget_ceremony_absences(recovery).await;
         recovery.snapshot.phase = FormationPhase::DkgComplete;
         self.publish_snapshot(recovery.snapshot.clone());
         self.publish_seat_bindings(sessions, recovery, fa_id, &invite, run)
@@ -3837,20 +3870,40 @@ where
                     seat_id: session.seat_id.clone(),
                 };
                 pending_status.push(async move {
-                    let request = run
-                        .construct("signing GetStatus request", || self.sign(&request))
-                        .await?;
-                    let status = session
-                        .client
-                        .call(run, MgOperation::GetStatus, |client| {
-                            client.get_status(request)
-                        })
-                        .await?;
-                    Ok::<_, FaError>((position, status))
+                    let result = async {
+                        let request = run
+                            .construct("signing GetStatus request", || self.sign(&request))
+                            .await?;
+                        session
+                            .client
+                            .call(run, MgOperation::GetStatus, |client| {
+                                client.get_status(request)
+                            })
+                            .await
+                    }
+                    .await;
+                    (position, result)
                 });
             }
-            while let Some(result) = pending_status.next().await {
-                let (position, status) = result?;
+            // Every seat answers or fails before the round returns its first
+            // failure, so the round can say whose failure it was.
+            let mut first_error = None;
+            let mut round = Vec::with_capacity(sessions.len());
+            while let Some((position, result)) = pending_status.next().await {
+                round.push((
+                    position,
+                    result.as_ref().is_err_and(ceremony_failures::is_absence),
+                ));
+                let status = match result {
+                    Ok(status) => status,
+                    Err(error) => {
+                        if first_error.is_some() {
+                            log_mg_failure(formation_id, &error, "discarded");
+                        }
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                };
                 recovery.seats[position].progress.phase = service_seat_phase(&status.status)
                     .map_err(|cause| {
                         sessions[position]
@@ -3866,6 +3919,10 @@ where
                 } else {
                     waiting.push(&sessions[position]);
                 }
+            }
+            if let Some(error) = first_error {
+                self.remember_ceremony_absences(recovery, &round).await;
+                return Err(error);
             }
             recovery.snapshot.freshness = FormationFreshness::Fresh;
             self.publish_snapshot(recovery.snapshot.clone());
@@ -3886,6 +3943,58 @@ where
                         );
                     }
                 })?;
+        }
+    }
+
+    /// Remember, for selection to skip, the MGs whose seats one ceremony
+    /// round attributes its failure to ([`ceremony_failures`]): `round` holds
+    /// each answering seat's position and whether it was absent. A round
+    /// after the ceremony completed is not a ceremony's. Selection memory is
+    /// best effort: failing to store it never fails the formation.
+    async fn remember_ceremony_absences(
+        &self,
+        recovery: &ActiveFormationRecovery,
+        round: &[(usize, bool)],
+    ) {
+        if recovery.snapshot.phase.dkg_complete() {
+            return;
+        }
+        let absent = ceremony_failures::attributable_absences(
+            round
+                .iter()
+                .map(|&(position, absent)| (recovery.seats[position].progress.mg_id, absent)),
+        );
+        if absent.is_empty() {
+            return;
+        }
+        let now = fedimint_core::time::duration_since_epoch().as_secs();
+        match self
+            .inner
+            .store
+            .record_ceremony_failures(&absent, now)
+            .await
+        {
+            Ok(()) => tracing::info!(
+                formation_id = %recovery.snapshot.formation_id.0,
+                mg_ids = ?absent,
+                "skipping MGs absent from a key ceremony in selection"
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "failed to remember MGs absent from a key ceremony")
+            }
+        }
+    }
+
+    /// Forget the ceremony failures of this formation's MGs: their ceremony
+    /// completed, so an absence they recovered from did not fail it.
+    async fn forget_ceremony_absences(&self, recovery: &ActiveFormationRecovery) {
+        let mg_ids = recovery
+            .seats
+            .iter()
+            .map(|seat| seat.progress.mg_id)
+            .collect::<Vec<_>>();
+        if let Err(error) = self.inner.store.forget_ceremony_failures(&mg_ids).await {
+            tracing::warn!(%error, "failed to forget MGs that completed a key ceremony");
         }
     }
 

@@ -342,6 +342,10 @@ pub enum AdvertisementRejection {
     /// The run deadline expired before this advertisement was processed.
     DeadlineExpired,
 
+    /// This MG's seat was absent from a key ceremony this FA drove within
+    /// the last day, so this FA does not select it until then.
+    RecentCeremonyFailure,
+
     /// The live availability probe produced no usable response: connecting,
     /// calling, or the Manifold Guardian's own error, or the per-probe budget
     /// elapsed first.
@@ -426,6 +430,7 @@ impl AdvertisementRejection {
             Self::DuplicateServicePubkey { .. } => "duplicate_service_pubkey",
             Self::DuplicateBadgeHolder => "duplicate_badge_holder",
             Self::DeadlineExpired => "deadline_expired",
+            Self::RecentCeremonyFailure => "recent_ceremony_failure",
             Self::ProbeFailed { .. } => "probe_failed",
             Self::LiveNotAcceptingSeats => "live_not_accepting_seats",
             Self::LiveUnsupportedFederationSize => "live_unsupported_federation_size",

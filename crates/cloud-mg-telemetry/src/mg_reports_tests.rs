@@ -11,7 +11,7 @@ fn record(timestamp: &str, message: &str, fields: &str) -> serde_json::Value {
 
 const CAPACITY: &str = "\"mg_version\":\"0.1.6\",\"memory_max_seats\":9,\"policy_max_seats\":12,\"available_seats\":6,\"accepting_seats\":true";
 
-const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"version\":\"mg_version_too_old\",\"pressure\":\"host_pressure_6h_high\",\"cpu_pressure_6h_pct\":21.3,\"cpu_pressure_3_5d_pct\":8.7,\"io_pressure_6h_pct\":4.1,\"max_cpu_pressure_6h_pct\":15,\"max_cpu_pressure_3_5d_pct\":10,\"max_io_pressure_6h_pct\":10,\"max_io_pressure_3_5d_pct\":5,\"memory_pressure_6h_pct\":6.2,\"memory_pressure_3_5d_pct\":1.8,\"max_memory_pressure_6h_pct\":70,\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
+const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"ceremonies\":\"ceremony_child_failed\",\"version\":\"mg_version_too_old\",\"pressure\":\"host_pressure_6h_high\",\"cpu_pressure_6h_pct\":21.3,\"cpu_pressure_3_5d_pct\":8.7,\"io_pressure_6h_pct\":4.1,\"max_cpu_pressure_6h_pct\":15,\"max_cpu_pressure_3_5d_pct\":10,\"max_io_pressure_6h_pct\":10,\"max_io_pressure_3_5d_pct\":5,\"memory_pressure_6h_pct\":6.2,\"memory_pressure_3_5d_pct\":1.8,\"max_memory_pressure_6h_pct\":70,\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
 
 fn capacity(fields: &str) -> Option<Stated<SeatCapacity>> {
     let mut latest = LatestReports::default();
@@ -65,6 +65,10 @@ fn keeps_the_last_valid_report_of_each_kind() {
     assert_eq!(capacity.report.max_seats, None);
     let readiness = latest.seat_readiness.unwrap();
     assert!(!readiness.report.ready);
+    assert_eq!(
+        readiness.report.ceremonies,
+        Some(ReadinessCode("ceremony_child_failed".into()))
+    );
     assert_eq!(
         readiness.report.version,
         Some(ReadinessCode("mg_version_too_old".into()))
@@ -122,6 +126,7 @@ fn reports_from_releases_with_fewer_fields_decode() {
     .unwrap()
     .report;
     assert!(readiness.ready);
+    assert_eq!(readiness.ceremonies, None);
     assert_eq!(readiness.version, None);
     assert_eq!(readiness.pressure, None);
     assert_eq!(readiness.cpu_pressure_6h_pct, None);
