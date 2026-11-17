@@ -3,7 +3,7 @@ import { AttentionList } from '@/features/overview/components/attention-list/Att
 import { EarningsTimeline } from '@/features/overview/components/earnings-timeline/EarningsTimeline';
 import { OfferSummary } from '@/features/overview/components/offer-summary/OfferSummary';
 import { useOverviewEarnings } from '@/features/overview/hooks/use-overview-earnings/useOverviewEarnings';
-import { WALLET_RECOVERING, deriveOverview } from '@/features/overview/utils/deriveOverview';
+import { deriveOverview, WALLET_RECOVERING } from '@/features/overview/utils/deriveOverview';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { usePaymentFederations } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
