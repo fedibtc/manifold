@@ -113,6 +113,15 @@ the fleet.
   seconds of unbroken up slots until the gate passes that window (zero when it
   passes), computed by the daemon from the same moving averages so the UI
   holds no copy of the formula.
+- `ResetUptime` forgets the uptime history and wakes the readiness checks,
+  which run at once instead of at their next slot. The history restarts at
+  95% at the next up slot, as on a new MG, so an MG an outage closed reopens
+  with its next passing run. It returns `{ uptime_reset: "rechecking" }`;
+  `ShowSeatReadiness` shows the verdict once the run finishes. Uptime is
+  self-reported, so the reset is the operator's to make. It is for an outage
+  this MG's badge issuer agrees was not the host's fault, and the issuer may
+  revoke the badge of an MG that resets it otherwise; the daemon journals
+  each reset as a shareable event, so the reset is visible in telemetry.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.

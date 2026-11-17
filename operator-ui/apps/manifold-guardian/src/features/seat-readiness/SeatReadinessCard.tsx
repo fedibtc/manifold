@@ -19,6 +19,7 @@ import {
 } from '@/shared/utils/seatReadiness';
 import { formatWait } from './formatWait';
 import styles from './SeatReadinessCard.module.css';
+import { UptimeTitle } from './UptimeTitle';
 
 interface SeatReadinessCardProps {
   readiness: ShowSeatReadinessResponse;
@@ -86,7 +87,7 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
           {uptime && (
             <section className={styles.uptime} aria-label="Uptime">
               <div className={styles.uptimeHead}>
-                <strong>Uptime</strong>
+                <UptimeTitle />
 
                 <span className={styles.guidance}>
                   {wait > 0

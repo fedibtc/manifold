@@ -415,6 +415,10 @@ async fn admin_socket_round_trips_operator_verbs() {
         ask(AdminRequest::ReenrollTelemetry).await.unwrap(),
         serde_json::json!({ "telemetry_reenrollment": "scheduled" })
     );
+    assert_eq!(
+        ask(AdminRequest::ResetUptime).await.unwrap(),
+        serde_json::json!({ "uptime_reset": "rechecking" })
+    );
 
     // Onboarding is behind this fleet, and happens once: the verbs that
     // choose an identity are refused by a daemon that already has one. The

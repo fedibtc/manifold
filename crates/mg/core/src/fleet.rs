@@ -376,6 +376,9 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// Edge trigger for the readiness loop to run now rather than at its next
+    /// slot, after the operator reset the uptime history.
+    readiness_rerun: Notify,
     /// The operator's linked phone: offer and evaluator memory
     /// ([`crate::guardian_link`]).
     pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
@@ -589,6 +592,7 @@ impl Fleet {
             advertisement_changed,
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
+            readiness_rerun: Notify::new(),
             guardian_link: Default::default(),
             iroh_endpoint_id: std::sync::OnceLock::new(),
         };
@@ -930,6 +934,24 @@ impl Fleet {
             .uptime()
             .await?
             .map_or(UptimeScores::START, |uptime| uptime.scores))
+    }
+
+    /// Forget the uptime history, so it restarts at [`UptimeScores::START`]
+    /// at the next up slot as on a new MG, and wake the readiness loop so the
+    /// verdict follows now.
+    pub async fn reset_uptime(&self) -> anyhow::Result<()> {
+        self.db.reset_uptime().await?;
+        tracing::warn!(
+            safe_to_share = true,
+            "the operator reset the uptime history"
+        );
+        self.readiness_rerun.notify_one();
+        Ok(())
+    }
+
+    /// Wait until the readiness checks should run before their next slot.
+    pub async fn readiness_rerun_requested(&self) {
+        self.readiness_rerun.notified().await;
     }
 
     /// Account for this run's pressure reading, `None` when the counters
