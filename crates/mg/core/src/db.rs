@@ -791,6 +791,14 @@ impl Db {
         Ok(next)
     }
 
+    /// Forget the uptime history: it restarts at the next up slot.
+    pub(crate) async fn reset_uptime(&self) -> Result<(), DbError> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM uptime").execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The stored CPU measurement, or `None` before the first.
     pub(crate) async fn cpu_capacity(&self) -> Result<Option<CpuCapacity>, DbError> {
         let mut conn = self.pool.acquire().await?;

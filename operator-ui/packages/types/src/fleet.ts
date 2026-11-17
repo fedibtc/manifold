@@ -401,6 +401,11 @@ export interface DecommissionSeatResponse {
 export interface ReenrollTelemetryResponse {
   telemetry_reenrollment: 'scheduled';
 }
+// The uptime history is gone and the readiness checks are running again;
+// ShowSeatReadiness shows their verdict once they finish.
+export interface ResetUptimeResponse {
+  uptime_reset: 'rechecking';
+}
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
 // The operator's NIP-17 chat with Fedi support (SPEC-mg-support-chat).
 export type SupportAuthor = 'operator' | 'fedi';
@@ -534,6 +539,7 @@ export interface AdminResponseByName {
   SetPrice: SetPriceResponse;
   ShowCapacity: ShowCapacityResponse;
   ShowSeatReadiness: ShowSeatReadinessResponse;
+  ResetUptime: ResetUptimeResponse;
   SetCapacity: SetCapacityResponse;
   SetDataBudget: SetDataBudgetResponse;
   ListPaymentFederations: ListPaymentFederationsResponse;

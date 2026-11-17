@@ -1769,6 +1769,85 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     fleet.shutdown().await;
 }
 
+/// Resetting the uptime history reopens an MG an outage closed at once: the
+/// readiness worker reruns without waiting out its retry minute, and the
+/// history restarts at 95% from the slot it records.
+#[tokio::test]
+async fn resetting_uptime_reruns_readiness_and_restarts_the_history() {
+    use crate::seat_readiness::{ReadinessProbe, run};
+
+    /// Passing prerequisites on every run, counting the runs.
+    struct CountingProbe(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for CountingProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            readiness(true)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 31_400).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    let slot = |n: u64| {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + n * UPTIME_SLOT_SECS)
+    };
+    // Up, then four days no daemon recorded: every window falls below its
+    // default minimum.
+    let day = 24 * 60 * 60 / UPTIME_SLOT_SECS;
+    fleet.record_uptime_slot(slot(1), true).await.unwrap();
+    let now = slot(1 + 4 * day);
+    let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_publish, policies) = tokio::sync::watch::channel(None);
+    let worker = tokio::spawn(run(
+        CountingProbe(runs.clone()),
+        fleet.clone(),
+        policies,
+        move || now,
+        None::<fn() -> anyhow::Result<crate::host_pressure::PressureTotals>>,
+    ));
+    let report_where = |wanted: fn(&ReadinessReport) -> bool| {
+        let fleet = fleet.clone();
+        async move {
+            // Well under the worker's one-minute retry while it fails.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(report) = fleet.seat_readiness().filter(wanted)
+                        && fleet.ready_for_new_seats().await == report.ready()
+                    {
+                        break report;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("a run reports it")
+        }
+    };
+    let closed = report_where(|report| report.uptime != ReadinessOutcome::Pass).await;
+    assert_eq!(closed.uptime, ReadinessOutcome::DayUptimeLow);
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    fleet.reset_uptime().await.unwrap();
+    let reopened = report_where(|report| report.uptime == ReadinessOutcome::Pass).await;
+    assert!(reopened.ready(), "{reopened:?}");
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+    // The rerun's own up slot is the history's first.
+    let scores = fleet.uptime().await.unwrap();
+    for score in [scores.day, scores.week, scores.month] {
+        assert!((0.95..0.951).contains(&score), "{scores:?}");
+    }
+    worker.abort();
+    fleet.shutdown().await;
+}
+
 /// The readiness worker follows the setup-payment policy's minimum release
 /// and maximum pressures: raising the minimum above this release, or a
 /// maximum below the host's CPU, IO or memory pressure average, stops

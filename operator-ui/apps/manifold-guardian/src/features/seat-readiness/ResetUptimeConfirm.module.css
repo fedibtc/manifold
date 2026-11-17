@@ -1,0 +1,23 @@
+.root {
+  @apply uConfirmBackdrop;
+}
+
+.card {
+  @apply uConfirmCard;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.body {
+  @apply uIntro uStack2;
+}
+
+.error {
+  @apply uFieldError;
+}
+
+.actions {
+  @apply uActionsRow;
+}

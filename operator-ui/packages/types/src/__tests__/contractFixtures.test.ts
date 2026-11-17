@@ -56,6 +56,7 @@ import mgPayoutJobCappedJson from '../../fixtures/mg_payout_job_capped.json';
 import mgPayoutJobStatusJson from '../../fixtures/mg_payout_job_status.json';
 import mgPlansJson from '../../fixtures/mg_plans.json';
 import mgReenrollTelemetryJson from '../../fixtures/mg_reenroll_telemetry.json';
+import mgResetUptimeJson from '../../fixtures/mg_reset_uptime.json';
 import mgSeatGuardianFeesJson from '../../fixtures/mg_seat_guardian_fees.json';
 import mgSeatReadinessJson from '../../fixtures/mg_seat_readiness.json';
 import mgSeatReportsJson from '../../fixtures/mg_seat_reports.json';
@@ -90,6 +91,7 @@ import type {
   PayoutJob,
   PayoutJobStatusResponse,
   ReenrollTelemetryResponse,
+  ResetUptimeResponse,
   RefreshHolderAuthorizationsResponse,
   SeatGuardianFee,
   SeatReport,
@@ -281,6 +283,7 @@ const adminRequestsMirror = {
   SetPrice: { SetPrice: { price_msats: 50_000_000 } },
   ShowCapacity: 'ShowCapacity',
   ShowSeatReadiness: 'ShowSeatReadiness',
+  ResetUptime: 'ResetUptime',
   SetCapacity: { SetCapacity: { max_seats: 4 } },
   SetDataBudget: { SetDataBudget: { monthly_data_budget: '500' } },
   ConfigureInitialOffer: {
@@ -601,6 +604,10 @@ const mgReenrollTelemetryMirror = {
   telemetry_reenrollment: 'scheduled'
 } satisfies ReenrollTelemetryResponse;
 
+const mgResetUptimeMirror = {
+  uptime_reset: 'rechecking'
+} satisfies ResetUptimeResponse;
+
 const supportOperatorMessage = {
   id: 'a'.repeat(64),
   author: 'operator',
@@ -873,6 +880,10 @@ describe('committed MG fixtures match their type-checked mirrors', () => {
     expect(mgSupportChatJson).toEqual(mgSupportChatMirror);
     expect(mgSendSupportMessageJson).toEqual(mgSendSupportMessageMirror);
     expect(mgMarkSupportReadJson).toEqual(mgMarkSupportReadMirror);
+  });
+
+  it('should keep mg_reset_uptime.json equal to the typed mirror', () => {
+    expect(mgResetUptimeJson).toEqual(mgResetUptimeMirror);
   });
 
   it('should keep mg_guardian_fees.json equal to the typed mirror', () => {

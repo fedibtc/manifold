@@ -1,0 +1,8 @@
+/* Reads as the plain section title it replaced: the reset stays hidden. */
+.title {
+  @apply cursor-default select-none self-start text-left font-semibold;
+}
+
+.done {
+  @apply uMutedSm;
+}
