@@ -2348,11 +2348,11 @@
         "nixpkgs-unstable": "nixpkgs-unstable_3"
       },
       "locked": {
-        "lastModified": 1785087478,
-        "narHash": "sha256-Z15piZBEmfx7fLTbc8D/huF/5YhZqpzBpdXUnWTquUI=",
+        "lastModified": 1794894827,
+        "narHash": "sha256-pPTTvl92/Q6lgKlfZIdPd+1NaDMLlmMIojpmYDJWaCE=",
         "owner": "dpc",
         "repo": "selfci",
-        "rev": "4c3a5338915bd667c1c3cdb2fbca3366cef8cf1e",
+        "rev": "45ea9cfce30073a8d0eb701419fcf32e21564298",
         "type": "github"
       },
       "original": {
