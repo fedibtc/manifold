@@ -45,8 +45,8 @@ export const UptimeTitle = () => {
 
       {reset.isSuccess && (
         <span role="status" className={styles.done}>
-          Uptime reset. The readiness checks are running again; this page shows their result
-          within a minute.
+          Uptime reset. The readiness checks are running again; this page shows their result within
+          a minute.
         </span>
       )}
     </>
