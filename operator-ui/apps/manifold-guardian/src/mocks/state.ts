@@ -83,6 +83,9 @@ export interface MockState {
   /** The CPU seat limit, null while the setup-payment policy sets no
    *  per-seat CPU budget. Read by `ShowCapacity`. */
   cpuMaxSeats: number | null;
+  /** The disk seat limit, null while the daemon has not measured its data
+   *  filesystem. Read by `ShowCapacity`. */
+  diskMaxSeats: number | null;
   /** The operator's monthly data answer (`offer_state.monthly_data_budget`):
    *  written by `ConfigureInitialOffer` and `SetDataBudget`, `not_set` on an
    *  MG set up before the question. */

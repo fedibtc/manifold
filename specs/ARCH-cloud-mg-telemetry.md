@@ -196,7 +196,7 @@ before 0.1.4 journal only the free seats, the accepting flag and the operator
 limit, and no uptime outcome, scores or minimums; releases before 0.1.9
 journal no `version` outcome, and releases before 0.1.16 no `pressure`
 outcome or pressure figures, no CPU limit or CPU capacity, and no
-`monthly_data_budget`. Absent fields stay absent. A `monthly_data_budget`
+`monthly_data_budget`; releases before 0.1.17 journal no disk limit. Absent fields stay absent. A `monthly_data_budget`
 token the collector does not know is dropped as if absent, so a later
 release's answer does not cost the rest of the record.
 
@@ -205,7 +205,7 @@ record of each kind, in journal order, that has an RFC 3339 timestamp and
 whose fields validate: counts as unsigned 32-bit integers, codes and versions
 as short bounded ASCII, and percentages from 0 to 100. A capacity record also
 needs at least one stated limit, free seats no greater than any of them
-(the CPU limit included), and
+(the CPU and disk limits included), and
 a policy limit no greater than the most seats a setup-payment policy allows
 one MG. Every release states a limit. Releases before 0.1.4 state only the
 operator limit, which has no upper bound. These checks

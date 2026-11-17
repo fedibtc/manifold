@@ -1185,6 +1185,7 @@ mod tests {
                 "cpu_count": null,
                 "cpu_iterations_per_sec": null,
                 "cpu_single_core_iterations_per_sec": null,
+                "disk_max_seats": null,
                 "monthly_data_budget": "unlimited",
                 "mg_version": "0.1.6",
             })

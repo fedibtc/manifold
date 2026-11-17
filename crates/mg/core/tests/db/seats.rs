@@ -1011,6 +1011,39 @@ async fn operator_data_changes_rotate_only_when_the_seats_they_cover_change() {
 }
 
 #[tokio::test]
+async fn admission_also_stops_at_the_disk_limit_and_only_while_it_is_set() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    let disk = |limit| crate::db::SeatsConfigUpdate {
+        disk_max_seats: Some(limit),
+        ..Default::default()
+    };
+    set_max_seats(&db, 5).await.unwrap();
+    // A fresh store has no disk limit, so memory's first value of 4 binds.
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!((snapshot.limits.disk_max_seats, snapshot.slots), (None, 4));
+
+    // A disk limit below every other one binds, and one that takes the last
+    // slot retires the epoch quoted under the old limits.
+    let epoch = db.offer_epoch().await.unwrap();
+    assert!(db.update_seats_config(disk(Some(3)), base).await.unwrap());
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (snapshot.limits.disk_max_seats, snapshot.slots),
+        (Some(3), 3)
+    );
+    assert_eq!(db.offer_epoch().await.unwrap(), epoch);
+    assert!(db.update_seats_config(disk(Some(0)), base).await.unwrap());
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 0);
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+
+    // Without a measurement there is no disk limit; memory binds again.
+    assert!(db.update_seats_config(disk(None), base).await.unwrap());
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!((snapshot.limits.disk_max_seats, snapshot.slots), (None, 4));
+}
+
+#[tokio::test]
 async fn admission_also_stops_at_the_cpu_limit_and_only_while_it_is_set() {
     let (_dir, db) = open_db().await;
     let base = crate::facts::PortBase::new(30_000).unwrap();

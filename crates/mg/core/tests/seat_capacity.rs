@@ -31,6 +31,34 @@ fn cpu_limit_is_whole_budgets_of_the_measured_capacity() {
 }
 
 #[test]
+fn disk_limit_is_whole_per_seat_figures_of_the_filesystem_size() {
+    let gb = |gb| NonZeroU32::new(gb).unwrap();
+    // What ext4 reports as the size of a 1 TB and a 512 GB drive, after its
+    // own overhead: 12 and 6 seats at the default 80 GB.
+    assert_eq!(disk_max_seats(984_000_000_000, DEFAULT_SEAT_DISK), 12);
+    assert_eq!(disk_max_seats(503_000_000_000, DEFAULT_SEAT_DISK), 6);
+    // GB are 10^9 bytes: one byte short of k figures gives k - 1.
+    assert_eq!(disk_max_seats(3 * 80 * GB, gb(80)), 3);
+    assert_eq!(disk_max_seats(3 * 80 * GB - 1, gb(80)), 2);
+    assert_eq!(disk_max_seats(80 * GB - 1, gb(80)), 0);
+    assert_eq!(disk_max_seats(u64::MAX, gb(1)), u32::MAX);
+}
+
+#[test]
+fn data_filesystem_size_is_the_whole_filesystem_not_its_free_space() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let size = data_filesystem_bytes(dir.path()).unwrap();
+    // SAFETY: as in `data_filesystem_bytes`.
+    let mut stat = unsafe { std::mem::zeroed::<libc::statvfs>() };
+    let path = std::ffi::CString::new(dir.path().to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &raw mut stat) }, 0);
+    #[allow(clippy::useless_conversion)]
+    let free = u64::from(stat.f_bavail) * u64::from(stat.f_frsize);
+    assert!(size > 0 && size >= free, "size {size}, free {free}");
+    assert!(data_filesystem_bytes(&dir.path().join("missing")).is_err());
+}
+
+#[test]
 fn smoothing_lowers_at_once_and_raises_after_three_agreeing_samples() {
     let mut smoothed = Smoothed::starting_at(6);
     assert_eq!(smoothed.push(4), 4);

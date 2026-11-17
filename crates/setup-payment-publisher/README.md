@@ -110,6 +110,13 @@ its default of 65, set for example `"seat_monthly_data_gb": 60`, in GB (10^9
 bytes) per 30 days, from 1 to 10,000. Derive it from the fleet's
 `fm_peer_transport_bytes_total`, transmitted plus received.
 
+MGs from 0.1.17 on also sell no more than their data filesystem's size
+divided by the disk one seat needs, which stands in for drive wear. To change
+that figure from its default of 80, set for example `"seat_disk_gb": 100`, in
+GB (10^9 bytes), from 1 to 100,000. Tune it from the fleet's
+`cgroup_block_write_bytes` and `data_filesystem_bytes` in the `cgroup
+resource sample`.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files. Older consumers

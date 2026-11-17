@@ -6,7 +6,8 @@
 //! journal without the daemon tracking child process ids. The daemon also
 //! samples the cgroup and the network namespace that it shares with its
 //! seats, the whole host's pressure (to tell the MG's own contention from
-//! other services'), and names the filesystem of its data directory.
+//! other services'), and names the filesystem of its data directory and its
+//! size.
 //!
 //! Counters are cumulative. A consumer derives rates from the deltas between
 //! two samples. A counter whose source the kernel does not provide is omitted
@@ -27,8 +28,12 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(crate) enum Role {
     /// The MG daemon. It also samples the cgroup and network namespace it
     /// shares with its seats, the host's pressure, and names the filesystem
-    /// that holds the data directory.
-    Daemon { data_filesystem: DataFilesystem },
+    /// that holds the data directory and its size, `None` where it cannot be
+    /// read.
+    Daemon {
+        data_filesystem: DataFilesystem,
+        data_filesystem_bytes: Option<u64>,
+    },
     /// One bundled `fedimintd` seat process.
     Fedimintd,
 }
@@ -70,8 +75,12 @@ pub(crate) fn spawn(role: Role) {
                 io_write_bytes = io.as_ref().map(|io| io.write_bytes),
                 "process resource sample"
             );
-            if let Role::Daemon { data_filesystem } = role {
-                report_cgroup(data_filesystem);
+            if let Role::Daemon {
+                data_filesystem,
+                data_filesystem_bytes,
+            } = role
+            {
+                report_cgroup(data_filesystem, data_filesystem_bytes);
             }
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
@@ -81,7 +90,7 @@ pub(crate) fn spawn(role: Role) {
 /// Report the cgroup and the network namespace that the daemon shares with
 /// its seats, and the host's pressure. The cgroup path, device numbers and
 /// interface names stay local.
-fn report_cgroup(data_filesystem: DataFilesystem) {
+fn report_cgroup(data_filesystem: DataFilesystem, data_filesystem_bytes: Option<u64>) {
     let cgroup = read("/proc/self/cgroup", cgroup_v2_dir);
     let cgroup_file = |name: &str| cgroup.as_ref().map(|dir| dir.join(name));
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
@@ -116,6 +125,7 @@ fn report_cgroup(data_filesystem: DataFilesystem) {
         host_io_pressure_us = host_pressure("io"),
         host_memory_pressure_us = host_pressure("memory"),
         data_filesystem = %data_filesystem,
+        data_filesystem_bytes,
         netns_rx_bytes = network.as_ref().map(|network| network.rx_bytes),
         netns_tx_bytes = network.as_ref().map(|network| network.tx_bytes),
         "cgroup resource sample"

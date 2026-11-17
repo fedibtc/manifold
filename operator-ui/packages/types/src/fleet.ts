@@ -295,7 +295,9 @@ export type MonthlyDataBudget = 'not_set' | 'unlimited' | `${number}`;
 /** Admission sells up to the lowest of the operator's limit, the runtime
  *  limits, and the data limit. `max_seats` is null when automatic: no
  *  operator cap. `cpu_max_seats` is null while the setup-payment policy sets
- *  no per-seat CPU budget. `cpu_benchmark` is the host's CPU capacity,
+ *  no per-seat CPU budget, and `disk_max_seats` while the daemon has not
+ *  measured its data filesystem (local end-to-end tests, or a failed
+ *  measurement). `cpu_benchmark` is the host's CPU capacity,
  *  measured at start; null only where the daemon skips the benchmark (local
  *  end-to-end tests). `data_max_seats` is the GB of `monthly_data_budget`
  *  divided by `seat_monthly_data_gb` (the publication's, or its default of
@@ -306,6 +308,7 @@ export interface CapacityResponse {
   policy_max_seats: number;
   cpu_max_seats: number | null;
   cpu_benchmark: CpuBenchmark | null;
+  disk_max_seats: number | null;
   monthly_data_budget: MonthlyDataBudget;
   seat_monthly_data_gb: number;
   data_max_seats: number | null;

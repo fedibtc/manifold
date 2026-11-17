@@ -1,9 +1,10 @@
-//! How many seats this host's memory and CPU carry
+//! How many seats this host's memory, CPU and disk carry
 //! (`crates/mg/specs/REQ-seat-capacity-default.md`).
 //!
 //! One task writes the runtime inputs beside the operator's limits: a limit
 //! from sampled memory, one from the measured CPU capacity
-//! ([`crate::cpu_capacity`]), and the publication's seat limit and per-seat
+//! ([`crate::cpu_capacity`]), one from the data filesystem's size, and the
+//! publication's seat limit and per-seat
 //! monthly data, which the operator's data budget is divided by
 //! ([`crate::db::SeatLimits::data_max_seats`]). Admission uses the lowest
 //! limit, and the database applies each write without breaking the
@@ -11,13 +12,14 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_MEMORY_BUDGET_MIB,
-    DEFAULT_SEAT_MONTHLY_DATA_GB,
+    AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
+    DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,
 };
 use tokio::sync::watch;
 
@@ -33,6 +35,11 @@ const MIB: u64 = 1024 * 1024;
 /// The publication's default data per seat, for when there is no publication.
 const DEFAULT_SEAT_MONTHLY_DATA: std::num::NonZeroU32 =
     std::num::NonZeroU32::new(DEFAULT_SEAT_MONTHLY_DATA_GB).expect("the default is nonzero");
+/// The publication's default disk per seat, for when there is no publication.
+const DEFAULT_SEAT_DISK: NonZeroU32 =
+    NonZeroU32::new(DEFAULT_SEAT_DISK_GB).expect("the default is nonzero");
+/// Disk figures are in GB of 10^9 bytes, as drives are sold.
+const GB: u64 = 1_000_000_000;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// A raised limit takes effect only once this many consecutive samples agree,
 /// while a lowered one takes effect at once.
@@ -50,6 +57,33 @@ fn memory_max_seats(available_ram_bytes: u64, seat_process_bytes: u64, budget_by
 /// measured capacity, or none while the publication sets no budget.
 fn cpu_max_seats(iterations_per_sec: u32, budget: Option<NonZeroU32>) -> Option<u32> {
     budget.map(|budget| iterations_per_sec / budget)
+}
+
+/// The runtime limit from disk: one seat per whole per-seat figure of the data
+/// filesystem's size. Size stands in for the drive's write endurance, which
+/// grows with it and which the MG cannot read.
+fn disk_max_seats(filesystem_bytes: u64, seat_disk_gb: NonZeroU32) -> u32 {
+    let seats = filesystem_bytes / (u64::from(seat_disk_gb.get()) * GB);
+    u32::try_from(seats).unwrap_or(u32::MAX)
+}
+
+/// The size of the filesystem that holds `path`, used or not: its blocks
+/// times their size, which is what `df` reports as its size. Free space does
+/// not enter, since the limit is about how much writing the drive takes.
+pub fn data_filesystem_bytes(path: &Path) -> anyhow::Result<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .context("the data directory path holds a NUL byte")?;
+    // SAFETY: `statvfs` writes only into `stat`, which outlives the call, and
+    // reads the NUL-terminated `path`.
+    let mut stat = unsafe { std::mem::zeroed::<libc::statvfs>() };
+    if unsafe { libc::statvfs(path.as_ptr(), &raw mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("statvfs the data directory to derive a seat capacity");
+    }
+    #[allow(clippy::useless_conversion)] // The field widths vary by target.
+    let (blocks, fragment) = (u64::from(stat.f_blocks), u64::from(stat.f_frsize));
+    Ok(blocks.saturating_mul(fragment))
 }
 
 /// Lower at once; raise only after [`RAISE_AFTER_SAMPLES`] samples.
@@ -75,24 +109,28 @@ impl Smoothed {
 /// every newly admitted publication, and every [`SAMPLE_INTERVAL`]. On a host
 /// without procfs the memory limit keeps its stored value (4 seats until a
 /// first sample). The CPU limit divides `cpu`, measured once at start;
-/// without a measurement (local E2E) there is no CPU limit.
+/// without a measurement (local E2E) there is no CPU limit. The disk limit
+/// divides `data_filesystem_bytes`, also measured once at start, and is
+/// likewise absent without it.
 pub fn spawn_runtime_seat_limits(
     fleet: Arc<Fleet>,
     mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     cpu: Option<CpuCapacity>,
+    data_filesystem_bytes: Option<u64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut smoothed =
             Smoothed::starting_at(fleet.availability_snapshot().await.limits.memory_max_seats);
         let mut sample_memory = true;
         loop {
-            let (policy_max_seats, budget_mib, cpu_budget, seat_monthly_data_gb) =
+            let (policy_max_seats, budget_mib, cpu_budget, seat_monthly_data_gb, seat_disk_gb) =
                 policy.borrow_and_update().as_ref().map_or(
                     (
                         DEFAULT_MAX_SEATS_PER_MG,
                         DEFAULT_SEAT_MEMORY_BUDGET_MIB,
                         None,
                         DEFAULT_SEAT_MONTHLY_DATA,
+                        DEFAULT_SEAT_DISK,
                     ),
                     |policy| {
                         (
@@ -100,6 +138,7 @@ pub fn spawn_runtime_seat_limits(
                             policy.seat_memory_budget_mib(),
                             policy.seat_cpu_iterations_per_sec(),
                             policy.seat_monthly_data_gb(),
+                            policy.seat_disk_gb(),
                         )
                     },
                 );
@@ -125,6 +164,9 @@ pub fn spawn_runtime_seat_limits(
                 cpu_max_seats: Some(
                     cpu.as_ref()
                         .and_then(|cpu| cpu_max_seats(cpu.iterations_per_sec, cpu_budget)),
+                ),
+                disk_max_seats: Some(
+                    data_filesystem_bytes.map(|bytes| disk_max_seats(bytes, seat_disk_gb)),
                 ),
                 policy_seat_monthly_data_gb: Some(seat_monthly_data_gb),
                 ..SeatsConfigUpdate::default()

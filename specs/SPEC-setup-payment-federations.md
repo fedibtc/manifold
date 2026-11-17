@@ -156,6 +156,14 @@ replacement ordering as the new shared high-water mark.
   The field is new in 0.1.16, so it has no `_v2` twin. Consumers that admit
   unknown fields but predate it, which includes every MG and FA release
   from 0.1.1 to 0.1.15, ignore it and apply no data limit;
+- `seat_disk_gb`, the size of the data filesystem, in GB (10^9 bytes), that each
+  MG reserves per seat when it computes its disk seat limit, from 1 to
+  100,000
+  ([REQ-seat-capacity-default](../crates/mg/specs/REQ-seat-capacity-default.md#disk)).
+  Optional: absent means 80. The field is new in 0.1.17, so it has no `_v2`
+  twin. Consumers that admit unknown fields but predate it, which includes
+  every MG and FA release from 0.1.1 to 0.1.16, ignore it and apply no disk
+  limit;
 - `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
 - `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
@@ -263,7 +271,8 @@ Admission performs all of these checks before the set influences policy:
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
     256 to 16,384, a `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
-    `seat_monthly_data_gb` outside 1 to 10,000, a `max_seats_per_mg` or
+    `seat_monthly_data_gb` outside 1 to 10,000, a `seat_disk_gb` outside 1 to
+    100,000, a `max_seats_per_mg` or
     `max_seats_per_mg_v2` above 256, or a `max_pressure_percent` window
     outside 1 to 100, where 0 would close every MG and no share of time
     exceeds 100;

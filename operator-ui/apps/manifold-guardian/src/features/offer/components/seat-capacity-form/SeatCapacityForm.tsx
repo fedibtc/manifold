@@ -35,22 +35,30 @@ export const parseSeatCapacity = (value: string, activeSeats: number | null = nu
 
 const seats = (count: number) => `${count} ${count === 1 ? 'seat' : 'seats'}`;
 
-/** What the runtime and data limits allow together. While a CPU or data
- *  limit applies, it also names each applying limit's share side by side, so
- *  an operator sees why the host sells fewer seats than memory allows. */
+/** What the runtime and data limits allow together. While a CPU, disk or
+ *  data limit applies, it also names each applying limit's share side by
+ *  side, so an operator sees why the host sells fewer seats than memory
+ *  allows. */
 export const describeAutomaticLimit = (capacity: CapacityResponse) => {
-  const { memory_max_seats: memory, cpu_max_seats: cpu, data_max_seats: data } = capacity;
+  const {
+    memory_max_seats: memory,
+    cpu_max_seats: cpu,
+    disk_max_seats: disk,
+    data_max_seats: data
+  } = capacity;
   const limit = Math.min(
     capacity.policy_max_seats,
     memory,
     cpu ?? Number.POSITIVE_INFINITY,
+    disk ?? Number.POSITIVE_INFINITY,
     data ?? Number.POSITIVE_INFINITY
   );
   const head = `Up to ${seats(limit)} for this host now.`;
-  if (cpu === null && data === null) return head;
+  if (cpu === null && disk === null && data === null) return head;
   const shares = [
     `Memory allows ${seats(memory)}`,
     ...(cpu === null ? [] : [`CPU ${seats(cpu)}`]),
+    ...(disk === null ? [] : [`disk ${seats(disk)}`]),
     ...(data === null ? [] : [`monthly data ${seats(data)}`])
   ];
   return `${head} ${shares.join(', ')}.`;
@@ -63,6 +71,7 @@ export const describeDataLimit = ({
   memory_max_seats,
   policy_max_seats,
   cpu_max_seats,
+  disk_max_seats,
   data_max_seats
 }: CapacityResponse): string | null => {
   if (max_seats === null || data_max_seats === null) return null;
@@ -70,7 +79,8 @@ export const describeDataLimit = ({
   const runtime = Math.min(
     memory_max_seats,
     policy_max_seats,
-    cpu_max_seats ?? Number.POSITIVE_INFINITY
+    cpu_max_seats ?? Number.POSITIVE_INFINITY,
+    disk_max_seats ?? Number.POSITIVE_INFINITY
   );
   if (data_max_seats > runtime) return null;
   return `Your limit is ${seats(max_seats)}. Monthly data allows ${seats(data_max_seats)}.`;

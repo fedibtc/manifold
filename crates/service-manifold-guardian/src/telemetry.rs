@@ -332,8 +332,8 @@ pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
 /// field keeps its name and meaning once released. The collector also uses
 /// these field names for its stored reports and private exports. Releases before 0.1.4
 /// journal only the seat counts, the accepting flag and the operator limit,
-/// and releases before 0.1.16 no CPU limit, CPU capacity or monthly data
-/// budget.
+/// releases before 0.1.16 no CPU limit, CPU capacity or monthly data
+/// budget, and releases before 0.1.17 no disk limit.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SeatCapacityEvent {
     pub available_seats: u32,
@@ -360,6 +360,10 @@ pub struct SeatCapacityEvent {
     /// The benchmark iterations per second of one worker alone.
     #[serde(default)]
     pub cpu_single_core_iterations_per_sec: Option<u32>,
+    /// The disk limit; absent while the MG does not measure its data
+    /// filesystem.
+    #[serde(default)]
+    pub disk_max_seats: Option<u32>,
     /// The operator's monthly data answer, as its token. Releases before
     /// 0.1.16 do not journal it, and a token this release does not know
     /// decodes as absent rather than refusing the record.

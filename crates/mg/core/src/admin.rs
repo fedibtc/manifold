@@ -641,7 +641,8 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
 /// `monthly_data_budget` is `"not_set"`, `"unlimited"` or the GB as a decimal
 /// string. `cpu_max_seats` is `null` while the publication sets no per-seat
 /// CPU budget, and `cpu_benchmark`, the measured CPU capacity, before the
-/// first measurement.
+/// first measurement. `disk_max_seats` is `null` while the data filesystem is
+/// not measured.
 pub(crate) fn capacity_json(snapshot: &crate::fleet::AvailabilitySnapshot) -> Value {
     let limits = &snapshot.limits;
     json!({
@@ -654,6 +655,7 @@ pub(crate) fn capacity_json(snapshot: &crate::fleet::AvailabilitySnapshot) -> Va
             "iterations_per_sec": cpu.iterations_per_sec,
             "single_core_iterations_per_sec": cpu.single_core_iterations_per_sec,
         })),
+        "disk_max_seats": limits.disk_max_seats,
         "monthly_data_budget": limits.monthly_data_budget,
         "seat_monthly_data_gb": limits.policy_seat_monthly_data_gb,
         "data_max_seats": limits.data_max_seats(),

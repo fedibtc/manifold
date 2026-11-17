@@ -78,6 +78,7 @@ test('should take a new fleet from the doors through to a priced offer', async (
         iterations_per_sec: 12_600,
         single_core_iterations_per_sec: 810
       },
+      disk_max_seats: null,
       monthly_data_budget: 'unlimited',
       seat_monthly_data_gb: 65,
       data_max_seats: null,

@@ -334,13 +334,14 @@ const dataMaxSeats = (budget: MonthlyDataBudget, perSeat: number): number | null
   budget === 'not_set' || budget === 'unlimited' ? null : Math.floor(Number(budget) / perSeat);
 
 const capacity = () => {
-  const { maxSeats, cpuMaxSeats, monthlyDataBudget, seatMonthlyDataGb } = getState();
+  const { maxSeats, cpuMaxSeats, diskMaxSeats, monthlyDataBudget, seatMonthlyDataGb } = getState();
   const dataLimit = dataMaxSeats(monthlyDataBudget, seatMonthlyDataGb);
   const limit = Math.min(
     maxSeats ?? Infinity,
     MOCK_MEMORY_MAX_SEATS,
     MOCK_POLICY_MAX_SEATS,
     cpuMaxSeats ?? Infinity,
+    diskMaxSeats ?? Infinity,
     dataLimit ?? Infinity
   );
   return {
@@ -349,6 +350,7 @@ const capacity = () => {
     policy_max_seats: MOCK_POLICY_MAX_SEATS,
     cpu_max_seats: cpuMaxSeats,
     cpu_benchmark: MOCK_CPU_BENCHMARK,
+    disk_max_seats: diskMaxSeats,
     monthly_data_budget: monthlyDataBudget,
     seat_monthly_data_gb: seatMonthlyDataGb,
     data_max_seats: dataLimit,
