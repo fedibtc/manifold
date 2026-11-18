@@ -147,8 +147,8 @@ pub(crate) struct VerificationDeps {
 /// matched against the previewed config, request-carried MG trust material
 /// verified per operating identity, holder trust envelope verification with
 /// fresh fail-closed revocation lookups, the selected environment's minimum
-/// badge policy, and accepted-attester policy evaluation over distinct MG
-/// identities.
+/// badge policy, and accepted-attester policy evaluation over distinct
+/// trusted badge holders.
 ///
 /// Trust standing arrives as signed material inside the request rather than
 /// from a relay lookup. The requester carries it but does not author it: the
@@ -652,14 +652,17 @@ impl VerificationPipeline {
             ));
         }
 
-        let mut trusted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        // The verified holders of each trusted identity. An identity is
+        // trusted exactly when it has an entry: `candidates` only ever holds
+        // accepted, installed issuers, so this is the pooled trusted set.
+        let mut trusted: BTreeMap<String, BTreeSet<nostr_sdk::PublicKey>> = BTreeMap::new();
         for (mg_pubkey, issuer_hex, digest, envelope) in &candidates {
             match self.verify_mg_peer_badge(&verifier, envelope, &Pubkey(mg_pubkey.clone()), now) {
                 Ok(badge) => {
                     trusted
-                        .entry(issuer_hex.clone())
+                        .entry(mg_pubkey.clone())
                         .or_default()
-                        .insert(mg_pubkey.clone());
+                        .insert(badge.holder_pubkey);
                     checks.credential.push(check(
                         "issuer_credential_policy",
                         VerificationCheckStatus::Passed,
@@ -688,11 +691,11 @@ impl VerificationPipeline {
             }
         }
 
-        // 7. Evaluate accepted attester policies over distinct identities.
+        // 7. Evaluate accepted attester policies over distinct trusted
+        //    operators.
         //
         // The accepted attesters are pooled: an identity counts as trusted when
-        // any accepted attester vouches for it. `trusted` only ever holds
-        // accepted, installed issuers, so its union is exactly that set.
+        // any accepted attester vouches for it.
         //
         // Pooling is what keeps FLIP reachable for the federations the FA
         // actually builds. The FA admits a seat on a badge from any configured
@@ -701,11 +704,14 @@ impl VerificationPipeline {
         // normally carries several issuers and no single one covers every seat.
         // Judging each attester alone would reject a federation precisely for
         // having the operator diversity the FA is built to produce.
-        let pooled: BTreeSet<&String> = trusted.values().flatten().collect();
-        let trusted_operators = operators
-            .iter()
-            .filter(|identity| pooled.contains(*identity))
-            .count();
+        //
+        // An operator is a badge holder, not an MG identity: trusted identities
+        // whose badges name a common holder count as one, whichever issuer
+        // signed each badge. This is the FA's one-seat-per-holder rule applied
+        // where FLIP can check it. Since an operator never counts more than the
+        // identities it spans, `all_trusted` holds exactly when every identity
+        // is its own trusted operator.
+        let trusted_operators = count_trusted_operators(&trusted, checks);
         for policy in &config.policy.accepted_attester_policies {
             let satisfied = match policy.verification_requirement {
                 VerificationRequirement::AllTrusted => trusted_operators == operators.len(),
@@ -722,10 +728,46 @@ impl VerificationPipeline {
 
         Err((
             PublicRejectionCode::PolicyMismatch,
-            "no accepted attester policy is satisfied by the distinct trusted MG identities"
+            "no accepted attester policy is satisfied by the distinct trusted badge holders"
                 .to_owned(),
         ))
     }
+}
+
+/// Count the operators behind the trusted identities, where identities whose
+/// badges share a holder are one operator.
+///
+/// Sharing is transitive: if A and B share one holder and B and C another, all
+/// three are one operator. Merging that way, rather than matching each identity
+/// to a holder of its own, keeps an identity with several holders from
+/// lending one of them to stand in for a second identity that shares the other.
+///
+/// Records a failed check for each identity folded into another's operator.
+fn count_trusted_operators(
+    trusted: &BTreeMap<String, BTreeSet<nostr_sdk::PublicKey>>,
+    checks: &mut PipelineChecks,
+) -> usize {
+    let mut operators: Vec<BTreeSet<nostr_sdk::PublicKey>> = Vec::new();
+    for (mg_pubkey, holders) in trusted {
+        let (shared, mut separate): (Vec<_>, Vec<_>) = operators
+            .into_iter()
+            .partition(|operator| !operator.is_disjoint(holders));
+        if !shared.is_empty() {
+            checks.credential.push(check(
+                "distinct_badge_holder",
+                VerificationCheckStatus::Failed,
+                Some(mg_pubkey.clone()),
+                "badge holder is shared with another operating identity; counted as one operator",
+            ));
+        }
+        let mut merged = holders.clone();
+        for operator in shared {
+            merged.extend(operator);
+        }
+        separate.push(merged);
+        operators = separate;
+    }
+    operators.len()
 }
 
 #[async_trait]
