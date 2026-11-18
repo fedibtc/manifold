@@ -68,10 +68,12 @@ backup, because its signature stays valid.
   it free whatever price the MG offers publicly;
 - applies its usual seat capacity, the release's fedimintd version, and the
   offer epoch;
-- applies the readiness gate's connectivity, Bitcoin, release-version and
-  pressure checks, but not its historical uptime thresholds, which measure
-  fitness for the Fedi-verified pool
-  ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate));
+- does not apply the readiness gate
+  ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate)): its uptime,
+  pressure, connectivity and Bitcoin checks decide fitness for public
+  selling. An MG with a connectivity or Bitcoin problem can still take the
+  seat, and the problem delays the DKG, which `RestartDkg` reruns once the MG
+  is healthy;
 - skips the advertised federation-size list and setup-payment membership.
   The size must still be 4 through 20.
 
