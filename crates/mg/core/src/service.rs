@@ -709,7 +709,6 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,
-                        stats: None,
                     }),
                 ),
                 SeatPhase::Running { invite_code } => (
@@ -720,7 +719,6 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,
-                        stats: None,
                     }),
                 ),
             };

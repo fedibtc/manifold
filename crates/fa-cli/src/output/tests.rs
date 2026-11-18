@@ -92,6 +92,61 @@ fn formed_text_status_reports_current_freshness() {
 }
 
 #[test]
+fn stats_comparison_is_additive_and_distinguishes_missing_from_zero_history() {
+    let combined = |value, based_on, partial| fa_client::CombinedFigure {
+        value,
+        based_on,
+        partial,
+    };
+    let mut stats = fa_client::FederationStats {
+        guardians: 4,
+        custodied_msats: combined(100, 4, false),
+        active_wallets_30d: combined(40, 4, false),
+        active_wallets_comparison: None,
+        volume_7d_msats: combined(50, 2, true),
+        volume_30d_msats: combined(100, 2, true),
+    };
+    let totals = concat!(
+        r#"{"guardians":4,"custodiedMsats":{"value":100,"basedOn":4,"partial":false},"#,
+        r#""activeWallets30d":{"value":40,"basedOn":4,"partial":false},"#,
+        r#""volume7dMsats":{"value":50,"basedOn":2,"partial":true},"#,
+        r#""volume30dMsats":{"value":100,"basedOn":2,"partial":true}"#,
+    );
+    let (stdout, stderr) = capture(|output| output.federation_stats(&stats, OutputFormat::Json));
+    assert_eq!(stdout, format!("{totals}}}\n"));
+    assert!(stderr.is_empty());
+    let (stdout, stderr) = capture(|output| output.federation_stats(&stats, OutputFormat::Human));
+    assert!(stdout.ends_with("active wallets 30d comparison: unavailable\n"));
+    assert!(stderr.is_empty());
+
+    for (previous_30d, delta, percent, human_change) in
+        [(80, -50, "-62.5", "-50, -62.50%"), (0, 30, "null", "+30")]
+    {
+        stats.active_wallets_comparison = Some(fa_client::ActiveWalletComparison {
+            utc_day: 20_000,
+            current_30d: 30,
+            previous_30d,
+            based_on: 3,
+        });
+        let (stdout, stderr) =
+            capture(|output| output.federation_stats(&stats, OutputFormat::Json));
+        assert_eq!(
+            stdout,
+            format!(
+                r#"{totals},"activeWalletsComparison":{{"utcDay":20000,"current30d":30,"previous30d":{previous_30d},"basedOn":3,"delta":{delta},"deltaPercent":{percent}}}}}"#,
+            ) + "\n",
+        );
+        assert!(stderr.is_empty());
+        let (stdout, stderr) =
+            capture(|output| output.federation_stats(&stats, OutputFormat::Human));
+        assert!(stdout.ends_with(&format!(
+            "active wallets 30d comparison (UTC day 20000, based on 3 of 4 guardians): 30 vs {previous_30d} 30 days earlier (change {human_change})\n",
+        )));
+        assert!(stderr.is_empty());
+    }
+}
+
+#[test]
 fn discovery_json_has_exact_schema_on_stdout() {
     let author =
         NostrPublicKey::parse("aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4")

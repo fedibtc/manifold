@@ -270,28 +270,62 @@ impl MetaConsensusBase {
     }
 }
 
-/// Simple runtime stats for the single `fedimintd` this MG runs for a seat.
+/// The FA Stats figures one guardian reports for its federation, read from
+/// the seat's own `fedimintd`.
 ///
-/// An MG hosts one guardian, not the whole federation, so these are
-/// node-level stats, not federation-wide telemetry. Deliberately minimal for
-/// MVP; richer telemetry is a post-MVP concern.
+/// Every guardian answers for the whole federation. The FA asks each
+/// guardian's MG and takes the median of the complete answers for each
+/// figure.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct FedimintStats {
-    /// Version of the `fedimintd` this seat runs.
-    pub fedimintd_version: FedimintdVersion,
+    /// The bitcoin the federation holds on chain, in millisatoshis: the
+    /// walletv2 module's audit value.
+    pub custodied_msats: u64,
 
-    /// Seconds the `fedimintd` process has been running.
-    pub uptime_seconds: u64,
+    /// Client wallets whose ecash backup this guardian saw refreshed in the
+    /// last 30 days.
+    pub active_wallets_30d: WindowedFigure,
 
-    /// Whether the seat's `fedimintd` reports consensus running.
-    pub consensus_running: bool,
+    /// Lightning payments sent and received plus on-chain deposits and
+    /// withdrawals over the last 7 days, in millisatoshis.
+    pub volume_7d_msats: WindowedFigure,
 
-    /// Guardian peers currently connected, of the federation's set.
-    pub connected_peers: u32,
+    /// The same volume over the last 30 days, in millisatoshis.
+    pub volume_30d_msats: WindowedFigure,
 
-    /// Client ecash backups this seat's `fedimintd` stores — fedimint's
-    /// `BackupStatistics.num_backups`, read from `BACKUP_STATISTICS_ENDPOINT`.
-    pub num_backups: u64,
+    /// The sample date for `active_wallets_30d` and its optional baseline.
+    /// Older MGs omit this field and may still report the four figures above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_wallets_history: Option<ActiveWalletHistory>,
+}
+
+/// Daily snapshot metadata for the 30-day active-wallet count.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActiveWalletHistory {
+    /// UTC date of `active_wallets_30d`, as days since the Unix epoch.
+    pub utc_day: u64,
+
+    /// The count for exactly 30 UTC dates earlier, or `None` if unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_30d: Option<WindowedFigure>,
+}
+
+impl ActiveWalletHistory {
+    /// The distance between the current and baseline snapshot dates.
+    pub const LOOKBACK_DAYS: u64 = 30;
+}
+
+/// A figure counted over a time window, as one guardian saw it.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowedFigure {
+    pub value: u64,
+
+    /// Whether this guardian observed the whole window. This is true when its
+    /// counting started when the federation formed, or before the window
+    /// began. A guardian that moved or was restored starts a new window,
+    /// because client backups are local to each guardian and its volume
+    /// counters start with the `fedimintd` version that counts them.
+    pub complete: bool,
 }
 
 /// Commercial and lifecycle terms for a seat, chosen by the FA when

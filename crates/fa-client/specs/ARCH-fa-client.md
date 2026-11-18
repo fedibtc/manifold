@@ -647,6 +647,29 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Federation stats
+
+`federation_stats` asks every formed seat's MG for its guardian's FA Stats
+in one pass, with no lease, retries or stored state. Custody comes from
+consensus; active wallets come from guardian-local client backups, so a moved
+or restored guardian reports that window as partial. For each figure the FA
+takes the lower median of the complete answers once at least 2f+1 guardians
+gave one, so up to f dishonest answers cannot move it outside the honest ones,
+and otherwise the lower median of every answer, marked partial. Each figure says how many answers it rests on.
+Each MG's `GetVersion` API version says whether it serves stats; a
+guardian that cannot be reached, errors, or runs an older MG gives no answer. The call fails only when no guardian answers, and its error
+separates guardians whose MG lacks the verb from guardians that failed, so the
+consumer can tell "stats arrive once guardians update" from "retry".
+
+The active-wallet comparison is separate from the standalone total. It uses
+only guardians with complete counts for the UTC date at the start of the
+request wave and exactly 30 UTC dates earlier. When at least 2f+1 give such a
+pair, FA takes both lower medians over that same cohort and reports the date,
+cohort size, and change. There is no partial comparison or stale-date
+fallback. A missing baseline (including an older MG without history) does not
+affect the ordinary totals or count as zero. A measured zero is a valid count
+but has no percentage change.
+
 ## Replacement eligibility
 
 The FA checks the other guardians' public reports and authenticated MG trust
@@ -876,6 +899,7 @@ seals a backup that restore would refuse.
 - `seat_purchase` — selection and purchase of a transfer's destination seat.
 - `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
+- `federation_stats` — combining the guardians' FA Stats.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 
 ## Testing
