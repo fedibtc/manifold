@@ -1131,6 +1131,7 @@ mod tests {
                 "relay": "pass",
                 "discovery": "pass",
                 "bitcoin": "not_applicable",
+                "ceremonies": null,
                 "version": null,
                 "pressure": null,
                 "cpu_pressure_6h_pct": null,

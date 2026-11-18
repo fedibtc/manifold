@@ -121,6 +121,7 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                     relay: ReadinessOutcome::Pass,
                     discovery: ReadinessOutcome::DiscoveryRecordMissing,
                     bitcoin: ReadinessOutcome::BitcoinSyncing,
+                    ceremonies: ReadinessOutcome::CeremonyChildFailed,
                     version: ReadinessOutcome::MgVersionTooOld,
                     pressure: ReadinessOutcome::SixHourPressureHigh,
                     host_pressure: Some(HostPressure {

@@ -135,6 +135,7 @@ fn readiness(failing: &[&str]) -> ReadinessReport {
         relay: outcome("relay", ReadinessOutcome::RelayDisconnected),
         discovery: outcome("discovery", ReadinessOutcome::DiscoveryRecordMissing),
         bitcoin: outcome("bitcoin", ReadinessOutcome::BitcoinSyncing),
+        ceremonies: ReadinessOutcome::Pass,
         version: outcome("version", ReadinessOutcome::MgVersionTooOld),
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,

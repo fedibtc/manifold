@@ -8,6 +8,7 @@
 //! telemetry.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{
@@ -39,6 +40,9 @@ pub enum ReadinessOutcome {
     BitcoinWrongNetwork,
     BitcoinSyncing,
     BitcoinNoFeeRate,
+    /// Since the previous run, the fedimintd of a seat whose key ceremony has
+    /// not finished exited without this MG stopping it, or failed to start.
+    CeremonyChildFailed,
     /// This MG's release is older than the setup-payment policy's minimum.
     MgVersionTooOld,
     /// The 6-hour CPU, IO or memory pressure average is over the
@@ -81,6 +85,7 @@ impl ReadinessOutcome {
             Self::BitcoinWrongNetwork => "bitcoin_wrong_network",
             Self::BitcoinSyncing => "bitcoin_syncing",
             Self::BitcoinNoFeeRate => "bitcoin_no_fee_rate",
+            Self::CeremonyChildFailed => "ceremony_child_failed",
             Self::MgVersionTooOld => "mg_version_too_old",
             Self::SixHourPressureHigh => "host_pressure_6h_high",
             Self::HalfWeekPressureHigh => "host_pressure_3_5d_high",
@@ -102,6 +107,9 @@ pub struct ReadinessReport {
     pub relay: ReadinessOutcome,
     pub discovery: ReadinessOutcome,
     pub bitcoin: ReadinessOutcome,
+    /// Whether this MG's own fedimintd failed a key ceremony since the
+    /// previous run ([`CeremonyChildFailures`]).
+    pub ceremonies: ReadinessOutcome,
     /// This MG's release against the setup-payment policy's minimum.
     pub version: ReadinessOutcome,
     /// The MG's CPU, IO and memory pressure against the setup-payment
@@ -202,13 +210,46 @@ impl ReadinessReport {
             && self.uptime.passed()
     }
 
-    /// Whether the probed prerequisites passed. These decide whether a
-    /// slot counts as up, so the uptime gate cannot keep itself closed. The
-    /// version and pressure checks are not among them: an MG below the
-    /// policy's minimum release, or too busy for more seats, still serves its
-    /// seats, so it is up.
+    /// Whether the prerequisites passed. These decide whether a slot counts
+    /// as up, so the uptime gate cannot keep itself closed. The version and
+    /// pressure checks are not among them: an MG below the policy's minimum
+    /// release, or too busy for more seats, still serves its seats, so it is
+    /// up. A key ceremony this MG's own fedimintd failed is: for the
+    /// federation waiting on that seat the MG was down.
     pub fn prerequisites_passed(&self) -> bool {
-        self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
+        self.relay.passed()
+            && self.discovery.passed()
+            && self.bitcoin.passed()
+            && self.ceremonies.passed()
+    }
+}
+
+/// Failures of this MG's own fedimintd in key ceremonies, counted by the
+/// seats and taken by each readiness run.
+///
+/// Only a child that exited without this MG stopping it, or that could not
+/// be started, counts, and only while its seat has no federation yet. A
+/// ceremony that fails between the guardians, such as mismatched configs or
+/// guardians retrying out of step, ends with the child reporting the failure
+/// and the MG stopping it, so it does not count: it is not this MG's fault
+/// alone.
+#[derive(Clone, Debug, Default)]
+pub struct CeremonyChildFailures(Arc<AtomicU64>);
+
+impl CeremonyChildFailures {
+    /// Count one failure.
+    pub fn record(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The ceremonies check: fails when a failure was counted since the
+    /// previous call.
+    pub fn take_outcome(&self) -> ReadinessOutcome {
+        if self.0.swap(0, Ordering::Relaxed) == 0 {
+            ReadinessOutcome::Pass
+        } else {
+            ReadinessOutcome::CeremonyChildFailed
+        }
     }
 }
 
@@ -396,6 +437,7 @@ pub async fn run(
     let mut warned_pressure = false;
     loop {
         let mut report = probe.probe().await;
+        report.ceremonies = fleet.ceremony_child_failures().take_outcome();
         // Recording this slot also accounts for every slot since the last
         // record, such as a restart's downtime.
         let recorded_at = clock();
@@ -530,6 +572,7 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
         relay = report.relay.as_str(),
         discovery = report.discovery.as_str(),
         bitcoin = report.bitcoin.as_str(),
+        ceremonies = report.ceremonies.as_str(),
         version = report.version.as_str(),
         pressure = report.pressure.as_str(),
         cpu_pressure_6h_pct = pressure.map(|pressure| pct_of(pressure.cpu.six_hours)),
@@ -851,6 +894,7 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
+            ceremonies: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
@@ -877,6 +921,7 @@ mod tests {
                 "relay": "pass",
                 "discovery": "pass",
                 "bitcoin": "pass",
+                "ceremonies": "pass",
                 "version": "not_applicable",
                 "pressure": "not_applicable",
                 "host_pressure": null,
@@ -898,6 +943,7 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
+            ceremonies: ReadinessOutcome::Pass,
             version: ReadinessOutcome::Pass,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
@@ -926,6 +972,30 @@ mod tests {
             }
             .ready()
         );
+        // A ceremony this MG's own fedimintd failed closes the gate and
+        // counts the slot down, unlike the version check.
+        let ceremony_failed = ReadinessReport {
+            ceremonies: ReadinessOutcome::CeremonyChildFailed,
+            uptime: ReadinessOutcome::Pass,
+            ..report
+        };
+        assert!(!ceremony_failed.prerequisites_passed());
+        assert!(!ceremony_failed.ready());
+    }
+
+    /// Each failure fails exactly the next run's ceremonies check: one run
+    /// takes them all, and the run after it passes again.
+    #[test]
+    fn a_ceremony_child_failure_fails_only_the_next_run() {
+        let failures = CeremonyChildFailures::default();
+        assert_eq!(failures.take_outcome(), ReadinessOutcome::Pass);
+        failures.record();
+        failures.clone().record();
+        assert_eq!(
+            failures.take_outcome(),
+            ReadinessOutcome::CeremonyChildFailed
+        );
+        assert_eq!(failures.take_outcome(), ReadinessOutcome::Pass);
     }
 
     /// Releases compare by SemVer precedence: 0.1.10 is newer than 0.1.9
@@ -1037,6 +1107,7 @@ mod tests {
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::NotApplicable,
             bitcoin: ReadinessOutcome::Pass,
+            ceremonies: ReadinessOutcome::CeremonyChildFailed,
             version: ReadinessOutcome::MgVersionTooOld,
             pressure: ReadinessOutcome::SixHourPressureHigh,
             host_pressure: Some(HostPressure {
@@ -1105,6 +1176,7 @@ mod tests {
                 relay: "pass".into(),
                 discovery: "not_applicable".into(),
                 bitcoin: "pass".into(),
+                ceremonies: Some("ceremony_child_failed".into()),
                 version: Some("mg_version_too_old".into()),
                 pressure: Some("host_pressure_6h_high".into()),
                 cpu_pressure_6h_pct: Some(21.3),

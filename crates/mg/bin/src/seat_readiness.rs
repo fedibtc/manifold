@@ -123,6 +123,7 @@ impl SeatReadiness {
             relay,
             discovery,
             bitcoin,
+            ceremonies: Outcome::Pass,
             version: Outcome::NotApplicable,
             pressure: Outcome::NotApplicable,
             host_pressure: None,

@@ -360,6 +360,7 @@ const mgSeatReadinessMirror = {
     relay: 'pass',
     discovery: 'discovery_record_missing',
     bitcoin: 'bitcoin_syncing',
+    ceremonies: 'ceremony_child_failed',
     version: 'mg_version_too_old',
     pressure: 'host_pressure_6h_high',
     // Per-mille of wall time: 21.3% over the 15.0% maximum.

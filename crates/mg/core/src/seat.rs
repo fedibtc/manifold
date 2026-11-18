@@ -61,6 +61,7 @@ use crate::seat_process::{
     SeatProcessError, SeatProcessSpawner, effective_iroh_api_key, effective_iroh_p2p_key,
     seat_data_dir,
 };
+use crate::seat_readiness::CeremonyChildFailures;
 use crate::transfer_state::TransferPhase;
 
 /// Content digest of one candidate whole-object metadata target.
@@ -277,6 +278,7 @@ struct SeatLoop {
     /// fences.
     meta_admission: Option<(MetaConsensusBase, MetaTargetDigest)>,
     completion_hooks: CompletionHookWake,
+    ceremony_child_failures: CeremonyChildFailures,
     transfer_wake: crate::transfer_worker::TransferWake,
     process_spawner: SeatProcessSpawner,
     child: ProcessSlot,
@@ -414,6 +416,8 @@ pub(crate) struct SeatRuntimeDependencies {
     pub(crate) backup: Arc<BackupWorker>,
     /// Fleet-wide durable completion-hook reconciler.
     pub(crate) completion_hooks: CompletionHookWake,
+    /// Where this seat counts its fedimintd's failures in a key ceremony.
+    pub(crate) ceremony_child_failures: CeremonyChildFailures,
     pub(crate) transfer_wake: crate::transfer_worker::TransferWake,
     pub(crate) process_spawner: SeatProcessSpawner,
 }
@@ -577,6 +581,7 @@ impl Seat {
             fedimint_connectors,
             backup,
             completion_hooks,
+            ceremony_child_failures,
             transfer_wake,
             process_spawner,
         } = runtime;
@@ -609,6 +614,7 @@ impl Seat {
                 backup,
                 meta_admission: None,
                 completion_hooks,
+                ceremony_child_failures,
                 transfer_wake,
                 process_spawner,
                 child: ProcessSlot::Empty,
@@ -1364,11 +1370,15 @@ impl SeatLoop {
                     if let Err(error) = self.handle_driven_event(Err(error)).await {
                         tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "driven-DKG event handling failed");
                     }
+                    self.record_ceremony_child_failure();
                     if let Err(error) = self.retire_failed_ceremony().await {
                         tracing::warn!(seat_id = %self.facts.seat_id, %error, "failed to retire ceremony child after protocol error");
                     }
                 }
                 None => {
+                    // The child closed its control channel without
+                    // reporting a failure.
+                    self.record_ceremony_child_failure();
                     if let Err(error) = self.retire_failed_ceremony().await {
                         tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "failed to stop ceremony child after control stream closed");
                     }
@@ -1381,6 +1391,14 @@ impl SeatLoop {
     async fn handle_child_exit(&mut self, exit: Result<ObservedSeatExit, SeatProcessError>) {
         let slot = std::mem::replace(&mut self.child, ProcessSlot::Empty);
         self.set_process_slot(ProcessSlot::Empty);
+        // Every exit observed here is one this MG did not ask for: stopping
+        // a child empties its slot first. A parked child hands out the
+        // seat's DKG code and an acknowledged one runs the ceremony.
+        let in_ceremony = matches!(
+            slot,
+            ProcessSlot::Parked { .. } | ProcessSlot::DkgAcknowledged { .. }
+        );
+        let mut reported_failure = false;
         let mut client = match slot {
             ProcessSlot::Parked { client, .. } | ProcessSlot::DkgAcknowledged { client, .. } => {
                 Some(client)
@@ -1392,6 +1410,11 @@ impl SeatLoop {
             while let Some(event) = client.next_event().await {
                 match event {
                     Ok(event) => {
+                        reported_failure |= matches!(
+                            event,
+                            DrivenDkgEvent::ParamsRejected { .. }
+                                | DrivenDkgEvent::DkgFailed { .. }
+                        );
                         if let Err(error) = self.handle_driven_event(Ok(event)).await {
                             tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "driven-DKG event handling failed");
                         }
@@ -1404,6 +1427,11 @@ impl SeatLoop {
                     }
                 }
             }
+        }
+        // A child that reports its ceremony failed exits after the report:
+        // that failure is the ceremony's, not this child's.
+        if in_ceremony && !reported_failure {
+            self.record_ceremony_child_failure();
         }
         let exit_code = match exit {
             Ok(exit) => {
@@ -1532,10 +1560,18 @@ impl SeatLoop {
                 &self.keys.api_auth,
             )
             .await
-            .map_err(SeatVerbError::internal)?;
+            .map_err(|error| {
+                if imported_invite.is_none() {
+                    self.record_ceremony_child_failure();
+                }
+                SeatVerbError::internal(error)
+            })?;
         let client = match child.driven_client().await {
             Ok(client) => client,
             Err(error) => {
+                if imported_invite.is_none() {
+                    self.record_ceremony_child_failure();
+                }
                 if let Err(stop_error) = child.stop().await {
                     self.set_process_slot(ProcessSlot::ExitUnproven);
                     return Err(SeatVerbError::internal(anyhow!(
@@ -1580,6 +1616,15 @@ impl SeatLoop {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Count a failure of this seat's own fedimintd while the seat has no
+    /// federation yet, so its key ceremony waits on this MG
+    /// ([`CeremonyChildFailures`]).
+    fn record_ceremony_child_failure(&self) {
+        if self.state.borrow().formed_invite.is_none() {
+            self.ceremony_child_failures.record();
+        }
     }
 
     fn schedule_respawn(&mut self) {
@@ -1809,7 +1854,10 @@ impl SeatLoop {
                     network: self.process.bitcoin_network.to_string(),
                 })
                 .await
-                .map_err(SeatVerbError::internal)?;
+                .map_err(|error| {
+                    self.record_ceremony_child_failure();
+                    SeatVerbError::internal(error)
+                })?;
             self.await_dkg_started().await
         })
         .await;
@@ -1822,6 +1870,8 @@ impl SeatLoop {
                 ))),
             },
             Err(_) => {
+                // The child did not acknowledge parameters it was sent.
+                self.record_ceremony_child_failure();
                 self.retire_failed_ceremony()
                     .await
                     .map_err(SeatVerbError::internal)?;
@@ -1865,12 +1915,18 @@ impl SeatLoop {
                 .ok_or(SeatVerbError::SeatUnavailable)?
                 .next_event()
                 .await;
+            // The child went away or broke the protocol without reporting a
+            // failure.
             let Some(event) = event else {
+                self.record_ceremony_child_failure();
                 return Err(SeatVerbError::internal(anyhow!(
                     "driven-DKG event stream closed"
                 )));
             };
-            let event = event.map_err(SeatVerbError::internal)?;
+            let event = event.map_err(|error| {
+                self.record_ceremony_child_failure();
+                SeatVerbError::internal(error)
+            })?;
             match event {
                 DrivenDkgEvent::DkgStarted => {
                     self.handle_driven_event(Ok(DrivenDkgEvent::DkgStarted))

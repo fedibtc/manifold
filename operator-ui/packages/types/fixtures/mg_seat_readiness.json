@@ -2,6 +2,7 @@
   "ready_for_new_seats": false,
   "report": {
     "bitcoin": "bitcoin_syncing",
+    "ceremonies": "ceremony_child_failed",
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
     "host_pressure": {

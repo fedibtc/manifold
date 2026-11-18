@@ -106,6 +106,7 @@ async fn rpc_with_network(
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
+            ceremonies: ReadinessOutcome::Pass,
             version: ReadinessOutcome::NotApplicable,
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,

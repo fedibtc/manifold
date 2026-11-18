@@ -1565,6 +1565,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         } else {
             ReadinessOutcome::BitcoinSyncing
         },
+        ceremonies: ReadinessOutcome::Pass,
         version: ReadinessOutcome::NotApplicable,
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
@@ -1844,6 +1845,76 @@ async fn resetting_uptime_reruns_readiness_and_restarts_the_history() {
     for score in [scores.day, scores.week, scores.month] {
         assert!((0.95..0.951).contains(&score), "{scores:?}");
     }
+    worker.abort();
+    fleet.shutdown().await;
+}
+
+/// A key ceremony this MG's own fedimintd failed closes the next run and
+/// counts its slot down, as an outage does; the run after it passes again.
+#[tokio::test]
+async fn a_ceremony_child_failure_closes_the_next_run_and_counts_its_slot_down() {
+    use crate::seat_readiness::{ReadinessProbe, run};
+
+    /// Passing prerequisites on every run.
+    struct PassingProbe;
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for PassingProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            readiness(true)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 31_420).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    let slot = |n: u64| {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + n * UPTIME_SLOT_SECS)
+    };
+    let before = fleet.record_uptime_slot(slot(1), true).await.unwrap();
+    fleet.ceremony_child_failures().record();
+    let now = slot(2);
+    let (_publish, policies) = tokio::sync::watch::channel(None);
+    let worker = tokio::spawn(run(
+        PassingProbe,
+        fleet.clone(),
+        policies,
+        move || now,
+        None::<fn() -> anyhow::Result<crate::host_pressure::PressureTotals>>,
+    ));
+    let report_where = |wanted: fn(&ReadinessReport) -> bool| {
+        let fleet = fleet.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(report) = fleet.seat_readiness().filter(wanted)
+                        && fleet.ready_for_new_seats().await == report.ready()
+                    {
+                        break report;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("a run reports it")
+        }
+    };
+    let failed = report_where(|report| !report.ready()).await;
+    assert_eq!(failed.ceremonies, ReadinessOutcome::CeremonyChildFailed);
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    // Slot 2 counted down: an up slot would have raised the day score.
+    let after = fleet.uptime().await.unwrap();
+    assert!(after.day < before.day, "{before:?} then {after:?}");
+
+    // The next run, here woken by an uptime reset, has no new failure.
+    fleet.reset_uptime().await.unwrap();
+    let reopened = report_where(|report| report.ready()).await;
+    assert_eq!(reopened.ceremonies, ReadinessOutcome::Pass);
+    assert!(fleet.availability_snapshot().await.accepting_seats);
     worker.abort();
     fleet.shutdown().await;
 }
@@ -2472,6 +2543,14 @@ async fn ceremony_child_failure_respawns_a_parked_child() {
     .await
     .expect("replacement starts retained inputs without FA");
     assert_eq!(spawner.spawn_count(), 2, "a failed ceremony is replaced");
+    // The child died without reporting a failure: this MG's own fault, so
+    // the next readiness run fails, and only that one.
+    let failures = fleet.ceremony_child_failures();
+    assert_eq!(
+        failures.take_outcome(),
+        ReadinessOutcome::CeremonyChildFailed
+    );
+    assert_eq!(failures.take_outcome(), ReadinessOutcome::Pass);
 
     fleet.shutdown().await;
 }
@@ -2575,6 +2654,13 @@ async fn acknowledged_dkg_failure_clears_the_session_before_replacement() {
     })
     .await
     .expect("replacement retries without FA");
+    // A failure the child reports, and then exits after, is the ceremony's,
+    // as when the guardians' configs differ: it does not count against
+    // this MG.
+    assert_eq!(
+        fleet.ceremony_child_failures().take_outcome(),
+        ReadinessOutcome::Pass
+    );
     fleet.shutdown().await;
 }
 
@@ -2952,6 +3038,12 @@ async fn driven_dkg_persists_config_before_a_later_child_death() {
                     ..
                 }
             ));
+            // The ceremony had finished: a formed seat's crash is not a
+            // ceremony failure.
+            assert_eq!(
+                fleet.ceremony_child_failures().take_outcome(),
+                ReadinessOutcome::Pass
+            );
             fleet.shutdown().await;
             return;
         }

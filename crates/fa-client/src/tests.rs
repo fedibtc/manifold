@@ -801,6 +801,9 @@ struct MgState {
     status_calls: AtomicUsize,
     dkg_code_calls: AtomicUsize,
     unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
+    /// Seats whose MG answers `GetStatus` as if their guardian process were
+    /// gone.
+    unavailable_status_indices: Mutex<HashSet<usize>>,
     restart_calls: AtomicUsize,
     report_dkg_already_started: AtomicBool,
     start_callbacks: Mutex<Vec<Option<DkgCompletionCallback>>>,
@@ -1565,6 +1568,15 @@ impl ManifoldGuardianService for TestMg {
         _request: SignedRequest<GetStatusRequest>,
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .state
+            .unavailable_status_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return Err(ManifoldGuardianError::SeatUnavailable);
+        }
         Ok(GetStatusResponse {
             status: self
                 .state
@@ -15371,6 +15383,159 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
     assert!(
         line.contains(&format!("formation_id={}", snapshot.formation_id.0)),
         "{logs}"
+    );
+}
+
+/// Short runs, so a seat that never hands out its code ends the run quickly.
+fn ceremony_failure_options() -> FormationRunOptions {
+    FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(50),
+        run_timeout: Duration::from_millis(500),
+        request_timeout: Duration::from_millis(200),
+    })
+    .unwrap()
+}
+
+/// A seat that never hands out its DKG code while the others do is its MG's
+/// own failure: selection skips that MG, and only it. When the ceremony
+/// completes after all, the MG is no longer skipped.
+#[tokio::test]
+async fn an_mg_absent_from_a_ceremony_is_skipped_until_the_ceremony_completes() {
+    let state = Arc::new(MgState::default());
+    state.unavailable_dkg_code_indices.lock().unwrap().insert(5);
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), ceremony_failure_options())
+        .await
+        .unwrap_err();
+    let FaStatus::Formation(snapshot) = client.status() else {
+        panic!("active formation");
+    };
+    let now = test_now_secs();
+    assert_eq!(
+        client.inner.store.ceremony_failure_skips(now).await,
+        BTreeSet::from([snapshot.seats[5].mg_id])
+    );
+    // A day later the MG is selectable again.
+    assert!(
+        client
+            .inner
+            .store
+            .ceremony_failure_skips(now + 24 * 60 * 60 + 1)
+            .await
+            .is_empty()
+    );
+
+    state.unavailable_dkg_code_indices.lock().unwrap().clear();
+    client.resume_with_options(options()).await.unwrap();
+    assert!(
+        client
+            .inner
+            .store
+            .ceremony_failure_skips(test_now_secs())
+            .await
+            .is_empty()
+    );
+}
+
+/// A seat that drops out of the ceremony after it started, while the others
+/// still answer, is its MG's own failure too. One that answers but is not
+/// running yet, as every seat of a ceremony stuck between the guardians
+/// does, is not.
+#[tokio::test]
+async fn an_mg_that_drops_out_of_a_started_ceremony_is_skipped() {
+    let state = Arc::new(MgState::default());
+    state.unavailable_status_indices.lock().unwrap().insert(3);
+    state.seat_statuses.lock().unwrap().extend(
+        (0..usize::from(MIN_FEDERATION_SIZE)).map(|index| (index, ServiceStatus::DkgInProcess)),
+    );
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), ceremony_failure_options())
+        .await
+        .unwrap_err();
+    let FaStatus::Formation(snapshot) = client.status() else {
+        panic!("active formation");
+    };
+    assert_eq!(
+        client
+            .inner
+            .store
+            .ceremony_failure_skips(test_now_secs())
+            .await,
+        BTreeSet::from([snapshot.seats[3].mg_id])
+    );
+
+    // Every seat answers but the ceremony does not finish: nobody's fault.
+    let state = Arc::new(MgState::default());
+    state.seat_statuses.lock().unwrap().extend(
+        (0..usize::from(MIN_FEDERATION_SIZE)).map(|index| (index, ServiceStatus::DkgInProcess)),
+    );
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state,
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), ceremony_failure_options())
+        .await
+        .unwrap_err();
+    assert!(
+        client
+            .inner
+            .store
+            .ceremony_failure_skips(test_now_secs())
+            .await
+            .is_empty()
+    );
+}
+
+/// When most seats are absent, this FA may be the one that is offline, so
+/// no MG is blamed.
+#[tokio::test]
+async fn no_mg_is_skipped_when_most_seats_are_absent() {
+    let state = Arc::new(MgState::default());
+    state
+        .unavailable_dkg_code_indices
+        .lock()
+        .unwrap()
+        .extend(0..usize::from(MIN_FEDERATION_SIZE));
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state,
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), ceremony_failure_options())
+        .await
+        .unwrap_err();
+    assert!(
+        client
+            .inner
+            .store
+            .ceremony_failure_skips(test_now_secs())
+            .await
+            .is_empty()
     );
 }
 

@@ -4,6 +4,7 @@
 
 mod backup;
 mod backup_worker;
+mod ceremony_failures;
 mod db;
 mod decommission;
 mod discovery;

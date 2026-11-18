@@ -77,6 +77,7 @@ const READY: MockState['seatReadiness'] = {
   relay: 'pass',
   discovery: 'pass',
   bitcoin: 'pass',
+  ceremonies: 'pass',
   version: 'pass',
   pressure: 'pass',
   host_pressure: {
@@ -523,6 +524,19 @@ const builders = {
       bitcoin: 'bitcoin_syncing'
     }
   }),
+  // A seat's fedimintd stopped during its key ceremony since the last run.
+  'ceremony-failed': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      ceremonies: 'ceremony_child_failed'
+    }
+  }),
   // The published policy requires a newer release than this host runs.
   'version-too-old': () => ({
     ...base(),
@@ -880,6 +894,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'not-ready-for-seats': {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
+    affects: ['overview', 'health']
+  },
+  'ceremony-failed': {
+    desc: "Since the last readiness run, a seat's guardian process stopped while setting up keys, without reporting a failure. The daemon stops advertising and quoting new seats until the next run, and the run's uptime slot counts as down.",
     affects: ['overview', 'health']
   },
   'version-too-old': {

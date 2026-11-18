@@ -175,6 +175,7 @@ where
             excluded,
             retained_service_pubkeys,
             federation.holders,
+            &self.inner.store.ceremony_failure_skips(now).await,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
