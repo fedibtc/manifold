@@ -105,7 +105,7 @@ impl Default for MaintenanceRunOptionsConfig {
 
 /// Timing and deadline policy for one metadata-maintenance invocation.
 #[derive(Clone, Copy, Debug)]
-pub struct MaintenanceRunOptions(FormationRunOptions);
+pub struct MaintenanceRunOptions(pub(crate) FormationRunOptions);
 
 impl MaintenanceRunOptions {
     /// Construct timing options valid on native and WASM runtimes.

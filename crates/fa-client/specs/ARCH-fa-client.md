@@ -2,8 +2,8 @@
 
 ## Status
 
-Formation and replacement from SeatGrants, and custom gateway attachment
-([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)),
+Formation and replacement from SeatGrants
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md))
 are not implemented: every seat and replacement destination still comes from a
 verified selection, and the size range is 7 through 20.
 
@@ -32,7 +32,8 @@ read-only statically admitted enumeration, and trust-based selection with
 its read-only preview is implemented over it (see *Registry discovery and
 selection* below). Typed post-formation maintenance, liquidity orchestration,
 and guardian-fee arrangement are implemented as separate operations.
-Post-formation liquidity is governed by
+Post-formation liquidity, and the custom gateway attachment that is the
+federation's other gateway source, are governed by
 [`SPEC-fa-post-formation-liquidity`](./SPEC-fa-post-formation-liquidity.md).
 Each increment extends this consumer boundary and state engine rather than
 adding a second driver to any consumer. The public `FormationIntent`
@@ -67,6 +68,10 @@ it fails with reset guidance. Every older record must be
 reset rather than migrated because it predates the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
+The custom gateway attachment is its own record keyed by federation id,
+holding the URL and whether the fresh LNv2 view confirmed it. It was added
+without changing any existing record, so earlier stores need no migration; an
+older build ignores it. The record is local: the FA backup does not carry it.
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
@@ -887,6 +892,8 @@ seals a backup that restore would refuse.
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
+- `custom_gateway` — the FA-supplied gateway attachment, its durable
+  record, and its exclusion with liquidity.
 - `seat_purchase` — selection and purchase of a transfer's destination seat.
 - `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
@@ -960,7 +967,10 @@ validators in the client fake.
 
 Liquidity tests use fake discovery, provider, MG, and consensus-reader ports
 to cover durable completion replay before provider discovery, exact gateway-URL
-proof invalidation, and signed completion-evidence validation. The
+proof invalidation, and signed completion-evidence validation. Custom gateway
+tests cover threshold attachment and finality, resume of an unfinished
+attachment after reopen, and the one-source exclusion in both directions,
+including a rejected liquidity request that leaves the federation free. The
 federation-preview unit test separately covers per-entry admission and
 deduplication after upstream aggregation; module discovery, the live threshold
 query, and network freshness remain that adapter's integration boundary. The

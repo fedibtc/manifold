@@ -4,6 +4,7 @@
 
 mod backup;
 mod backup_worker;
+mod custom_gateway;
 mod db;
 mod decommission;
 mod discovery;
@@ -39,6 +40,7 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
+pub use custom_gateway::{CustomGatewayAttachment, CustomGatewayPhase};
 pub use decommission::DecommissionOutcome;
 pub use discovery::{
     AdvertisementRejection, EligibleMgCandidate, MG_ADVERTISEMENT_MAX_AGE,

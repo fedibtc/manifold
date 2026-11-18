@@ -1,4 +1,5 @@
 mod callback;
+mod custom_gateway;
 mod discovery;
 mod maintenance;
 mod recovery_policy;
