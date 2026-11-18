@@ -1,5 +1,12 @@
 # ARCH-fa-client: Federation Ambassador client library
 
+## Status
+
+Formation and replacement from SeatGrants, and custom gateway attachment
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)),
+are not implemented: every seat and replacement destination still comes from a
+verified selection, and the size range is 7 through 20.
+
 `fa-client` is the consumer-neutral state engine for the FA role: it discovers,
 verifies, selects, pays, and coordinates Manifold Guardians to form a Fedimint
 federation without operating a guardian. The Fedi app bridge is the production consumer;
@@ -12,9 +19,12 @@ secret-exclusion, and replay invariants that make the money path safe.
 
 ## Scope
 
-The current product path implements advertisement preview through selected-set
-payment, DKG, and invite-code recovery. Every seat comes from a verified
-selection; there is no pinned-locator path. A
+The Fedi-verified product path implements advertisement preview through
+selected-set payment, DKG, and invite-code recovery. A code-based federation
+instead takes every seat from an operator-issued SeatGrant
+([SPEC-seat-grant](../../mg/specs/SPEC-seat-grant.md)), whose code carries the
+MG's locator; the two sources never mix in one federation, and there is no
+other pinned-locator path. A
 locator is dialing data plus the MG
 commitment-verification key — an out-of-band fact, never an issuer attestation
 or a consumer trust verdict. Registry discovery is implemented as a
@@ -27,11 +37,11 @@ Post-formation liquidity is governed by
 Each increment extends this consumer boundary and state engine rather than
 adding a second driver to any consumer. The public `FormationIntent`
 therefore carries only an optional display name (resolved to one generated
-two-word name and persisted before stateful remote work), federation size (accepted
-product range 7 through 20 guardians), current plan
-family, a half-open `FedimintdVersionRange`, and an optional aggregate spending
-cap `max_total_msats` (must be greater than zero; persisted with the
-resolved intent so it survives resume). The formation intent carries no guardian-fee rate: formation installs the
+two-word name and persisted before stateful remote work), federation size
+(7 through 20 guardians on the Fedi-verified path, 4 through 20 on the
+code-based path), current plan family, a half-open `FedimintdVersionRange`,
+and an optional aggregate spending cap `max_total_msats` (must be greater than
+zero; persisted with the resolved intent so it survives resume). The formation intent carries no guardian-fee rate: formation installs the
 fixed recipient mapping and an initial rate, while post-formation
 `propose_guardian_fees` changes only that rate under the payer-compatible
 210,000-ppm ceiling and at or above the published minimum
@@ -131,8 +141,9 @@ up to two minutes, clipped by the current driver deadline, before that
 pre-output replacement result is returned. After outputs start, transport
 failure is an exact-replay error instead and never replacement advice.
 The product range does not imply that every MG release supports every admitted
-size. Before requesting a quote from an MG, the FA requires that MG's live
-availability to advertise the intent's exact size. Concurrently processed
+size. On the Fedi-verified path, before requesting a quote from an MG, the FA
+requires that MG's live availability to advertise the intent's exact size. A
+quote redeemed from a SeatGrant skips that advertised list. Concurrently processed
 siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
 Selected formation persists the original FA range and the chosen
@@ -267,8 +278,11 @@ from the advertised iroh endpoint and the self-attested commitment-signing
 `service_pubkey`; after the walk they additionally carry verified badge
 facts.
 
-Every MVP seat is subject to that complete PeerBadge verification. There is no
-unverified FA-owned, pinned, or bring-your-own exception.
+Every selected seat is subject to that complete PeerBadge verification. The
+only seats without it are those of a code-based federation, which come from
+SeatGrants the operators issued
+([SPEC-seat-grant](../../mg/specs/SPEC-seat-grant.md)); there is no
+FA-owned or other pinned exception.
 
 `preview_mg_selection` is the read-only public surface over
 enumerate → admit → select: it returns the selected seat set, the checked

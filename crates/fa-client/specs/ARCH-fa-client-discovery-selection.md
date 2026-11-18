@@ -97,13 +97,15 @@ enumeration with badge, key, and live failures encountered while producing the
 chosen cohort. Failures from incomplete or more expensive cohorts are omitted;
 they neither explain nor affect the displayed selection.
 
-Every product-path seat must have a PeerBadge that verifies through a configured
+Every selected seat must have a PeerBadge that verifies through a configured
 trusted issuer root, meets the environment minimum trust level, binds its Holder
 subject to the authenticated advertisement author, and has a verified issuer
 equal to the untrusted bucketing issuer. The first verified author reached owns
 each commitment-signing `service_pubkey`; another author with that key is
-rejected as `DuplicateServicePubkey`. There is no FA-owned, pinned, or BYO
-exception in the product path.
+rejected as `DuplicateServicePubkey`. Seats of a code-based federation are not
+selected: they come from operator-issued SeatGrants
+([SPEC-seat-grant](../../mg/specs/SPEC-seat-grant.md)). There is no FA-owned or
+other pinned exception.
 
 Each verified badge holder may occupy only one seat, regardless of issuer or
 MG service key. Later candidates sharing that holder are rejected as

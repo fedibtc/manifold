@@ -1,5 +1,10 @@
 # ARCH-manifold-guardian: Manifold Guardian daemon
 
+## Status
+
+Running without a badge and SeatGrants
+([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented.
+
 The MG daemon is one process that hosts up to its durable operator-configured
 guardian-seat capacity,
 spawning a `fedimintd` child for every non-decommissioned seat. The daemon exposes
@@ -217,7 +222,8 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   `backup`, and the seat data directories
   ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)).
 - `onboarding` — the daemon's first phase: it durably walks identity creation
-  or recovery, verified Holder authorization, and initial price/capacity. It is
+  or recovery, verified Holder authorization (which the operator may skip to
+  run without a badge), and initial price/capacity. It is
   the only writer of the onboarding state and identity row, and sits above
   `restore` and below `fleet`, which cannot open until every stage has finished
   ([SPEC-admin-socket](./SPEC-admin-socket.md)).

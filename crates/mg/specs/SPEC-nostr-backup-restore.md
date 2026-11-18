@@ -1,5 +1,11 @@
 # SPEC-nostr-backup-restore: Mnemonic-only fleet recovery through Nostr
 
+## Status
+
+SeatGrant state is not backed up yet: seat documents carry no grant nonce,
+the fleet-level grant revocation document does not exist, and restore cannot
+skip Holder authorization.
+
 ## Record justification
 
 Mnemonic-only recovery necessarily spans mg-core's data path, the MG Nostr
@@ -269,7 +275,11 @@ it is read back.
   succeed. Documents from older builds carry a `seat_no`, which readers
   ignore.
 
-**There is no fleet-wide event.** Operator settings and offered plans are the
+**There is one fleet-wide event: SeatGrant revocations.** It holds the
+revoked grant nonces, so that a restore cannot make a revoked grant usable
+again ([SPEC-seat-grant](./SPEC-seat-grant.md)); used nonces travel in the
+seat documents of the seats they created. Nothing else is fleet-wide.
+Operator settings and offered plans are the
 operator's to re-enter, and the offer generation must *not* survive a restore:
 a fresh install's generation refuses every quote issued before the loss, which
 is the wanted outcome — those quotes were priced against an advertisement the
@@ -472,7 +482,9 @@ Manifold Guardian this host is:
 Nothing mints a mnemonic implicitly. The identity row records the operator's
 choice, so a restore that finds one refuses, and its primary key makes that
 choice happen once. Restore then advances durable onboarding to Holder
-authorization. The operator must reacquire authorization and configure the
+authorization. The operator reacquires authorization or skips it to run
+without a badge, as on a new MG
+([SPEC-admin-socket](./SPEC-admin-socket.md)), and configures the
 initial price and capacity; restored guardian children remain stopped until
 those stages complete. The offer itself is operator policy and is not restored
 from guardian backup documents.

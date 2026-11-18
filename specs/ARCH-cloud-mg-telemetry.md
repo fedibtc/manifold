@@ -1,5 +1,11 @@
 # ARCH-cloud-mg-telemetry: Cloud MG telemetry collection
 
+## Status
+
+The unbadged admission mode described under *Unbadged instance* is not
+implemented. The collector admits only badge-verified registrations, and
+neither the per-target archive budget nor registration rate limits exist.
+
 ## Boundary and trust flow
 
 One standalone cloud collector owns the complete path from verified MG
@@ -45,6 +51,22 @@ selectors, incarnations, cursors, and raw rejected inputs never enter logs,
 traces, errors, metric labels, or public operator surfaces. The one exception
 is the federation export described below, which returns invites on the private
 listener only.
+
+## Unbadged instance
+
+MGs without a badge
+([REQ-bring-your-own-guardians](./REQ-bring-your-own-guardians.md)) register
+with a second deployment of the same collector, run in an unbadged admission
+mode. It keeps the NIP-98 exact-body, freshness and replay checks and skips
+only Holder verification, so any key can register. Because a target costs
+nothing to create, the instance has its own database, archive quota and
+target cap, so a flood of targets can degrade only unbadged telemetry. It also
+bounds what one target can take: a byte budget per target in the archive,
+which otherwise refuses every append once full; per-source registration
+limits; a cap on new admissions per hour; and a policy on which endpoints it
+dials. Its series are labelled unverified. It does not serve the federation
+export, because any key could make it hand attacker-chosen invites to a
+downstream consumer.
 
 ## Metrics ownership and identity
 

@@ -4,7 +4,8 @@
 
 MVP contract. The provider-side Public Liquidity API and the Manifold-owned FA
 producer/recovery projection are implemented. Fedi owns launch supervision and
-its RPC projection.
+its RPC projection. Custom gateway attachment and its exclusion with FLIP
+liquidity are not implemented.
 
 ## Product boundary
 
@@ -67,6 +68,19 @@ federation is created. It does not request stability-pool liquidity. A
 stability-only or combined request remains available through the same backend
 for a later, administratively approved operation. MVP exposes no operation that
 detaches a successfully attached Fedi-verified provider.
+
+Instead of FLIP liquidity, the FA may attach a custom gateway that a provider
+runs and funds separately
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+The FA supplies the `GatewayApiUrl`, and the attachment uses the same signed
+`RegisterGateway` fan-out and threshold readback as a FLIP gateway; the FA
+records it durably so it resumes after a crash. In v1 a federation gets one
+gateway source: a custom attachment is refused while a liquidity operation for
+the federation is live or after one completed, and `start` is refused while a
+custom attachment is in progress or after one completed. An unfinished
+attachment of either kind is resumed, not replaced. Nothing detaches or adds
+to a completed attachment. This is a v1 limit, not an incompatibility between
+the two.
 
 ## Provider discovery and disclosure gate
 

@@ -22,6 +22,9 @@ mnemonic restore rejoins it from the backed-up claim evidence
 ([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
 so it is listed and sweepable there too.
 
+The parser does not yet know `unbadged_telemetry_registration_url`; it is
+ignored like any unknown field.
+
 ## Record justification
 
 This contract spans Fedi's publisher, the shared domain parser, Nostr event
@@ -112,6 +115,10 @@ replacement ordering as the new shared high-water mark.
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
   username, password, query, or fragment;
+- `unbadged_telemetry_registration_url`, a URL of the same form for MGs without
+  a Holder authorization
+  ([SPEC-guardian-telemetry-proxy](../crates/mg/specs/SPEC-guardian-telemetry-proxy.md)).
+  Optional: absent means such MGs do not register;
 - `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already

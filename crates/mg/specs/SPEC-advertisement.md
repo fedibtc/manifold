@@ -4,7 +4,8 @@
 
 Advertisement availability depends only on a configured offer, physical
 capacity, and the daemon's readiness checks. Setup-payment membership is
-enforced when a priced quote is requested.
+enforced when a priced quote is requested. The fleet still waits for a Holder
+authorization before it starts; running without one is not implemented.
 
 The MG publishes the kind-37701 advertisement and the kind-37709 v2
 advertisement from each snapshot
@@ -66,8 +67,10 @@ federation identities and join material appear in neither content nor relay
 tags; consumers obtain them from
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
 
-Fleet runtime and advertisement publication do not begin until onboarding has
-retained at least one structurally verified, subject-bound Holder authorization.
+Advertisement publication does not begin until onboarding has retained at
+least one structurally verified, subject-bound Holder authorization. An MG
+whose operator skipped that stage runs its fleet without advertising
+([SPEC-admin-socket](./SPEC-admin-socket.md)).
 The relying consumer still owns issuer trust, revocation, and policy evaluation;
 onboarding does not turn structural verification into an issuer endorsement.
 The MG publishes neither ad while it is not accepting seats. A previously published
