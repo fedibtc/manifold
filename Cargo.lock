@@ -6379,6 +6379,7 @@ dependencies = [
  "fedimint-meta-common",
  "fedimint-server",
  "fedimint-tbs",
+ "fedimint-walletv2-common",
  "hex",
  "hkdf",
  "humantime",

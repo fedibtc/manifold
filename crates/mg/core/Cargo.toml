@@ -44,6 +44,7 @@ fedimint-meta-client = { workspace = true }
 fedimint-meta-common = { workspace = true }
 fedimint-server = { workspace = true }
 fedimint-tbs = { workspace = true }
+fedimint-walletv2-common = { workspace = true }
 hex = "0.4"
 hkdf = "0.12"
 iroh = { workspace = true }

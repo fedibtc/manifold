@@ -18,10 +18,8 @@ Items are ordered by dependency and risk, not promised for a release.
 
 ### 2. Complete the declared cross-component surface
 
-The shared protocol declares four verbs beyond the ceremony surface. Three now
-ship; `GetFedimintStats` remains `UnsupportedVerb`
-([SPEC-fa-rpc](./specs/SPEC-fa-rpc.md)). Enable the remaining verb only with its full
-trust and failure boundary:
+The shared protocol declares four verbs beyond the ceremony surface. All four
+now ship ([SPEC-fa-rpc](./specs/SPEC-fa-rpc.md)):
 
 - **Peer attestations — shipped.** `GetPeerAttestation` binds the MG service
   identity to the final federation config and this seat's peer once consensus
@@ -42,8 +40,9 @@ trust and failure boundary:
   ([SPEC-fa-metadata-maintenance](./specs/SPEC-fa-metadata-maintenance.md)).
   `fedi:fman_api_urls`, privacy-policy keys, and the guardian-fee recipient list
   remain deliberately absent; formation installs the fixed recipient policy.
-- **`GetFedimintStats`.** Keep the FA-facing filtered diagnostic unsupported
-  until its own statistic set is defined. Federation telemetry now has the
+- **`GetFedimintStats` — shipped.** Each MG reports its own guardian's
+  custody, 30-day active wallets, and 7/30-day volume, with per-figure window
+  completeness; fa-client combines the answers. Federation telemetry now has the
   separate, raw, capability-scoped Iroh path in
   [SPEC-guardian-telemetry-proxy](./specs/SPEC-guardian-telemetry-proxy.md).
 - **Guardian-fee metadata.** Collection itself now exists: each seat's
