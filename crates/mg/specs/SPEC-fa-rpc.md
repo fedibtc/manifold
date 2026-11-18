@@ -288,9 +288,11 @@ verifier read "not participating" as "participating but untrusted".
 `GetFedimintStats` (added in MG API version 2) is a read-only projection of
 the authorized seat's own guardian. It reports custodied value (the walletv2
 audit), wallets that uploaded a backup in the last 30 days, and Lightning plus
-on-chain volume over 7 and 30 days. Each windowed figure says whether this
-guardian observed the whole window: volume windows are complete once the
-module's counters started before the window's first day, and the backup window is
+on-chain volume over the 1008 and 4320 module consensus blocks before the
+current 144-block bucket (about 7 and 30 days; flows appear once their bucket
+ends). Each windowed figure says whether this guardian observed the whole
+window: volume windows are complete once the module's counters started before
+the window's first bucket, and the backup window is
 complete when the seat was formed with the federation or has held the seat
 for 30 days, because client backups are guardian-local and do not move with a
 seat. The MG keeps the first successful backup-count observation for each UTC

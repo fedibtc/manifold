@@ -1458,6 +1458,11 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         .await
         .context("MG did not sample active wallets before its first FA stats request")??;
         samples.close().await;
+        // Volume windows end before the current 144-block bucket, so the
+        // deposit counts once its bucket ends.
+        bitcoin_cli
+            .run(None, &["generatetoaddress", "144", miner_address])
+            .await?;
         assert_every_guardian_counts_deposit(state_dir, locators, 100_000_000).await?;
         assert_fa_combines_guardian_stats(
             fa_cli_bin,
@@ -2377,7 +2382,7 @@ async fn assert_every_guardian_counts_deposit(
                     .with_context(|| format!("guardian {index} stats: RPC transport"))?
                     .with_context(|| format!("guardian {index} answers fedimint stats"))?
                     .stats;
-                if stats.volume_7d_msats.value >= deposit_msats {
+                if stats.volume_1008_blocks_msats.value >= deposit_msats {
                     return Ok::<_, anyhow::Error>(stats);
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -2397,14 +2402,14 @@ async fn assert_every_guardian_counts_deposit(
             "guardian {index} custody must include the deposit: {stats:?}"
         );
         anyhow::ensure!(
-            stats.volume_7d_msats.complete
-                && stats.volume_30d_msats.complete
+            stats.volume_1008_blocks_msats.complete
+                && stats.volume_4320_blocks_msats.complete
                 && stats.active_wallets_30d.complete,
             "a guardian formed with its federation sees every window in full: {stats:?}"
         );
         anyhow::ensure!(
-            stats.volume_30d_msats.value == stats.volume_7d_msats.value,
-            "a federation younger than a week has equal 7- and 30-day volume: {stats:?}"
+            stats.volume_4320_blocks_msats.value == stats.volume_1008_blocks_msats.value,
+            "a federation younger than 1008 blocks has equal volume in both windows: {stats:?}"
         );
     }
     endpoint.close().await;
@@ -2439,8 +2444,8 @@ async fn assert_fa_combines_guardian_stats(
     for figure in [
         "custodiedMsats",
         "activeWallets30d",
-        "volume7dMsats",
-        "volume30dMsats",
+        "volume1008BlocksMsats",
+        "volume4320BlocksMsats",
     ] {
         anyhow::ensure!(
             stats[figure]["basedOn"].as_u64() == Some(guardians)
@@ -2448,7 +2453,11 @@ async fn assert_fa_combines_guardian_stats(
             "{figure} rests on every guardian's complete answer: {stats}"
         );
     }
-    for figure in ["custodiedMsats", "volume7dMsats", "volume30dMsats"] {
+    for figure in [
+        "custodiedMsats",
+        "volume1008BlocksMsats",
+        "volume4320BlocksMsats",
+    ] {
         anyhow::ensure!(
             stats[figure]["value"]
                 .as_u64()

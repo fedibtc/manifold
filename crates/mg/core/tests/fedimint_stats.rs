@@ -62,13 +62,13 @@ fn readings(formed_at_ms: i64, now_ms: i64) -> GuardianReadings {
         },
         lnv2_volume: LightningVolumeStats {
             block_count: 144_000,
-            last_7_days: lightning(1_000, 2_000, true),
-            last_30_days: lightning(10_000, 20_000, true),
+            last_1008_blocks: lightning(1_000, 2_000, true),
+            last_4320_blocks: lightning(10_000, 20_000, true),
         },
         walletv2_volume: WalletVolumeStats {
             block_count: 144_000,
-            last_7_days: wallet(3, 4, true),
-            last_30_days: wallet(30, 40, false),
+            last_1008_blocks: wallet(3, 4, true),
+            last_4320_blocks: wallet(30, 40, false),
         },
     }
 }
@@ -91,7 +91,7 @@ fn figures_come_from_their_own_readings() {
         }
     );
     assert_eq!(
-        stats.volume_7d_msats,
+        stats.volume_1008_blocks_msats,
         WindowedFigure {
             value: 1_000 + 2_000 + 3_000 + 4_000,
             complete: true,
@@ -99,7 +99,7 @@ fn figures_come_from_their_own_readings() {
     );
     // The wallet did not count the whole 30 days, so neither did the figure.
     assert_eq!(
-        stats.volume_30d_msats,
+        stats.volume_4320_blocks_msats,
         WindowedFigure {
             value: 10_000 + 20_000 + 30_000 + 40_000,
             complete: false,
@@ -163,5 +163,5 @@ fn moved_guardian_reports_its_active_wallets_as_partial() {
         }
     );
     // Volume completeness is the modules' own and does not depend on the move.
-    assert!(stats.volume_7d_msats.complete);
+    assert!(stats.volume_1008_blocks_msats.complete);
 }

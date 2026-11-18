@@ -39,13 +39,13 @@ pub(crate) fn fedimint_stats(readings: &GuardianReadings) -> anyhow::Result<Fedi
         custodied_msats: custodied_msats(&readings.audit)?,
         active_wallets_30d: readings.active_wallets,
         active_wallets_history: Some(readings.history),
-        volume_7d_msats: volume(
-            &readings.lnv2_volume.last_7_days,
-            &readings.walletv2_volume.last_7_days,
+        volume_1008_blocks_msats: volume(
+            &readings.lnv2_volume.last_1008_blocks,
+            &readings.walletv2_volume.last_1008_blocks,
         )?,
-        volume_30d_msats: volume(
-            &readings.lnv2_volume.last_30_days,
-            &readings.walletv2_volume.last_30_days,
+        volume_4320_blocks_msats: volume(
+            &readings.lnv2_volume.last_4320_blocks,
+            &readings.walletv2_volume.last_4320_blocks,
         )?,
     })
 }
