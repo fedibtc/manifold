@@ -21,6 +21,11 @@
   @apply absolute -right-4 top-1/2 size-2 -translate-y-1/2 rounded-full bg-warning;
 }
 
+/* The design system's "something new" dot. */
+.newDot {
+  @apply absolute -right-4 top-1/2 size-2 -translate-y-1/2 rounded-full bg-info;
+}
+
 @keyframes dot-pop {
   from {
     transform: scale(0);

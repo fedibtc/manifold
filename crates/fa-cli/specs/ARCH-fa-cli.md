@@ -292,7 +292,8 @@ the local caller; wallet root-secret bytes are never rendered.
 
 ## Guardian replacement eligibility
 
-`replacement-candidates` asks `fa-client` for eligible seats and reasons.
+`replacement-candidates` reconciles a formed federation, then asks `fa-client`
+for eligible seats and reasons.
 `--watch` drives the library's hourly checker and prints each successful
 snapshot; the CLI does not schedule its own polls. `transfer replace` acts on
 a candidate (see Guardian transfer). JSON contains only display data, never

@@ -427,6 +427,14 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     .await?;
     progress("metadata updated through the moved guardian");
 
+    // A new fa-cli run checks the federation after the move, on its own.
+    let check = fa.fa_cli(&["replacement-candidates"]).await?;
+    anyhow::ensure!(
+        check["federation_id"] == federation_id.to_string() && check["candidates"].is_array(),
+        "the replacement check reads the moved federation: {check}"
+    );
+    progress("replacement check ran after the move");
+
     // The destination restores the moved guardian from its mnemonic and the
     // relay alone, on a new host.
     wait_for_settled_backup(bin, &destination_dir, 1).await?;
@@ -558,6 +566,12 @@ struct TransferCli<'a> {
 
 impl TransferCli<'_> {
     async fn run(&self, args: &[&str]) -> anyhow::Result<serde_json::Value> {
+        let mut transfer = vec!["transfer", "--run-timeout-secs", "60"];
+        transfer.extend_from_slice(args);
+        self.fa_cli(&transfer).await
+    }
+
+    async fn fa_cli(&self, args: &[&str]) -> anyhow::Result<serde_json::Value> {
         let mut command = Command::new(self.bin);
         command
             .arg("--state-dir")
@@ -567,8 +581,6 @@ impl TransferCli<'_> {
             .arg(self.setup_payment_event_file)
             .arg("--setup-payment-publisher")
             .arg(self.setup_payment_publisher)
-            .arg("transfer")
-            .args(["--run-timeout-secs", "60"])
             .args(args)
             .env("MG_E2E_LOCAL_IROH", "1")
             .env(MG_ENDPOINT_ADDRS_ENV, self.mg_endpoints)
@@ -579,11 +591,11 @@ impl TransferCli<'_> {
             );
         let output = run_expect_success(
             command,
-            &format!("fa-cli transfer {}", args.join(" ")),
+            &format!("fa-cli {}", args.join(" ")),
             Duration::from_secs(90),
         )
         .await?;
-        serde_json::from_str(output.trim()).context("parse fa-cli transfer JSON")
+        serde_json::from_str(output.trim()).context("parse fa-cli JSON")
     }
 }
 
