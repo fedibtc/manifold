@@ -1,0 +1,15 @@
+.root {
+  @apply uStack3;
+}
+
+.actions {
+  @apply flex items-center gap-4;
+}
+
+.notNow {
+  @apply text-sm font-medium text-ink hover:underline;
+}
+
+.primary {
+  @apply uPrimaryButtonFit;
+}
