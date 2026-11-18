@@ -134,6 +134,37 @@ describe('SetupAuthorization', () => {
     expect(client.getQueryState(ONBOARDING_KEY)?.status).toBe('success');
   });
 
+  it('should move on without a badge when the operator skips', async () => {
+    const skipped = { ...waiting, stage: 'initial_offer' };
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(skipped);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(ONBOARDING_KEY, waiting);
+    const onSettled = vi.fn();
+    render(
+      <QueryClientProvider client={client}>
+        <SetupAuthorization onSettled={onSettled} />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue without a badge' }));
+
+    await vi.waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
+    expect(adminCall.mock.calls.map(([request]) => request)).toEqual(['SkipHolderAuthorization']);
+    expect(client.getQueryData(ONBOARDING_KEY)).toEqual(skipped);
+  });
+
+  it('should stay on the step and say why when the skip is refused', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockRejectedValue(
+      new AdminApiError('this Manifold Fedimint Guardian has not completed setup')
+    );
+    const { onSettled } = renderAuthorization();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue without a badge' }));
+
+    await screen.findByText('this Manifold Fedimint Guardian has not completed setup');
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+
   it('should show the key an attester signs over', async () => {
     renderAuthorization();
 

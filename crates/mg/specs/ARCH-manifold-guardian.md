@@ -2,8 +2,8 @@
 
 ## Status
 
-Running without a badge and SeatGrants
-([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented.
+SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented, so
+an MG run without a badge opens its fleet unadvertised but cannot take seats.
 
 The MG daemon is one process that hosts up to its durable operator-configured
 guardian-seat capacity,

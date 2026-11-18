@@ -1,5 +1,6 @@
-import { Button } from '@operator-ui/common-ui';
+import { Banner, Button } from '@operator-ui/common-ui';
 import { useEffect, useRef } from 'react';
+import { useSkipHolderAuthorization } from '@/features/setup/api/hooks/use-skip-holder-authorization/useSkipHolderAuthorization';
 import { CheckStatusButton } from '@/features/setup/components/check-status-button/CheckStatusButton';
 import { PeerBadgeHelp } from '@/features/setup/components/peerbadge-help/PeerBadgeHelp';
 import { SetupAuthorizationPanel } from '@/features/setup/components/setup-authorization-panel/SetupAuthorizationPanel';
@@ -7,6 +8,7 @@ import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationStatusBanner } from '@/shared/components/authorization-status-banner/AuthorizationStatusBanner';
 import { isAuthorized } from '@/shared/utils/authorization';
+import { describeActionError } from '@/shared/utils/describeActionError';
 import styles from './SetupAuthorization.module.css';
 
 const CONTINUE_DELAY_MS = 2_000;
@@ -18,6 +20,7 @@ interface SetupAuthorizationProps {
 export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   const onboarding = useOnboarding();
   const refresh = useRefreshAuthorization();
+  const skip = useSkipHolderAuthorization();
   const authorized = isAuthorized(onboarding.data);
   // One guard for the timer and the manual continue button landing together.
   const hasSettled = useRef(false);
@@ -31,6 +34,12 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   // Relay reconciliation is explicit: setup performs no background refreshes.
   const handleCheckNow = () => {
     refresh.mutate();
+  };
+
+  // Without a badge the daemon settles the stage at once; there is nothing to
+  // show before moving on.
+  const handleSkip = () => {
+    skip.mutate(undefined, { onSuccess: settleOnce });
   };
 
   const checkStatus = <CheckStatusButton loading={refresh.isPending} onClick={handleCheckNow} />;
@@ -88,9 +97,20 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
 
       <PeerBadgeHelp />
 
+      <p className={styles.hint}>
+        No badge? You can set this host up without one. Federation Ambassadors can’t find it
+        until you approve it later on the Authorization page.
+      </p>
+
       <div className={styles.actions}>
         <Button disabled>Continue</Button>
+
+        <Button variant="secondary" loading={skip.isPending} onClick={handleSkip}>
+          Continue without a badge
+        </Button>
       </div>
+
+      {skip.error ? <Banner variant="error">{describeActionError(skip.error)}</Banner> : null}
     </div>
   );
 };

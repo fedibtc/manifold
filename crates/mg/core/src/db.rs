@@ -437,8 +437,9 @@ impl Db {
         parse_offer_epoch(epoch)
     }
 
-    /// Store the first complete operator offer and finish setup. Holder
-    /// authorization has already been retained before this transition.
+    /// Store the first complete operator offer and finish setup. The
+    /// Holder-authorization stage has already been settled, by a retained
+    /// authorization or the operator's skip.
     /// Returns the stored (payable) price.
     pub async fn configure_initial_offer(
         &self,
@@ -731,6 +732,32 @@ impl Db {
                 actual: stage,
             });
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Settle the Holder-authorization stage without an authorization: the
+    /// operator runs this MG without a badge. Nothing records the skip; an MG
+    /// is badgeless exactly while no authorization is retained, so a later
+    /// enrollment needs no second fact changed.
+    pub async fn skip_holder_authorization(&self) -> Result<(), DbError> {
+        let mut tx = self.begin_write().await?;
+        let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?;
+        let stage = OnboardingStage::parse(&stage)?;
+        if stage != OnboardingStage::HolderAuthorization {
+            return Err(DbError::WrongOnboardingStage {
+                expected: OnboardingStage::HolderAuthorization,
+                actual: stage,
+            });
+        }
+        sqlx::query(
+            "UPDATE onboarding_state SET stage = 'initial_offer', updated_at_ms = ? WHERE id = 1",
+        )
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }

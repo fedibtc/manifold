@@ -322,6 +322,7 @@ const adminRequestsMirror = {
   },
   Onboarding: 'Onboarding',
   RefreshHolderAuthorizations: 'RefreshHolderAuthorizations',
+  SkipHolderAuthorization: 'SkipHolderAuthorization',
   ShowMnemonic: 'ShowMnemonic',
   OnboardAsNew: { OnboardAsNew: { if_needed: true } },
   OnboardFromBackup: {

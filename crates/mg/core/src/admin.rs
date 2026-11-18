@@ -169,8 +169,14 @@ pub enum AdminRequest {
     /// Schedule one bounded relay fetch that verifies and durably retains any
     /// Holder authorizations addressed to this MG.
     RefreshHolderAuthorizations,
+    /// Leave the Holder-authorization onboarding stage without an
+    /// authorization, to run this MG without a badge. Its fleet opens but
+    /// publishes no advertisement until a later `RefreshHolderAuthorizations`
+    /// enrolls one.
+    SkipHolderAuthorization,
     /// Finish first-run setup with the admission limit and initial price. This
-    /// is accepted only after a Holder authorization has been retained.
+    /// is accepted only after the Holder-authorization stage has been settled,
+    /// by a retained authorization or an explicit skip.
     /// `max_seats` `null` is automatic. `monthly_data_budget` is the answer
     /// [`AdminRequest::SetDataBudget`] takes; setup does not finish without
     /// one.
@@ -610,7 +616,7 @@ pub(crate) async fn dispatch(
             authorizations.refresh().await?;
             Ok(fleet_status_json(fleet, &directory.borrow()))
         }
-        AdminRequest::ConfigureInitialOffer { .. } => {
+        AdminRequest::SkipHolderAuthorization | AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
         AdminRequest::ShowMnemonic => Ok(mnemonic_json(&fleet.identity().phrase())),

@@ -3,8 +3,7 @@
 ## Status
 
 SeatGrant state is not backed up yet: seat documents carry no grant nonce,
-the fleet-level grant revocation document does not exist, and restore cannot
-skip Holder authorization.
+and the fleet-level grant revocation document does not exist.
 
 ## Record justification
 

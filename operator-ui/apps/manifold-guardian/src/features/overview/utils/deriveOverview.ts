@@ -80,10 +80,11 @@ export const deriveOverview = ({
   // one whose relay it had not read, so this could only report what was *not*
   // known. It reports the four states separately instead.
   //
-  // `checking` raises nothing. It is the state between daemon start and the
-  // first relay read, it clears on its own, and an attention item the operator
-  // cannot act on is noise.
-  if (nostrState === 'not_observed') {
+  // `checking` is not approved either: it reports no stored authorization and
+  // no relay read since startup. The daemon reads only when the operator asks,
+  // so it does not clear on its own, and a host set up without a badge stays
+  // in it (SPEC-advertisement).
+  if (nostrState === 'checking' || nostrState === 'not_observed') {
     attention.push({
       key: 'authorization-not-observed',
       title: 'This host is not approved yet',

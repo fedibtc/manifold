@@ -428,6 +428,12 @@ async fn admin_socket_round_trips_operator_verbs() {
         .await
         .unwrap_err();
     assert_eq!(already.kind, super::AdminErrorKind::AlreadyOnboarded);
+    // Skipping Holder authorization is an onboarding answer too; a fleet
+    // without a badge enrolls one by refreshing, not by reopening setup.
+    let already = ask(AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap_err();
+    assert_eq!(already.kind, super::AdminErrorKind::AlreadyOnboarded);
     // ...unless the caller asked for an onboarded host rather than for
     // onboarding, which is what an orchestrator restarting a daemon wants and
     // what keeps the refusal message out of another program's control flow.

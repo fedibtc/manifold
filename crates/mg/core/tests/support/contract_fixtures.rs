@@ -452,7 +452,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::RevokeGuardianLink => AdminRequest::TestGuardianLinkNotification,
         AdminRequest::TestGuardianLinkNotification => AdminRequest::Onboarding,
         AdminRequest::Onboarding => AdminRequest::RefreshHolderAuthorizations,
-        AdminRequest::RefreshHolderAuthorizations => AdminRequest::ConfigureInitialOffer {
+        AdminRequest::RefreshHolderAuthorizations => AdminRequest::SkipHolderAuthorization,
+        AdminRequest::SkipHolderAuthorization => AdminRequest::ConfigureInitialOffer {
             max_seats: Some(4),
             price_msats: Some(50_000_000),
             monthly_data_budget:
@@ -501,6 +502,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::TestGuardianLinkNotification => "TestGuardianLinkNotification",
         AdminRequest::Onboarding => "Onboarding",
         AdminRequest::RefreshHolderAuthorizations => "RefreshHolderAuthorizations",
+        AdminRequest::SkipHolderAuthorization => "SkipHolderAuthorization",
         AdminRequest::ConfigureInitialOffer { .. } => "ConfigureInitialOffer",
         AdminRequest::ShowMnemonic => "ShowMnemonic",
         AdminRequest::OnboardAsNew { .. } => "OnboardAsNew",

@@ -8,18 +8,25 @@ interface AuthorizationStatusBannerProps {
 }
 
 // One banner per daemon state, because the four states are four different facts
-// and the operator acts differently on each. "Not read yet" is transient and
-// needs no action; "read, nothing found" is the state a fleet waits in for a
-// holder to sign; a relay error is the operator's to chase. Folding any of them
-// together would produce a sentence that is true of one and false of another.
+// and the operator acts differently on each. "Not read yet" means nothing is
+// stored and the relays have not been asked since startup — the daemon reads
+// them only when the operator asks, so it does not clear on its own, and a host
+// set up without a badge stays in it; "read, nothing found" is the state a
+// fleet waits in for a holder to sign; a relay error is the operator's to
+// chase. Folding any of them together would produce a sentence that is true of
+// one and false of another.
 export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerProps) => {
+  // What an unapproved host loses is the operator's first question: the daemon
+  // advertises only with a stored approval (SPEC-advertisement).
   if (nostr.state === 'checking') {
-    return <Banner variant="info">Checking whether this host has been approved…</Banner>;
+    return (
+      <Banner variant="info" title="Not approved">
+        This host has no stored approval, so it is not advertised and cannot sell seats. Approval
+        has not been checked since the app started.
+      </Banner>
+    );
   }
 
-  // What an unapproved fleet loses is the operator's first question, and it is
-  // not cosmetic: the daemon blocks on onboarding before it opens the seat
-  // runtime, the iroh endpoint or the advertiser (crates/mg/bin/src/main.rs).
   if (nostr.state === 'not_observed') {
     return (
       <Banner variant="info" title="Not approved yet">

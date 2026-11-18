@@ -322,8 +322,9 @@ const builders = {
       minimum_max_seats: 0
     }
   }),
-  // The window between daemon start and its first relay read. Nothing is known
-  // yet, and the Overview deliberately raises no attention item for it.
+  // No stored authorization and no relay read since startup: a host set up
+  // without a badge, or one whose operator has not asked for a read yet. It is
+  // not advertised, and the Overview says so.
   'authorization-checking': () => ({
     ...base(),
     relayAuthorization: 'absent',
@@ -828,7 +829,7 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     affects: ['setup']
   },
   'authorization-checking': {
-    desc: 'The daemon has not finished its first relay read. Nothing is known yet, and the Overview raises no item for it.',
+    desc: 'No stored authorization and no relay read since startup, as on a host set up without a badge. The Overview raises the not-approved item.',
     affects: ['setup', 'authorization', 'overview']
   },
   'authorization-relay-error': {

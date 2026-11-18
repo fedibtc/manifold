@@ -4,9 +4,9 @@
 
 Payment-federation acceptance is the authenticated common setup-payment set; the
 admin surface only observes it. Removed payment scopes stay durable and lazily
-reopen on the first wallet query or payout after restart. Skipping the
-`holder_authorization` stage and the SeatGrant verbs are not implemented yet:
-the stage still requires an authorization.
+reopen on the first wallet query or payout after restart. The SeatGrant verbs
+are not implemented yet, so an MG that skipped the `holder_authorization` stage
+cannot take seats.
 
 ## Record justification
 
@@ -61,8 +61,10 @@ At `identity` it answers two choosing verbs:
 At `holder_authorization`, `RefreshHolderAuthorizations` performs and awaits one
 bounded Nostr fetch. The stage advances once at least one structurally
 verified, subject-bound complete event is durably retained, or when the
-operator explicitly skips it to run without a badge
-([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+operator explicitly skips it with `SkipHolderAuthorization` to run without a
+badge ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+The skip records nothing beyond the stage: an MG is badgeless exactly while it
+retains no authorization.
 An MG without a badge publishes no advertisement and takes seats only through
 SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)); a later enrolled
 authorization makes it discoverable. An empty or failed fetch without a skip

@@ -88,8 +88,9 @@ test('should take a new fleet from the doors through to a priced offer', async (
 });
 
 // The daemon's stage cursor does not advance past `holder_authorization` until
-// an authorization is retained — there is no skip (SPEC-admin-socket). The
-// wizard says so with a disabled Continue rather than an error after the fact.
+// an authorization is retained or the operator skips it (SPEC-admin-socket).
+// Without either the wizard says so with a disabled Continue rather than an
+// error after the fact.
 test('should hold setup at the authorization step until one is observed', async ({ page }) => {
   await resetScenario(page, 'not-onboarded');
 
@@ -101,6 +102,32 @@ test('should hold setup at the authorization step until one is observed', async 
   await expect(page.getByText(/Not checked yet/i)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+});
+
+// An operator without a badge finishes setup by skipping the authorization. The
+// host then runs unlisted, and the Authorization page is where it is approved
+// later.
+test('should set a host up without a badge when the operator skips approval', async ({
+  page
+}) => {
+  await resetScenario(page, 'not-onboarded');
+
+  await startSetup(page);
+  await page.getByRole('button', { name: 'Start fresh' }).click();
+  await page.getByRole('button', { name: 'Reveal phrase' }).click();
+  await page.getByRole('button', { name: "I've written it down — continue" }).click();
+
+  await expect(page.getByRole('heading', { name: 'Approve your host' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue without a badge' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Accept the terms of service' })).toBeVisible();
+  await page.getByRole('button', { name: 'Accept and continue' }).click();
+  await page.getByLabel('No monthly limit').check();
+  await page.getByRole('button', { name: 'Finish setup' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
+  await page.goto('/authorization');
+  await expect(page.getByText(/needs to be approved before Federation Ambassadors/)).toBeVisible();
 });
 
 test('should require the acknowledgement before recovering from a phrase', async ({ page }) => {

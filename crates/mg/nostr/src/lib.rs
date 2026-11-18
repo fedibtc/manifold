@@ -503,6 +503,17 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// The offer to advertise, or `None` for an MG with no enrolled Holder
+/// authorization. Such an MG, whose operator skipped that onboarding stage,
+/// is not publicly discoverable; the enrollment watch wakes the
+/// advertisement loop once an authorization arrives (SPEC-advertisement).
+fn advertisement_payload(
+    snapshot: AdvertisementSnapshot,
+    holder_authorizations: Vec<HolderAuthorizationEnvelope>,
+) -> Option<AdvertisementV2Payload> {
+    (!holder_authorizations.is_empty()).then(|| build_payload(snapshot, holder_authorizations))
+}
+
 /// Render one daemon snapshot as the unsigned v2 offer. The kind-37701
 /// payload derives from it, so both formats publish the same snapshot.
 fn build_payload(
@@ -683,7 +694,9 @@ async fn advertise_once(
     let Some(snapshot) = host.advertisement().await else {
         return Ok(());
     };
-    let payload = build_payload(snapshot, holder_authorizations);
+    let Some(payload) = advertisement_payload(snapshot, holder_authorizations) else {
+        return Ok(());
+    };
     let mut failed = Vec::new();
     for format in MgAdvertisementFormat::ALL {
         let published = async {
