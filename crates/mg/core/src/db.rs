@@ -830,6 +830,26 @@ impl Db {
         Ok(())
     }
 
+    /// This MG's rollout seed: the stored one, or `fresh` stored now when
+    /// there is none yet. One write transaction, so concurrent first calls
+    /// agree on one seed.
+    pub(crate) async fn rollout_seed(&self, fresh: [u8; 32]) -> Result<[u8; 32], DbError> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO rollout_seed (id, seed) VALUES (1, ?) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&fresh[..])
+        .execute(&mut *tx)
+        .await?;
+        let seed: Vec<u8> = sqlx::query_scalar("SELECT seed FROM rollout_seed WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(seed
+            .try_into()
+            .expect("the seed is 32 bytes by schema CHECK"))
+    }
+
     /// The uptime history, or `None` before the first up slot.
     pub(crate) async fn uptime(&self) -> Result<Option<Uptime>, DbError> {
         let mut conn = self.pool.acquire().await?;

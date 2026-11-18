@@ -40,6 +40,7 @@ fn content(invites: &[&str]) -> String {
         guardian_link: None,
         min_mg_version: None,
         recommended_min_mg_version: None,
+        rollout: None,
     })
     .expect("test content serializes")
 }

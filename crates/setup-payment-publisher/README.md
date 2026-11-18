@@ -117,6 +117,26 @@ GB (10^9 bytes), from 1 to 100,000. Tune it from the fleet's
 `cgroup_block_write_bytes` and `data_filesystem_bytes` in the `cgroup
 resource sample`.
 
+To roll a feature out to a share of seats, set `"rollout"` to the schedule
+of each feature by name, for example
+`"rollout": {"aleph_backup_batch": [[1795000000, 0], [1795086400, 10]]}`:
+each point is a Unix time in seconds and the percentage of seats (0 to 100)
+that run the feature then. Between points the percentage moves linearly,
+before the first point it is the first point's and after the last point the
+last point's. Each seat selects itself with a private random draw, so a
+higher percentage adds seats and a lower one removes them; a publication
+cannot pick seats. MGs that know no feature by that name ignore it.
+
+Every change of a schedule must start from the percentage the previous
+publication gives the feature at the new event's timestamp, which the tool
+checks to within one point; a new feature starts at 0. To pause, publish one
+point at the current percentage; to speed up, slow down or roll back, start a
+new ramp from it, for example `[[now, 40], [now + 1800, 0]]` to remove the
+feature over half an hour. MGs that lose their relays keep following the
+last schedule they hold, so publish ramps of at most about a day and extend
+them with later publications. `--allow-rollout-jump` acknowledges a larger
+step, which flips that share of seats at once.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files. Older consumers

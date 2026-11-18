@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{self, IsTerminal as _, Read as _, Write as _};
@@ -14,7 +15,7 @@ use std::time::Duration;
 use anyhow::{Context as _, ensure};
 use clap::{Parser, Subcommand};
 use fedi_decentralized_domain::{
-    SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SetupPaymentFederationsContent,
+    Rollouts, SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SetupPaymentFederationsContent,
 };
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::setup_payment_federations::{
@@ -77,6 +78,11 @@ enum Command {
         /// Explicitly acknowledge publishing a stop-set with no federations.
         #[arg(long)]
         allow_empty_stop_set: bool,
+
+        /// Explicitly acknowledge a rollout that moves a feature's percentage
+        /// by more than one point at the new event's timestamp.
+        #[arg(long)]
+        allow_rollout_jump: bool,
 
         /// Read the publisher secret from this file instead of piped standard input.
         #[arg(long)]
@@ -184,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
             first_publication: _,
             previous_receipt,
             allow_empty_stop_set,
+            allow_rollout_jump,
             secret_key_file,
         } => {
             ensure!(
@@ -198,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
             preflight_relays(&relays, expected_publisher, &basis).await?;
 
             let created_at = basis.next_timestamp(Timestamp::now())?;
+            if !allow_rollout_jump {
+                validate_rollout_continuity(&content, &basis, created_at)?;
+            }
             let secret = read_secret_key(secret_key_file.as_deref())?;
             let event = sign_event(&content, expected_publisher, secret, created_at)?;
             admit_setup_payment_federations_event(
@@ -244,6 +254,52 @@ fn validate_content_for_publication(
     );
     setup_payment_federations_event_builder(content)
         .context("validate complete setup-payment federation policy")?;
+    Ok(())
+}
+
+/// Largest change, in percentage points, a publication may make to a
+/// feature's rollout percentage at its own timestamp without
+/// `--allow-rollout-jump`. MGs evaluate the schedule every 30 seconds, so a
+/// larger change would flip that share of seats at once rather than along a
+/// ramp.
+const ROLLOUT_MAX_JUMP_PERCENT: f64 = 1.0;
+
+/// Require every feature's rollout percentage at `created_at` to match the
+/// previous publication's within [`ROLLOUT_MAX_JUMP_PERCENT`]; a feature
+/// either publication does not schedule is at 0%.
+fn validate_rollout_continuity(
+    content: &SetupPaymentFederationsContent,
+    basis: &PublicationBasis,
+    created_at: Timestamp,
+) -> anyhow::Result<()> {
+    let next = content.rollout.clone().unwrap_or_default();
+    let empty = Rollouts::default();
+    let previous = basis
+        .current()
+        .map_or(&empty, |current| current.set().rollout());
+    let at = created_at.as_secs();
+    let features: BTreeSet<_> = previous
+        .iter()
+        .chain(next.iter())
+        .map(|(feature, _)| feature)
+        .collect();
+    let jumps: Vec<String> = features
+        .into_iter()
+        .filter_map(|feature| {
+            let (before, after) = (
+                previous.percent_at(feature, at),
+                next.percent_at(feature, at),
+            );
+            ((after - before).abs() > ROLLOUT_MAX_JUMP_PERCENT)
+                .then(|| format!("{feature} from {before:.2}% to {after:.2}%"))
+        })
+        .collect();
+    ensure!(
+        jumps.is_empty(),
+        "rollout moves {} at {at}; start each schedule from the percentage the previous \
+         publication gives it then, or pass --allow-rollout-jump to acknowledge",
+        jumps.join(", ")
+    );
     Ok(())
 }
 

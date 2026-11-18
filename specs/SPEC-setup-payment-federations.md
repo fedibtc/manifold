@@ -22,6 +22,9 @@ mnemonic restore rejoins it from the backed-up claim evidence
 ([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
 so it is listed and sweepable there too.
 
+No MG feature reads its [staged rollout](#staged-rollouts) state yet: MGs
+only log it, so a schedule changes no behavior.
+
 ## Record justification
 
 This contract spans Fedi's publisher, the shared domain parser, Nostr event
@@ -207,6 +210,11 @@ replacement ordering as the new shared high-water mark.
   or one newer than `fman_version`, rejects the publication like any other
   invalid field. MG and FA releases from 0.1.1 on admit unknown fields and
   ignore it;
+- `rollout`, an object of staged rollout schedules of MG features by feature
+  name ([Staged rollouts](#staged-rollouts)). Optional: absent, or a feature
+  absent from it, means that feature runs nowhere. MG and FA releases from
+  0.1.1 to 0.1.16 admit unknown fields and ignore it; later ones reject a
+  publication with an invalid schedule like any other invalid field;
 - `guardian_link`, a boolean that turns on the MG's guardian link (mobile notifications)
   ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
   Optional: absent means the Manifold environment's default, on in
@@ -279,7 +287,11 @@ Admission performs all of these checks before the set influences policy:
 13. reject a `min_uptime_percent` window above 100, which no MG can reach;
 14. reject a `min_mg_version` that is neither `null` nor a SemVer string, or
     that has higher SemVer precedence than `fman_version`, which no MG could
-    run; and the same for `recommended_min_mg_version`.
+    run; and the same for `recommended_min_mg_version`;
+15. reject a `rollout` that is not an object, has more than 32 features, a
+    feature name outside `[a-z0-9_]{1,64}` or a repeated one, or a schedule
+    that is not 1 to 16 `[unix_secs, percent]` points with strictly
+    increasing times and integer percentages from 0 to 100.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
@@ -291,6 +303,55 @@ and whether the running version is lower. An equal or newer local version is
 accepted, which permits staged rollouts and development builds ahead of the
 publication. This is a cheap rollout signal for operator consumers, not a
 daemon kill switch.
+
+## Staged rollouts
+
+`rollout` lets Fedi turn an MG feature on for a growing share of the fleet
+without a release per step. Each feature's schedule is a list of
+`[unix_secs, percent]` points, for example
+`{"aleph_backup_batch": [[1795000000, 0], [1795086400, 10]]}`. Between two
+points the percentage moves linearly with time; before the first point it is
+the first point's and after the last point the last point's, so an MG whose
+clock is off still sees a percentage the publication meant to hold.
+
+Each MG stores one private seed of 32 random bytes, created at its first start
+and never derived from the root mnemonic, so rollout state is outside
+[CLAIM-manifold-guardian-confines-secret-dependent-content](../crates/mg/specs/CLAIM-manifold-guardian-confines-secret-dependent-content.md).
+A unit's draw for a feature is the first four bytes, big-endian, of SHA-256
+over `fedi-manifold-guardian/rollout-draw/v1`, the seed, the unit and the
+feature name; the unit is byte 1 and the 32 seat-id bytes for a seat, or byte
+2 for the whole MG. The code that defines a feature chooses the unit: per seat
+by default, per MG for a host-level feature; the publication cannot. A unit
+runs a feature while `draw / 2^32 * 100` is below the schedule's percentage at
+the MG's wall clock, computed exactly. Consequently:
+
+- the units at a percentage are a subset of those at any higher percentage, so
+  raising it only adds units and lowering it only removes them;
+- draws are independent between features and seats, and stable across
+  restarts of one data root; a new data root, such as a restored MG on a new
+  host, draws anew;
+- the publication cannot target or exclude a seat or MG, and Fedi does not
+  learn which units a percentage selects except through their telemetry;
+- a feature that the running MG does not know has no effect beyond its log,
+  and an MG without any admitted publication runs no feature.
+
+Each MG evaluates every published feature for every live seat on each newly
+admitted publication and every 30 seconds, and logs the first state and each
+change as a safe-to-share event with only the seat id, the feature name and
+whether it is enabled. Fedi can therefore ramp a name that no code reads yet
+and watch the fleet follow. That telemetry places a seat's draw on one side
+of each percentage it crossed; publishing under a new feature name gives every
+seat a new draw.
+
+The publisher refuses a publication in which any feature's percentage at the
+new event's `created_at` differs by more than one point from the previous
+publication's at that time, where an unscheduled feature is at 0, unless the
+operator acknowledges the jump explicitly. Every schedule change therefore
+starts from where the previous schedule stands: pausing publishes one point
+at the current percentage, and a rollback ramps down from it. An MG that
+loses its relays keeps following the last schedule it admitted, so Fedi
+publishes ramps of at most about a day and extends them with later
+publications.
 
 ## Replacement and durable state
 

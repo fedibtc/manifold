@@ -63,6 +63,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         guardian_link: None,
         min_mg_version: None,
         recommended_min_mg_version: None,
+        rollout: None,
     })
     .expect("test content serializes")
 }
@@ -255,6 +256,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             guardian_link: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
+            rollout: None,
         })
         .unwrap();
         assert_eq!(
@@ -681,6 +683,31 @@ fn unset_seat_limits_stay_off_the_wire() {
     assert!(!encoded.contains("guardian_transfer_v2"));
     assert!(!encoded.contains("min_mg_version"));
     assert!(!encoded.contains("recommended_min_mg_version"));
+    assert!(!encoded.contains("rollout"));
+}
+
+/// Schedules reach the admitted policy; an invalid one rejects the whole
+/// event, as any other malformed field does.
+#[test]
+fn rollout_is_optional_and_an_invalid_schedule_rejects_the_event() {
+    let feature = crate::RolloutFeature::new("aleph_backup_batch").unwrap();
+    assert_eq!(parse_with_fields("").unwrap().rollout().iter().len(), 0);
+    let admitted =
+        parse_with_fields(r#","rollout":{"aleph_backup_batch":[[1000,0],[2000,50]]}"#).unwrap();
+    let schedule = admitted.rollout().get(&feature).unwrap();
+    assert!((schedule.percent_at(1_500) - 25.0).abs() < 1e-9);
+    for invalid in [
+        r#","rollout":{"aleph_backup_batch":[[2000,0],[1000,50]]}"#,
+        r#","rollout":{"aleph_backup_batch":[[1000,0]],"aleph_backup_batch":[[1000,9]]}"#,
+        r#","rollout":{"Aleph":[[1000,0]]}"#,
+        r#","rollout":[]"#,
+    ] {
+        assert_eq!(
+            parse_with_fields(invalid),
+            Err(SetupPaymentFederationsContentError::MalformedContent),
+            "{invalid}"
+        );
+    }
 }
 
 /// A minimum is optional (absent or null), compares by SemVer precedence, may not exceed the latest

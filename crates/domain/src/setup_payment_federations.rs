@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 
-use crate::{FederationId, InviteCode, ProtocolV1, Url};
+use crate::{FederationId, InviteCode, ProtocolV1, Rollouts, Url};
 
 /// Maximum UTF-8 size of one public Fedimint invite.
 pub const SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES: usize = 16 * 1024;
@@ -414,6 +414,11 @@ pub struct SetupPaymentFederationsContent {
     /// otherwise runs as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended_min_mg_version: Option<MgVersion>,
+
+    /// Staged rollouts of MG features, by feature name. Optional on the wire:
+    /// absent, no feature runs on any seat or MG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<Rollouts>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -439,6 +444,7 @@ pub struct AdmittedSetupPaymentFederations {
     guardian_link: Option<bool>,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
+    rollout: Rollouts,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -603,6 +609,7 @@ impl AdmittedSetupPaymentFederations {
             guardian_link: content.guardian_link,
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
+            rollout: content.rollout.unwrap_or_default(),
         })
     }
 
@@ -735,6 +742,13 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn recommended_min_mg_version(&self) -> Option<&MgVersion> {
         self.recommended_min_mg_version.as_ref()
+    }
+
+    /// Return the staged rollouts of MG features; empty when the event
+    /// schedules none.
+    #[must_use]
+    pub fn rollout(&self) -> &Rollouts {
+        &self.rollout
     }
 }
 

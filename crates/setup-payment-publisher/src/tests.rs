@@ -182,6 +182,80 @@ fn empty_stop_set_requires_explicit_acknowledgement() {
     validate_content_for_publication(&content_with_invites(vec![public_invite(1)]), false).unwrap();
 }
 
+fn content_with_rollout(rollout: serde_json::Value) -> SetupPaymentFederationsContent {
+    let mut value: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    value["rollout"] = rollout;
+    serde_json::from_value(value).unwrap()
+}
+
+fn previous_basis(content: &SetupPaymentFederationsContent) -> PublicationBasis {
+    let previous = signed_event(content, 1_700_000_000);
+    PublicationBasis::Previous(
+        restore_durably_admitted_setup_payment_federations_event(
+            &previous,
+            test_keys().public_key(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn rollout_changes_must_start_from_the_previous_percentage() {
+    let at = Timestamp::from_secs(1_700_001_000);
+    let previous = previous_basis(&content_with_rollout(
+        serde_json::json!({"a": [[1_700_000_000, 0], [1_700_002_000, 80]]}),
+    ));
+    // The previous ramp is at 40% at 1_700_001_000.
+    let pause = content_with_rollout(serde_json::json!({"a": [[1_700_001_000, 40]]}));
+    validate_rollout_continuity(&pause, &previous, at).unwrap();
+    let revert =
+        content_with_rollout(serde_json::json!({"a": [[1_700_000_990, 41], [1_700_002_800, 0]]}));
+    validate_rollout_continuity(&revert, &previous, at).unwrap();
+
+    for jump in [
+        // Straight to off: 40 points at once.
+        serde_json::json!({"a": [[1_700_001_000, 100], [1_700_002_000, 0]]}),
+        // Held before its first point at 0, not at the previous 40%.
+        serde_json::json!({"a": [[1_700_005_000, 0], [1_700_006_000, 100]]}),
+        // A dropped feature is at 0%.
+        serde_json::json!({}),
+    ] {
+        let error = validate_rollout_continuity(&content_with_rollout(jump.clone()), &previous, at)
+            .expect_err("a jump needs acknowledgement");
+        assert!(
+            error.to_string().contains("a from 40.00%"),
+            "{jump}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_new_rollout_feature_starts_at_zero() {
+    let at = Timestamp::from_secs(1_700_001_000);
+    let previous = previous_basis(&valid_content());
+    let ramp =
+        content_with_rollout(serde_json::json!({"b": [[1_700_001_000, 0], [1_700_090_000, 10]]}));
+    validate_rollout_continuity(&ramp, &previous, at).unwrap();
+    validate_rollout_continuity(&ramp, &PublicationBasis::First, at).unwrap();
+    let at_once = content_with_rollout(serde_json::json!({"b": [[1_700_001_000, 5]]}));
+    assert!(validate_rollout_continuity(&at_once, &previous, at).is_err());
+    assert!(validate_rollout_continuity(&at_once, &PublicationBasis::First, at).is_err());
+    validate_rollout_continuity(&valid_content(), &previous, at).unwrap();
+}
+
+#[test]
+fn manifest_keeps_rollout_schedules() {
+    let temp = TempDir::new().unwrap();
+    let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    content["rollout"] = serde_json::json!({"a": [[1, 0], [2, 100]]});
+    let path = write_policy(&temp, &content.to_string());
+    let parsed = read_content(&path).unwrap();
+    assert_eq!(
+        serde_json::to_value(parsed.rollout).unwrap(),
+        serde_json::json!({"a": [[1, 0], [2, 100]]})
+    );
+}
+
 #[test]
 fn signer_rejects_a_secret_for_another_publisher() {
     let result = sign_event(
