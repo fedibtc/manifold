@@ -45,7 +45,8 @@ FA request labels cover `create_seat`, `get_dkg_code`, `start_dkg`,
 `restart_dkg`, `get_status`, `get_invite_code`, `get_peer_attestation`,
 `propose_formation_meta`, `set_meta_field`, `register_gateway`, and
 `get_fedimint_stats`. MG
-response labels cover `get_quote` and `create_seat`.
+response labels cover `get_quote`, `create_seat`, and `seat_grant`
+([SPEC-seat-grant](../../mg/specs/SPEC-seat-grant.md)).
 
 `start_dkg` signs its optional DKG-completion callback as part of the exact
 payload bytes and rejects unknown fields. `restart_dkg` signs the complete

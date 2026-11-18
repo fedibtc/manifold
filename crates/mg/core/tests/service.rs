@@ -166,6 +166,7 @@ async fn rpc_with_owned_seat_and_origin(
             plan: test_plan(),
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .unwrap();
@@ -373,6 +374,7 @@ async fn release_size_capabilities_are_advertised_and_enforced() {
             plan: test_plan(),
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .unwrap_or_else(|error| panic!("size {size} must be accepted: {error}"));
@@ -386,6 +388,7 @@ async fn release_size_capabilities_are_advertised_and_enforced() {
                 plan: test_plan(),
                 payment_federation_id: None,
                 refund_issuance: None,
+                seat_grant: None,
             })
             .await
             .unwrap_err(),
@@ -409,6 +412,7 @@ async fn free_quote_creates_seat_and_replays_the_same_acceptance() {
             plan: test_plan(),
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .unwrap();
@@ -461,6 +465,7 @@ async fn free_quote_creates_seat_and_replays_the_same_acceptance() {
             plan: test_plan(),
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .unwrap_err(),
@@ -486,6 +491,7 @@ async fn a_give_away_refuses_payment_material() {
             "some-federation".to_owned(),
         )),
         refund_issuance: None,
+        seat_grant: None,
     };
     assert!(matches!(
         rpc.get_quote(request).await,
@@ -511,6 +517,7 @@ async fn a_priced_quote_refuses_a_federation_outside_the_accepted_set() {
             "not-in-the-common-set".to_owned(),
         )),
         refund_issuance: None,
+        seat_grant: None,
     };
     // The accepted set is empty here, so any named federation is outside it —
     // as is naming none at all for a priced seat.
@@ -541,6 +548,7 @@ async fn quote_epoch_changes_only_when_quote_settings_change() {
         plan: test_plan(),
         payment_federation_id: None,
         refund_issuance: None,
+        seat_grant: None,
     };
     let quote = rpc.get_quote(request.clone()).await.unwrap();
     let epoch = quote
@@ -598,6 +606,7 @@ async fn create_seat_rejects_quote_bound_to_another_fa() {
             plan: test_plan(),
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .unwrap();
@@ -634,6 +643,7 @@ async fn create_seat_rejects_a_signed_incoherent_quote() {
                     plan: test_plan(),
                     payment_federation_id: None,
                     refund_issuance: None,
+                    seat_grant: None,
                 },
                 // A manager signature authenticates these bytes but must not
                 // make an incoherent price/payment pair redeemable.

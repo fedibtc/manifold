@@ -26,6 +26,7 @@ mod locked_payment;
 mod maintenance;
 mod mg_name;
 mod monthly_data_budget;
+mod seat_grant;
 mod service;
 pub mod signing;
 mod status;
@@ -80,6 +81,10 @@ pub use maintenance::{
 };
 pub use mg_name::MgName;
 pub use monthly_data_budget::{InvalidMonthlyDataBudget, MonthlyDataBudget};
+pub use seat_grant::{
+    InvalidSeatGrantCode, InvalidSeatGrantLabel, SEAT_GRANT_LABEL_MAX_CHARS, SeatGrant,
+    SeatGrantCode, SeatGrantLabel, SeatGrantNonce,
+};
 pub use service::{
     FmResult, ManifoldGuardianService, ManifoldGuardianServiceClient,
     ManifoldGuardianServiceClientTransport, ManifoldGuardianServiceServer,
