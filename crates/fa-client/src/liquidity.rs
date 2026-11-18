@@ -547,7 +547,9 @@ where
     /// [`LiquidityOperationPhase::Accepted`], starting again returns
     /// [`FaError::LiquidityOperationExists`] naming it, and the consumer must
     /// resume that operation instead —
-    /// [`Self::current_liquidity_operation`] returns it. Both sources are
+    /// [`Self::current_liquidity_operation`] returns it. A federation with a
+    /// custom gateway attachment, unfinished or completed, is refused with
+    /// [`FaError::CustomGatewayExists`]. Both sources are
     /// funded through one combined gateway-plus-stability intent, never
     /// through a second request.
     pub async fn start_liquidity<L>(
@@ -622,6 +624,8 @@ where
             lease.renew().await?;
             let context = self.formed_liquidity_context(formation_id).await?;
             self.ensure_no_live_liquidity_operation(context.federation.federation_id())
+                .await?;
+            self.ensure_no_custom_gateway(context.federation.federation_id())
                 .await?;
             lease.renew().await?;
             let provider = self

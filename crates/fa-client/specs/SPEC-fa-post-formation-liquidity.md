@@ -4,8 +4,11 @@
 
 MVP contract. The provider-side Public Liquidity API and the Manifold-owned FA
 producer/recovery projection are implemented. Fedi owns launch supervision and
-its RPC projection. Custom gateway attachment and its exclusion with FLIP
-liquidity are not implemented.
+its RPC projection. `fa-client` implements custom gateway attachment and its
+exclusion with FLIP liquidity; the Fedi bridge and app do not expose it yet.
+The attachment record is local and not in the FA backup, so a device restored
+from backup does not refuse FLIP liquidity for a federation that has a custom
+gateway.
 
 ## Product boundary
 

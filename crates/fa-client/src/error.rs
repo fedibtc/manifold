@@ -441,6 +441,21 @@ pub enum FaError {
         /// Semantic id of the live operation to resume.
         operation_id: crate::LiquidityOperationId,
     },
+    /// The federation's gateway source is already this custom gateway. In
+    /// v1 a federation gets one gateway source: an unfinished attachment
+    /// resumes only with its own URL, a completed one is final, and either
+    /// refuses FLIP liquidity.
+    /// [`crate::FaClient::custom_gateway_attachment`] returns it.
+    #[error(
+        "the federation already has custom gateway {} ({:?}); resume an unfinished \
+         attachment with the same URL, and a completed one is final",
+        .attachment.gateway_api,
+        .attachment.phase
+    )]
+    CustomGatewayExists {
+        /// The federation's existing attachment.
+        attachment: crate::CustomGatewayAttachment,
+    },
     /// The setup-payment policy this FA holds does not let MGs start a
     /// guardian transfer, so the FA does not buy a seat for one. Fedi turns
     /// transfer on by republishing the policy.
@@ -570,7 +585,9 @@ impl FaError {
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
             Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
             Self::Payment(_) => FaErrorCode::Payment,
-            Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
+            Self::Liquidity(_)
+            | Self::LiquidityOperationExists { .. }
+            | Self::CustomGatewayExists { .. } => FaErrorCode::Liquidity,
             Self::MaintenanceWrongState { .. } | Self::MaintenanceUnsynced => {
                 FaErrorCode::MaintenanceWrongState
             }
