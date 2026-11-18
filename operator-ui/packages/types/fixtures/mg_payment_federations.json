@@ -21,7 +21,8 @@
             "state": "pending"
           }
         ],
-        "query_errors": []
+        "query_errors": [],
+        "recovering": false
       }
     },
     {
@@ -39,7 +40,27 @@
           "available_ecash",
           "economically_sweepable",
           "outgoing_operations"
-        ]
+        ],
+        "recovering": false
+      }
+    },
+    {
+      "accepted": true,
+      "federation_id": "fed1fixturerecoveringfederation",
+      "receivable": false,
+      "wallet": {
+        "active_operation_count": 0,
+        "available_ecash_msat": null,
+        "drain_state": "unknown",
+        "economically_sweepable_recipient_msat": null,
+        "encumbered_outgoing_msat": null,
+        "outgoing": null,
+        "query_errors": [
+          "available_ecash",
+          "economically_sweepable",
+          "outgoing_operations"
+        ],
+        "recovering": true
       }
     },
     {
@@ -53,7 +74,8 @@
         "economically_sweepable_recipient_msat": 0,
         "encumbered_outgoing_msat": 0,
         "outgoing": [],
-        "query_errors": []
+        "query_errors": [],
+        "recovering": false
       }
     }
   ]

@@ -94,6 +94,8 @@ pub struct WalletDrainStatusWire {
     pub active_operation_count: usize,
     pub query_errors: Vec<WalletDrainQueryWire>,
     pub drain_state: DrainStateWire,
+    /// The wallet is unreadable because its client is recovering.
+    pub recovering: bool,
 }
 
 impl WalletDrainStatusWire {
@@ -110,6 +112,15 @@ impl WalletDrainStatusWire {
                 WalletDrainQueryWire::OutgoingOperations,
             ],
             drain_state: DrainStateWire::Unknown,
+            recovering: false,
+        }
+    }
+
+    /// Unreadable because the wallet's recovery scan is still running.
+    pub fn recovering() -> Self {
+        Self {
+            recovering: true,
+            ..Self::unavailable()
         }
     }
 }

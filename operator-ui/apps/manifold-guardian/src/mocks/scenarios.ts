@@ -464,6 +464,25 @@ const builders = {
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
   }),
+  'wallet-recovering': () => ({
+    ...base(),
+    seats: [
+      runningSeat(
+        'seat-running-01',
+        'fed1running0000000000000000000000000000000000000000000000000000'
+      )
+    ],
+    paymentFederations: [
+      {
+        federation_id: FEDERATION_A,
+        accepted: true,
+        receivable: false,
+        wallet: { ...walletStatus(null), recovering: true }
+      }
+    ],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized
+  }),
   'offer-without-payments': () => ({
     ...base(),
     seats: [],
@@ -854,6 +873,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'wallet-not-receivable': {
     desc: 'Payment federation cannot receive.',
+    affects: ['payouts', 'overview']
+  },
+  'wallet-recovering': {
+    desc: 'The payment wallet is still recovering, so its balance is unreadable.',
     affects: ['payouts', 'overview']
   },
   'offer-without-payments': {

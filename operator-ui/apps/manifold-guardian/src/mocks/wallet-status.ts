@@ -8,5 +8,6 @@ export const walletStatus = (availableEcashMsat: number | null): WalletDrainStat
   active_operation_count: 0,
   query_errors: availableEcashMsat === null ? ['available_ecash'] : [],
   drain_state:
-    availableEcashMsat === null ? 'unknown' : availableEcashMsat === 0 ? 'drained' : 'sweepable'
+    availableEcashMsat === null ? 'unknown' : availableEcashMsat === 0 ? 'drained' : 'sweepable',
+  recovering: false
 });

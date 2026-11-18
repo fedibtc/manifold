@@ -150,6 +150,18 @@ pub enum WalletError {
         federation_id: FederationId,
     },
 
+    /// Another task is opening this scope's client. A status read refuses
+    /// rather than waits, because an open can be a recovery scan with no
+    /// time bound.
+    #[error("wallet client for federation {federation_id} is still opening")]
+    ClientOpening {
+        /// Federation whose client is being opened.
+        federation_id: FederationId,
+        /// The stored client is a recovery that has not finished, so the
+        /// open is that recovery's scan.
+        recovering: bool,
+    },
+
     /// Any other client failure (open, join, spend, balance).
     #[error(transparent)]
     Client(#[from] anyhow::Error),
@@ -201,6 +213,19 @@ impl ClientScope {
             } => *id,
         }
     }
+}
+
+/// What a caller does while another task is opening the client it needs.
+///
+/// An open can run a recovery scan, which has no time bound. Callers that act
+/// on the client wait for it; status reads refuse, so that an operator screen
+/// answers instead of hanging behind the open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpenWait {
+    /// Wait for the open to finish.
+    Wait,
+    /// Fail with [`WalletError::ClientOpening`] instead.
+    Refuse,
 }
 
 /// One payment client and, for every guarded seat, one guardian-fee client per
@@ -336,6 +361,7 @@ impl Wallet {
             ClientScope::Payment(invite_code.federation_id()),
             JOIN_ATTEMPT_TIMEOUT,
             None,
+            OpenWait::Wait,
         )
         .await
     }
@@ -346,9 +372,10 @@ impl Wallet {
         scope: ClientScope,
         timeout: std::time::Duration,
         guardian_key: Option<&GuardianFeeAccountKey>,
+        wait: OpenWait,
     ) -> Result<FederationId, WalletError> {
         ensure_public_invite(invite_code)?;
-        self.join_inner(invite_code, scope, timeout, guardian_key)
+        self.join_inner(invite_code, scope, timeout, guardian_key, wait)
             .await
     }
 
@@ -358,9 +385,15 @@ impl Wallet {
         scope: ClientScope,
         preview_timeout: std::time::Duration,
         guardian_key: Option<&GuardianFeeAccountKey>,
+        wait: OpenWait,
     ) -> Result<FederationId, WalletError> {
         let federation_id = scope.federation_id();
-        let _joining = self.join_exclusion(scope.clone()).await;
+        // Checked before the exclusion too, so a caller that refuses to wait
+        // is refused only while an open is really running.
+        if self.federations.read().await.contains_key(&scope) {
+            return Ok(federation_id);
+        }
+        let _joining = self.open_exclusion(scope.clone(), wait).await?;
         if self.federations.read().await.contains_key(&scope) {
             return Ok(federation_id);
         }
@@ -617,13 +650,20 @@ impl Wallet {
         invite_code: &InviteCode,
         seat_id: &fedi_decentralized_service_manifold_guardian::SeatId,
         key: &GuardianFeeAccountKey,
+        wait: OpenWait,
     ) -> anyhow::Result<ClientHandleArc> {
         let scope = ClientScope::Guardian {
             federation_id: invite_code.federation_id(),
             seat_id: seat_id.to_string(),
         };
-        self.join_with_timeout(invite_code, scope.clone(), JOIN_ATTEMPT_TIMEOUT, Some(key))
-            .await?;
+        self.join_with_timeout(
+            invite_code,
+            scope.clone(),
+            JOIN_ATTEMPT_TIMEOUT,
+            Some(key),
+            wait,
+        )
+        .await?;
         self.federations
             .read()
             .await
@@ -633,14 +673,49 @@ impl Wallet {
     }
 
     async fn join_exclusion(&self, scope: ClientScope) -> tokio::sync::OwnedMutexGuard<()> {
-        let join_lock = {
-            let mut locks = self.join_locks.lock().await;
-            locks
-                .entry(scope)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
+        self.join_lock(scope).await.lock_owned().await
+    }
+
+    /// The join exclusion for `scope`, or, for a caller that refuses to wait,
+    /// [`WalletError::ClientOpening`] while another task holds it.
+    async fn open_exclusion(
+        &self,
+        scope: ClientScope,
+        wait: OpenWait,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, WalletError> {
+        match wait {
+            OpenWait::Wait => Ok(self.join_exclusion(scope).await),
+            OpenWait::Refuse => {
+                let lock = self.join_lock(scope.clone()).await;
+                match lock.try_lock_owned() {
+                    Ok(guard) => Ok(guard),
+                    Err(_) => Err(WalletError::ClientOpening {
+                        federation_id: scope.federation_id(),
+                        recovering: self.stored_recovery_unfinished(&scope).await,
+                    }),
+                }
+            }
+        }
+    }
+
+    /// Whether `scope`'s stored client is a recovery the MG has not marked
+    /// ready. Reads the stored state only; a scope with none is not recovering.
+    async fn stored_recovery_unfinished(&self, scope: &ClientScope) -> bool {
+        let Some(prefix) = self.prefixes.read().await.get(scope).copied() else {
+            return false;
         };
-        join_lock.lock_owned().await
+        let database = self.database.with_prefix(prefix.consensus_encode_to_vec());
+        recovery_needs_ready_marker(&database)
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn join_lock(&self, scope: ClientScope) -> Arc<Mutex<()>> {
+        let mut locks = self.join_locks.lock().await;
+        locks
+            .entry(scope)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Exclude concurrent payout starts in one wallet scope.
@@ -877,11 +952,21 @@ impl Wallet {
     }
 
     async fn client(&self, federation_id: FederationId) -> Result<ClientHandleArc, WalletError> {
+        self.client_with(federation_id, OpenWait::Wait).await
+    }
+
+    /// The payment client, opening a retained one if needed. `wait` decides
+    /// what happens while another task is opening it.
+    pub(crate) async fn client_with(
+        &self,
+        federation_id: FederationId,
+        wait: OpenWait,
+    ) -> Result<ClientHandleArc, WalletError> {
         let scope = ClientScope::Payment(federation_id);
         if let Some(client) = self.federations.read().await.get(&scope).cloned() {
             return Ok(client);
         }
-        let _opening = self.join_exclusion(scope.clone()).await;
+        let _opening = self.open_exclusion(scope.clone(), wait).await?;
         if let Some(client) = self.federations.read().await.get(&scope).cloned() {
             return Ok(client);
         }

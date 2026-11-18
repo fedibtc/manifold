@@ -3,7 +3,7 @@ import { AttentionList } from '@/features/overview/components/attention-list/Att
 import { EarningsTimeline } from '@/features/overview/components/earnings-timeline/EarningsTimeline';
 import { OfferSummary } from '@/features/overview/components/offer-summary/OfferSummary';
 import { useOverviewEarnings } from '@/features/overview/hooks/use-overview-earnings/useOverviewEarnings';
-import { deriveOverview } from '@/features/overview/utils/deriveOverview';
+import { deriveOverview, WALLET_RECOVERING } from '@/features/overview/utils/deriveOverview';
 import { useMobileNotificationsNews } from '@/features/phone-link/hooks/use-mobile-notifications-news/useMobileNotificationsNews';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
@@ -46,6 +46,9 @@ export const OverviewPage = () => {
     nostrState: onboarding.data?.nostr.state,
     seatReadiness: seatReadiness.data
   });
+  const recovering = (paymentFederations.data?.federations ?? []).some(
+    (federation) => federation.wallet.recovering
+  );
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0
       ? `Guardian fees for ${earnings.unreadableFeeSeatCount} seat(s) couldn't be read and aren't included above.`
@@ -63,7 +66,11 @@ export const OverviewPage = () => {
         </Banner>
 
         <div className={styles.tileGrid}>
-          <StatCard label="Held in federations" value={formatSats(earnings.balanceMsat)} />
+          <StatCard
+            label="Held in federations"
+            value={formatSats(earnings.balanceMsat)}
+            hint={recovering ? `${WALLET_RECOVERING}.` : undefined}
+          />
 
           <StatCard
             label="Earned, all time"

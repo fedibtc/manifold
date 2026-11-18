@@ -300,6 +300,7 @@ impl WalletDrainStatus {
                 }
                 DrainState::Unknown => mg_core::payout_wire::DrainStateWire::Unknown,
             },
+            recovering: false,
         }
     }
 }

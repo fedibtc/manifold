@@ -47,6 +47,7 @@
     "economically_sweepable_recipient_msat": 7950000,
     "encumbered_outgoing_msat": 0,
     "outgoing": [],
-    "query_errors": []
+    "query_errors": [],
+    "recovering": false
   }
 }

@@ -518,9 +518,9 @@ pub fn plans_fixture() -> Value {
     admin::plans_json(vec![plan()])
 }
 
-/// Covers all three states an operator sees: an accepted federation with a
-/// balance, an accepted one whose wallet cannot answer (null, never zero), and
-/// a wallet-only leftover of a removed member.
+/// Covers the states an operator sees: an accepted federation with a balance,
+/// an accepted one whose wallet cannot answer (null, never zero), one whose
+/// wallet is recovering, and a wallet-only leftover of a removed member.
 pub fn payment_federations_fixture() -> Value {
     admin::payment_federations_json(vec![
         PaymentFederationStatus {
@@ -544,6 +544,7 @@ pub fn payment_federations_fixture() -> Value {
                 active_operation_count: 1,
                 query_errors: vec![],
                 drain_state: DrainStateWire::PendingWalletWork,
+                recovering: false,
             },
         },
         PaymentFederationStatus {
@@ -551,6 +552,12 @@ pub fn payment_federations_fixture() -> Value {
             accepted: true,
             receivable: false,
             wallet: unavailable_wallet(),
+        },
+        PaymentFederationStatus {
+            federation_id: FederationId("fed1fixturerecoveringfederation".into()),
+            accepted: true,
+            receivable: false,
+            wallet: WalletDrainStatusWire::recovering(),
         },
         PaymentFederationStatus {
             federation_id: FederationId("fed1fixtureleftoverfederation".into()),
@@ -576,6 +583,7 @@ fn drained_wallet(available: u64, sweepable: u64) -> WalletDrainStatusWire {
         } else {
             DrainStateWire::Drained
         },
+        recovering: false,
     }
 }
 

@@ -405,7 +405,8 @@ const mgPaymentFederationsMirror = {
             state: 'pending'
           }
         ],
-        query_errors: []
+        query_errors: [],
+        recovering: false
       }
     },
     {
@@ -419,7 +420,23 @@ const mgPaymentFederationsMirror = {
         economically_sweepable_recipient_msat: null,
         encumbered_outgoing_msat: null,
         outgoing: null,
-        query_errors: ['available_ecash', 'economically_sweepable', 'outgoing_operations']
+        query_errors: ['available_ecash', 'economically_sweepable', 'outgoing_operations'],
+        recovering: false
+      }
+    },
+    {
+      accepted: true,
+      federation_id: 'fed1fixturerecoveringfederation',
+      receivable: false,
+      wallet: {
+        active_operation_count: 0,
+        available_ecash_msat: null,
+        drain_state: 'unknown',
+        economically_sweepable_recipient_msat: null,
+        encumbered_outgoing_msat: null,
+        outgoing: null,
+        query_errors: ['available_ecash', 'economically_sweepable', 'outgoing_operations'],
+        recovering: true
       }
     },
     {
@@ -433,7 +450,8 @@ const mgPaymentFederationsMirror = {
         economically_sweepable_recipient_msat: 0,
         encumbered_outgoing_msat: 0,
         outgoing: [],
-        query_errors: []
+        query_errors: [],
+        recovering: false
       }
     }
   ]
@@ -652,7 +670,8 @@ const mgGuardianFeesMirror = {
     economically_sweepable_recipient_msat: 7_950_000,
     encumbered_outgoing_msat: 0,
     outgoing: [],
-    query_errors: []
+    query_errors: [],
+    recovering: false
   },
   // Deliberately larger than the two remittances below add up to: the lifetime
   // total is not a sum of the window, and a fixture where the two agreed would
