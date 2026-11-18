@@ -1,5 +1,35 @@
 # Before changing routine SelfCI work, read
 # specs/GATE-selfci-local-development-cost.md.
+deadlines:
+  run:
+    - after: 9m
+      action: warn
+      notice: >-
+        This run has passed 9m. Recent fast Linux checks took under a minute
+        in the job phase; slower successful checks took up to about 30m.
+        Check for Nix cache misses, host contention, or slow builds and
+        tests. This warning does not fail the run; the 45m limit still
+        applies. See .config/selfci/ci.sh and docs/ci-timing-budgets.md.
+    - { after: 45m, action: fail }
+    - { after: "+25%", action: warn }
+  # Shared backstops also cover lint, the dispatcher, and implicit steps.
+  job:
+    - { after: 41m, action: fail }
+    - { after: "+25%", action: warn }
+  step:
+    - { after: 40m, action: fail }
+    - { after: "+25%", action: warn }
+  notice: >-
+    Check Nix cache misses, machine load, and build and test runtime.
+    See .config/selfci/ci.sh and docs/ci-timing-budgets.md for the expected
+    runtimes and hard limits. Look for ways to make the checks faster before
+    increasing a deadline.
+
+timings:
+  percentile: 90
+  window: 30d
+  min-samples: 10
+
 job:
   clone-mode: shallow
   command: ./.config/selfci/ci.sh
