@@ -1179,3 +1179,54 @@ fn mismatched_prefix_federation_is_rejected() {
     let error = validate_scope_prefix(1, &payment(1), federation_id(2)).unwrap_err();
     assert!(format!("{error:#}").contains("client scope prefix 1 contains a different federation"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn recovery_stall_warnings_fire_only_while_no_module_advances() {
+    use std::time::Duration;
+
+    const INTERVAL: Duration = Duration::from_secs(300);
+    let progress = |complete| RecoveryProgress {
+        complete,
+        total: 100,
+    };
+
+    // Module 1 advances at 1 and 4 minutes, then stays at 7/100.
+    let (tx, rx) = futures::channel::mpsc::unbounded();
+    tokio::spawn(async move {
+        // Sent at 0 s, 60 s, 240 s, and an unchanged repeat at 640 s, which
+        // is not progress.
+        for (after_secs, complete) in [(0, 5), (60, 6), (180, 7), (400, 7)] {
+            tokio::time::sleep(Duration::from_secs(after_secs)).await;
+            tx.unbounded_send((1, progress(complete))).unwrap();
+        }
+        std::future::pending::<()>().await;
+    });
+
+    let started = tokio::time::Instant::now();
+    let mut stalls = Vec::new();
+    let result = wait_warning_on_stall(
+        tokio::time::sleep(Duration::from_secs(21 * 60)),
+        rx,
+        INTERVAL,
+        |stalled_for, latest| {
+            stalls.push((
+                started.elapsed().as_secs(),
+                stalled_for.as_secs(),
+                latest.get(&1).map(|p| p.complete),
+            ));
+        },
+    )
+    .await;
+
+    assert_eq!(result, ());
+    // Ticks at 5, 10, 15 and 20 minutes. The first follows progress, so it
+    // does not warn; the later ones count the stall from that tick.
+    assert_eq!(
+        stalls,
+        vec![
+            (600, 300, Some(7)),
+            (900, 600, Some(7)),
+            (1200, 900, Some(7))
+        ]
+    );
+}

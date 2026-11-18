@@ -1,0 +1,94 @@
+--- a/modules/fedimint-mint-client/src/lib.rs
++++ b/modules/fedimint-mint-client/src/lib.rs
+@@ -88,7 +88,7 @@
+ use fedimint_core::secp256k1::rand::prelude::IteratorRandom;
+ use fedimint_core::secp256k1::rand::thread_rng;
+ use fedimint_core::secp256k1::{All, Keypair, Secp256k1};
+-use fedimint_core::util::{BoxFuture, BoxStream, NextOrPending, SafeUrl};
++use fedimint_core::util::{BoxFuture, BoxStream, FmtCompactAnyhow as _, NextOrPending, SafeUrl};
+ use fedimint_core::{
+     Amount, IdxRange, OutPoint, PeerId, Tiered, TieredCounts, TieredMulti, TransactionId, apply,
+     async_trait_maybe_send, base32, push_db_pair_items,
+@@ -179,7 +179,9 @@
+ ) -> Vec<RecoveryItem> {
+     const TIMEOUT: Duration = Duration::from_secs(30);
+ 
++    let mut attempt: u64 = 0;
+     loop {
++        attempt += 1;
+         let peer = peer_selector.choose_peer();
+         let start_time = fedimint_core::time::now();
+ 
+@@ -199,15 +201,56 @@
+                     return data;
+                 }
+ 
++                warn!(
++                    target: LOG_CLIENT_MODULE_MINT,
++                    %peer, start, end, attempt,
++                    "Mint recovery slice does not match its consensus hash, dropping peer"
++                );
+                 peer_selector.remove(peer);
+             }
+-            Err(..) => {
++            Err(err) => {
++                warn!(
++                    target: LOG_CLIENT_MODULE_MINT,
++                    %peer, start, end, attempt,
++                    err = %err.fmt_compact_anyhow(),
++                    "Mint recovery slice download failed, retrying"
++                );
+                 peer_selector.report(peer, TIMEOUT);
+             }
+         }
+     }
+ }
+ 
++/// Fetches a slice's consensus hash, warning while it stays pending.
++///
++/// The fetch retries until a threshold of peers agree and logs nothing on
++/// the way, so a recovery that waits here would otherwise stall silently.
++async fn fetch_recovery_slice_hash_logged(
++    module_api: DynModuleApi,
++    start: u64,
++    end: u64,
++) -> sha256::Hash {
++    const WARN_INTERVAL: Duration = Duration::from_secs(60);
++
++    let fetch = module_api.fetch_recovery_slice_hash(start, end);
++    pin_mut!(fetch);
++    let mut waited = Duration::ZERO;
++    loop {
++        match tokio::time::timeout(WARN_INTERVAL, &mut fetch).await {
++            Ok(hash) => return hash,
++            Err(_) => {
++                waited += WARN_INTERVAL;
++                warn!(
++                    target: LOG_CLIENT_MODULE_MINT,
++                    start, end,
++                    waited_secs = waited.as_secs(),
++                    "Mint recovery slice hash is still pending"
++                );
++            }
++        }
++    }
++}
++
+ /// An encapsulation of [`FederationId`] and e-cash notes in the form of
+ /// [`TieredMulti<SpendableNote>`] for the purpose of spending e-cash
+ /// out-of-band. Also used for validating and reissuing such out-of-band notes.
+@@ -634,7 +677,13 @@
+             let api = args.module_api().clone();
+             let end = std::cmp::min(start + SLICE_SIZE, state.total_items);
+ 
+-            async move { (start, end, api.fetch_recovery_slice_hash(start, end).await) }
++            async move {
++                (
++                    start,
++                    end,
++                    fetch_recovery_slice_hash_logged(api, start, end).await,
++                )
++            }
+         })
+         .buffered(PARALLEL_HASH_REQUESTS)
+         .map(move |(start, end, hash)| {

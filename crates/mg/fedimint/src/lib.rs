@@ -63,6 +63,7 @@ use bitcoin_hashes::{Hash as _, HashEngine as _, sha256, sha256t};
 use fedimint_client::db::{ClientInitStateKey, ClientModuleRecovery};
 use fedimint_client::{Client, ClientHandle, ClientHandleArc, RootSecret};
 use fedimint_client_module::module::ClientModule as _;
+use fedimint_client_module::module::recovery::RecoveryProgress;
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::Amount;
 use fedimint_core::config::FederationId;
@@ -201,6 +202,79 @@ impl ClientScope {
             } => *id,
         }
     }
+}
+
+/// How long a recovery may make no progress before each stall warning.
+const RECOVERY_STALL_WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Await `wait` while watching module recovery `progress`, calling
+/// `on_stall` once per `interval` in which no module advanced.
+///
+/// Fedimint's recovery retries its requests forever without logging, so a
+/// scan that stops is otherwise silent; this makes it visible without
+/// changing when, or whether, the wait ends.
+async fn wait_warning_on_stall<T>(
+    wait: impl std::future::Future<Output = T>,
+    progress: impl futures::Stream<Item = (ModuleInstanceId, RecoveryProgress)>,
+    interval: std::time::Duration,
+    mut on_stall: impl FnMut(std::time::Duration, &BTreeMap<ModuleInstanceId, RecoveryProgress>),
+) -> T {
+    futures::pin_mut!(wait);
+    futures::pin_mut!(progress);
+    let mut latest = BTreeMap::new();
+    let mut advanced = false;
+    let mut stalled_for = std::time::Duration::ZERO;
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    let mut progress_open = true;
+    loop {
+        tokio::select! {
+            result = &mut wait => return result,
+            update = progress.next(), if progress_open => match update {
+                Some((module, now)) => {
+                    let before = latest.insert(module, now);
+                    if before.is_none_or(|before: RecoveryProgress| {
+                        (before.complete, before.total) != (now.complete, now.total)
+                    }) {
+                        advanced = true;
+                    }
+                }
+                None => progress_open = false,
+            },
+            _ = ticks.tick() => {
+                if std::mem::take(&mut advanced) {
+                    stalled_for = std::time::Duration::ZERO;
+                } else {
+                    stalled_for += interval;
+                    on_stall(stalled_for, &latest);
+                }
+            }
+        }
+    }
+}
+
+fn warn_recovery_stalled(
+    scope: &ClientScope,
+    stalled_for: std::time::Duration,
+    progress: &BTreeMap<ModuleInstanceId, RecoveryProgress>,
+) {
+    let progress = progress
+        .iter()
+        .map(|(module, progress)| format!("{module}:{}/{}", progress.complete, progress.total))
+        .collect::<Vec<_>>()
+        .join(",");
+    let (scope_kind, seat_id) = match scope {
+        ClientScope::Payment(_) => ("payment", None),
+        ClientScope::Guardian { seat_id, .. } => ("guardian_fee", Some(seat_id.as_str())),
+    };
+    warn!(
+        safe_to_share = true,
+        federation_id = %scope.federation_id(),
+        scope_kind,
+        seat_id,
+        stalled_secs = stalled_for.as_secs(),
+        progress = %progress,
+        "wallet federation recovery made no progress"
+    );
 }
 
 /// One payment client and, for every guarded seat, one guardian-fee client per
@@ -585,10 +659,14 @@ impl Wallet {
         validate_scope_config(scope, &config)?;
         let required_mints = required_mint_modules(&config)?;
         ensure_mint_recoveries_started(database, &required_mints).await?;
-        recovering
-            .wait_for_all_recoveries()
-            .await
-            .with_context(|| format!("wait for {operation}"))?;
+        wait_warning_on_stall(
+            recovering.wait_for_all_recoveries(),
+            recovering.subscribe_to_recovery_progress(),
+            RECOVERY_STALL_WARN_INTERVAL,
+            |stalled_for, progress| warn_recovery_stalled(scope, stalled_for, progress),
+        )
+        .await
+        .with_context(|| format!("wait for {operation}"))?;
         ensure_mint_recoveries_finished(database, &required_mints).await?;
         recovering.shutdown().await;
 
