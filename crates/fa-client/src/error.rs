@@ -530,6 +530,18 @@ pub enum FaError {
         /// Last sanitized consumer consensus-read failure, when one occurred.
         consensus_error: Option<String>,
     },
+    /// No guardian answered a federation stats request.
+    #[error(
+        "no guardian reported federation stats; without the verb: {unsupported:?}; \
+         failed: {failed:?}"
+    )]
+    FederationStatsUnavailable {
+        /// Guardians whose MG predates the verb. When `failed` is empty, stats
+        /// arrive only once guardians update.
+        unsupported: Vec<u16>,
+        /// Sanitized failure per guardian that could not answer now.
+        failed: Vec<(u16, String)>,
+    },
     /// Formation polling reached its deadline.
     #[error("formation timed out while {0}")]
     Timeout(String),
@@ -568,7 +580,9 @@ impl FaError {
             | Self::GuardianTransferDisabled
             | Self::GuardianTransferUnsupported { .. } => FaErrorCode::CapabilityUnavailable,
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
-            Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
+            Self::ManifoldGuardian { .. } | Self::FederationStatsUnavailable { .. } => {
+                FaErrorCode::ManifoldGuardian
+            }
             Self::Payment(_) => FaErrorCode::Payment,
             Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
             Self::MaintenanceWrongState { .. } | Self::MaintenanceUnsynced => {

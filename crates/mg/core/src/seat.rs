@@ -16,6 +16,7 @@
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
+mod active_wallets;
 mod import;
 mod transfer;
 mod transfer_binding;
@@ -33,9 +34,9 @@ use fedi_decentralized_domain::{
     parse_protocol_peer_id, protocol_peer_id,
 };
 use fedi_decentralized_service_manifold_guardian::{
-    FEDERATION_METADATA_OBJECT_MAX_BYTES, FaId, FederationName, FormationSeatBinding, GuardianCode,
-    InviteCode, MetaConsensusBase, MetaFieldKey, MetaFieldValue, Plan, SeatHealth, SeatId,
-    ServiceStatus,
+    FEDERATION_METADATA_OBJECT_MAX_BYTES, FaId, FederationName, FedimintStats,
+    FormationSeatBinding, GuardianCode, InviteCode, MetaConsensusBase, MetaFieldKey,
+    MetaFieldValue, Plan, SeatHealth, SeatId, ServiceStatus,
 };
 use fedimint_core::base32::{self, FEDIMINT_PREFIX};
 use fedimint_core::config::ClientConfig;
@@ -53,6 +54,7 @@ use crate::backup_worker::BackupWorker;
 use crate::db::Db;
 use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
 use crate::fedimint_api::{FedimintApi, FedimintApiError};
+use crate::fedimint_stats::{GuardianReadings, fedimint_stats};
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
 use crate::push_callback::{CompletionHookWake, ValidatedDkgCompletionCallback};
@@ -263,6 +265,7 @@ struct SeatLoop {
     own_mg_pubkey: Pubkey,
     ports: SeatPorts,
     fedimint_api: FedimintApi,
+    wallet_samples: Arc<active_wallets::DailyWalletSamples>,
     state: watch::Sender<SeatRuntimeFacts>,
     /// Where this seat's recovery-document publication is hinted. The loop
     /// marks; nothing here ever waits on, or reads back from, a relay.
@@ -492,6 +495,9 @@ enum SeatCommand {
         gateway_api: SafeUrl,
         reply: oneshot::Sender<Result<bool, SeatVerbError>>,
     },
+    FedimintStats {
+        reply: oneshot::Sender<Result<FedimintStats, SeatVerbError>>,
+    },
     GuardianFeePolicy {
         our_account_id: AccountId,
         guardian_verification_fee_account: Option<Account>,
@@ -595,6 +601,12 @@ impl Seat {
         if decommissioned_at_ms.is_none() {
             let fedimint_api =
                 FedimintApi::new(fedimint_connectors.clone(), ports.api(), &keys.api_auth);
+            let samples = Arc::new(active_wallets::DailyWalletSamples::new(
+                db.clone(),
+                facts.seat_id.clone(),
+                fedimint_api.clone(),
+            ));
+            let runtime = state.subscribe();
             let seat_loop = SeatLoop {
                 facts: facts.clone(),
                 db,
@@ -605,6 +617,7 @@ impl Seat {
                 own_mg_pubkey,
                 ports,
                 fedimint_api,
+                wallet_samples: samples.clone(),
                 state: state.clone(),
                 backup,
                 meta_admission: None,
@@ -619,7 +632,11 @@ impl Seat {
                 backoff: policy.initial_backoff,
             };
             tokio::spawn(async move {
-                seat_loop.run(command_rx).await;
+                // Sampling is independent of lifecycle commands, but ends with this seat.
+                tokio::select! {
+                    () = seat_loop.run(command_rx) => {}
+                    () = samples.run(runtime) => {}
+                }
             });
         } else {
             // Closing the receiver makes every lifecycle request fail without
@@ -886,6 +903,12 @@ impl Seat {
         gateway_api: SafeUrl,
     ) -> Result<bool, SeatVerbError> {
         self.verb_request(|reply| SeatCommand::RegisterGateway { gateway_api, reply })
+            .await
+    }
+
+    /// Read the FA Stats figures through this seat's own fedimintd.
+    pub(crate) async fn fedimint_stats(&self) -> Result<FedimintStats, SeatVerbError> {
+        self.verb_request(|reply| SeatCommand::FedimintStats { reply })
             .await
     }
 
@@ -1300,6 +1323,10 @@ impl SeatLoop {
                 }
                 SeatCommand::RegisterGateway { gateway_api, reply } => {
                     let result = self.register_gateway(gateway_api).await;
+                    let _ = reply.send(result);
+                }
+                SeatCommand::FedimintStats { reply } => {
+                    let result = self.fedimint_stats().await;
                     let _ = reply.send(result);
                 }
                 SeatCommand::GuardianFeePolicy {
@@ -2216,6 +2243,30 @@ impl SeatLoop {
             .map_err(SeatVerbError::child_needed)
     }
 
+    async fn fedimint_stats(&mut self) -> Result<FedimintStats, SeatVerbError> {
+        let (client, config) = self.running_client_config().await?;
+        let lnv2_id = module_id(&config, &fedimint_lnv2_common::KIND)?;
+        let walletv2_id = module_id(&config, &fedimint_walletv2_common::KIND)?;
+        let balances_and_flows = async {
+            tokio::try_join!(
+                client.audit(),
+                client.lnv2_volume_stats(lnv2_id),
+                client.walletv2_volume_stats(walletv2_id)
+            )
+            .map_err(SeatVerbError::child_needed)
+        };
+        let ((audit, lnv2_volume, walletv2_volume), (active_wallets, history)) =
+            tokio::try_join!(balances_and_flows, self.wallet_samples.report())?;
+        let readings = GuardianReadings {
+            audit,
+            active_wallets,
+            history,
+            lnv2_volume,
+            walletv2_volume,
+        };
+        fedimint_stats(&readings).map_err(SeatVerbError::internal)
+    }
+
     /// Guarded read/merge/canonicalize/submit primitive for one FA field write.
     async fn submit_meta_patch(
         &mut self,
@@ -2548,6 +2599,17 @@ fn derive_federation_seats(config: &ClientConfig) -> Result<FederationSeats, Sea
     federation_seats(config).map_err(|err| {
         SeatVerbError::internal(anyhow!("seat's own federation config is unusable: {err}"))
     })
+}
+
+fn module_id(config: &ClientConfig, kind: &ModuleKind) -> Result<ModuleInstanceId, SeatVerbError> {
+    config
+        .modules
+        .iter()
+        .find(|(_, module)| &module.kind == kind)
+        .map(|(instance_id, _)| *instance_id)
+        .ok_or_else(|| {
+            SeatVerbError::internal(anyhow!("federation config carries no {kind} module"))
+        })
 }
 
 /// The instance id of the federation's `meta` module, if it has one.
