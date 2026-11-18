@@ -3,6 +3,7 @@
 ## Status
 
 Paid quoting checks the authenticated common setup-payment membership and quotes a configured gross price; minimum-net-revenue pricing remains unimplemented.
+Quoting from a SeatGrant is not implemented.
 
 The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`,
 and `RemoveSeat` are implemented in normal daemon builds. The setup-payment
@@ -319,7 +320,10 @@ Adding a wire verb without a trait method fails compilation.
 `GetQuote` applies release policy before quoting: the requested
 fedimintd version must equal the release's sole supported version, the
 federation size must be between 7 and 20 inclusive, and the selected plan must
-exactly match a currently offered plan. For a paid plan, the named payment
+exactly match a currently offered plan. A request that presents a SeatGrant
+instead allows 4 through 20 guardians and always quotes the free plan, whatever
+price the MG offers publicly
+([SPEC-seat-grant](./SPEC-seat-grant.md)). For a paid plan, the named payment
 federation must be a member of the accepted common setup-payment set — read
 from the same database snapshot as the offer epoch, so a quote can never
 outlive a removal without an epoch change — and its wallet must already be

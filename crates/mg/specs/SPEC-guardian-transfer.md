@@ -13,8 +13,9 @@ ships this code with transfer off, and Fedi turns it on by republishing the
 policy. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
-Destinations supplied through a SeatGrant are not implemented: every
-destination still needs a PeerBadge.
+Badge-free admission for source seats that came from a SeatGrant is not
+implemented: every destination still needs a PeerBadge and a
+holder-authorization proof.
 
 ## Record justification
 
@@ -125,8 +126,8 @@ online once. The FA does not have to be online at the same time.
    its federation. It also independently verifies a destination-bound
    PeerBadge against its own environment's issuer roots and minimum trust
    level, including fresh revocation checks. A source seat that came from a
-   SeatGrant instead admits a destination the FA obtained through a SeatGrant,
-   without a badge, because its operator delegated replacement to the FA
+   SeatGrant skips this badge check and admits the destination the FA's grant
+   names, because its operator delegated replacement to the FA
    ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md),
    [SPEC-seat-grant](./SPEC-seat-grant.md)). The source fails closed if it
    cannot verify that trust, before stopping the guardian or releasing its
@@ -150,8 +151,9 @@ online once. The FA does not have to be online at the same time.
      them confidential. It answers every later valid grant for the seat with
      the same guardian only if the destination passes a fresh admission check.
 
-   Destinations must also co-sign the exact service-signed request and their
-   current holder-authorization envelope with the badge subject's Nostr key.
+   Unless the source seat came from a SeatGrant, destinations must also co-sign
+   the exact service-signed request and their current holder-authorization
+   envelope with the badge subject's Nostr key.
    This required proof travels outside the unchanged signed request payload.
    The source verifies the request-bound subject signature,
    issuance, and authorization, applies its own issuer/minimum-trust policy,
@@ -159,7 +161,10 @@ online once. The FA does not have to be online at the same time.
    rejects missing, null, invalid, unsupported or oversized proofs without
     discovery fallback. The proof shares the request's one-hour freshness
     window: whole-request replay inside that window still
-   requires fresh admission on every attempt.
+   requires fresh admission on every attempt. For a source seat that came from
+   a SeatGrant, admission is the FA-signed grant and the destination's
+   service-key signature alone: no holder-authorization proof is required, so a
+   destination without a badge can take the seat.
 
    Admission does not depend on advertisement discovery or spare capacity.
     Rejection after a successful stop request cannot cancel that stop or

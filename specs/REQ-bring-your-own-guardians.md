@@ -45,11 +45,17 @@ unchanged.
   Telemetry from MGs without a badge must not be able to degrade telemetry
   from badged MGs
   ([ARCH-cloud-mg-telemetry](./ARCH-cloud-mg-telemetry.md)).
-- **Lightning.** The FA may attach a gateway that a provider runs and funds
-  separately. A federation uses either such a custom gateway or Fedi-verified
-  FLIP liquidity, not both
+- **Lightning.** The FA can attach a custom gateway that a provider runs and
+  funds separately, by entering its URL; a guide stays available as help.
+  After a Fedi-verified formation, the FA can choose FLIP liquidity, a custom
+  gateway, or "Skip for now". After a code-based formation, the FA is offered
+  only a custom gateway, and can defer it and return later. An attachment in
+  progress is finished or recovered before another starts. In v1, a
+  successful attachment of either kind is final: no switching, removal or
+  additional gateway. That is a v1 limitation, not a permanent incompatibility
+  between custom gateways and FLIP
   ([SPEC-fa-post-formation-liquidity](../crates/fa-client/specs/SPEC-fa-post-formation-liquidity.md)).
-  FLIP serves any federation whose operators are distinct trusted badge
+  FLIP itself serves any federation whose operators are distinct trusted badge
   holders, however it was formed
   ([SPEC-flip-federation-trust](../crates/liquidity-manager-daemon/specs/SPEC-flip-federation-trust.md)).
 

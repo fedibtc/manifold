@@ -48,9 +48,15 @@ decision about who redeems it. The MG keeps a list of issued grants (nonce,
 label, issue time, and whether each is unused, used or revoked) so the
 operator can see them and revoke one individually. That list grants nothing:
 authority comes from the signature, and refusal from the used and revoked
-nonces. Revoked nonces are part of the MG backup, so a restore cannot revive a
-revoked grant. An unused grant needs no backup, because its signature stays
-valid.
+nonces.
+
+A restore must not make a used or revoked grant usable again
+([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)). Each seat
+created from a grant carries its grant nonce and label in its seat document,
+which is backed up from the moment the seat exists, so restore rebuilds the used
+nonces with their seats. Revoked nonces are carried in a fleet-level backup
+document, republished on each revocation. An unused, unrevoked grant needs no
+backup, because its signature stays valid.
 
 ## Redeeming
 
@@ -58,8 +64,14 @@ valid.
 
 - verifies its own signature over the grant and refuses a nonce that is
   already used or revoked;
-- requires the free `InfiniteBestEffort` plan and no payment fields;
-- applies its usual seat capacity, readiness and offer epoch;
+- requires the free `InfiniteBestEffort` plan and no payment fields, and quotes
+  it free whatever price the MG offers publicly;
+- applies its usual seat capacity, the release's fedimintd version, and the
+  offer epoch;
+- applies the readiness gate's connectivity, Bitcoin, release-version and
+  pressure checks, but not its historical uptime thresholds, which measure
+  fitness for the Fedi-verified pool
+  ([SPEC-advertisement](./SPEC-advertisement.md#readiness-gate));
 - skips the advertised federation-size list and setup-payment membership.
   The size must still be 4 through 20.
 
