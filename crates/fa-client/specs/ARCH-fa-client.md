@@ -652,7 +652,9 @@ observes success or replays the idempotent typed mutation.
 `federation_stats` asks every formed seat's MG for its guardian's FA Stats
 in one pass, with no lease, retries or stored state. Custody comes from
 consensus; active wallets come from guardian-local client backups, so a moved
-or restored guardian reports that window as partial. For each figure the FA
+or restored guardian reports that window as partial. Volume covers the 1008
+and 4320 module consensus blocks before the current 144-block bucket, which is
+about 7 and 30 days, not calendar spans. For each figure the FA
 takes the lower median of the complete answers once at least 2f+1 guardians
 gave one, so up to f dishonest answers cannot move it outside the honest ones,
 and otherwise the lower median of every answer, marked partial. Each figure says how many answers it rests on.

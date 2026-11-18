@@ -103,14 +103,14 @@ fn stats_comparison_is_additive_and_distinguishes_missing_from_zero_history() {
         custodied_msats: combined(100, 4, false),
         active_wallets_30d: combined(40, 4, false),
         active_wallets_comparison: None,
-        volume_7d_msats: combined(50, 2, true),
-        volume_30d_msats: combined(100, 2, true),
+        volume_1008_blocks_msats: combined(50, 2, true),
+        volume_4320_blocks_msats: combined(100, 2, true),
     };
     let totals = concat!(
         r#"{"guardians":4,"custodiedMsats":{"value":100,"basedOn":4,"partial":false},"#,
         r#""activeWallets30d":{"value":40,"basedOn":4,"partial":false},"#,
-        r#""volume7dMsats":{"value":50,"basedOn":2,"partial":true},"#,
-        r#""volume30dMsats":{"value":100,"basedOn":2,"partial":true}"#,
+        r#""volume1008BlocksMsats":{"value":50,"basedOn":2,"partial":true},"#,
+        r#""volume4320BlocksMsats":{"value":100,"basedOn":2,"partial":true}"#,
     );
     let (stdout, stderr) = capture(|output| output.federation_stats(&stats, OutputFormat::Json));
     assert_eq!(stdout, format!("{totals}}}\n"));

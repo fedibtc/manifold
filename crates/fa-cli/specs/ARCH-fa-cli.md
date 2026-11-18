@@ -274,7 +274,7 @@ transfer object with `seatIndex`, `sourceFmanPubkey`, `sourceSeatId`,
 `destinationFmanPubkey`, `destinationSeatId`, and the
 lower-snake-case `phase`, or `null` when no transfer is open.
 `stats` writes one object with `guardians`, `custodiedMsats`, `activeWallets30d`,
-`volume7dMsats`, and `volume30dMsats`. It includes `activeWalletsComparison`
+`volume1008BlocksMsats`, and `volume4320BlocksMsats`. It includes `activeWalletsComparison`
 only when `fa-client` has a comparable cohort: `utcDay` (days since the Unix
 epoch), `current30d`, `previous30d`, `basedOn`, `delta`, and `deltaPercent`
 (`null` when the earlier count is zero).

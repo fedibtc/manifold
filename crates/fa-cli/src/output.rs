@@ -138,8 +138,8 @@ struct FederationStatsJson {
     guardians: u16,
     custodied_msats: CombinedFigureJson,
     active_wallets_30d: CombinedFigureJson,
-    volume_7d_msats: CombinedFigureJson,
-    volume_30d_msats: CombinedFigureJson,
+    volume_1008_blocks_msats: CombinedFigureJson,
+    volume_4320_blocks_msats: CombinedFigureJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_wallets_comparison: Option<ActiveWalletComparisonJson>,
 }
@@ -814,8 +814,8 @@ impl<'a> CliOutput<'a> {
                     guardians: stats.guardians,
                     custodied_msats: stats.custodied_msats.into(),
                     active_wallets_30d: stats.active_wallets_30d.into(),
-                    volume_7d_msats: stats.volume_7d_msats.into(),
-                    volume_30d_msats: stats.volume_30d_msats.into(),
+                    volume_1008_blocks_msats: stats.volume_1008_blocks_msats.into(),
+                    volume_4320_blocks_msats: stats.volume_4320_blocks_msats.into(),
                     active_wallets_comparison: stats.active_wallets_comparison.map(|comparison| {
                         ActiveWalletComparisonJson {
                             utc_day: comparison.utc_day,
@@ -833,8 +833,8 @@ impl<'a> CliOutput<'a> {
             for (name, figure) in [
                 ("custodied msats", stats.custodied_msats),
                 ("active wallets 30d", stats.active_wallets_30d),
-                ("volume 7d msats", stats.volume_7d_msats),
-                ("volume 30d msats", stats.volume_30d_msats),
+                ("volume 1008 blocks msats", stats.volume_1008_blocks_msats),
+                ("volume 4320 blocks msats", stats.volume_4320_blocks_msats),
             ] {
                 writeln!(
                     self.stdout,

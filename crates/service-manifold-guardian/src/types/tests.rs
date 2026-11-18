@@ -15,8 +15,8 @@ fn fedimint_stats_history_is_additive_on_the_rpc_wire() {
     struct LegacyStats {
         custodied_msats: u64,
         active_wallets_30d: WindowedFigure,
-        volume_7d_msats: WindowedFigure,
-        volume_30d_msats: WindowedFigure,
+        volume_1008_blocks_msats: WindowedFigure,
+        volume_4320_blocks_msats: WindowedFigure,
     }
 
     fn cbor(value: &impl serde::Serialize) -> Vec<u8> {
@@ -32,11 +32,11 @@ fn fedimint_stats_history_is_additive_on_the_rpc_wire() {
                 value: 18,
                 complete: true,
             },
-            volume_7d_msats: WindowedFigure {
+            volume_1008_blocks_msats: WindowedFigure {
                 value: 200,
                 complete: true,
             },
-            volume_30d_msats: WindowedFigure {
+            volume_4320_blocks_msats: WindowedFigure {
                 value: 400,
                 complete: false,
             },
@@ -49,11 +49,11 @@ fn fedimint_stats_history_is_additive_on_the_rpc_wire() {
                 value: 18,
                 complete: true,
             },
-            volume_7d_msats: WindowedFigure {
+            volume_1008_blocks_msats: WindowedFigure {
                 value: 200,
                 complete: true,
             },
-            volume_30d_msats: WindowedFigure {
+            volume_4320_blocks_msats: WindowedFigure {
                 value: 400,
                 complete: false,
             },

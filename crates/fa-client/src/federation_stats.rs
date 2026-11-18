@@ -41,10 +41,12 @@ pub struct FederationStats {
     /// The active-wallet comparison, if enough guardians reported a complete
     /// pair for the current UTC day and the day 30 dates earlier.
     pub active_wallets_comparison: Option<ActiveWalletComparison>,
-    /// Lightning and on-chain volume over the last 7 days, in millisatoshis.
-    pub volume_7d_msats: CombinedFigure,
-    /// Lightning and on-chain volume over the last 30 days, in millisatoshis.
-    pub volume_30d_msats: CombinedFigure,
+    /// Lightning and on-chain volume over the last 1008 blocks (about 7 days),
+    /// in millisatoshis.
+    pub volume_1008_blocks_msats: CombinedFigure,
+    /// Lightning and on-chain volume over the last 4320 blocks (about 30
+    /// days), in millisatoshis.
+    pub volume_4320_blocks_msats: CombinedFigure,
 }
 
 /// One figure combined from the guardians' answers.
@@ -191,8 +193,8 @@ pub(crate) fn combine_stats(
         }),
         active_wallets_30d: figure(|stats| stats.active_wallets_30d),
         active_wallets_comparison: combine_active_wallet_history(answers, utc_day, needed),
-        volume_7d_msats: figure(|stats| stats.volume_7d_msats),
-        volume_30d_msats: figure(|stats| stats.volume_30d_msats),
+        volume_1008_blocks_msats: figure(|stats| stats.volume_1008_blocks_msats),
+        volume_4320_blocks_msats: figure(|stats| stats.volume_4320_blocks_msats),
     })
 }
 

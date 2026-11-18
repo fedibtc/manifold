@@ -13,8 +13,8 @@ fn answer(custodied_msats: u64, windowed: WindowedFigure) -> FedimintStats {
         custodied_msats,
         active_wallets_30d: windowed,
         active_wallets_history: None,
-        volume_7d_msats: windowed,
-        volume_30d_msats: windowed,
+        volume_1008_blocks_msats: windowed,
+        volume_4320_blocks_msats: windowed,
     }
 }
 
@@ -40,7 +40,7 @@ fn the_median_of_complete_answers_ignores_partial_ones() {
         UTC_DAY,
     )
     .expect("answers");
-    assert_eq!(stats.volume_7d_msats, combined(11, 3, false));
+    assert_eq!(stats.volume_1008_blocks_msats, combined(11, 3, false));
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn f_plus_one_complete_answers_are_still_partial() {
         UTC_DAY,
     )
     .expect("answers");
-    assert_eq!(stats.volume_30d_msats, combined(90, 3, true));
+    assert_eq!(stats.volume_4320_blocks_msats, combined(90, 3, true));
 }
 
 #[test]
@@ -105,10 +105,10 @@ fn larger_federations_need_more_complete_answers() {
     // Seven guardians tolerate two faulty ones, so 2f+1 is five.
     let four = [40, 30, 20, 10].map(|value| answer(1, figure(value, true)));
     let stats = combine_stats(7, &four, UTC_DAY).expect("answers");
-    assert_eq!(stats.volume_7d_msats, combined(20, 4, true));
+    assert_eq!(stats.volume_1008_blocks_msats, combined(20, 4, true));
     let five = [40, 30, 20, 10, 50].map(|value| answer(1, figure(value, true)));
     let stats = combine_stats(7, &five, UTC_DAY).expect("answers");
-    assert_eq!(stats.volume_7d_msats, combined(30, 5, false));
+    assert_eq!(stats.volume_1008_blocks_msats, combined(30, 5, false));
 }
 
 #[test]
@@ -257,8 +257,8 @@ async fn federation_stats_combine_the_guardians_that_answer() {
             custodied_msats: combined(300, 5, false),
             active_wallets_30d: combined(12, 5, false),
             active_wallets_comparison: None,
-            volume_7d_msats: combined(12, 5, false),
-            volume_30d_msats: combined(12, 5, false),
+            volume_1008_blocks_msats: combined(12, 5, false),
+            volume_4320_blocks_msats: combined(12, 5, false),
         }
     );
 

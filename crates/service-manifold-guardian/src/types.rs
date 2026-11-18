@@ -287,11 +287,14 @@ pub struct FedimintStats {
     pub active_wallets_30d: WindowedFigure,
 
     /// Lightning payments sent and received plus on-chain deposits and
-    /// withdrawals over the last 7 days, in millisatoshis.
-    pub volume_7d_msats: WindowedFigure,
+    /// withdrawals over the 1008 blocks (about 7 days) before the current
+    /// 144-block bucket, in millisatoshis. The guardian's modules count by
+    /// consensus block count, so the span is in blocks, not calendar days.
+    pub volume_1008_blocks_msats: WindowedFigure,
 
-    /// The same volume over the last 30 days, in millisatoshis.
-    pub volume_30d_msats: WindowedFigure,
+    /// The same volume over the 4320 blocks (about 30 days) before the
+    /// current 144-block bucket, in millisatoshis.
+    pub volume_4320_blocks_msats: WindowedFigure,
 
     /// The sample date for `active_wallets_30d` and its optional baseline.
     /// Older MGs omit this field and may still report the four figures above.
