@@ -107,9 +107,7 @@ test('should hold setup at the authorization step until one is observed', async 
 // An operator without a badge finishes setup by skipping the authorization. The
 // host then runs unlisted, and the Authorization page is where it is approved
 // later.
-test('should set a host up without a badge when the operator skips approval', async ({
-  page
-}) => {
+test('should set a host up without a badge when the operator skips approval', async ({ page }) => {
   await resetScenario(page, 'not-onboarded');
 
   await startSetup(page);

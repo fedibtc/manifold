@@ -98,8 +98,8 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
       <PeerBadgeHelp />
 
       <p className={styles.hint}>
-        No badge? You can set this host up without one. Federation Ambassadors can’t find it
-        until you approve it later on the Authorization page.
+        No badge? You can set this host up without one. Federation Ambassadors can’t find it until
+        you approve it later on the Authorization page.
       </p>
 
       <div className={styles.actions}>
