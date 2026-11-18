@@ -83,13 +83,6 @@
           "linked-specs-review"
           "linked-specs-claims"
           "linked-specs-claims-verification"
-          "multipart-review"
-          "multipart-review-coordination"
-          "multipart-review-architecture"
-          "multipart-review-judgment"
-          "multipart-review-maintainability"
-          "multipart-review-rust-style"
-          "multipart-review-reliability"
         ];
         linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
           set -eu
@@ -111,7 +104,7 @@
 
           remove_old_link dpc-public-skills
           remove_old_link maan2003-skills
-          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability; do
+          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability multipart-review multipart-review-coordination multipart-review-architecture multipart-review-judgment multipart-review-maintainability multipart-review-rust-style multipart-review-reliability; do
             remove_old_link "$name"
           done
 
@@ -138,6 +131,13 @@
             ${pkgs.gnugrep}/bin/grep -Fvx \
               -e '/.agents/skills/dpc-public-skills' \
               -e '/.agents/skills/maan2003-skills' \
+              -e '/.agents/skills/multipart-review' \
+              -e '/.agents/skills/multipart-review-coordination' \
+              -e '/.agents/skills/multipart-review-architecture' \
+              -e '/.agents/skills/multipart-review-judgment' \
+              -e '/.agents/skills/multipart-review-maintainability' \
+              -e '/.agents/skills/multipart-review-rust-style' \
+              -e '/.agents/skills/multipart-review-reliability' \
               "$exclude_file" >"$tmp_file" || true
             ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
 
