@@ -1,13 +1,12 @@
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use fedi_decentralized_service_manifold_guardian::Plan;
+use mg_core::directory::AdvertisementSnapshot;
 use nostr_sdk::EventBuilder;
 use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
     SubjectPubkey, Timestamp,
 };
-
-use fedi_decentralized_service_manifold_guardian::Plan;
-use mg_core::directory::AdvertisementSnapshot;
 
 use super::*;
 
@@ -376,12 +375,27 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
-        db,
+        db.clone(),
     );
-    // The replacement comes from another holder with another credential: the
-    // MG keeps exactly one authorization, not one per credential.
     let original = authorization_event_at(&holder, keys.public_key(), 100);
-    let replacement = authorization_event_at(&Keys::generate(), keys.public_key(), 200);
+    db.install_holder_grant([1; 32], i64::MAX).await.unwrap();
+    assert!(
+        db.commit_holder_pairing([1; 32], holder.public_key(), 100, &original.as_json())
+            .await
+            .unwrap()
+    );
+    let replacement = authorization_event_at(&holder, keys.public_key(), 200);
+    let different = authorization_event_at(&Keys::generate(), keys.public_key(), 300);
+    assert!(
+        service
+            .inner
+            .retain_authorization(Some(
+                verified_holder_authorization_event(different, &keys.public_key(), now_secs())
+                    .unwrap()
+            ))
+            .await
+            .is_err()
+    );
     let mut changes = service.inner.holder_authorizations.subscribe();
     for (event, expected_time) in [(original.clone(), 100), (replacement, 200), (original, 200)] {
         service
@@ -512,13 +526,13 @@ async fn transfer_proofs_follow_live_enrollment_and_reloaded_material() {
     let mut proofs = Vec::new();
     for issued_at in [now_secs() - 1, now_secs()] {
         let event = issued_authorization_event_at(&Keys::generate(), keys.public_key(), issued_at);
-        service
-            .inner
-            .retain_authorization(Some(
-                verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
-            ))
-            .await
-            .unwrap();
+        db.install_holder_grant([2; 32], i64::MAX).await.unwrap();
+        assert!(
+            db.commit_holder_pairing([2; 32], event.pubkey, issued_at, &event.as_json())
+                .await
+                .unwrap()
+        );
+        service.reload_holder().await.unwrap();
         let proof = service.transfer_admission_proof(&request).unwrap();
         assert_eq!(
             proof.holder_authorization,
@@ -1087,4 +1101,125 @@ async fn feature_cache_restores_the_latest_admitted_snapshot_without_a_payment_s
             .to_string(),
         "3.1.0"
     );
+}
+#[tokio::test]
+async fn private_submission_requires_a_current_grant_and_an_issued_badge() {
+    use fedi_decentralized_service_manifold_guardian::holder_pairing::{
+        HolderPairingService, SubmitHolderAuthorization,
+    };
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = mg_core::db::Db::open(temp.path()).await.unwrap();
+    let mg = RootMnemonic::generate().unwrap();
+    db.install_identity(&mg).await.unwrap();
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let service = super::holder_pairing::HolderPairing::new(db.clone(), profile.clone()).unwrap();
+    let invite = service.offer("test-endpoint".into()).await.unwrap();
+    let holder = Keys::generate();
+    let subject = mg.derive_service_nostr_keys().public_key();
+    let signed = issued_authorization_event_at(&holder, subject, now_secs());
+    let request = |event: &Event| SubmitHolderAuthorization {
+        version: fedi_decentralized_domain::ProtocolV1,
+        secret: invite.secret.clone(),
+        event_json: event.as_json(),
+    };
+    let restarted = super::holder_pairing::HolderPairing::new(db.clone(), profile).unwrap();
+    assert!(
+        restarted
+            .submit_holder_authorization(request(&signed))
+            .await
+            .is_err()
+    );
+    let other = issued_authorization_event_at(&holder, Keys::generate().public_key(), now_secs());
+    assert!(
+        service
+            .submit_holder_authorization(request(&other))
+            .await
+            .is_err()
+    );
+    let untrusted = authorization_event_at(&holder, subject, now_secs());
+    assert!(
+        service
+            .submit_holder_authorization(request(&untrusted))
+            .await
+            .is_err()
+    );
+    assert!(db.pinned_holder().await.unwrap().is_none());
+    let receipt = service
+        .submit_holder_authorization(request(&signed))
+        .await
+        .unwrap();
+    assert_eq!(receipt.event_id, signed.id);
+    assert_eq!(db.pinned_holder().await.unwrap(), Some(holder.public_key()));
+    assert!(
+        service
+            .submit_holder_authorization(request(&signed))
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn upgrade_grandfathers_only_the_configured_active_holder() {
+    use sqlx::sqlite::SqliteConnectOptions;
+    let mg = RootMnemonic::generate().unwrap();
+    let subject = mg.derive_service_nostr_keys().public_key();
+    let holder = Keys::generate();
+    let active = issued_authorization_event_at(&holder, subject, 150);
+    let other = issued_authorization_event_at(&Keys::generate(), subject, 250);
+    for (version, expected) in [(18, Some(holder.public_key())), (4, None)] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let pool = sqlx::SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(temp.path().join("fleet-manager.sqlite"))
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let mut old = sqlx::migrate!("../core/migrations");
+        old.migrations = old
+            .iter()
+            .filter(|m| m.version <= version)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        old.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO identity(id, mnemonic, created_at_ms, wallet_origin) VALUES (1, ?, 0, 'restored')")
+            .bind(mg.phrase()).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE onboarding_state SET stage='complete'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (idx, time, event) in [(1, 150u64, &active), (2, 250, &other)] {
+            sqlx::query("INSERT INTO holder_authorization_events VALUES (?, ?, ?)")
+                .bind(vec![idx; 32])
+                .bind(time.to_be_bytes().to_vec())
+                .bind(event.as_json())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        if version >= 5 {
+            sqlx::query("INSERT INTO holder_authorization VALUES (1, ?, ?)")
+                .bind(150u64.to_be_bytes().to_vec())
+                .bind(active.as_json())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool.close().await;
+        let db = mg_core::db::Db::open(temp.path()).await.unwrap();
+        let service = super::holder_pairing::HolderPairing::new(
+            db.clone(),
+            ManifoldEnvironment::Development.profile().unwrap(),
+        )
+        .unwrap();
+        service.adopt_legacy().await.unwrap();
+        assert_eq!(db.pinned_holder().await.unwrap(), expected);
+        let provenance: Option<String> =
+            sqlx::query_scalar("SELECT provenance FROM holder_binding")
+                .fetch_optional(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(provenance.as_deref(), expected.map(|_| "legacy_active"));
+        assert!(db.legacy_holder_evidence().await.unwrap().is_none());
+    }
 }

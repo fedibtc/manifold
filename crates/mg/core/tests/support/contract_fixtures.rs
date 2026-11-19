@@ -10,9 +10,9 @@
 //! Two things separate this from the liquidity-manager module it mirrors
 //! (`crates/service-liquidity-manager/tests/support/fixtures.rs`):
 //!
-//! - Almost nothing on the MG admin surface is a serde-derived response
-//!   struct. `admin.rs` hand-encodes the JSON, so every response fixture here
-//!   is produced by calling that module's own `*_json` shaper. A fixture that
+//! - Almost nothing on the MG admin surface is a serde-derived response struct.
+//!   `admin.rs` hand-encodes the JSON, so every response fixture here is
+//!   produced by calling that module's own `*_json` shaper. A fixture that
 //!   rebuilt the shapes locally would be a second copy of the contract, which
 //!   is the drift this wave exists to remove.
 //! - The request side is covered exhaustively rather than sampled. The walk in
@@ -451,7 +451,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::CreateGuardianLinkOffer => AdminRequest::RevokeGuardianLink,
         AdminRequest::RevokeGuardianLink => AdminRequest::TestGuardianLinkNotification,
         AdminRequest::TestGuardianLinkNotification => AdminRequest::Onboarding,
-        AdminRequest::Onboarding => AdminRequest::RefreshHolderAuthorizations,
+        AdminRequest::Onboarding => AdminRequest::CreateHolderPairing,
+        AdminRequest::CreateHolderPairing => AdminRequest::RefreshHolderAuthorizations,
         AdminRequest::RefreshHolderAuthorizations => AdminRequest::ConfigureInitialOffer {
             max_seats: Some(4),
             price_msats: Some(50_000_000),
@@ -501,6 +502,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::TestGuardianLinkNotification => "TestGuardianLinkNotification",
         AdminRequest::Onboarding => "Onboarding",
         AdminRequest::RefreshHolderAuthorizations => "RefreshHolderAuthorizations",
+        AdminRequest::CreateHolderPairing => "CreateHolderPairing",
         AdminRequest::ConfigureInitialOffer { .. } => "ConfigureInitialOffer",
         AdminRequest::ShowMnemonic => "ShowMnemonic",
         AdminRequest::OnboardAsNew { .. } => "OnboardAsNew",

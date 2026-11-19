@@ -3,14 +3,15 @@
 //!
 //! A compatible Holder app parses the versioned operator QR locally, confirms
 //! the displayed environment and MG identity, then signs the existing Holder
-//! authorization for `subject_pubkey` and packages it with the issuer credential
-//! in a holder-signed kind-37705 event. It dials exactly `endpoint_id`, using
-//! [`HOLDER_PAIRING_ALPN`], and passes that event to `submit_holder_authorization`.
-//! It compares the receipt with the event ID it sent. The existing
-//! `HolderPairingServiceClient`/server types use the normal `fedi-iroh-rpc`
-//! framing. No relay publication, holder-app URL, redirect, or capability in
-//! an event tag, content, advertisement, telemetry, or log is part of pairing.
-//! A client unable to submit privately must not publish in its place.
+//! authorization for `subject_pubkey` and packages it with the issuer
+//! credential in a holder-signed kind-37705 event. It dials exactly
+//! `endpoint_id`, using [`HOLDER_PAIRING_ALPN`], and passes that event to
+//! `submit_holder_authorization`. It compares the receipt with the event ID it
+//! sent. The existing `HolderPairingServiceClient`/server types use the normal
+//! `fedi-iroh-rpc` framing. No relay publication, holder-app URL, redirect, or
+//! capability in an event tag, content, advertisement, telemetry, or log is
+//! part of pairing. A client unable to submit privately must not publish in its
+//! place.
 
 use fedi_decentralized_services::domain::ProtocolV1;
 use fedi_iroh_rpc::service;
@@ -33,6 +34,10 @@ pub struct HolderPairingInvite {
     pub subject_pubkey: nostr::PublicKey,
     /// Ephemeral, authenticated Iroh peer; no caller-provided submission URL.
     pub endpoint_id: String,
+    /// Optional direct route for local pairing. It never replaces peer ID
+    /// verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_address: Option<std::net::SocketAddr>,
     /// Single-use bearer, redacted in Debug.
     pub secret: LinkSecret,
     /// Absolute deadline in Unix milliseconds.

@@ -87,11 +87,8 @@ for i in $(seq 1 "$MG_COUNT"); do
     echo "mg$i did not accept onboarding; see $data_dir/mg.log" >&2
     exit 1
   fi
-  onboarding="$($BIN/fman-cli --data-dir "$data_dir" onboarding)"
-  authorization_request="$(python3 -c 'import json,sys; print(json.dumps({"subject_pubkey": json.load(sys.stdin)["service_nostr_pubkey"]}))' <<<"$onboarding")"
   "$BIN/manifold-test-issuer" --environment development --relay "$RELAY_URL" \
-    --authorization-request "$authorization_request" --publish-mg-authorization >/dev/null
-  "$BIN/fman-cli" --data-dir "$data_dir" refresh-holder-authorizations >/dev/null
+    --pair-mg-data-dir "$data_dir" >/dev/null
   "$BIN/fman-cli" --data-dir "$data_dir" onboard offer --max-seats "$((i + 1))" --monthly-data unlimited >/dev/null
   echo "mg$i      capacity=$((i + 1))  log: $data_dir/mg.log"
 done

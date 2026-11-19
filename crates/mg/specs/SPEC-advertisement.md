@@ -81,9 +81,12 @@ The commitment-signing pubkey inside the signed payload is what binds the dialin
 
 ## Holder-authorization enrollment
 
-The operator explicitly requests a bounded query of at most 64 kind-37705
-candidate events indexed to the MG's own Nostr pubkey: `Check now` during
-setup, or `Fetch new authorization` when renewing authorization afterward.
+For initial enrollment or a holder change, the host creates a private,
+five-minute pairing invitation and presents it as a QR code. The Holder submits
+its signed kind-37705 event privately to the Iroh endpoint in the invitation.
+The secret is a separate single-use capability, not part of the signed event.
+The MG consumes it in the same transaction that pins the new holder. Renewals
+may use a bounded Nostr query of at most 64 events from the pinned holder.
 Relay tags are discovery hints only. Before retaining a candidate, the daemon
 verifies the Nostr event signature, parses
 its versioned content, requires the content holder id and authorization
@@ -99,13 +102,15 @@ candidates are skipped without logging candidate-controlled values.
 
 One MG identity retains exactly one complete authorization event, shared
 across every federation it operates, and reverifies it at startup. A refresh
-selects the valid candidate with the greatest signed authorization `issued_at`,
-whatever its holder or credential, and it replaces the retained event only when
+selects the pinned holder's valid candidate with greatest signed `issued_at`,
+and it replaces the retained event only when
 strictly later; an empty, failed, equal, or older relay answer never deletes or
 rolls it back. Startup removes a retained event beyond the receiver-time bound
-before reuse. The holder chooses `issued_at`, so any holder of a trusted badge
-can publish a later-dated candidate that a refresh then selects in place of the
-operator's.
+before reuse. On upgrade, a configured MG's unambiguous, locally retained
+current authorization is revalidated and pinned as legacy enrollment; old
+cache entries, fresh relay answers, and advertisements are not ownership
+evidence on restore. Without local evidence, pair again. Both advertisements
+and signed trust-material responses project the same live enrollment.
 The UI never polls for enrollment; after setup the operator can explicitly
 check for renewed or replacement authorization. Refreshes update the live
 authorization and trigger republication, while ordinary advertisement

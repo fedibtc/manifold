@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use serde_json::{Value, json};
 
 use crate::admin::AdminRequest;
@@ -15,7 +16,6 @@ use crate::identity::RootMnemonic;
 use crate::restore::RestoreError;
 use crate::seat_process::SeatProcessConfig;
 use crate::wallet::Msats;
-use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 
 pub struct FetchedHolderAuthorization {
     pub authorization_issued_at: u64,
@@ -155,11 +155,20 @@ impl Onboarding {
                 match self.holder_authorizations.fetch(&identity).await {
                     Ok((fetched, max_issued_at)) => {
                         if let Some(event) = &fetched {
+                            anyhow::ensure!(
+                                event.authorization_issued_at <= max_issued_at,
+                                "authorization exceeds receiver time limit"
+                            );
                             self.db
-                                .replace_holder_authorization_event(
+                                .renew_holder(
+                                    event
+                                        .authorization
+                                        .holder_authorization
+                                        .authorization
+                                        .holder_id_pubkey
+                                        .0,
                                     event.authorization_issued_at,
                                     &event.event_json,
-                                    max_issued_at,
                                 )
                                 .await?;
                         }

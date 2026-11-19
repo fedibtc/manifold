@@ -575,8 +575,11 @@ must be recreated rather than being silently assigned an environment or partly
 upgraded for callbacks. Identical relay URLs do not give every consumer
 identical relay semantics: canonical PeerBadge authorities are pinned from the
 profile and their signed locations govern fresh revocation reads, while MG
-uses the profile relays for active publication and operator-triggered
-Holder-authorization enrollment.
+uses the profile relays for active publication and operator-triggered renewal
+by its pinned Holder. First enrollment and holder switches require the host's
+private, short-lived Iroh pairing invitation. The bearer must never appear in
+a signed event, URL, log, or backup. Ship the pairing-capable Holder app before
+enforcing this requirement on new installations or holder changes.
 Enrolled complete authorization events are retained in the MG database and
 reverified at startup; failed or empty relay answers never empty the cached set. This cache
 is carriage, not credential validity: relying FAs still apply current issuer

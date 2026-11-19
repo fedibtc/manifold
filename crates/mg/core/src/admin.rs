@@ -88,7 +88,8 @@ pub enum AdminRequest {
     PayoutDestination,
     /// Replace or clear the global Lightning destination.
     SetPayoutDestination { destination: Option<String> },
-    /// Sweep one setup-payment wallet through an automatically selected gateway.
+    /// Sweep one setup-payment wallet through an automatically selected
+    /// gateway.
     SweepPaymentFees {
         #[ts(type = "FederationId")]
         federation_id: FederationId,
@@ -144,7 +145,8 @@ pub enum AdminRequest {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
     },
-    /// Sweep collected guardian-fee ecash through an automatically selected gateway.
+    /// Sweep collected guardian-fee ecash through an automatically selected
+    /// gateway.
     SweepGuardianFees {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
@@ -169,6 +171,8 @@ pub enum AdminRequest {
     /// Schedule one bounded relay fetch that verifies and durably retains any
     /// Holder authorizations addressed to this MG.
     RefreshHolderAuthorizations,
+    /// Create a private five-minute QR invitation for a Holder.
+    CreateHolderPairing,
     /// Finish first-run setup with the admission limit and initial price. This
     /// is accepted only after a Holder authorization has been retained.
     /// `max_seats` `null` is automatic. `monthly_data_budget` is the answer
@@ -243,14 +247,34 @@ pub(crate) enum Phase {
 /// serve. Nothing waits for the switch, so this is a plain shared cell, not a
 /// channel.
 #[derive(Clone)]
-pub struct OperatorPhase(Arc<std::sync::Mutex<Phase>>);
+pub struct OperatorPhase(
+    Arc<std::sync::Mutex<Phase>>,
+    Option<Arc<dyn HolderPairingOffers>>,
+);
+
+/// Private operator access to one-time holder enrollment invitations.
+#[async_trait::async_trait]
+pub trait HolderPairingOffers: Send + Sync {
+    /// Rotate the grant and return its QR data, never ordinary status.
+    async fn create(
+        &self,
+    ) -> anyhow::Result<
+        fedi_decentralized_service_manifold_guardian::holder_pairing::HolderPairingInvite,
+    >;
+}
 
 impl OperatorPhase {
+    /// Attach the pairing service before binding either admin transport.
+    pub fn with_holder_pairing(mut self, pairing: Arc<dyn HolderPairingOffers>) -> Self {
+        self.1 = Some(pairing);
+        self
+    }
     /// Operator surfaces for a host with no identity yet.
     pub fn onboarding(onboarding: Arc<crate::onboarding::Onboarding>) -> Self {
-        Self(Arc::new(std::sync::Mutex::new(Phase::Onboarding(
-            onboarding,
-        ))))
+        Self(
+            Arc::new(std::sync::Mutex::new(Phase::Onboarding(onboarding))),
+            None,
+        )
     }
 
     /// Operator surfaces for a host whose fleet was already open at binding.
@@ -260,12 +284,15 @@ impl OperatorPhase {
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
         support: Arc<dyn SupportChat>,
     ) -> Self {
-        Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
-            fleet,
-            directory,
-            authorizations,
-            support,
-        })))
+        Self(
+            Arc::new(std::sync::Mutex::new(Phase::Fleet {
+                fleet,
+                directory,
+                authorizations,
+                support,
+            })),
+            None,
+        )
     }
 
     /// Switch every serving operator transport to the newly opened fleet.
@@ -287,7 +314,21 @@ impl OperatorPhase {
     /// Answer one operator request from the phase current when it arrived.
     /// This is the one dispatcher; both transports are adapters onto it.
     pub(crate) async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value> {
-        match self.sample() {
+        if matches!(request, AdminRequest::CreateHolderPairing) {
+            return Ok(serde_json::to_value(
+                self.1
+                    .as_ref()
+                    .context("holder pairing unavailable")?
+                    .create()
+                    .await?,
+            )?);
+        }
+        let show_pairing_support = self.1.is_some()
+            && matches!(
+                request,
+                AdminRequest::Onboarding | AdminRequest::RefreshHolderAuthorizations
+            );
+        let mut response = match self.sample() {
             Phase::Onboarding(onboarding) => onboarding.answer(request).await,
             Phase::Fleet {
                 fleet,
@@ -304,7 +345,11 @@ impl OperatorPhase {
                 )
                 .await
             }
+        }?;
+        if show_pairing_support {
+            response["holder_pairing_supported"] = json!(true);
         }
+        Ok(response)
     }
 
     /// Clone the cheap `Arc`-built phase out; the lock is never held across
@@ -610,6 +655,7 @@ pub(crate) async fn dispatch(
             authorizations.refresh().await?;
             Ok(fleet_status_json(fleet, &directory.borrow()))
         }
+        AdminRequest::CreateHolderPairing => anyhow::bail!("holder pairing unavailable"),
         AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
@@ -946,11 +992,11 @@ pub fn onboarded_already_json() -> Value {
 ///
 /// The daemon does not withdraw service when a federation stops paying — that
 /// is the operator's decision
-/// ([REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md))
-/// — and an operator who has to remember a second verb to notice being cut out
-/// will not notice. Reading it is best-effort: a seat with no federation yet,
-/// or one whose metadata cannot be read, reports why instead of failing the
-/// whole status.
+/// ([REQ-guardian-fee-remittance](../../../../specs/
+/// REQ-guardian-fee-remittance.md)) — and an operator who has to remember a
+/// second verb to notice being cut out will not notice. Reading it is
+/// best-effort: a seat with no federation yet, or one whose metadata cannot be
+/// read, reports why instead of failing the whole status.
 pub(crate) async fn read_seat_guardian_fee(fleet: &Fleet, seat_id: &SeatId) -> Value {
     match fleet.guardian_fee_account(seat_id) {
         // Without an account there is nothing to report a policy against, so

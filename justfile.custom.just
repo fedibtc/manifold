@@ -1073,20 +1073,14 @@ staging-mg-trust *ARGS:
   if [[ ! -x "$bin" ]]; then
     cargo build -p mg
   fi
-  onboarding="$($bin admin --data-dir "$data_dir" onboarding)"
-  subject="$(jq --exit-status --raw-output '.service_nostr_pubkey' <<<"$onboarding")"
-  authorization_request="$(jq --compact-output --null-input \
-    --arg subject_pubkey "$subject" '{subject_pubkey:$subject_pubkey}')"
-  echo "MG holder-authorization request:" >&2
-  jq . <<<"$authorization_request" >&2
+  cargo build --quiet -p mg-cli --bin fman-cli
   issued="$(cargo run --quiet -p devmon --bin manifold-test-issuer -- \
     --environment staging \
-    --authorization-request "$authorization_request" \
-    --publish-mg-authorization)"
+    --pair-mg-data-dir "$data_dir")"
   jq '{subject_pubkey,issuer_pubkey,holder_pubkey,authority_event_ids,authorization_event_ids}' \
     <<<"$issued"
 
-  echo "Waiting for MG to observe the published authorization..." >&2
+  echo "Checking MG's pinned authorization..." >&2
   holder="$(jq --exit-status --raw-output '.holder_pubkey' <<<"$issued")"
   for _ in {1..20}; do
     onboarding="$($bin admin --data-dir "$data_dir" onboarding)"

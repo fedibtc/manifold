@@ -13,10 +13,8 @@ mod transfer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{
-    Arc, Mutex, RwLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, anyhow};
@@ -28,13 +26,6 @@ use fedi_decentralized_service_manifold_guardian::{
 };
 use tokio::sync::{Notify, Semaphore};
 
-use crate::guardian_fee::{
-    AccountId, Collected, FederationFeeStatus, FeePolicy, GuardianFeeAccountKey, GuardianFeeVault,
-    Remittance,
-};
-use crate::wallet::EcashPayoutWorker;
-use crate::wallet::{ClaimOutcome, EcashClaimWorker, EcashWallet, Msats, VerifiedLockedPayment};
-
 use crate::backup::BackupSink;
 use crate::backup_worker::BackupWorker;
 use crate::db::{
@@ -42,6 +33,10 @@ use crate::db::{
     SeatsConfigUpdate,
 };
 use crate::facts::{PortBase, SeatPorts};
+use crate::guardian_fee::{
+    AccountId, Collected, FederationFeeStatus, FeePolicy, GuardianFeeAccountKey, GuardianFeeVault,
+    Remittance,
+};
 use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
@@ -52,6 +47,9 @@ use crate::seat::{
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
 use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::wallet::{
+    ClaimOutcome, EcashClaimWorker, EcashPayoutWorker, EcashWallet, Msats, VerifiedLockedPayment,
+};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -215,7 +213,8 @@ impl FleetNostrHost {
     /// What a directory runtime reads out of the daemon each cycle.
     ///
     /// Read-only and whole: `None` suppresses publication while the MG is not
-    /// accepting seats; otherwise the snapshot contains the whole advertisement.
+    /// accepting seats; otherwise the snapshot contains the whole
+    /// advertisement.
     pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
         // Each advertisement cycle reports capacity, even without publication.
@@ -282,6 +281,10 @@ pub struct FleetHolderAuthorizationStore {
 }
 
 impl FleetHolderAuthorizationStore {
+    /// Current pinned holder; never inferred from a live relay.
+    pub async fn pinned_holder(&self) -> anyhow::Result<Option<nostr_sdk::PublicKey>> {
+        self.db.pinned_holder().await
+    }
     pub fn new(db: Db) -> Self {
         Self { db }
     }
@@ -305,10 +308,15 @@ impl FleetHolderAuthorizationStore {
         event_json: &str,
         max_issued_at: u64,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            authorization_issued_at <= max_issued_at,
+            "authorization issue time exceeds receiver limit"
+        );
+        use nostr_sdk::JsonUtil as _;
+        let event = nostr_sdk::Event::from_json(event_json)?;
         self.db
-            .replace_holder_authorization_event(authorization_issued_at, event_json, max_issued_at)
-            .await?;
-        Ok(())
+            .renew_holder(event.pubkey, authorization_issued_at, event_json)
+            .await
     }
 }
 
@@ -1233,7 +1241,8 @@ impl Fleet {
     ///
     /// The FA-facing release verb needs the same effect as the operator verb
     /// above but must reach it through `authorize`, so seat selection stays
-    /// owner-bound (`CLAIM-manifold-guardian-selects-only-owned-seat-authority`).
+    /// owner-bound
+    /// (`CLAIM-manifold-guardian-selects-only-owned-seat-authority`).
     pub(crate) async fn decommission(&self, seat: &Seat) -> anyhow::Result<bool> {
         let decommissioned = seat.decommission().await?;
         if decommissioned {
@@ -1376,7 +1385,8 @@ impl Fleet {
             .await
     }
 
-    /// Read-only destruction-safety projection for one seat's collected-fee wallet.
+    /// Read-only destruction-safety projection for one seat's collected-fee
+    /// wallet.
     pub async fn guardian_fee_drain_status(
         &self,
         seat_id: &SeatId,
@@ -1427,9 +1437,10 @@ impl Fleet {
     /// The federation a seat guards, as a client invite code.
     ///
     /// Collection is an ordinary client operation
-    /// ([REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md)),
-    /// so this is the only thing guardian-fee work takes from the seat: the
-    /// same public invite code any member of the federation holds.
+    /// ([REQ-guardian-fee-remittance](../../../../specs/
+    /// REQ-guardian-fee-remittance.md)), so this is the only thing guardian-fee
+    /// work takes from the seat: the same public invite code any member of the
+    /// federation holds.
     async fn seat_federation(
         &self,
         seat_id: &SeatId,

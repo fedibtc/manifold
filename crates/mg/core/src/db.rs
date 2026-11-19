@@ -1,25 +1,24 @@
 mod guardian_link;
+mod holder_binding;
 mod seats;
 
 pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 mod transfers;
-
-pub(crate) use seats::SeatAdmissionResult;
-pub(crate) use seats::SeatRecoveryFacts;
-pub(crate) use seats::{CompletionCallbackOutcome, CompletionCallbackRecord};
-pub use seats::{
-    NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,
-};
 
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::wallet::Msats;
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, MonthlyDataBudget, OfferEpoch, Plan,
+    FederationId, MonthlyDataBudget, OfferEpoch, Plan, SeatId,
+};
+pub(crate) use seats::{
+    CompletionCallbackOutcome, CompletionCallbackRecord, SeatAdmissionResult, SeatRecoveryFacts,
+};
+pub use seats::{
+    NewPayment, NewSeat, PaymentRecord, RestoredGuardianConfig, RestoredSeat, SeatRecord,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -32,7 +31,7 @@ use crate::host_pressure::{
 };
 use crate::identity::RootMnemonic;
 use crate::seat_readiness::{Uptime, UptimeScores};
-use fedi_decentralized_service_manifold_guardian::SeatId;
+use crate::wallet::Msats;
 
 pub(crate) const IDENTITY_ID: i64 = 1;
 
@@ -261,6 +260,7 @@ impl Db {
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
+        holder_binding::preserve_upgrade_boundary(&pool).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
 
         Ok(Self {
@@ -332,8 +332,8 @@ impl Db {
 
     /// Write the identity onboarding chose, once.
     ///
-    /// A Manifold Guardian has exactly one mnemonic and acquires it exactly once,
-    /// at onboarding: either freshly generated, or the phrase a restore
+    /// A Manifold Guardian has exactly one mnemonic and acquires it exactly
+    /// once, at onboarding: either freshly generated, or the phrase a restore
     /// recovered from ([`crate::onboarding`]). Nothing else creates one — a
     /// daemon that finds no identity row has not begun onboarding and does not
     /// invent one for itself, because a host that was going to be recovered
@@ -647,7 +647,8 @@ impl Db {
         )
     }
 
-    /// Replace the feature cache without touching payment state or the offer epoch.
+    /// Replace the feature cache without touching payment state or the offer
+    /// epoch.
     pub async fn store_feature_config(&self, publisher: &str, event: &str) -> Result<(), DbError> {
         sqlx::query("INSERT INTO nostr_feature_config_v1 (publisher, event_json) VALUES (?, ?) ON CONFLICT (publisher) DO UPDATE SET event_json = excluded.event_json").bind(publisher).bind(event).execute(&self.pool).await?;
         Ok(())
@@ -688,6 +689,7 @@ impl Db {
     /// Retain a verified Holder authorization as this MG's only one when its
     /// signed issue time is later than the retained one's. An equal or older
     /// statement cannot roll the retained authorization back.
+    #[cfg(test)]
     pub(crate) async fn replace_holder_authorization_event(
         &self,
         authorization_issued_at: u64,
