@@ -712,7 +712,6 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,
-                        stats: None,
                     }),
                 ),
                 SeatPhase::Running { invite_code } => (
@@ -723,7 +722,6 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         peer_connections: Vec::new(),
                         in_grace: false,
                         grace_deadline: None,
-                        stats: None,
                     }),
                 ),
             };
@@ -885,11 +883,17 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
         request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse> {
         let request = self.validate(request)?;
-        let _seat = self
+        let seat = self
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("get_fedimint_stats", err))?;
-        unsupported("GetFedimintStats")
+        seat.reject_decommissioned()
+            .map_err(|err| map_seat_error("get_fedimint_stats", err))?;
+        let stats = seat
+            .fedimint_stats()
+            .await
+            .map_err(|err| map_seat_error("get_fedimint_stats", err))?;
+        Ok(GetFedimintStatsResponse { stats })
     }
 
     /// Decommission the caller's own seat, outside production only.

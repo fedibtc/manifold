@@ -125,13 +125,14 @@ pub use transfer::{
     TransferSeatRequest, TransferSeatResponse, rebind_transferred_seat,
 };
 pub use types::{
-    AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,
-    FaSignature, FederationSize, FedimintStats, FedimintdDkgVersion, FedimintdVersion,
-    FedimintdVersionCore, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
-    TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
+    ActiveWalletHistory, AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY,
+    FEDERATION_NAME_META_FIELD_KEY, FaId, FaSignature, FederationSize, FedimintStats,
+    FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, GuardianCode, GuardianName,
+    ManagerSignature, MetaConsensusBase, MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken,
+    Plan, SeatHealth, TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate,
+    WELCOME_MESSAGE_META_FIELD_KEY, WindowedFigure,
 };
 pub use version::{
-    GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest, GetVersionResponse, MG_API_VERSION,
-    MgApiVersion,
+    FEDIMINT_STATS_API_VERSION, GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest,
+    GetVersionResponse, MG_API_VERSION, MgApiVersion,
 };

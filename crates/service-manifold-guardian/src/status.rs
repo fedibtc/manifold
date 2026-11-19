@@ -132,9 +132,6 @@ pub struct FederationStatusInfo {
 
     /// Grace deadline, when `in_grace`.
     pub grace_deadline: Option<Timestamp>,
-
-    /// This seat's `fedimintd` stats.
-    pub stats: Option<FedimintStats>,
 }
 
 /// Status info for a suspended-for-non-payment seat.
@@ -555,7 +552,7 @@ where
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProposeFormationMetaResponse;
 
-/// Request for this seat's `fedimintd` stats.
+/// Request for the FA Stats figures this seat's guardian reports.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct GetFedimintStatsRequest {
     /// Freshness challenge timestamp (±1h window, SPEC-signed-envelopes).
@@ -569,9 +566,8 @@ pub struct GetFedimintStatsRequest {
     pub seat_id: SeatId,
 }
 
-/// Response containing this seat's `fedimintd` stats.
+/// The FA Stats figures this seat's guardian reports.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct GetFedimintStatsResponse {
-    /// This seat's `fedimintd` stats.
     pub stats: FedimintStats,
 }

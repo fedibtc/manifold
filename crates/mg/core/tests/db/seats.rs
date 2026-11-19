@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, DkgCompletionCallbackInput, FederationSize, InviteCode,
-    MonthlyDataBudget, Plan,
+    MonthlyDataBudget, Plan, WindowedFigure,
 };
 use tempfile::TempDir;
 
@@ -646,6 +646,53 @@ async fn decommission_write_is_set_once_without_releasing_creation_facts() {
     let loaded = reload(&db, &seat.seat_id).await;
     assert_eq!(loaded.facts, seat);
     assert_eq!(loaded.decommissioned_at_ms, Some(at_ms));
+}
+
+#[tokio::test]
+async fn active_wallet_samples_survive_restart_without_filling_gaps_or_mixing_seats() {
+    let (dir, db) = open_db().await;
+    let a = crate::test_support::insert_test_seat(&db, new_seat(1))
+        .await
+        .seat_id;
+    let b = crate::test_support::insert_test_seat(&db, new_seat(2))
+        .await
+        .seat_id;
+    let observed = WindowedFigure {
+        value: 0,
+        complete: true,
+    };
+    let partial = WindowedFigure {
+        value: 17,
+        complete: false,
+    };
+    for (seat, invite) in [(&a, "a"), (&b, "b")] {
+        db.record_formed(seat, &InviteCode(invite.into()))
+            .await
+            .unwrap();
+    }
+    db.record_active_wallet_sample(&a, 100, observed)
+        .await
+        .unwrap();
+    db.record_active_wallet_sample(&a, 130, partial)
+        .await
+        .unwrap();
+    assert!(
+        db.record_active_wallet_sample(&a, 100, partial)
+            .await
+            .is_err()
+    );
+    drop(db);
+    let db = Db::open(dir.path()).await.unwrap();
+    assert_eq!(
+        db.active_wallet_sample(&a, 100).await.unwrap(),
+        Some(observed)
+    );
+    assert_eq!(
+        db.active_wallet_sample(&a, 130).await.unwrap(),
+        Some(partial)
+    );
+    assert_eq!(db.active_wallet_sample(&a, 101).await.unwrap(), None);
+    assert_eq!(db.active_wallet_sample(&b, 100).await.unwrap(), None);
 }
 
 #[tokio::test]
