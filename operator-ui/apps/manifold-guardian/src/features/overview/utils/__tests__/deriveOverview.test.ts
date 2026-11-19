@@ -120,12 +120,14 @@ it('should state plainly that the fleet is not approved', () => {
   expect(item?.detail).not.toMatch(/still be reading/i);
 });
 
-// `checking` clears on its own within one relay read of daemon start. An item
-// the operator cannot act on is noise.
-it('should raise nothing while the first relay read is still outstanding', () => {
+// `checking` means nothing is stored and no read has run since startup. The
+// daemon reads only when asked, so a host set up without a badge stays here; it
+// is not advertised, and saying "Advertised and healthy" would be false.
+it('should report a host with no stored approval and no read as not approved', () => {
   const model = deriveOverview({ nostrState: 'checking' });
 
-  expect(model.attention.map((entry) => entry.key)).not.toContain('authorization-not-observed');
+  expect(model.attention.map((entry) => entry.key)).toContain('authorization-not-observed');
+  expect(model.headline).toBe('Needs your attention');
 });
 
 // A failed read and an absent authorization are different facts. Folding them

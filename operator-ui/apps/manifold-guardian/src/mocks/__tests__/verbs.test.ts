@@ -105,6 +105,30 @@ describe('staged onboarding dispatch', () => {
     expect(refreshed.Ok.stage).toBe('initial_offer');
   });
 
+  it('should advance to the offer stage on a skip, with no authorization retained', () => {
+    onboardToAuthorizationStage();
+    getState().relayAuthorization = 'absent';
+
+    const skipped = dispatch('SkipHolderAuthorization') as { Ok: Record<string, unknown> };
+    const retried = dispatch('SkipHolderAuthorization') as { Ok: Record<string, unknown> };
+
+    expect(skipped.Ok.stage).toBe('initial_offer');
+    expect(retried.Ok.stage).toBe('initial_offer');
+    expect((skipped.Ok.nostr as { state: string }).state).not.toBe('authorization_observed');
+  });
+
+  it('should refuse the skip where the network has no badgeless path', () => {
+    onboardToAuthorizationStage();
+    getState().onboarding.badgeless_mg = false;
+
+    const refused = dispatch('SkipHolderAuthorization') as { Err: { message: string } };
+
+    expect(refused.Err.message).toMatch(/without a badge/);
+    expect((dispatch('Onboarding') as { Ok: { stage: string } }).Ok.stage).toBe(
+      'holder_authorization'
+    );
+  });
+
   it('should stop serving the refresh once the authorization question is settled', () => {
     onboardToOfferStage();
 

@@ -200,6 +200,20 @@ impl ManifoldEnvironment {
         })
     }
 
+    /// Whether an MG in this environment may be set up without a badge
+    /// ([`REQ-bring-your-own-guardians`](../../../specs/REQ-bring-your-own-guardians.md)).
+    ///
+    /// Off in production until the rest of the bring-your-own-guardians path
+    /// ships, so no production host can become badgeless before it can take a
+    /// seat. A release turns it on; nothing published changes it.
+    #[must_use]
+    pub fn badgeless_mg(self) -> bool {
+        match self {
+            Self::Development | Self::Staging => true,
+            Self::Production => false,
+        }
+    }
+
     /// Resolve this environment's public configuration, applying the
     /// development-only override environment variables.
     ///

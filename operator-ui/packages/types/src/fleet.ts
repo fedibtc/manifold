@@ -260,6 +260,10 @@ export interface OnboardingResponse {
   service_pubkey: string;
   service_nostr_pubkey: string;
   nostr: OnboardingNostrStatus;
+  // Whether this network lets the host run without a badge. Off in production
+  // until bring-your-own guardians ships; the dashboard offers the badgeless
+  // path only when it is on.
+  badgeless_mg: boolean;
   fman_version: MgVersionReport;
 }
 
@@ -409,6 +413,8 @@ export interface ResetUptimeResponse {
   uptime_reset: 'rechecking';
 }
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
+// The onboarding projection after the skip, at the `initial_offer` stage.
+export type SkipHolderAuthorizationResponse = OnboardingResponse;
 // The operator's NIP-17 chat with Fedi support (SPEC-mg-support-chat).
 export type SupportAuthor = 'operator' | 'fedi';
 export interface SupportMessage {
@@ -566,6 +572,7 @@ export interface AdminResponseByName {
   SweepGuardianFees: SweepGuardianFeesResponse;
   Onboarding: OnboardingResponse;
   RefreshHolderAuthorizations: RefreshHolderAuthorizationsResponse;
+  SkipHolderAuthorization: SkipHolderAuthorizationResponse;
   ConfigureInitialOffer: ConfigureInitialOfferResponse;
   ShowMnemonic: ShowMnemonicResponse;
   OnboardAsNew: OnboardAsNewResponse;

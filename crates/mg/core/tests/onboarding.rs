@@ -68,6 +68,7 @@ async fn onboarding(
         Arc::new(NoArchive),
         Arc::new(NoHolderAuthorizations),
         true,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
     );
     (
         crate::admin::OperatorPhase::onboarding(onboarding.clone()),
@@ -149,6 +150,168 @@ async fn an_un_onboarded_daemon_answers_only_the_onboarding_verbs() {
         );
     }
     server.abort();
+}
+
+/// An operator without a badge settles the Holder-authorization stage by
+/// skipping it. Nothing else does: the offer cannot be configured past an
+/// unsettled stage, and a skip at the identity stage has no identity to run.
+/// Once the offer is configured the fleet may open with no authorization
+/// retained, which is what keeps it unadvertised.
+#[tokio::test]
+async fn skipping_holder_authorization_completes_setup_without_a_badge() {
+    let temp = TempDir::new().unwrap();
+    let (phase, onboarding, db, socket) = onboarding(&temp).await;
+    let server = crate::admin::serve(&phase, &socket).unwrap();
+    let offer = AdminRequest::ConfigureInitialOffer {
+        max_seats: None,
+        price_msats: None,
+        monthly_data_budget:
+            fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Unlimited,
+    };
+
+    let refused = ask(&socket, &AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind, crate::admin::AdminErrorKind::NotOnboarded);
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        OnboardingStage::Identity
+    );
+
+    ask(&socket, &AdminRequest::OnboardAsNew { if_needed: false })
+        .await
+        .unwrap();
+    let refused = ask(&socket, &offer).await.unwrap_err();
+    assert_eq!(refused.kind, crate::admin::AdminErrorKind::NotOnboarded);
+
+    let skipped = ask(&socket, &AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap();
+    assert_eq!(skipped["stage"], "initial_offer");
+    assert_eq!(skipped["badgeless_mg"], true);
+    assert_eq!(skipped["nostr"]["state"], "checking");
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        OnboardingStage::InitialOffer
+    );
+    // A retried skip finds the stage settled rather than failing.
+    assert_eq!(
+        ask(&socket, &AdminRequest::SkipHolderAuthorization)
+            .await
+            .unwrap()["stage"],
+        "initial_offer"
+    );
+
+    assert_eq!(
+        ask(&socket, &offer).await.unwrap()["onboarding"],
+        "complete"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), onboarding.completed())
+        .await
+        .expect("a skipped authorization does not hold the fleet back")
+        .unwrap();
+    assert_eq!(
+        db.holder_authorization_event_json(u64::MAX).await.unwrap(),
+        None
+    );
+    server.abort();
+}
+
+/// Production cannot run badgeless MGs before they can take seats: the skip
+/// is refused there, the stage does not move, and the status says the path is
+/// unavailable so the dashboard does not offer it.
+#[tokio::test]
+async fn production_refuses_the_skip_and_says_so() {
+    let temp = TempDir::new().unwrap();
+    let db = Db::open(temp.path()).await.unwrap();
+    let onboarding = Onboarding::new(
+        db.clone(),
+        process(&temp),
+        Arc::new(NoArchive),
+        Arc::new(NoHolderAuthorizations),
+        true,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
+    );
+    onboarding
+        .answer(AdminRequest::OnboardAsNew { if_needed: false })
+        .await
+        .unwrap();
+    let status = onboarding.answer(AdminRequest::Onboarding).await.unwrap();
+    assert_eq!(status["badgeless_mg"], false);
+
+    let refused = onboarding
+        .answer(AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap_err();
+    assert!(refused.is::<BadgelessUnavailable>(), "{refused:#}");
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        OnboardingStage::HolderAuthorization
+    );
+}
+
+/// A restore reaches the same Holder-authorization stage as a new MG, and an
+/// operator recovering a host that never had a badge skips it the same way.
+#[tokio::test]
+async fn a_restored_host_can_skip_holder_authorization() {
+    let temp = TempDir::new().unwrap();
+    let (_phase, onboarding, db, _socket) = onboarding(&temp).await;
+    let recovered = crate::backup::RecoveredFleet {
+        seats: Vec::new(),
+        archives: std::collections::HashMap::new(),
+    };
+    crate::restore::install(
+        &db,
+        &process(&temp),
+        &crate::identity::RootMnemonic::generate().unwrap(),
+        &recovered,
+    )
+    .await
+    .unwrap();
+
+    let skipped = onboarding
+        .answer(AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap();
+    assert_eq!(skipped["stage"], "initial_offer");
+}
+
+/// A badge that arrives after setup is enrolled like a renewal: the retained
+/// authorization is replaced and setup stays complete, rather than the
+/// enrollment failing on a stage it no longer moves.
+#[tokio::test]
+async fn an_authorization_enrolled_after_a_skip_leaves_setup_complete() {
+    let temp = TempDir::new().unwrap();
+    let (_phase, onboarding, db, _socket) = onboarding(&temp).await;
+    db.install_identity(&crate::identity::RootMnemonic::generate().unwrap())
+        .await
+        .unwrap();
+    onboarding
+        .answer(AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap();
+    db.configure_initial_offer(
+        None,
+        None,
+        fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Unlimited,
+    )
+    .await
+    .unwrap();
+
+    db.replace_holder_authorization_event(7, "{}", 7)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.holder_authorization_event_json(7)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("{}")
+    );
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        OnboardingStage::Complete
+    );
 }
 
 /// The one precondition only an operator can answer is refused where the

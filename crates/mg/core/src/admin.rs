@@ -169,8 +169,14 @@ pub enum AdminRequest {
     /// Schedule one bounded relay fetch that verifies and durably retains any
     /// Holder authorizations addressed to this MG.
     RefreshHolderAuthorizations,
+    /// Leave the Holder-authorization onboarding stage without an
+    /// authorization, to run this MG without a badge. Its fleet opens but
+    /// publishes no advertisement until a later `RefreshHolderAuthorizations`
+    /// enrolls one.
+    SkipHolderAuthorization,
     /// Finish first-run setup with the admission limit and initial price. This
-    /// is accepted only after a Holder authorization has been retained.
+    /// is accepted only after the Holder-authorization stage has been settled,
+    /// by a retained authorization or an explicit skip.
     /// `max_seats` `null` is automatic. `monthly_data_budget` is the answer
     /// [`AdminRequest::SetDataBudget`] takes; setup does not finish without
     /// one.
@@ -610,7 +616,7 @@ pub(crate) async fn dispatch(
             authorizations.refresh().await?;
             Ok(fleet_status_json(fleet, &directory.borrow()))
         }
-        AdminRequest::ConfigureInitialOffer { .. } => {
+        AdminRequest::SkipHolderAuthorization | AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
         AdminRequest::ShowMnemonic => Ok(mnemonic_json(&fleet.identity().phrase())),
@@ -634,6 +640,7 @@ fn fleet_status_json(fleet: &Fleet, directory: &DirectoryPresence) -> Value {
         &env!("CARGO_PKG_VERSION")
             .parse::<MgVersion>()
             .expect("workspace package version is valid SemVer"),
+        fleet.config().manifold_environment.badgeless_mg(),
     )
 }
 
@@ -888,6 +895,7 @@ pub fn onboarding_json(
     service_pubkey: &str,
     directory: &DirectoryPresence,
     current_mg_version: &MgVersion,
+    badgeless_mg: bool,
 ) -> Value {
     let update_required = directory
         .latest_mg_version
@@ -924,6 +932,10 @@ pub fn onboarding_json(
         "service_pubkey": service_pubkey,
         "service_nostr_pubkey": directory.service_nostr_pubkey.to_string(),
         "nostr": status,
+        // Whether this environment lets an MG run without a badge
+        // (`ManifoldEnvironment::badgeless_mg`). The dashboard shows the
+        // badgeless setup path and states only when it does.
+        "badgeless_mg": badgeless_mg,
         "fman_version": {
             "current": current_mg_version.to_string(),
             "latest": directory.latest_mg_version.as_ref().map(ToString::to_string),

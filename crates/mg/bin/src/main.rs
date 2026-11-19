@@ -406,6 +406,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         )),
         manifold_environment.setup_payment_publisher().is_some(),
+        manifold_environment.environment(),
     );
     let phase = admin::OperatorPhase::onboarding(onboarding.clone());
     let admin_task = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;

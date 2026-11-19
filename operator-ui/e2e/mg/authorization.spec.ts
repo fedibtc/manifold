@@ -19,18 +19,23 @@ test('should report a completed read that found no authorization', async ({ page
   await expect(page.getByText('This host is not approved yet')).toBeVisible();
 });
 
-test('should say nothing is known while the first relay read is outstanding', async ({ page }) => {
+// Nothing stored and no read since startup: the daemon reads only when asked,
+// so this does not clear on its own, and a host set up without a badge stays
+// here. It is known to be unadvertised; whether the relay holds an approval is
+// not, so the banner does not claim a read happened.
+test('should report a host with no stored approval and no read as unadvertised', async ({
+  page
+}) => {
   await resetScenario(page, 'authorization-checking');
 
   await page.goto('/authorization');
   await signIn(page);
 
-  await expect(page.getByText(/Checking whether this host has been approved/i)).toBeVisible();
-  await expect(page.getByText(/Not approved yet/i)).not.toBeVisible();
+  await expect(page.getByText(/not been checked since the app started/i)).toBeVisible();
+  await expect(page.getByText(/Last checked/i)).not.toBeVisible();
 
-  // An item the operator cannot act on is noise, so the Overview raises none.
   await page.goto('/');
-  await expect(page.getByText('This host is not approved yet')).not.toBeVisible();
+  await expect(page.getByText('This host is not approved yet')).toBeVisible();
 });
 
 test('should report a failed relay read as a failure, not as a missing authorization', async ({

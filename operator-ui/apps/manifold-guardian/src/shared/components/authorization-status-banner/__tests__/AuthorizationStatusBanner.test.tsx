@@ -5,10 +5,15 @@ import { AuthorizationStatusBanner } from '@/shared/components/authorization-sta
 const CHECKED_AT = 1_760_000_000;
 
 describe('AuthorizationStatusBanner', () => {
-  it('should say the check is still running while the first read is outstanding', () => {
+  // Nothing is checking: the daemon reads the relays only when asked, and a host
+  // set up without a badge stays here. What is known is that it is unadvertised.
+  it('should say a host with no stored approval is unadvertised and not yet checked', () => {
     render(<AuthorizationStatusBanner nostr={{ state: 'checking' }} />);
 
-    expect(screen.getByText(/checking whether this host has been approved/i)).toBeTruthy();
+    expect(screen.getByText('Not approved')).toBeTruthy();
+    expect(screen.getByText(/not advertised and cannot sell seats/i)).toBeTruthy();
+    expect(screen.getByText(/not been checked since the app started/i)).toBeTruthy();
+    expect(screen.queryByText(/checking whether/i)).toBeNull();
   });
 
   // The daemon separates a completed read from no read. Saying "not approved"

@@ -59,6 +59,8 @@ const onboarding = (
   service_pubkey: '02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
   nostr,
+  // As in development and staging; the production scenario turns it off.
+  badgeless_mg: true,
   fman_version
 });
 
@@ -310,6 +312,20 @@ const builders = {
       minimum_max_seats: 0
     }
   }),
+  // Production, before bring-your-own guardians ships: no badgeless path.
+  'setup-awaiting-authorization-production': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: {
+      ...onboarding(),
+      stage: 'holder_authorization',
+      runtime: 'starting',
+      minimum_max_seats: 0,
+      badgeless_mg: false
+    }
+  }),
   'setup-initial-offer': () => ({
     ...base(),
     seats: [],
@@ -322,8 +338,9 @@ const builders = {
       minimum_max_seats: 0
     }
   }),
-  // The window between daemon start and its first relay read. Nothing is known
-  // yet, and the Overview deliberately raises no attention item for it.
+  // No stored authorization and no relay read since startup: a host set up
+  // without a badge, or one whose operator has not asked for a read yet. It is
+  // not advertised, and the Overview says so.
   'authorization-checking': () => ({
     ...base(),
     relayAuthorization: 'absent',
@@ -823,12 +840,16 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     desc: 'Onboarded and waiting in setup at the authorization step. Nothing is observed yet; the relay holds an authorization, so Check status approves the host.',
     affects: ['setup']
   },
+  'setup-awaiting-authorization-production': {
+    desc: 'Production network at the authorization step. Setup offers no way to continue without a badge.',
+    affects: ['setup']
+  },
   'setup-initial-offer': {
     desc: 'Authorized and back in setup at the initial-offer stage. Setup reopens on the terms step.',
     affects: ['setup']
   },
   'authorization-checking': {
-    desc: 'The daemon has not finished its first relay read. Nothing is known yet, and the Overview raises no item for it.',
+    desc: 'No stored authorization and no relay read since startup, as on a host set up without a badge. The Overview raises the not-approved item.',
     affects: ['setup', 'authorization', 'overview']
   },
   'authorization-relay-error': {
