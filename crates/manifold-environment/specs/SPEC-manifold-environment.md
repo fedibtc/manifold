@@ -52,7 +52,12 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - whether MGs offer the guardian link (mobile notifications) when the effective feature policy omits the flag
   (`ManifoldEnvironment::guardian_link`): on in development and staging, off
   in production. A published `guardian_link` flag always wins
-  ([SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
+  ([SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)); and
+- whether an MG may be set up without a badge
+  (`ManifoldEnvironment::badgeless_mg`): on in development and staging, off
+  in production until bring-your-own guardians can take seats there. No
+  publication changes it; a release turns it on
+  ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
 
 The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);

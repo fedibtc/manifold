@@ -626,6 +626,11 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
  *  as the daemon's does. */
 const skipHolderAuthorization: Verb<'SkipHolderAuthorization'> = () => {
   const state = getState();
+  if (!state.onboarding.badgeless_mg) {
+    throw new Error(
+      'this network does not support setting up a Manifold Fedimint Guardian without a badge yet'
+    );
+  }
   if (state.onboarding.stage === 'holder_authorization') {
     state.onboarding = { ...state.onboarding, stage: 'initial_offer' };
   }

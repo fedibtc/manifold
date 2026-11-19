@@ -978,6 +978,7 @@ pub fn onboarding_fixture() -> Value {
             latest_mg_version: Some(mg_version("0.2.0")),
         },
         &mg_version("0.1.0"),
+        true,
     )
 }
 

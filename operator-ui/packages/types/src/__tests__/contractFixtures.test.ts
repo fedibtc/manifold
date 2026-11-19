@@ -758,6 +758,7 @@ const mgOnboardingMirror = {
     holders: [HOLDER_PUBKEY],
     checked_at: 1_760_000_000
   },
+  badgeless_mg: true,
   fman_version: { current: '0.1.0', latest: '0.2.0', update_required: true },
   stage: 'complete',
   runtime: 'ready'

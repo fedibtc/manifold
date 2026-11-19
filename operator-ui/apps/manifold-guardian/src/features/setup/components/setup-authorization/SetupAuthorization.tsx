@@ -22,6 +22,8 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   const refresh = useRefreshAuthorization();
   const skip = useSkipHolderAuthorization();
   const authorized = isAuthorized(onboarding.data);
+  // Off in production until bring-your-own guardians ships.
+  const badgeless = onboarding.data?.badgeless_mg === true;
   // One guard for the timer and the manual continue button landing together.
   const hasSettled = useRef(false);
 
@@ -97,17 +99,21 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
 
       <PeerBadgeHelp />
 
-      <p className={styles.hint}>
-        No badge? You can set this host up without one. Federation Ambassadors can’t find it until
-        you approve it later on the Authorization page.
-      </p>
+      {badgeless ? (
+        <p className={styles.hint}>
+          No badge? You can set this host up without one. Federation Ambassadors can’t find it until
+          you approve it later on the Authorization page.
+        </p>
+      ) : null}
 
       <div className={styles.actions}>
         <Button disabled>Continue</Button>
 
-        <Button variant="secondary" loading={skip.isPending} onClick={handleSkip}>
-          Continue without a badge
-        </Button>
+        {badgeless ? (
+          <Button variant="secondary" loading={skip.isPending} onClick={handleSkip}>
+            Continue without a badge
+          </Button>
+        ) : null}
       </div>
 
       {skip.error ? <Banner variant="error">{describeActionError(skip.error)}</Banner> : null}

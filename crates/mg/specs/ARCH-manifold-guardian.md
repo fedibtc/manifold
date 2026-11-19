@@ -4,6 +4,7 @@
 
 SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented, so
 an MG run without a badge opens its fleet unadvertised but cannot take seats.
+Badgeless setup is off in production until they ship.
 
 The MG daemon is one process that hosts up to its durable operator-configured
 guardian-seat capacity,

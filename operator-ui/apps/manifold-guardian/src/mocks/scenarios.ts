@@ -59,6 +59,8 @@ const onboarding = (
   service_pubkey: '02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
   nostr,
+  // As in development and staging; the production scenario turns it off.
+  badgeless_mg: true,
   fman_version
 });
 
@@ -308,6 +310,20 @@ const builders = {
       stage: 'holder_authorization',
       runtime: 'starting',
       minimum_max_seats: 0
+    }
+  }),
+  // Production, before bring-your-own guardians ships: no badgeless path.
+  'setup-awaiting-authorization-production': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: {
+      ...onboarding(),
+      stage: 'holder_authorization',
+      runtime: 'starting',
+      minimum_max_seats: 0,
+      badgeless_mg: false
     }
   }),
   'setup-initial-offer': () => ({
@@ -822,6 +838,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'setup-awaiting-authorization': {
     desc: 'Onboarded and waiting in setup at the authorization step. Nothing is observed yet; the relay holds an authorization, so Check status approves the host.',
+    affects: ['setup']
+  },
+  'setup-awaiting-authorization-production': {
+    desc: 'Production network at the authorization step. Setup offers no way to continue without a badge.',
     affects: ['setup']
   },
   'setup-initial-offer': {

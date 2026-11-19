@@ -260,6 +260,10 @@ export interface OnboardingResponse {
   service_pubkey: string;
   service_nostr_pubkey: string;
   nostr: OnboardingNostrStatus;
+  // Whether this network lets the host run without a badge. Off in production
+  // until bring-your-own guardians ships; the dashboard offers the badgeless
+  // path only when it is on.
+  badgeless_mg: boolean;
   fman_version: MgVersionReport;
 }
 

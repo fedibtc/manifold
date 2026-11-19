@@ -10,6 +10,7 @@ import { SetupAuthorization } from '../SetupAuthorization';
 const waiting = {
   service_pubkey: '02abc',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+  badgeless_mg: true,
   nostr: { state: 'not_observed', checked_at: 1_760_000_000 }
 };
 
@@ -151,6 +152,14 @@ describe('SetupAuthorization', () => {
     await vi.waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
     expect(adminCall.mock.calls.map(([request]) => request)).toEqual(['SkipHolderAuthorization']);
     expect(client.getQueryData(ONBOARDING_KEY)).toEqual(skipped);
+  });
+
+  it('should offer no badgeless path where the network does not support one', async () => {
+    renderAuthorization(vi.fn(), { ...waiting, badgeless_mg: false });
+
+    await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
+    expect(screen.queryByRole('button', { name: 'Continue without a badge' })).toBeNull();
+    expect(screen.queryByText(/No badge\?/)).toBeNull();
   });
 
   it('should stay on the step and say why when the skip is refused', async () => {

@@ -7,8 +7,10 @@ bring-your-own guardians.
 
 Not implemented. Every seat still comes from verified selection
 ([ARCH-fa-client-discovery-selection](../crates/fa-client/specs/ARCH-fa-client-discovery-selection.md)).
-An MG can be set up without a Holder authorization and then publishes no
-advertisement, but it cannot take seats until SeatGrants exist. The records
+An MG in development or staging can be set up without a Holder authorization
+and then publishes no advertisement, but it cannot take seats until SeatGrants
+exist. Production refuses badgeless setup until the rest of this path ships
+([SPEC-manifold-environment](../crates/manifold-environment/specs/SPEC-manifold-environment.md)). The records
 linked below carry their own `## Status` for the parts that do not apply yet.
 
 ## Requirement

@@ -68,6 +68,7 @@ async fn onboarding(
         Arc::new(NoArchive),
         Arc::new(NoHolderAuthorizations),
         true,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
     );
     (
         crate::admin::OperatorPhase::onboarding(onboarding.clone()),
@@ -187,6 +188,7 @@ async fn skipping_holder_authorization_completes_setup_without_a_badge() {
         .await
         .unwrap();
     assert_eq!(skipped["stage"], "initial_offer");
+    assert_eq!(skipped["badgeless_mg"], true);
     assert_eq!(skipped["nostr"]["state"], "checking");
     assert_eq!(
         db.onboarding_stage().await.unwrap(),
@@ -213,6 +215,39 @@ async fn skipping_holder_authorization_completes_setup_without_a_badge() {
         None
     );
     server.abort();
+}
+
+/// Production cannot run badgeless MGs before they can take seats: the skip
+/// is refused there, the stage does not move, and the status says the path is
+/// unavailable so the dashboard does not offer it.
+#[tokio::test]
+async fn production_refuses_the_skip_and_says_so() {
+    let temp = TempDir::new().unwrap();
+    let db = Db::open(temp.path()).await.unwrap();
+    let onboarding = Onboarding::new(
+        db.clone(),
+        process(&temp),
+        Arc::new(NoArchive),
+        Arc::new(NoHolderAuthorizations),
+        true,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
+    );
+    onboarding
+        .answer(AdminRequest::OnboardAsNew { if_needed: false })
+        .await
+        .unwrap();
+    let status = onboarding.answer(AdminRequest::Onboarding).await.unwrap();
+    assert_eq!(status["badgeless_mg"], false);
+
+    let refused = onboarding
+        .answer(AdminRequest::SkipHolderAuthorization)
+        .await
+        .unwrap_err();
+    assert!(refused.is::<BadgelessUnavailable>(), "{refused:#}");
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        OnboardingStage::HolderAuthorization
+    );
 }
 
 /// A restore reaches the same Holder-authorization stage as a new MG, and an
