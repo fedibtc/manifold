@@ -121,13 +121,10 @@ withdrawn. That historical reset exception is closed; subsequent changes are
 governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
-The optional feature cache uses an additive, versioned table outside the SQLx
-journal. Pre-feature binaries can therefore reopen the same fleet database.
-Version 1 retains the complete signed event per publisher. Its layout is fixed:
-future incompatible layouts must coexist under a new name and preserve each
-authenticated replacement floor across upgrade and rollback before activation.
-This exception to the schema mechanism is limited to the feature cache, not
-payment, seats or other fleet state.
+The feature cache (`nostr_feature_config_v1`, migration 0017) retains the
+complete signed event per publisher. Its layout is fixed: future incompatible
+layouts must coexist under a new name and preserve each authenticated
+replacement floor across upgrade and rollback before activation.
 
 ## Durability policy
 

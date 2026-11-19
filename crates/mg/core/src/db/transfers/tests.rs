@@ -295,37 +295,3 @@ async fn additive_upgrade_preserves_native_seats_and_old_migrator_refuses_downgr
         Err(sqlx::migrate::MigrateError::VersionMissing(8))
     ));
 }
-
-#[tokio::test]
-async fn pre_feature_migrator_can_reopen_the_fleet_after_feature_cache_writes() {
-    let root = tempfile::tempdir().unwrap();
-    let db = Db::open(root.path()).await.unwrap();
-    db.store_feature_config("publisher", "cache fixture")
-        .await
-        .unwrap();
-    db.pool.close().await;
-    drop(db);
-    let pool = sqlx::SqlitePool::connect(&format!(
-        "sqlite://{}",
-        root.path().join("fleet-manager.sqlite").display()
-    ))
-    .await
-    .unwrap();
-    let mut old = sqlx::migrate!("./migrations");
-    old.migrations.to_mut().retain(|m| m.version <= 16);
-    old.run(&pool).await.unwrap();
-    let _: i64 = sqlx::query_scalar("SELECT count(*) FROM seats")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    pool.close().await;
-    let reopened = Db::open(root.path()).await.unwrap();
-    assert_eq!(
-        reopened
-            .feature_config_json("publisher")
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("cache fixture")
-    );
-}
