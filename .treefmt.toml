@@ -5,7 +5,7 @@ includes = ["*.nix"]
 [formatter.rust]
 command = "rustfmt"
 includes = ["*.rs"]
-options = ["--edition", "2024"]
+options = ["--config=skip_children=true", "--edition=2024"]
 
 [formatter.toml]
 command = "taplo"
