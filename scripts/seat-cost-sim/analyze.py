@@ -159,9 +159,19 @@ def summarize(samples, phase):
                 if value > before.get(key, 0):
                     active.add(key.split('peer_id="')[1].split('"')[0])
         peers.append(len(active))
-        completed = after.get("fm_consensus_session_count", 0) - before.get("fm_consensus_session_count", 0)
-        if completed > 0:
-            sessions.append(mdt / completed)
+        # Session duration from the scrape times at which the count moved,
+        # so a window holding few sessions is not quantized to whole ones.
+        changes = []
+        last = None
+        for sample in m:
+            count = sample["metrics"].get(seat, {}).get("fm_consensus_session_count")
+            if count is None:
+                continue
+            if last is not None and count > last:
+                changes.append((sample["ts"], count))
+            last = count
+        if len(changes) >= 2:
+            sessions.append((changes[-1][0] - changes[0][0]) / (changes[-1][1] - changes[0][1]))
         count = after.get("fm_consensus_ordering_latency_seconds_count", 0) - before.get(
             "fm_consensus_ordering_latency_seconds_count", 0
         )

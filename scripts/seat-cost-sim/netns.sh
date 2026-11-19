@@ -67,6 +67,9 @@ table ip seatsim {
 }
 EOF
 
+# netem.sh enters the rig's namespaces through this pid.
+echo $$ > "$run_dir/rig-netns.pid"
+
 export DEV_DEFE_PORTALLOC_DATA_DIR="$run_dir/portalloc"
 export SEAT_SIM_DIR="$run_dir"
 export SEAT_SIM_MUT_MG_BIN="$run_dir/bin/seat-sim-mut-mg"

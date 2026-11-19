@@ -14,6 +14,9 @@
 set -euo pipefail
 run_dir=$(realpath "$1")
 points=$2
+# Optional one-way delay applied while measuring (netem.sh), cleared while
+# federations form.
+delay=${SEAT_SIM_NETEM_DELAY_MS:-off}
 warmup=${3:-180}
 measure=${4:-600}
 holder=$(cat "$run_dir/mut-netns-holder.pid")
@@ -60,21 +63,23 @@ for point in $points; do
   n=${point%%:*}
   load=${point#*:}
   if [ "$(formed)" -lt "$n" ]; then
+    "$(dirname "$0")/netem.sh" "$run_dir" off
     set_control "$n" 0
     while [ "$(formed)" -lt "$n" ]; do sleep 10; done
   fi
+  "$(dirname "$0")/netem.sh" "$run_dir" "$delay"
   {
     set_control "$n" "$load"
     echo "$(date -Is) N=$n load=$load warming up ${warmup}s" >&2
     sleep "$warmup"
     start=$(date +%s.%N)
     before=$(nft_counters)
-    load_before=$(cat "$run_dir/load.json")
+    load_before=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$run_dir/load.json")
     sleep "$measure"
     end=$(date +%s.%N)
     after=$(nft_counters)
-    printf '{"federations": %s, "ops_per_sec": %s, "start": %s, "end": %s, "nft_before": %s, "nft_after": %s, "load_before": %s, "load_after": %s}\n' \
-      "$n" "$load" "$start" "$end" "$before" "$after" "$load_before" "$(cat "$run_dir/load.json")" >> "$run_dir/phases.jsonl"
+    printf '{"federations": %s, "ops_per_sec": %s, "netem_delay_ms": "%s", "start": %s, "end": %s, "nft_before": %s, "nft_after": %s, "load_before": %s, "load_after": %s}\n' \
+      "$n" "$load" "$delay" "$start" "$end" "$before" "$after" "$load_before" "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$run_dir/load.json")" >> "$run_dir/phases.jsonl"
     echo "$(date -Is) N=$n load=$load measured" >&2
   }
 done
