@@ -1643,7 +1643,7 @@
           fetcherVersion = 2;
           # Refresh whenever operator-ui/pnpm-lock.yaml changes; the build error
           # prints the replacement.
-          hash = "sha256-2uuWz8DS7znGIxxN8d7UskHko52+Jskk3NsLdi0f1dk=";
+          hash = "sha256-QYU5oR0+T6TytQWjQ2T8z15ghSBcGNLUpPIGVg9PsUs=";
         };
 
         operatorUi = pkgs.stdenv.mkDerivation {
