@@ -262,12 +262,6 @@ impl Db {
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-        // An older MG rejects a newer entry in SQLx's main migration journal,
-        // even when the new table is additive. Keep this optional relay cache
-        // outside that journal so a rollback can still open all existing state.
-        sqlx::query(include_str!("../feature-migrations/0001_feature_cache.sql"))
-            .execute(&pool)
-            .await?;
 
         Ok(Self {
             pool,
