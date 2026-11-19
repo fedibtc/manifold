@@ -245,7 +245,7 @@ impl LiveWalletStack {
     }
 
     async fn fund_gateway_wallet(&self) -> anyhow::Result<()> {
-        fund_gateway_wallet(&self.http, &self.admin_url, &self.bitcoin).await
+        fund_gateway_wallet(&self.http, &self.admin_url, &self.bitcoin, &self.gateway).await
     }
 
     async fn create_deposit_address(&self, label: &str) -> anyhow::Result<(String, String)> {
@@ -482,7 +482,7 @@ async fn live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh() -> 
         None,
     )
     .await?;
-    fund_gateway_wallet(&http, &admin_url, &bitcoin).await?;
+    fund_gateway_wallet(&http, &admin_url, &bitcoin, &gateway).await?;
 
     let (endpoint_addr, advertisement, rpc) = configure_publish_and_connect(
         &http,
@@ -852,6 +852,7 @@ async fn live_second_federation_is_funded_after_the_operator_tops_up() -> anyhow
         &stack.wallet.http,
         &stack.wallet.admin_url,
         &stack.wallet.bitcoin,
+        &stack.wallet.gateway,
         ONE_ALLOCATION_BTC,
         GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE,
     )
@@ -1099,6 +1100,7 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
         &stack.wallet.http,
         &stack.wallet.admin_url,
         &stack.wallet.bitcoin,
+        &stack.wallet.gateway,
         ONE_ALLOCATION_BTC,
         GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE,
     )
@@ -2283,7 +2285,7 @@ impl LiveStabilityStack {
             Some(&esplora.http_url),
         )
         .await?;
-        fund_gateway_wallet(&http, &admin_url, &bitcoin).await?;
+        fund_gateway_wallet(&http, &admin_url, &bitcoin, &gateway).await?;
 
         let (_endpoint_addr, advertisement, rpc) = configure_publish_and_connect(
             &http,
@@ -2912,11 +2914,13 @@ async fn fund_gateway_wallet(
     http: &Client,
     admin_url: &str,
     bitcoin: &BitcoinFixture,
+    gateway: &GatewayFixture,
 ) -> anyhow::Result<()> {
     fund_gateway_wallet_amount(
         http,
         admin_url,
         bitcoin,
+        gateway,
         TOP_UP_BTC,
         GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE,
     )
@@ -2924,7 +2928,13 @@ async fn fund_gateway_wallet(
 }
 
 /// Tops the provider wallet up by `btc` and waits until FLIP reports at least
-/// `min_available_sats` available for a new allocation.
+/// `min_available_sats` available for a new allocation and gatewayd can spend
+/// the deposit.
+///
+/// FLIP's available balance comes from gatewayd's total on-chain balance,
+/// which already counts the deposit while gatewayd has seen it only in the
+/// mempool. A send before gatewayd connects the confirming blocks is refused,
+/// so the helper also waits for gatewayd to reach the chain tip.
 ///
 /// The amount is a parameter because a capacity test has to fund a wallet that
 /// cannot cover everything it will be asked for, which the suite's usual whole
@@ -2933,6 +2943,7 @@ async fn fund_gateway_wallet_amount(
     http: &Client,
     admin_url: &str,
     bitcoin: &BitcoinFixture,
+    gateway: &GatewayFixture,
     btc: f64,
     min_available_sats: u64,
 ) -> anyhow::Result<()> {
@@ -2949,6 +2960,9 @@ async fn fund_gateway_wallet_amount(
     bitcoin.send_to_address(address, btc).await?;
     mine_and_sync(bitcoin, FEDIMINT_FINALITY_BLOCKS).await?;
     wait_for_available_funds(http, admin_url, bitcoin, min_available_sats).await?;
+    gateway
+        .wait_for_chain_height(bitcoin.get_block_height().await?)
+        .await?;
     Ok(())
 }
 
