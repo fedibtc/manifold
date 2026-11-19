@@ -5,7 +5,7 @@ import { afterEach, vi } from 'vitest';
 import { NetworkError } from '../../../errors';
 import { useHealth } from '../useHealth';
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -20,7 +20,7 @@ const wrapper = ({ children }: { children: ReactNode }) => {
 };
 
 afterEach(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
 
@@ -32,7 +32,7 @@ const healthyResponse = {
 
 it('should GET /health and return the parsed GetHealthResponse on 2xx', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse(healthyResponse));
-  global.fetch = fetchMock;
+  globalThis.fetch = fetchMock;
 
   const { result } = renderHook(() => useHealth(), { wrapper });
 
@@ -42,7 +42,7 @@ it('should GET /health and return the parsed GetHealthResponse on 2xx', async ()
 });
 
 it('should surface a NetworkError when the daemon is unreachable', async () => {
-  global.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+  globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
 
   const { result } = renderHook(() => useHealth(), { wrapper });
 
@@ -51,7 +51,7 @@ it('should surface a NetworkError when the daemon is unreachable', async () => {
 });
 
 it('should surface a NetworkError on a non-2xx response', async () => {
-  global.fetch = vi.fn().mockResolvedValue(jsonResponse({}, { status: 500 }));
+  globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, { status: 500 }));
 
   const { result } = renderHook(() => useHealth(), { wrapper });
 

@@ -10,7 +10,7 @@ import {
   ProtocolError
 } from '../errors';
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -20,13 +20,13 @@ const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   });
 
 afterEach(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
 
 it('should POST a unit-variant request as a bare JSON string', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ Ok: { plans: [] } }));
-  global.fetch = fetchMock;
+  globalThis.fetch = fetchMock;
 
   const result = await adminCall('ShowPlans');
 
@@ -41,7 +41,7 @@ it('should POST a struct-variant request as a single-key object', async () => {
   const fetchMock = vi
     .fn()
     .mockImplementation(() => Promise.resolve(jsonResponse({ Ok: { seats: [] } })));
-  global.fetch = fetchMock;
+  globalThis.fetch = fetchMock;
 
   await adminCall('ListSeats');
   await adminCall({ SeatStatus: { seat_id: 'abc' } });
@@ -52,7 +52,7 @@ it('should POST a struct-variant request as a single-key object', async () => {
 });
 
 it('should return the Ok payload on success', async () => {
-  global.fetch = vi.fn().mockResolvedValue(jsonResponse({ Ok: { mnemonic: 'a b c' } }));
+  globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ Ok: { mnemonic: 'a b c' } }));
 
   const result = await adminCall('ShowMnemonic');
 
@@ -60,7 +60,7 @@ it('should return the Ok payload on success', async () => {
 });
 
 it('should throw AdminApiError with the Err message and reason on a 200 Err envelope', async () => {
-  global.fetch = vi
+  globalThis.fetch = vi
     .fn()
     .mockResolvedValue(jsonResponse({ Err: { kind: 'other', message: 'unknown seat' } }));
 
@@ -73,7 +73,7 @@ it('should throw AdminApiError with the Err message and reason on a 200 Err enve
 // The daemon's own discriminant is what a screen selects an action from, so it
 // has to survive the transport rather than be re-derived from the sentence.
 it('should carry the daemon reason through to the thrown error', async () => {
-  global.fetch = vi.fn().mockResolvedValue(
+  globalThis.fetch = vi.fn().mockResolvedValue(
     jsonResponse({
       Err: { kind: 'seat_directory_exists', message: 'seat 07 would be restored over a directory' }
     })
@@ -89,32 +89,32 @@ it('should carry the daemon reason through to the thrown error', async () => {
 // A body that is not this protocol is not a daemon refusal, and reading a
 // message out of it would invent one.
 it('should raise ProtocolError when the Err side is not { kind, message }', async () => {
-  global.fetch = vi.fn().mockResolvedValue(jsonResponse({ Err: 'unknown seat' }));
+  globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ Err: 'unknown seat' }));
 
   await expect(adminCall('ShowPlans')).rejects.toBeInstanceOf(ProtocolError);
 });
 
 it('should throw AuthError on HTTP 401', async () => {
-  global.fetch = vi.fn().mockResolvedValue(jsonResponse({}, { status: 401 }));
+  globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, { status: 401 }));
 
   await expect(adminCall('ListSeats')).rejects.toBeInstanceOf(AuthError);
 });
 
 it('should throw NetworkError when fetch rejects', async () => {
-  global.fetch = vi.fn().mockRejectedValue(new TypeError('failed to fetch'));
+  globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('failed to fetch'));
 
   await expect(adminCall('ListSeats')).rejects.toBeInstanceOf(NetworkError);
 });
 
 it('should keep the original exception as the cause when fetch rejects', async () => {
   const cause = new TypeError('failed to fetch');
-  global.fetch = vi.fn().mockRejectedValue(cause);
+  globalThis.fetch = vi.fn().mockRejectedValue(cause);
 
   await expect(adminCall('ListSeats')).rejects.toMatchObject({ cause });
 });
 
 it('should throw HttpStatusError carrying the real status on a non-2xx response', async () => {
-  global.fetch = vi.fn().mockResolvedValue(new Response('gateway down', { status: 502 }));
+  globalThis.fetch = vi.fn().mockResolvedValue(new Response('gateway down', { status: 502 }));
 
   const promise = adminCall('ListSeats');
 
@@ -123,7 +123,7 @@ it('should throw HttpStatusError carrying the real status on a non-2xx response'
 });
 
 it('should throw AccessDeniedError on HTTP 403, which must not read as unreachable', async () => {
-  global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+  globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
 
   const error = await adminCall('ListSeats').catch((thrown: unknown) => thrown);
 
@@ -132,7 +132,7 @@ it('should throw AccessDeniedError on HTTP 403, which must not read as unreachab
 });
 
 it('should throw ProtocolError when a 2xx body does not decode', async () => {
-  global.fetch = vi.fn().mockResolvedValue(new Response('<!doctype html>', { status: 200 }));
+  globalThis.fetch = vi.fn().mockResolvedValue(new Response('<!doctype html>', { status: 200 }));
 
   const error = await adminCall('ListSeats').catch((thrown: unknown) => thrown);
 
@@ -141,7 +141,7 @@ it('should throw ProtocolError when a 2xx body does not decode', async () => {
 });
 
 it('should throw ProtocolError when a decoded body carries neither Ok nor Err', async () => {
-  global.fetch = vi.fn().mockResolvedValue(jsonResponse({ seats: [] }));
+  globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ seats: [] }));
 
   await expect(adminCall('ListSeats')).rejects.toBeInstanceOf(ProtocolError);
 });
@@ -156,9 +156,16 @@ it('should abort a request that never settles, so it cannot hold a fan-out slot'
         init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
       })
   );
-  global.fetch = fetchMock as unknown as typeof fetch;
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 
   vi.useFakeTimers();
+  // Node's AbortSignal.timeout runs on internal timers that fake timers do not
+  // control, so drive the same timeout from a faked setTimeout.
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException('signal timed out', 'TimeoutError')), ms);
+    return controller.signal;
+  });
   try {
     const pending = adminCall('ShowPlans');
     const asserted = expect(pending).rejects.toBeInstanceOf(NetworkError);
@@ -166,6 +173,7 @@ it('should abort a request that never settles, so it cannot hold a fan-out slot'
     await asserted;
   } finally {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   }
 
   expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
