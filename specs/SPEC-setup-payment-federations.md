@@ -92,9 +92,10 @@ rejects fields it does not understand rather than signing unknown policy.
 
 Publishing requires an independently supplied expected public key and reads
 the matching secret only from a file or non-terminal standard input. The
-custodian owns the complete signed-event receipts as the publisher-side durable
-high-water mark and must retain the latest receipt independently of relay
-storage.
+previous signed event is the publisher-side high-water mark. Custodians take it
+from the Fedi-operated canonical relay rather than keeping a private copy,
+because a publication completes only after every canonical relay has returned
+it. They keep each new receipt until every relay has verified it.
 
 An initial publication requires an explicit assertion that no prior publication
 exists. An update requires and authenticates the latest prior receipt. Before

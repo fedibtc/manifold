@@ -9,17 +9,24 @@ untrusted and may be stale, incomplete, or unavailable.
 The publisher secret is the only sensitive input. It is accepted only from a
 file or non-terminal standard input, never argv or the environment, and must
 never be logged. Input memory is zeroized and parsed key material is dropped
-immediately after signing, before receipt or network work. Receipts contain a
-public signed event, but the newest receipt is operationally critical: it is the
-publisher's durable replacement-order high-water mark and must be backed up by
-the custodian independently of relays.
+immediately after signing, before receipt or network work. A receipt is the
+public signed event, and the previous receipt is the publisher's replacement-order
+high-water mark. Custodians do not need a private copy of it: they take the
+current event from the Fedi-operated canonical relay. That copy is sound because
+a run counts as done only after every canonical relay returned the event, and
+preflight rejects a previous receipt that any relay has superseded. The custodian
+still checks that the fetched content is the policy they expect, because the new
+policy is usually an edit of it: if every relay lost the newest event, an older
+one would pass preflight, and editing it would silently revert the lost change.
+The receipt a run saves must be kept until every relay has verified it, because
+keyless republish needs it.
 
 Exactly one publish or republish operation for this key may run across all
 custodians and hosts. Relay preflight is not a distributed lock: concurrent
 runs can share one previous receipt, sign conflicting events, and leave only
-the NIP-01 winner authoritative. The custody procedure must serialize all
-operations and retain that winning receipt. Revisit this invariant before
-adding another custodian or automated publisher.
+the NIP-01 winner authoritative. Custodians serialize by agreeing with each
+other before each run; the winning event is then the one on the relays. Revisit
+this invariant before adding another custodian or automated publisher.
 
 Before signing, the tool checks an independently obtained expected public key,
 uses shared semantic admission, requires explicit acknowledgement for an empty
