@@ -222,22 +222,36 @@ fn authenticate_address(
     event: &Event,
     pinned_publisher: PublicKey,
 ) -> Result<(), SetupPaymentFederationsEventError> {
+    authenticate_address_at(
+        event,
+        pinned_publisher,
+        SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
+        SETUP_PAYMENT_FEDERATIONS_D_TAG,
+    )
+}
+
+pub(crate) fn authenticate_address_at(
+    event: &Event,
+    pinned_publisher: PublicKey,
+    kind: u16,
+    identifier: &str,
+) -> Result<(), SetupPaymentFederationsEventError> {
     event
         .verify()
         .map_err(|_| SetupPaymentFederationsEventError::InvalidEvent)?;
     if event.pubkey != pinned_publisher {
         return Err(SetupPaymentFederationsEventError::WrongPublisher);
     }
-    if event.kind != Kind::from(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND) {
+    if event.kind != Kind::from(kind) {
         return Err(SetupPaymentFederationsEventError::WrongKind);
     }
-    if !has_exact_d_tag(event) {
+    if !has_exact_d_tag(event, identifier) {
         return Err(SetupPaymentFederationsEventError::WrongDTag);
     }
     Ok(())
 }
 
-fn has_exact_d_tag(event: &Event) -> bool {
+fn has_exact_d_tag(event: &Event, identifier: &str) -> bool {
     let mut d_tags = event
         .tags
         .as_slice()
@@ -247,20 +261,17 @@ fn has_exact_d_tag(event: &Event) -> bool {
         return false;
     };
     let d_tag = d_tag.as_slice();
-    d_tag.len() == 2
-        && d_tag[0] == "d"
-        && d_tag[1] == SETUP_PAYMENT_FEDERATIONS_D_TAG
-        && d_tags.next().is_none()
+    d_tag.len() == 2 && d_tag[0] == "d" && d_tag[1] == identifier && d_tags.next().is_none()
 }
 
-fn is_newer(candidate: &Event, current: &Event) -> bool {
+pub(crate) fn is_newer(candidate: &Event, current: &Event) -> bool {
     candidate.created_at > current.created_at
         || (candidate.created_at == current.created_at && candidate.id < current.id)
 }
 
 /// Failure while authenticating or admitting a setup-payment federation event.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SetupPaymentFederationsEventError {
+pub enum PolicyEventError {
     /// The Nostr event ID or signature is invalid.
     InvalidEvent,
 
@@ -283,27 +294,28 @@ pub enum SetupPaymentFederationsEventError {
     Content(SetupPaymentFederationsContentError),
 }
 
-impl core::fmt::Display for SetupPaymentFederationsEventError {
+/// Backward-compatible name for payment-publication callers.
+pub use PolicyEventError as SetupPaymentFederationsEventError;
+
+impl core::fmt::Display for PolicyEventError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidEvent => formatter.write_str("invalid Nostr event"),
-            Self::WrongPublisher => formatter.write_str("unexpected setup-payment publisher"),
-            Self::WrongKind => formatter.write_str("unexpected setup-payment event kind"),
-            Self::WrongDTag => formatter.write_str("unexpected setup-payment event d tag"),
+            Self::WrongPublisher => formatter.write_str("unexpected policy publisher"),
+            Self::WrongKind => formatter.write_str("unexpected policy event kind"),
+            Self::WrongDTag => formatter.write_str("unexpected policy event d tag"),
             Self::CreatedTooFarInFuture => {
-                formatter.write_str("setup-payment event timestamp is too far in the future")
+                formatter.write_str("policy event timestamp is too far in the future")
             }
-            Self::Rollback => {
-                formatter.write_str("setup-payment event would roll back current state")
-            }
+            Self::Rollback => formatter.write_str("policy event would roll back current state"),
             Self::Content(error) => {
-                write!(formatter, "invalid setup-payment event content: {error}")
+                write!(formatter, "invalid policy event content: {error}")
             }
         }
     }
 }
 
-impl std::error::Error for SetupPaymentFederationsEventError {
+impl std::error::Error for PolicyEventError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Content(error) => Some(error),

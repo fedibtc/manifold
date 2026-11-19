@@ -276,8 +276,7 @@ async fn current_input(
 /// before its daemon reaches [`Fleet::open`].
 /// A setup-payment policy that lets MGs start guardian transfers.
 fn transfer_policy()
--> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
-{
+-> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>> {
     policy_with_transfer_flag("guardian_transfer_v2", Some(true))
 }
 
@@ -285,8 +284,7 @@ fn transfer_policy()
 fn policy_with_transfer_flag(
     field: &str,
     flag: Option<bool>,
-) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
-{
+) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>> {
     let mut content = serde_json::json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -299,7 +297,9 @@ fn policy_with_transfer_flag(
     let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         content.to_string().as_bytes(),
     )
-    .expect("test policy parses");
+    .expect("test policy parses")
+    .features()
+    .clone();
     assert_eq!(
         policy.guardian_transfer_v2(),
         if field == "guardian_transfer_v2" {
@@ -1256,7 +1256,7 @@ async fn runtime_limits_divide_the_data_budget_by_the_published_data_per_seat() 
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     fleet
         .set_monthly_data_budget(MonthlyDataBudget::Gb(
@@ -1421,7 +1421,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
 /// A setup-payment publication with a per-seat CPU budget, or without one.
 fn cpu_budget_policy(
     budget: Option<u32>,
-) -> Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {
+) -> Option<fedi_decentralized_domain::AdmittedFeaturePolicy> {
     let mut content = serde_json::json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -1435,7 +1435,9 @@ fn cpu_budget_policy(
         fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
             content.to_string().as_bytes(),
         )
-        .expect("test policy parses"),
+        .expect("test policy parses")
+        .features()
+        .clone(),
     )
 }
 
@@ -1529,7 +1531,9 @@ async fn runtime_seat_limits_divide_the_data_filesystem_by_the_published_disk_fi
             fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
                 content.to_string().as_bytes(),
             )
-            .expect("test policy parses"),
+            .expect("test policy parses")
+            .features()
+            .clone(),
         )
     };
     // A 1 TB drive's ext4 size: 12 seats at the default 80 GB, 6 at 160 GB.
@@ -1909,7 +1913,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     let first_slot = 3_000_000;
     let slot = Arc::new(AtomicU64::new(first_slot));
@@ -2071,12 +2075,12 @@ async fn the_pressure_history_survives_restart() {
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     /// One run under `policy` at `now`, reading `reading`, then its report.
     async fn one_run(
         fleet: &Arc<Fleet>,
-        policy: AdmittedSetupPaymentFederations,
+        policy: fedi_decentralized_domain::AdmittedFeaturePolicy,
         now: std::time::SystemTime,
         reading: anyhow::Result<PressureTotals>,
     ) -> ReadinessReport {

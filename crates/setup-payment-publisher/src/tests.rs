@@ -126,7 +126,10 @@ fn manifest_keeps_the_guardian_transfer_v2_flag() {
         content["guardian_transfer_v2"] = serde_json::json!(enabled);
         let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
         assert_eq!(
-            read_content(&path).unwrap().guardian_transfer_v2,
+            read_content(&path)
+                .unwrap()
+                .legacy_features
+                .guardian_transfer_v2,
             Some(enabled)
         );
     }
@@ -139,7 +142,10 @@ fn manifest_keeps_the_guardian_link_flag() {
         let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
         content["guardian_link"] = serde_json::json!(enabled);
         let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
-        assert_eq!(read_content(&path).unwrap().guardian_link, Some(enabled));
+        assert_eq!(
+            read_content(&path).unwrap().legacy_features.guardian_link,
+            Some(enabled)
+        );
     }
 }
 
@@ -153,7 +159,7 @@ fn manifest_checks_uptime_windows_it_would_otherwise_drop() {
     let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
     let read = read_content(&path).expect("a partial minimum is publishable");
     assert_eq!(
-        read.min_uptime_percent,
+        read.legacy_features.min_uptime_percent,
         Some(MinUptimePercent {
             day: 70,
             week: 85,

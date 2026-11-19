@@ -572,3 +572,38 @@ fn each_environment_names_its_push_gateway_and_only_development_overrides_it() {
         })
     ));
 }
+
+#[test]
+fn feature_pin_is_opt_in_distinct_and_development_only() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        assert!(
+            environment
+                .profile_with_env(|_| None)
+                .unwrap()
+                .feature_config_publisher()
+                .is_none()
+        );
+        let configured = environment.profile_with_env(|name| {
+            (name == DEV_FEATURE_CONFIG_PUBLISHER_ENV)
+                .then(|| STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER.to_owned())
+        });
+        if environment == ManifoldEnvironment::Development {
+            assert!(configured.unwrap().feature_config_publisher().is_some());
+        } else {
+            assert!(matches!(
+                configured,
+                Err(ManifoldEnvironmentProfileError::OverrideOutsideDevelopment { .. })
+            ));
+        }
+    }
+    assert!(
+        ManifoldEnvironment::Development
+            .profile_with_env(|name| (name == DEV_FEATURE_CONFIG_PUBLISHER_ENV)
+                .then(|| DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER.to_owned()))
+            .is_err()
+    );
+}

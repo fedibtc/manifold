@@ -14,7 +14,7 @@ direct messages. There is one conversation per MG and no tickets.
 
 - **Identities.** The MG writes as its service Nostr key, the key its
   advertisement and Holder authorization name. Fedi support is the
-  `support_nostr_pubkey` of the admitted setup-payment policy
+  `support_nostr_pubkey` of the admitted feature policy
   ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
   which the policy publisher's signature authenticates. When the policy names
   none, it is the key the environment profile pins

@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+    AdmittedFeaturePolicy, AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
     HolderAuthorizationEnvelope, MgPeerAttestation, MgPeerAttestationStatement, MgTrustMaterial,
     ProtocolV1, Pubkey, SchnorrSignatureProof, Url,
 };
@@ -87,6 +87,7 @@ pub struct ManifoldGuardianRpc {
     /// [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`] rather than to zero — a missing
     /// publication must not read as "any rate is acceptable".
     setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    features: tokio::sync::watch::Receiver<Option<AdmittedFeaturePolicy>>,
 }
 
 /// The late-bound inputs behind `get_fman_trust_material`.
@@ -110,10 +111,10 @@ impl ManifoldGuardianRpc {
     /// ([`SPEC-guardian-transfer`](../specs/SPEC-guardian-transfer.md)).
     fn may_start_guardian_transfer(&self) -> bool {
         let published = self
-            .setup_payment_policy
+            .features
             .borrow()
             .as_ref()
-            .and_then(AdmittedSetupPaymentFederations::guardian_transfer_v2);
+            .and_then(|policy| policy.guardian_transfer_v2());
         self.fleet
             .config()
             .manifold_environment
@@ -124,6 +125,7 @@ impl ManifoldGuardianRpc {
     pub fn new(
         fleet: Arc<Fleet>,
         setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+        features: tokio::sync::watch::Receiver<Option<AdmittedFeaturePolicy>>,
     ) -> Self {
         let signing_key = fleet.identity().derive_service_signing_key();
         let attestation_keys = nostr_sdk::Keys::new(
@@ -141,6 +143,7 @@ impl ManifoldGuardianRpc {
             attestation_keys,
             trust_material: Arc::new(OnceLock::new()),
             setup_payment_policy,
+            features,
         }
     }
 

@@ -356,8 +356,8 @@ the fleet.
   Holder-authorization status (the Nostr boundary is always constructed from
   the environment profile). The operator uses the configured identity when
   arranging a Holder authorization. It also returns `fman_version`: the
-  running package version, the latest version from the authenticated
-  setup-payment publication (or null before one is admitted), and whether
+  running package version, the latest version from the effective feature policy
+  (kind 37710 when admitted, otherwise the legacy kind 37707 projection) (or null before one is admitted), and whether
   SemVer ordering requires an update. Consumers decide how to present that
   information; the daemon does not stop its guardian children.
 - `RefreshHolderAuthorizations` is available during the onboarding
@@ -376,7 +376,7 @@ the fleet.
   returns `{available, messages, unread}` from the database without a relay
   read. `SendSupportMessage` publishes before it answers `{message}` and
   returns an operation error when no relay accepts the message or the
-  admitted setup-payment policy names no Fedi support key. Each message
+  effective feature policy and environment supply no Fedi support key. Each message
   carries `unread`, true for a Fedi message not yet marked read.
   `MarkSupportRead` takes the rumor ids of the messages the operator saw as
   `ids`, marks those Fedi messages read, and returns `{unread}`.

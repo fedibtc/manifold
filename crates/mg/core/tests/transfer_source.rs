@@ -381,6 +381,7 @@ async fn saturated_replacement_admission_leaves_other_rpcs_available() {
     let rpc = Arc::new(crate::service::ManifoldGuardianRpc::new(
         source.fleet.clone(),
         tokio::sync::watch::channel(None).1,
+        tokio::sync::watch::channel(None).1,
     ));
     let mut requests = tokio::task::JoinSet::new();
     // More simultaneous authorized calls than the daemon's 128 shared permits.
@@ -431,6 +432,7 @@ async fn replacement_admission_fences_stop_and_every_package_release() {
     let source = running_source(35_600).await;
     let rpc = crate::service::ManifoldGuardianRpc::new(
         source.fleet.clone(),
+        tokio::sync::watch::channel(None).1,
         tokio::sync::watch::channel(None).1,
     );
     let request = || crate::test_support::transfer_call(&source.pull(), &source.destination);

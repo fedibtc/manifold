@@ -26,7 +26,7 @@ Admission sells up to the lowest of six limits on total seats:
   MG's seat processes, divided by the budget. Running seats count toward
   their own budget, so they do not lower the limit as they grow. Until the
   first sample it is 4;
-- a policy limit, the setup-payment publication's `max_seats_per_mg_v2`
+- a policy limit, the effective feature policy's `max_seats_per_mg_v2`
   (default 12);
 - a CPU limit: the host's measured CPU capacity divided by the
   publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
@@ -38,7 +38,8 @@ Admission sells up to the lowest of six limits on total seats:
   publication's `seat_monthly_data_gb` (default 65 GB), rounded down. It
   binds only when the operator gave a budget in GB.
 
-The publication's `seat_memory_budget_mib_v2` replaces the default budget
+The effective feature snapshot (37710, or the legacy 37707 projection before admission)
+supplies `seat_memory_budget_mib_v2`, which replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release.

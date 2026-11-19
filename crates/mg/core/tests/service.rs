@@ -116,7 +116,11 @@ async fn rpc_with_network(
         .await
         .unwrap();
     fleet.set_offered_price(Some(TEST_PRICE)).await.unwrap();
-    ManifoldGuardianRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1)
+    ManifoldGuardianRpc::new(
+        Arc::new(fleet),
+        tokio::sync::watch::channel(None).1,
+        tokio::sync::watch::channel(None).1,
+    )
 }
 
 /// The offer these tests quote against: priced at zero, so a quote needs no

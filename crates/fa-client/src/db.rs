@@ -61,6 +61,7 @@ enum FaDbPrefix {
     GuardianTransfer = 0x09,
     MgTrustMaterial = 0x0a,
     MgTrustMaterialRefreshRequired = 0x0b,
+    FeatureConfig = 0x0c,
 }
 
 /// Disposable signed evidence, outside recovery records and backup formats.
@@ -278,6 +279,15 @@ impl_db_record!(
     key = SetupPaymentFederationsKey,
     value = StoredSetupPaymentFederationsEvent,
     db_prefix = FaDbPrefix::SetupPaymentFederations,
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct FeatureConfigKey([u8; 32]);
+
+impl_db_record!(
+    key = FeatureConfigKey,
+    value = StoredSetupPaymentFederationsEvent,
+    db_prefix = FaDbPrefix::FeatureConfig,
 );
 
 #[derive(Debug, Decodable, Encodable)]
@@ -2304,6 +2314,46 @@ impl FaStore {
                 AutocommitError::ClosureError { error, .. } => error,
                 AutocommitError::CommitFailed { .. } => {
                     FaError::Storage("storing setup-payment policy transaction failed".to_owned())
+                }
+            })
+    }
+    /// Load the complete last durably admitted feature publication.
+    pub(crate) async fn load_feature_config_event(&self, publisher: PublicKey) -> Option<Event> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&FeatureConfigKey(publisher.to_bytes()))
+            .await
+            .map(|stored| stored.0)
+    }
+
+    /// Atomically retain one complete admitted feature publication if it is highest.
+    pub(crate) async fn store_feature_config_event(&self, event: Event) -> FaResult<()> {
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let event = event.clone();
+                    Box::pin(async move {
+                        let key = FeatureConfigKey(event.pubkey.to_bytes());
+                        let current = dbtx.get_value(&key).await;
+                        if current.as_ref().is_some_and(|current| {
+                            current.0.id == event.id
+                                || !setup_payment_event_is_newer(&event, &current.0)
+                        }) {
+                            return Ok(());
+                        }
+                        dbtx.insert_entry(&key, &StoredSetupPaymentFederationsEvent(event))
+                            .await;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|error: AutocommitError<FaError>| match error {
+                AutocommitError::ClosureError { error, .. } => error,
+                AutocommitError::CommitFailed { .. } => {
+                    FaError::Storage("storing feature policy transaction failed".to_owned())
                 }
             })
     }

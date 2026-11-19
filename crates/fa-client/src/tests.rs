@@ -150,6 +150,8 @@ impl FaIdentity for OtherIdentity {
 
 #[derive(Clone, Default)]
 struct TestRegistry {
+    feature_candidates: Arc<Mutex<Vec<Event>>>,
+    feature_pin: Option<PublicKey>,
     candidates: Arc<Mutex<Vec<Event>>>,
     advertisements: Arc<Mutex<Vec<Event>>>,
     fail: Arc<AtomicBool>,
@@ -166,6 +168,15 @@ impl FaNostrClient for TestRegistry {
         _timeout: Duration,
     ) -> NostrClientResult<Event> {
         Err(NostrClientError::MissingEvent { context: "test" })
+    }
+
+    async fn fetch_feature_config(
+        &self,
+        publisher: PublicKey,
+        _timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        assert_eq!(self.feature_pin, Some(publisher));
+        Ok(self.feature_candidates.lock().unwrap().clone())
     }
 
     async fn fetch_setup_payment_federations(
@@ -4702,6 +4713,7 @@ async fn open_client_that_cannot_pay(
         },
         test_peer_badge_verifier(),
         None,
+        None,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4794,6 +4806,7 @@ async fn open_client_with_registry_reader_and_fee_account(
     consensus_reader: TestConsensusReader,
     fa_fee_account_provider: TestFaFeeAccountProvider,
 ) -> TestClient {
+    let feature_pin = registry.feature_pin;
     FaClient::open_inner(
         database,
         FaClientPorts {
@@ -4806,6 +4819,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         },
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
+        feature_pin,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4841,6 +4855,7 @@ async fn open_client_with_verifier(
         },
         verifier,
         Some(setup_payment_keys().public_key()),
+        None,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4891,6 +4906,7 @@ async fn open_client_with_store_and_registry(
             run_guard: Arc::new(tokio::sync::Mutex::new(())),
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
+            feature_config_publisher: None,
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
             manifold_environment:
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
@@ -15656,3 +15672,153 @@ async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
 
 #[path = "tests/replacement_receipts.rs"]
 mod replacement_receipts;
+
+#[tokio::test]
+async fn feature_replacements_survive_reopen_without_payment_authority() {
+    use fedi_decentralized_nostr::feature_config::{FEATURE_CONFIG_D_TAG, FEATURE_CONFIG_KIND};
+    let feature_keys = Keys::generate();
+    let now = test_now_secs();
+    let registry = TestRegistry {
+        feature_pin: Some(feature_keys.public_key()),
+        ..Default::default()
+    };
+    let feature = |version: &str, ts| {
+        EventBuilder::new(Kind::Custom(FEATURE_CONFIG_KIND),serde_json::json!({"version":1,"fman_version":version,"min_fee_ppm":0,"federations":[],"telemetry_registration_url":"https://ignored.example","guardian_transfer_v2":true}).to_string()).tag(Tag::identifier(FEATURE_CONFIG_D_TAG)).custom_created_at(nostr_sdk::Timestamp::from_secs(ts)).sign_with_keys(&feature_keys).unwrap()
+    };
+    registry
+        .feature_candidates
+        .lock()
+        .unwrap()
+        .push(feature("2.0.0", now));
+    let db = MemDatabase::new().into_database();
+    let open = || {
+        open_client_with_registry(
+            db.clone(),
+            TestPayments::new().0,
+            Arc::new(MgState::default()),
+            MgConfig::paid(),
+            registry.clone(),
+        )
+    };
+    let client = open().await;
+    client.refresh_maintenance_policy(options()).await.unwrap();
+    assert_eq!(
+        client
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.0.0"
+    );
+    assert!(
+        client
+            .admitted_setup_payment_federations(options())
+            .await
+            .is_err()
+    );
+    registry
+        .candidates
+        .lock()
+        .unwrap()
+        .push(setup_payment_raw_event(now + 5, serde_json::json!({"version":1,"fman_version":"0.1.0","federations":[PAYMENT_INVITE],"telemetry_registration_url":"https://example.com/enroll","min_fee_ppm":3210,"guardian_link":true}).to_string()));
+    client.refresh_maintenance_policy(options()).await.unwrap();
+    assert_eq!(client.min_guardian_fee_ppm().await, 3210);
+    assert_eq!(
+        client.replacement_policy().await.unwrap().guardian_link(),
+        None
+    );
+    drop(client);
+    *registry.feature_candidates.lock().unwrap() = vec![feature("1.1.0", now - 1)];
+    let reopened = open().await;
+    reopened
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.0.0"
+    );
+    assert_eq!(reopened.min_guardian_fee_ppm().await, 3210);
+    // A payment record this release cannot interpret still blocks payment,
+    // not the independently authenticated feature policy.
+    reopened
+        .inner
+        .store
+        .store_setup_payment_federations_event(setup_payment_raw_event(now + 6, r#"{"version":2}"#))
+        .await
+        .unwrap();
+    reopened
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .replacement_policy()
+            .await
+            .unwrap()
+            .guardian_transfer_v2(),
+        Some(true)
+    );
+    assert!(
+        reopened
+            .admitted_setup_payment_federations(options())
+            .await
+            .is_err()
+    );
+
+    let stored = EventBuilder::new(
+        Kind::Custom(FEATURE_CONFIG_KIND),
+        r#"{"version":1,"fman_version":"1.0.0","seat_memory_budget_mib_v2":0}"#,
+    )
+    .tag(Tag::identifier(FEATURE_CONFIG_D_TAG))
+    .custom_created_at(nostr_sdk::Timestamp::from_secs(now + 10))
+    .sign_with_keys(&feature_keys)
+    .unwrap();
+    reopened
+        .inner
+        .store
+        .store_feature_config_event(stored.clone())
+        .await
+        .unwrap();
+    drop(reopened);
+    let recovered = open().await;
+    *registry.feature_candidates.lock().unwrap() = vec![feature("2.1.0", now + 9)];
+    // This fixture's payment record is also unsupported; the refresh cannot
+    // supply policy, but must not replace the authentic feature floor.
+    assert!(
+        recovered
+            .refresh_maintenance_policy(options())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        recovered
+            .inner
+            .store
+            .load_feature_config_event(feature_keys.public_key())
+            .await
+            .unwrap()
+            .id,
+        stored.id
+    );
+    *registry.feature_candidates.lock().unwrap() = vec![feature("2.2.0", now + 11)];
+    recovered
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.2.0"
+    );
+}

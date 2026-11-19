@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, GetMgTrustMaterialRequest, GuardianReports, MgSeatBindings,
-    ProtocolV1, Pubkey, federation_seats, parse_protocol_peer_id,
+    AdmittedFeaturePolicy, GetMgTrustMaterialRequest, GuardianReports, MgSeatBindings, ProtocolV1,
+    Pubkey, federation_seats, parse_protocol_peer_id,
 };
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
@@ -86,7 +86,7 @@ where
         // An idle or unreconciled client has no guardian set to judge.
         self.maintenance_authority(self.fa_id()?).await?;
         match self
-            .admitted_setup_payment_federations(FormationRunOptions::default())
+            .refresh_maintenance_policy(FormationRunOptions::default())
             .await
         {
             Ok(_) | Err(FaError::Timeout(_)) => {}
@@ -259,7 +259,7 @@ where
 
 fn replacement_reasons(
     reports: &GuardianReports,
-    policy: &AdmittedSetupPaymentFederations,
+    policy: &AdmittedFeaturePolicy,
     now: u64,
 ) -> BTreeMap<PeerId, Vec<ReplacementReason>> {
     let num_peers = reports.peers.to_num_peers();

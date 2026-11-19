@@ -262,6 +262,12 @@ impl Db {
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
+        // An older MG rejects a newer entry in SQLx's main migration journal,
+        // even when the new table is additive. Keep this optional relay cache
+        // outside that journal so a rollback can still open all existing state.
+        sqlx::query(include_str!("../feature-migrations/0001_feature_cache.sql"))
+            .execute(&pool)
+            .await?;
 
         Ok(Self {
             pool,
@@ -632,6 +638,24 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Load the complete signed feature event for revalidation on restart.
+    pub async fn feature_config_json(&self, publisher: &str) -> Result<Option<String>, DbError> {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT event_json FROM nostr_feature_config_v1 WHERE publisher = ?",
+            )
+            .bind(publisher)
+            .fetch_optional(&self.pool)
+            .await?,
+        )
+    }
+
+    /// Replace the feature cache without touching payment state or the offer epoch.
+    pub async fn store_feature_config(&self, publisher: &str, event: &str) -> Result<(), DbError> {
+        sqlx::query("INSERT INTO nostr_feature_config_v1 (publisher, event_json) VALUES (?, ?) ON CONFLICT (publisher) DO UPDATE SET event_json = excluded.event_json").bind(publisher).bind(event).execute(&self.pool).await?;
         Ok(())
     }
 

@@ -4,8 +4,8 @@ use fedimint_core::peer_availability::{
 
 use super::*;
 
-fn policy(seconds: u64, week: u8, month: u8) -> AdmittedSetupPaymentFederations {
-    AdmittedSetupPaymentFederations::parse(
+fn policy(seconds: u64, week: u8, month: u8) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
+    fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         serde_json::to_string(&serde_json::json!({
             "version": 1, "fman_version": "0.1.0", "federations": [],
             "telemetry_registration_url": "https://example.com/telemetry",
@@ -15,6 +15,8 @@ fn policy(seconds: u64, week: u8, month: u8) -> AdmittedSetupPaymentFederations 
         .as_bytes(),
     )
     .unwrap()
+    .features()
+    .clone()
 }
 
 fn reports() -> GuardianReports {

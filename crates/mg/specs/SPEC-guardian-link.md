@@ -50,7 +50,7 @@ app created, exactly as it invokes an FI's DKG completion hook.
   checks the dashboard's Health page shows: `relay_check_failed`,
   `discovery_check_failed`, `bitcoin_check_failed`, `version_check_failed`
   (below the policy's `min_mg_version`), and `uptime_check_failed`. Then
-  `update_recommended`, when this release is below the setup-payment
+  `update_recommended`, when this release is below the feature
   policy's `recommended_min_mg_version`
   ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
   and `support_message`, an unread Fedi support message. Before the first
@@ -69,7 +69,7 @@ app created, exactly as it invokes an FI's DKG completion hook.
   `guardian-link:<linked_at_ms>:<sequence>`, so a retry after a transient
   failure deduplicates at the gateway.
 - **Wakes.** The notifier runs when a source of a reason changes: a new
-  readiness report, a new setup-payment policy, or a write to the support
+  readiness report, a new feature policy, or a write to the support
   thread; and when the link is made or revoked. It has no scan timer; the
   only timed wake is the retry of a failed send.
 - **Delivery states.** A transient failure is retried with the completion
@@ -105,7 +105,7 @@ app created, exactly as it invokes an FI's DKG completion hook.
 
 ## Enabling mobile notifications
 
-The setup-payment policy
+The feature policy
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md))
 carries an optional `guardian_link` flag. The guardian link is on only while the
 latest policy the MG admitted sets it to `true`, or, without an admitted

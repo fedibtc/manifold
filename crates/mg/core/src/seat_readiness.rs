@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, MaxPressurePercent, MgVersion, MinUptimePercent,
+    AdmittedFeaturePolicy, MaxPressurePercent, MgVersion, MinUptimePercent,
 };
 use fedi_decentralized_nostr::mg::{AdvertisedUptime, Permille, PermilleOutOfRange};
 use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
@@ -388,7 +388,7 @@ const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 pub async fn run(
     mut probe: impl ReadinessProbe,
     fleet: Arc<Fleet>,
-    mut setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    mut feature_policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     clock: impl Fn() -> SystemTime + Send,
     read_pressure: Option<impl Fn() -> anyhow::Result<PressureTotals> + Send>,
 ) {
@@ -431,7 +431,7 @@ pub async fn run(
             }
         });
         let (min, version, max_pressure) = {
-            let policy = setup_payment_policy.borrow_and_update();
+            let policy = feature_policy.borrow_and_update();
             let policy = policy.as_ref();
             (
                 policy.map_or_else(MinUptimePercent::default, |policy| {
@@ -439,7 +439,7 @@ pub async fn run(
                 }),
                 version_outcome(
                     &this_release,
-                    policy.and_then(AdmittedSetupPaymentFederations::min_mg_version),
+                    policy.and_then(|policy| policy.min_mg_version()),
                 ),
                 HostPressure::from(policy.map_or_else(MaxPressurePercent::default, |policy| {
                     policy.max_pressure_percent()
@@ -475,12 +475,7 @@ pub async fn run(
         } else {
             NOT_READY_INTERVAL
         };
-        wait_for_next_run(
-            wait,
-            &mut setup_payment_policy,
-            fleet.readiness_rerun_requested(),
-        )
-        .await;
+        wait_for_next_run(wait, &mut feature_policy, fleet.readiness_rerun_requested()).await;
     }
 }
 
@@ -490,7 +485,7 @@ pub async fn run(
 /// history. A policy that can no longer change only leaves the other two.
 async fn wait_for_next_run(
     wait: Duration,
-    policy: &mut watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    policy: &mut watch::Receiver<Option<AdmittedFeaturePolicy>>,
     rerun: impl Future<Output = ()>,
 ) {
     tokio::select! {

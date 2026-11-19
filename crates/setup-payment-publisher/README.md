@@ -48,6 +48,11 @@ nix run .#setup-payment-publisher -- republish \
   --expected-publisher <hex-or-npub>
 ```
 
+The following flags in this payment publication affect legacy readers and
+readers without an admitted feature snapshot. Once a reader admits kind 37710,
+publish feature changes at that independent address instead. Changes to these
+fields in kind 37707 no longer affect that reader's feature policy.
+
 To let MGs start direct-proof guardian transfers, set
 `"guardian_transfer_v2": true` in the policy file; set `false` to stop new
 transfers. If you omit the flag, each environment's default applies: on in

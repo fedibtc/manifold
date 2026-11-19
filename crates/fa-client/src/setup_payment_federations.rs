@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use fedi_decentralized_domain::DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM;
+use fedi_decentralized_nostr::feature_config::FeatureConfigEvent;
 use fedi_decentralized_nostr::setup_payment_federations::{
     AdmittedSetupPaymentFederationsEvent, admit_setup_payment_federations_event,
     restore_durably_admitted_setup_payment_federations_event,
@@ -81,18 +82,13 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Whether MGs start a guardian transfer now: the newest authenticated
-    /// setup-payment policy's flag, or, without one, the Manifold
+    /// Whether MGs start a guardian transfer now: the effective feature
+    /// policy's flag, or, without one, the Manifold
     /// environment's default, resolved as the MG resolves it. A relay
     /// timeout falls back to the retained policy, as the replacement check
     /// does.
     pub(crate) async fn guardian_transfer_enabled(&self, run: DriverRun<'_>) -> FaResult<bool> {
-        if let Some(publisher) = self.inner.setup_payment_publisher {
-            match self.refresh_setup_payment_policy(publisher, run).await {
-                Ok(_) | Err(FaError::Timeout(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
+        self.refresh_feature_sources(run).await?;
         let published = self
             .replacement_policy()
             .await
@@ -104,22 +100,64 @@ where
             .guardian_transfer_v2(published))
     }
 
+    /// Refresh feature policy for maintenance without requiring a payment publication.
+    pub(crate) async fn refresh_maintenance_policy(
+        &self,
+        options: crate::FormationRunOptions,
+    ) -> FaResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        options.validate_for_start(&self.inner.store)?;
+        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
+        let result = self
+            .refresh_feature_sources(DriverRun::new(options, deadline, &lease))
+            .await;
+        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    async fn refresh_feature_sources(&self, run: DriverRun<'_>) -> FaResult<()> {
+        let has_snapshot = self.refresh_features(run).await?;
+        if let Some(publisher) = self.inner.setup_payment_publisher {
+            match self.refresh_setup_payment_policy(publisher, run).await {
+                Ok(_) | Err(FaError::Timeout(_)) => (),
+                // A payment-cache failure still blocks paid operations. It must
+                // not invalidate a separately authenticated feature snapshot.
+                Err(FaError::Storage(_)) if has_snapshot => (),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn replacement_policy(
         &self,
-    ) -> FaResult<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {
-        let publisher = self
-            .inner
-            .setup_payment_publisher
-            .ok_or_else(|| FaError::Registry("no TSP publisher configured".to_owned()))?;
-        let event = self
-            .inner
-            .store
-            .load_setup_payment_federations_event()
-            .await
-            .ok_or_else(|| FaError::Registry("no authenticated TSP policy available".to_owned()))?;
-        restore_durably_admitted_setup_payment_federations_event(&event, publisher)
-            .map(|policy| policy.set().clone())
-            .map_err(|_| FaError::Registry("stored TSP policy failed authentication".to_owned()))
+    ) -> FaResult<fedi_decentralized_domain::AdmittedFeaturePolicy> {
+        let feature = match self.inner.feature_config_publisher {
+            Some(key) => FeatureConfigEvent::select(
+                self.inner.store.load_feature_config_event(key).await,
+                key,
+                [],
+                Timestamp::now(),
+            )
+            .map_err(|err| FaError::Storage(format!("restore feature policy: {err}")))?
+            .map(FeatureConfigEvent::into_policy),
+            None => None,
+        };
+        let legacy = match self.inner.setup_payment_publisher {
+            Some(key) => self
+                .inner
+                .store
+                .load_setup_payment_federations_event()
+                .await
+                .and_then(|event| {
+                    restore_durably_admitted_setup_payment_federations_event(&event, key).ok()
+                }),
+            None => None,
+        };
+        fedi_decentralized_domain::AdmittedFeaturePolicy::resolve(
+            feature,
+            legacy.as_ref().map(|p| p.set()),
+        )
+        .ok_or_else(|| FaError::Registry("no authenticated TSP policy available".to_owned()))
     }
 
     /// The smallest guardian fee rate this FA may propose right now, in ppm.
@@ -226,6 +264,52 @@ where
                 },
             )
             .collect::<Vec<_>>())
+    }
+
+    /// Refresh only the separately pinned feature publication.
+    async fn refresh_features(&self, run: DriverRun<'_>) -> FaResult<bool> {
+        let Some(key) = self.inner.feature_config_publisher else {
+            return Ok(false);
+        };
+        let stored = self.inner.store.load_feature_config_event(key).await;
+        let old = stored.as_ref().map(|event| event.id);
+        let candidates = match run
+            .call_with_timeout(
+                "refreshing feature policy",
+                run.request_timeout() / 2,
+                || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .registry
+                        .fetch_feature_config(key, run.request_timeout() / 2))
+                },
+            )
+            .await
+        {
+            Ok(Ok(events)) => events,
+            Ok(Err(_)) | Err(FaError::Timeout(_)) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let now = Timestamp::from(fedimint_core::time::duration_since_epoch().as_secs());
+        let current = FeatureConfigEvent::select(
+            stored,
+            key,
+            candidates
+                .into_iter()
+                .take(usize::from(SETUP_PAYMENT_FEDERATIONS_CANDIDATE_LIMIT)),
+            now,
+        )
+        .map_err(|err| FaError::Storage(format!("restore feature policy: {err}")))?;
+        if let Some(next) = &current
+            && Some(next.event().id) != old
+        {
+            self.inner
+                .store
+                .store_feature_config_event(next.event().clone())
+                .await?;
+        }
+        Ok(current.is_some())
     }
 
     /// Fetch `publisher`'s policy candidates, admit the newest authenticated

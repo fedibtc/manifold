@@ -141,6 +141,7 @@ struct FaClientInner<I, P, N, F, C> {
     run_guard: Arc<Mutex<()>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
+    feature_config_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
     /// Supplies the guardian-transfer default when the setup-payment policy
     /// does not say.
@@ -245,6 +246,7 @@ where
             peer_badge_verifier,
             None,
             None,
+            None,
             // Without a profile, guardian transfer defaults to production's
             // rule.
             ManifoldEnvironment::Production,
@@ -293,6 +295,7 @@ where
             },
             peer_badge_verifier,
             Some(setup_payment_publisher),
+            None,
             guardian_verification_fee_account,
             manifold_environment,
         )
@@ -367,6 +370,7 @@ where
             },
             peer_badge_verifier,
             setup_payment_publisher,
+            profile.feature_config_publisher().copied(),
             guardian_verification_fee_account,
             profile.environment(),
         )
@@ -421,6 +425,7 @@ where
         ports: FaClientPorts<I, P, N, F, C>,
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
+        feature_config_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
         manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
@@ -444,6 +449,7 @@ where
                 run_guard: Arc::new(Mutex::new(())),
                 peer_badge_verifier,
                 setup_payment_publisher,
+                feature_config_publisher,
                 guardian_verification_fee_account,
                 manifold_environment,
                 backup_tasks,

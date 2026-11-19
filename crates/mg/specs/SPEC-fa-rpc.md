@@ -6,8 +6,7 @@ Paid quoting checks the authenticated common setup-payment membership and quotes
 Quoting from a SeatGrant is not implemented.
 
 The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`,
-and `RemoveSeat` are implemented in normal daemon builds. The setup-payment
-policy's `guardian_transfer_v2` flag controls whether an MG starts new
+and `RemoveSeat` are implemented in normal daemon builds. The effective feature policy's `guardian_transfer_v2` flag controls whether an MG starts new
 transfers. Without the flag, the MG uses the environment default (off only
 in production). While transfer is off, an MG answers a `PullSeat` or
 `TransferSeat` that would start a transfer with `UnsupportedVerb`;

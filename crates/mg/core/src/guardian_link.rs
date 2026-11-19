@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, ProtocolV1};
+use fedi_decentralized_domain::{AdmittedFeaturePolicy, ProtocolV1};
 use fedi_decentralized_service_manifold_guardian::{
     DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, GuardianLinkError,
     GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, LinkDeviceRequest,
@@ -82,7 +82,7 @@ pub(crate) struct GuardianLinkState {
     offer: Mutex<Option<LinkOffer>>,
     /// The admitted setup-payment policy, bound once by the daemon when its
     /// Nostr boundary exists. Unbound reads as no policy admitted yet.
-    policy: OnceLock<watch::Receiver<Option<AdmittedSetupPaymentFederations>>>,
+    policy: OnceLock<watch::Receiver<Option<AdmittedFeaturePolicy>>>,
     /// Wakes the notifier after a link, a revoke, or a new readiness report.
     pub(crate) changed: tokio::sync::Notify,
 }
@@ -128,7 +128,7 @@ impl Fleet {
     /// switches the feature. Set once; a second call is ignored.
     pub fn bind_guardian_link_policy(
         &self,
-        policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+        policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     ) {
         let _ = self.guardian_link.policy.set(policy);
     }
@@ -143,10 +143,10 @@ impl Fleet {
         }
     }
 
-    fn guardian_link_enabled_by(&self, policy: Option<&AdmittedSetupPaymentFederations>) -> bool {
+    fn guardian_link_enabled_by(&self, policy: Option<&AdmittedFeaturePolicy>) -> bool {
         self.config()
             .manifold_environment
-            .guardian_link(policy.and_then(AdmittedSetupPaymentFederations::guardian_link))
+            .guardian_link(policy.and_then(|policy| policy.guardian_link()))
     }
 
     pub fn guardian_link_availability(&self) -> GuardianLinkAvailability {
@@ -268,7 +268,7 @@ impl Fleet {
     /// daemon already holds. Coarse by design: see [`AttentionReason`].
     pub async fn attention_reasons(
         &self,
-        policy: Option<&AdmittedSetupPaymentFederations>,
+        policy: Option<&AdmittedFeaturePolicy>,
     ) -> anyhow::Result<BTreeSet<AttentionReason>> {
         let mut reasons = BTreeSet::new();
         // Before the first readiness run nothing is known, so nothing fails.
@@ -288,7 +288,7 @@ impl Fleet {
             );
         }
         if policy
-            .and_then(AdmittedSetupPaymentFederations::recommended_min_mg_version)
+            .and_then(|policy| policy.recommended_min_mg_version())
             .is_some_and(|recommended| this_mg_version().is_older_than(recommended))
         {
             reasons.insert(AttentionReason::UpdateRecommended);
@@ -433,7 +433,7 @@ type Backoff = Option<(u32, tokio::time::Instant)>;
 /// thread write, and on its own only to retry a failed send.
 pub fn spawn_notifier(
     fleet: Arc<Fleet>,
-    mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    mut policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
 ) -> GuardianLinkNotifier {
     let (shutdown, mut shutdown_rx) = watch::channel(false);
     let mut support = fleet.db().subscribe_support();
@@ -489,7 +489,7 @@ fn next_backoff(fleet: &Fleet, backoff: Backoff, entropy: &[u8]) -> Backoff {
 /// One edge-detecting pass. Returns whether a notification was sent.
 async fn tick(
     fleet: &Fleet,
-    policy: Option<&AdmittedSetupPaymentFederations>,
+    policy: Option<&AdmittedFeaturePolicy>,
     backoff: &mut Backoff,
 ) -> anyhow::Result<bool> {
     // Off, nothing is told and nothing is recorded as told: when the policy
