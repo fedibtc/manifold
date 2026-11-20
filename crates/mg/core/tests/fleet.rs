@@ -3,7 +3,7 @@ use fedi_decentralized_service_manifold_guardian::{
     FederationName, FederationSize, FormationSeatBinding, GetQuoteRequest, GuardianCode,
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
     MetaFieldKey, MetaFieldValue, MonthlyDataBudget, OfferEpoch, SeatCapacityEvent, SeatHealth,
-    ServiceStatus, WindowedFigure,
+    ServiceStatus,
 };
 use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
@@ -561,12 +561,17 @@ async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
     tokio::time::timeout(Duration::from_secs(20), pending_read.notified())
         .await
         .expect("sampler rechecks session zero without waiting for the 300s error backoff");
+    // The worker dates the observation, so look for the first row even if
+    // midnight UTC passes before the test reads it.
     let read_sample = || async {
-        fleet
-            .db
-            .active_wallet_sample(&seat_id, crate::db::now_ms() / 86_400_000)
-            .await
-            .unwrap()
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT wallet_count, complete FROM active_wallet_samples
+             WHERE quote_id = ? ORDER BY utc_day LIMIT 1",
+        )
+        .bind(seat_id.as_bytes().as_slice())
+        .fetch_optional(fleet.db.pool())
+        .await
+        .unwrap()
     };
     assert_eq!(
         read_sample().await,
@@ -592,13 +597,7 @@ async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
     })
     .await
     .expect("background sampling retries without waiting for the 300s error backoff");
-    assert_eq!(
-        sample,
-        WindowedFigure {
-            value: 7,
-            complete: true
-        }
-    );
+    assert_eq!(sample, (7, true));
     fleet.shutdown().await;
 }
 

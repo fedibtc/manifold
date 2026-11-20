@@ -53,18 +53,16 @@ impl DailyWalletSamples {
                     Duration::from_millis(((day + 1) * DAY_MS - now_ms()).max(0) as u64)
                 }
                 // A healthy new federation may still be finishing session zero.
-                // Poll promptly, then fall back to the normal backoff if it stalls.
+                // Poll promptly, then stay on the normal backoff until a sample succeeds.
                 Ok(None) if prompt_retries > 0 => {
                     prompt_retries -= 1;
                     SESSION_ZERO_RETRY_INTERVAL
                 }
                 Ok(None) => {
-                    prompt_retries = SESSION_ZERO_PROMPT_RETRIES;
                     tracing::warn!(seat_id = %self.seat, "wallet sampling still awaits session zero");
                     ERROR_BACKOFF
                 }
                 Err(error) => {
-                    prompt_retries = SESSION_ZERO_PROMPT_RETRIES;
                     tracing::warn!(seat_id = %self.seat, %error, "could not sample active wallets");
                     ERROR_BACKOFF
                 }
@@ -76,6 +74,8 @@ impl DailyWalletSamples {
     pub(super) async fn report(
         &self,
     ) -> Result<(WindowedFigure, ActiveWalletHistory), SeatVerbError> {
+        // Session zero can be pending while the child is serving. Preserve the
+        // retryable RPC error callers previously got when waiting timed out.
         let (day, figure) = self.today().await?.ok_or(SeatVerbError::SeatUnavailable)?;
         let previous_30d = self
             .db
