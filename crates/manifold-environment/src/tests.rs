@@ -206,6 +206,7 @@ fn production_pins_its_issuer_identities() {
             "npub1auj9edrs2cfnuk2u64xkdh5tmkl8rw59swkzcthdu78e2xvpulmqe86t0t",
             "npub1c08msdcfzpv3gq0nryma5z0lahqw6nlkfer8w2a8c03xw7z2fsdqrvynla",
             "npub124rwnjk2dw9ywndfm2ren70clxyg3qqcksjzn6lqph2tnnf0dgcsk67pr9",
+            "npub1ff79m5ykm69ude3x4zxs3n5cdglmpwe4gl0re84nx3m5v3c4rx0s3wntpz",
         ]
     );
 
