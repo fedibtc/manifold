@@ -16,7 +16,7 @@ use crate::fedimint_api::FedimintApi;
 use crate::seat::SeatPhase;
 use crate::seat_process::fake::{
     FAKE_LNV2_INSTANCE_ID, FAKE_META_INSTANCE_ID, FakeApiState, FakeDkgStep, FakeSeatChildHandle,
-    FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
+    FakeSeatProcessSpawner, FakeWalletSampling, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
 use crate::seat_readiness::{
@@ -515,6 +515,90 @@ fn running_federation(peer: u16, meta_consensus: Option<Vec<u8>>) -> FakeApiStat
         meta_consensus,
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
+    use fedimint_core::backup::BackupStatistics;
+    use fedimint_core::core::DynModuleConsensusItem;
+    use fedimint_core::epoch::ConsensusItem;
+    use fedimint_core::session_outcome::{AcceptedItem, SessionOutcome};
+    use fedimint_lnv2_common::LightningConsensusItem;
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 31_280).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 142).await;
+    let (finish_session, session_zero) = tokio::sync::watch::channel(None);
+    let pending_read = Arc::new(Notify::new());
+    fleet
+        .form_fake_child(
+            &seat_id,
+            FakeApiState {
+                wallet_sampling: Some(FakeWalletSampling {
+                    backups: BackupStatistics {
+                        refreshed_1m: 7,
+                        ..Default::default()
+                    },
+                    session_zero,
+                    pending_read: pending_read.clone(),
+                }),
+                ..running_federation(0, None)
+            },
+        )
+        .await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    assert!(matches!(
+        seat.cached_report_for_test(),
+        SeatReport::Active {
+            phase: SeatPhase::Running { .. },
+            health: SeatHealth::Healthy,
+        }
+    ));
+    tokio::time::timeout(Duration::from_secs(15), pending_read.notified())
+        .await
+        .expect("sampler sees a serving guardian with session zero pending");
+    tokio::time::timeout(Duration::from_secs(20), pending_read.notified())
+        .await
+        .expect("sampler rechecks session zero without waiting for the 300s error backoff");
+    // The worker dates the observation, so look for the first row even if
+    // midnight UTC passes before the test reads it.
+    let read_sample = || async {
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT wallet_count, complete FROM active_wallet_samples
+             WHERE quote_id = ? ORDER BY utc_day LIMIT 1",
+        )
+        .bind(seat_id.as_bytes().as_slice())
+        .fetch_optional(fleet.db.pool())
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        read_sample().await,
+        None,
+        "no sample before provenance is known"
+    );
+    finish_session.send_replace(Some(SessionOutcome {
+        items: vec![AcceptedItem {
+            peer: fedimint_core::PeerId::from(0),
+            item: ConsensusItem::Module(DynModuleConsensusItem::from_typed(
+                FAKE_LNV2_INSTANCE_ID,
+                LightningConsensusItem::UnixTimeVote((crate::db::now_ms() / 1000) as u64),
+            )),
+        }],
+    }));
+    let sample = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(sample) = read_sample().await {
+                break sample;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("background sampling retries without waiting for the 300s error backoff");
+    assert_eq!(sample, (7, true));
+    fleet.shutdown().await;
 }
 
 fn fee_account(byte: u8) -> Account {
