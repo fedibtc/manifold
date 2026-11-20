@@ -420,6 +420,10 @@ impl VerificationPipeline {
                     FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS,
                 )
                 .map_err(|error| {
+                    // ExpiredCredentials is reserved for reader rollout.
+                    // Revisit using it for Expired around 2026-12-06, after
+                    // compatible FA readers have shipped. Keep the historical
+                    // code until then: old readers cannot decode the new one.
                     (
                         PublicRejectionCode::InvalidCredentials,
                         format!("MG trust material failed verification: {error}"),
