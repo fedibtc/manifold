@@ -84,6 +84,27 @@
           "linked-specs-claims"
           "linked-specs-claims-verification"
         ];
+        retiredReviewSkillNames = [
+          # Names before and after the multipart-review rename.
+          "dpc-general-multipart-review"
+          "dpc-review-coordination"
+          "dpc-review-architecture"
+          "dpc-review-judgment"
+          "dpc-review-maintainability"
+          "dpc-review-rust-style"
+          "dpc-review-reliability"
+          "multipart-review"
+          "multipart-review-coordination"
+          "multipart-review-architecture"
+          "multipart-review-judgment"
+          "multipart-review-maintainability"
+          "multipart-review-rust-style"
+          "multipart-review-reliability"
+        ];
+        retiredSkillPackages = [
+          "dpc-public-skills"
+          "maan2003-skills"
+        ];
         linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
           set -eu
 
@@ -92,20 +113,22 @@
           source_dir="${dpc-public-skills.packages.${system}.skills}/share/agents/skills"
           ${pkgs.coreutils}/bin/mkdir -p "$skills_dir"
 
-          remove_old_link() {
-            target="$skills_dir/$1"
-            if [ -L "$target" ]; then
-              ${pkgs.coreutils}/bin/rm -f "$target"
-            elif [ -e "$target" ]; then
-              printf 'refusing to replace non-symlink: %s\n' "$target" >&2
-              exit 1
+          remove_imported_link() {
+            local target="$skills_dir/$1" destination
+            # Read the direct target without resolving it: the store path may
+            # have been collected. Preserve even trailing newlines for matching.
+            if [ -L "$target" ] &&
+               IFS= read -r -d "" destination < <(${pkgs.coreutils}/bin/readlink -z "$target") &&
+               [[ "$destination" =~ ^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-"$2"$ ]]; then
+              ${pkgs.coreutils}/bin/rm -f -- "$target"
             fi
           }
 
-          remove_old_link dpc-public-skills
-          remove_old_link maan2003-skills
-          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability multipart-review multipart-review-coordination multipart-review-architecture multipart-review-judgment multipart-review-maintainability multipart-review-rust-style multipart-review-reliability; do
-            remove_old_link "$name"
+          for name in ${pkgs.lib.escapeShellArgs retiredSkillPackages}; do
+            remove_imported_link "$name" "$name/share/agents/skills"
+          done
+          for name in ${pkgs.lib.escapeShellArgs retiredReviewSkillNames}; do
+            remove_imported_link "$name" "dpc-public-skills/share/agents/skills/$name"
           done
 
           for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
@@ -128,18 +151,18 @@
             ${pkgs.coreutils}/bin/touch "$exclude_file"
 
             tmp_file="$(${pkgs.coreutils}/bin/mktemp "$exclude_file.XXXXXX")"
-            ${pkgs.gnugrep}/bin/grep -Fvx \
-              -e '/.agents/skills/dpc-public-skills' \
-              -e '/.agents/skills/maan2003-skills' \
-              -e '/.agents/skills/multipart-review' \
-              -e '/.agents/skills/multipart-review-coordination' \
-              -e '/.agents/skills/multipart-review-architecture' \
-              -e '/.agents/skills/multipart-review-judgment' \
-              -e '/.agents/skills/multipart-review-maintainability' \
-              -e '/.agents/skills/multipart-review-rust-style' \
-              -e '/.agents/skills/multipart-review-reliability' \
-              "$exclude_file" >"$tmp_file" || true
-            ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
+            if ${pkgs.gnugrep}/bin/grep -aFvx \
+              ${
+                pkgs.lib.concatMapStringsSep " " (name: "-e ${pkgs.lib.escapeShellArg "/.agents/skills/${name}"}") (
+                  retiredSkillPackages ++ retiredReviewSkillNames
+                )
+              } \
+              "$exclude_file" >"$tmp_file" || [ "$?" -eq 1 ]; then
+              ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
+            else
+              ${pkgs.coreutils}/bin/rm -f "$tmp_file"
+              exit 1
+            fi
 
             for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
               pattern="/.agents/skills/$name"
