@@ -14,7 +14,7 @@ use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::endpoint_constants::{
     AUDIT_ENDPOINT, AWAIT_SESSION_OUTCOME_ENDPOINT, BACKUP_STATISTICS_ENDPOINT,
-    CLIENT_CONFIG_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+    CLIENT_CONFIG_ENDPOINT, SESSION_COUNT_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
 use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::module::audit::AuditSummary;
@@ -208,6 +208,12 @@ impl FedimintApi {
             ),
         )
         .await
+    }
+
+    /// Read the number of completed consensus sessions without waiting for one.
+    pub async fn session_count(&self) -> Result<u64, FedimintApiError> {
+        self.request(SESSION_COUNT_ENDPOINT, self.api.session_count())
+            .await
     }
 
     /// When the federation formed: the earliest lnv2 unix time vote in its
