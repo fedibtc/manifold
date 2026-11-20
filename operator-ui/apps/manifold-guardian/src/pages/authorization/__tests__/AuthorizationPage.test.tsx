@@ -104,6 +104,40 @@ describe('AuthorizationPage', () => {
     expect(call).toHaveBeenCalledWith('RefreshHolderAuthorizations');
   });
 
+  it('should distinguish an unchanged holder from a new approval after scanning a private code', async () => {
+    const initial = { ...observed, holder_pairing_supported: true };
+    const invite = {
+      protocol: 'mg_holder_pairing_v1',
+      environment: 'development',
+      subject_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+      endpoint_id: '01'.repeat(32),
+      secret: '02'.repeat(32),
+      expires_at_ms: Date.now() + 300_000
+    };
+    const call = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(invite)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce({
+        ...initial,
+        nostr: { ...initial.nostr, holders: ['replacement-holder'] }
+      });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create private pairing code' }));
+    await screen.findByRole('button', { name: 'Replace pairing code' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    await screen.findByText(/still shows the same holder/);
+    expect(screen.getByRole('button', { name: 'Replace pairing code' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    await screen.findByText(/Confirm the holder under Approved by/);
+    expect(screen.getByText('replacement-holder')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Replace pairing code' })).toBeNull();
+    expect(call).not.toHaveBeenCalledWith('RefreshHolderAuthorizations');
+  });
+
   it('should show the fetch as busy and prevent a second click until it finishes', async () => {
     const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
     renderPage();

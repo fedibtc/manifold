@@ -1,9 +1,23 @@
+.guide {
+  container: peerbadge-steps / inline-size;
+}
+
 .steps {
-  @apply grid grid-cols-1 gap-6 rounded-card border border-muted bg-surface p-5 md:grid-cols-[1fr_1fr_16rem] md:gap-0;
+  @apply grid grid-cols-1 gap-6 rounded-card border border-muted bg-surface p-5;
 }
 
 .column {
-  @apply flex min-w-0 flex-col gap-3 md:px-4 md:first:pl-0 md:last:pr-0 md:[&:not(:first-child)]:border-l md:[&:not(:first-child)]:border-muted;
+  @apply flex min-w-0 flex-col gap-3;
+}
+
+@container peerbadge-steps (min-width: 40rem) {
+  .steps {
+    @apply grid-cols-[1fr_1fr_16rem] gap-x-0 gap-y-3;
+  }
+
+  .column {
+    @apply row-span-2 grid grid-rows-subgrid items-start px-4 first:pl-0 last:pr-0 [&:not(:first-child)]:border-l [&:not(:first-child)]:border-muted;
+  }
 }
 
 .link {

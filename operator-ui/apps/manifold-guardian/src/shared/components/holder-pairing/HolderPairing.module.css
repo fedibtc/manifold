@@ -1,0 +1,7 @@
+.controls {
+  @apply flex min-w-0 flex-col items-start gap-3;
+}
+
+.hint {
+  @apply uMutedSm;
+}

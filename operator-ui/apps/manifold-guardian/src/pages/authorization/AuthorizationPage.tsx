@@ -5,7 +5,7 @@ import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
-import { HolderPairing } from '@/shared/components/holder-pairing/HolderPairing';
+import { PeerBadgeApprovalSteps } from '@/shared/components/peerbadge-approval-steps/PeerBadgeApprovalSteps';
 import { toNpub } from '@/shared/utils/npub';
 import styles from './AuthorizationPage.module.css';
 
@@ -71,7 +71,7 @@ export const AuthorizationPage = () => {
 
       {onboarding.data?.holder_pairing_supported && (
         <SectionCard title="Pair a new holder">
-          <HolderPairing />
+          <PeerBadgeApprovalSteps data={onboarding.data} privatePairing />
         </SectionCard>
       )}
       <SectionCard title="Update authorization">

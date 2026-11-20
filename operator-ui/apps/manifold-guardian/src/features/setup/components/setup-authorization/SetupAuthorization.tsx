@@ -6,7 +6,7 @@ import { SetupAuthorizationPanel } from '@/features/setup/components/setup-autho
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationStatusBanner } from '@/shared/components/authorization-status-banner/AuthorizationStatusBanner';
-import { HolderPairing } from '@/shared/components/holder-pairing/HolderPairing';
+import { PeerBadgeApprovalSteps } from '@/shared/components/peerbadge-approval-steps/PeerBadgeApprovalSteps';
 import { isAuthorized } from '@/shared/utils/authorization';
 import styles from './SetupAuthorization.module.css';
 
@@ -81,7 +81,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
       </div>
 
       {onboarding.data?.holder_pairing_supported ? (
-        <HolderPairing />
+        <PeerBadgeApprovalSteps data={onboarding.data} privatePairing />
       ) : (
         <SetupAuthorizationPanel
           data={onboarding.data}
@@ -91,7 +91,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
         />
       )}
 
-      <PeerBadgeHelp />
+      <PeerBadgeHelp privatePairing={onboarding.data?.holder_pairing_supported} />
 
       <div className={styles.actions}>
         <Button disabled>Continue</Button>
