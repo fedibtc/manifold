@@ -3071,10 +3071,12 @@ fn assert_safe_event_journal(directory: &Path, expected_messages: &[&str]) -> an
     let mut event_count = 0usize;
     for segment in segments {
         let metadata = segment.metadata()?;
-        let segment_mode = metadata.permissions().mode() & 0o777;
+        // Older segments are sealed on reopen; this stopped snapshot checks privacy,
+        // while writer tests cover the active segment mode.
+        let segment_mode = metadata.permissions().mode() & 0o7777;
         anyhow::ensure!(
-            segment_mode == 0o600,
-            "journal segment {} has mode {segment_mode:o}, expected 600",
+            matches!(segment_mode, 0o400 | 0o600),
+            "journal segment {} has mode {segment_mode:o}, expected 400 or 600",
             segment.path().display()
         );
         anyhow::ensure!(
