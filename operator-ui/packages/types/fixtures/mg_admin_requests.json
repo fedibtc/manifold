@@ -17,6 +17,7 @@
     }
   },
   "CreateGuardianLinkOffer": "CreateGuardianLinkOffer",
+  "CreateHolderPairing": "CreateHolderPairing",
   "DecommissionSeat": {
     "DecommissionSeat": {
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"

@@ -5,6 +5,7 @@ import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
+import { PeerBadgeApprovalSteps } from '@/shared/components/peerbadge-approval-steps/PeerBadgeApprovalSteps';
 import { toNpub } from '@/shared/utils/npub';
 import styles from './AuthorizationPage.module.css';
 
@@ -34,12 +35,15 @@ export const AuthorizationPage = () => {
   };
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
+  const showPrivatePairing = onboarding.data?.holder_pairing_supported && !authorized;
   const holders = authorized ? nostr.holders : [];
   // An approved fleet is not waiting for a scan, so asking for one states
   // something the rest of the screen contradicts.
   const intro = authorized
     ? 'This host is approved. The code below is your Manifold Fedimint Guardian ID.'
-    : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the PeerBadge app to approve it.';
+    : showPrivatePairing
+      ? 'Pair a holder, or renew your existing holder’s authorization, before Federation Ambassadors can discover this host.'
+      : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the PeerBadge app to approve it.';
   const guideTitle = authorized ? 'Renew your approval' : 'Approve your host';
 
   const showMeHow = (
@@ -54,13 +58,22 @@ export const AuthorizationPage = () => {
 
       <p className={styles.intro}>{intro}</p>
 
-      <AuthorizationPanel
-        data={onboarding.data}
-        isLoading={onboarding.isLoading}
-        error={refresh.error ?? onboarding.error}
-      />
-      {onboarding.data && !authorized ? <div className={styles.actions}>{showMeHow}</div> : null}
+      {!showPrivatePairing && (
+        <AuthorizationPanel
+          data={onboarding.data}
+          isLoading={onboarding.isLoading}
+          error={refresh.error ?? onboarding.error}
+        />
+      )}
+      {onboarding.data && !authorized && !showPrivatePairing ? (
+        <div className={styles.actions}>{showMeHow}</div>
+      ) : null}
 
+      {onboarding.data?.holder_pairing_supported && (
+        <SectionCard title="Pair a new holder">
+          <PeerBadgeApprovalSteps data={onboarding.data} privatePairing />
+        </SectionCard>
+      )}
       <SectionCard title="Update authorization">
         <p className={styles.hint}>
           To renew, approve this host again in the PeerBadge app. Then fetch the new authorization

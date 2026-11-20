@@ -39,6 +39,40 @@ afterEach(() => {
 });
 
 describe('SetupAuthorization', () => {
+  it('should guide private pairing and check the host without fetching public relays', async () => {
+    const invite = {
+      protocol: 'mg_holder_pairing_v1',
+      environment: 'development',
+      subject_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+      endpoint_id: '01'.repeat(32),
+      secret: '02'.repeat(32),
+      expires_at_ms: Date.now() + 300_000
+    };
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValueOnce(invite)
+      .mockResolvedValueOnce({ ...observed, holder_pairing_supported: true });
+    renderAuthorization(vi.fn(), { ...waiting, holder_pairing_supported: true });
+
+    expect(screen.getByRole('img', { name: /What do you want to do/ })).toBeTruthy();
+    expect(screen.getByRole('img', { name: /your Trusted badge/ })).toBeTruthy();
+    expect(screen.getByText(/tap Authorize and pair/)).toBeTruthy();
+    expect(screen.queryByText(/Authorize and publish/)).toBeNull();
+    expect(adminCall).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Having trouble?' }));
+    expect(screen.queryByText(/Paste code/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create private pairing code' }));
+    await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
+    expect(adminCall.mock.calls.map(([request]) => request)).toEqual([
+      'CreateHolderPairing',
+      'Onboarding'
+    ]);
+  });
+
   it('should contact the relay only when the operator checks now', async () => {
     const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValueOnce(waiting);
     renderAuthorization();

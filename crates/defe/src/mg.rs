@@ -15,8 +15,8 @@ use crate::resource_process::{ResourceProcess, ResourceProcessConfig, log_tail};
 const LOCATOR_LOG_PREFIX: &str = "Fleet Manager locator: ";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// Setup-payment trust root every spawned Manifold Guardian accepts: a test that
-/// wants its published federation list admitted must sign it with this
+/// Setup-payment trust root every spawned Manifold Guardian accepts: a test
+/// that wants its published federation list admitted must sign it with this
 /// well-known secret key.
 const SETUP_PAYMENT_PUBLISHER_SECRET: &str =
     "0000000000000000000000000000000000000000000000000000000000000001";
@@ -38,7 +38,8 @@ pub struct MgDriver {
 }
 
 impl MgDriver {
-    /// Create a Manifold Guardian driver using the given binaries and storage directories.
+    /// Create a Manifold Guardian driver using the given binaries and storage
+    /// directories.
     #[must_use]
     pub fn new(
         manifold_guardian_bin: impl Into<OsString>,
@@ -145,11 +146,6 @@ impl MgDriver {
             return Ok(());
         }
         if stage == "holder_authorization" {
-            let subject = onboarding
-                .get("service_nostr_pubkey")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| internal_error("onboarding response has no service Nostr pubkey"))?;
-            let request = serde_json::json!({ "subject_pubkey": subject }).to_string();
             let issuer =
                 PathBuf::from(&self.manifold_guardian_bin).with_file_name("manifold-test-issuer");
             let issued = std::process::Command::new(&issuer)
@@ -158,10 +154,9 @@ impl MgDriver {
                     "development",
                     "--relay",
                     relay_url,
-                    "--authorization-request",
-                    &request,
-                    "--publish-mg-authorization",
+                    "--pair-mg-data-dir",
                 ])
+                .arg(data_dir)
                 .output()
                 .map_err(|err| internal_error(format!("run {}: {err}", issuer.display())))?;
             if !issued.status.success() {
@@ -170,7 +165,6 @@ impl MgDriver {
                     String::from_utf8_lossy(&issued.stderr).trim()
                 )));
             }
-            self.admin(data_dir, &["refresh-holder-authorizations"])?;
         }
         self.admin(
             data_dir,

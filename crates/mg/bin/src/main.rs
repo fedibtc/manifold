@@ -1,5 +1,5 @@
-//! L7 daemon: CLI args → onboard → check for a duplicate → open the fleet → serve the iroh RPC and the local
-//! admin socket.
+//! L7 daemon: CLI args → onboard → check for a duplicate → open the fleet →
+//! serve the iroh RPC and the local admin socket.
 //!
 //! This binary is also the `fedimintd` its seats run
 //! ([`bundled_fedimintd`]).
@@ -14,6 +14,7 @@ mod file_limit;
 mod guardian_config;
 #[cfg(target_os = "linux")]
 mod heap_profile;
+mod holder_pairing;
 #[cfg(target_os = "linux")]
 mod huge_pages;
 #[cfg(feature = "embedded-operator-ui")]
@@ -38,21 +39,18 @@ use fedi_decentralized_service_manifold_guardian::{
     ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
 };
 use fedi_iroh_rpc::IrohProtocol;
-use mg_core::admin;
-use mg_core::admin_http::{self, AdminHttpAuth};
-use mg_core::bundled_fedimintd;
-use mg_core::guardian_link::GuardianLinkRpc;
-
 use fedimint_core::Amount;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_core::ServerModuleInitRegistry;
 use iroh::Endpoint;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
+use mg_core::admin_http::{self, AdminHttpAuth};
 use mg_core::facts::PortBase;
 use mg_core::fleet::{
     Fleet, FleetConfig, FleetHolderAuthorizationStore, FleetNostrHost, FleetSetupPaymentPolicyStore,
 };
+use mg_core::guardian_link::GuardianLinkRpc;
 use mg_core::push_callback::{
     DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL, PushGatewayOrigin, PushGatewayOriginPolicy,
 };
@@ -60,6 +58,7 @@ use mg_core::seat_process::{
     BitcoinBackend, BitcoindConfig, RespawnPolicy, SeatProcessConfig, SeatProcessSpawner,
 };
 use mg_core::service::ManifoldGuardianRpc;
+use mg_core::{admin, bundled_fedimintd};
 use mg_telemetry::GuardianTelemetryRpc;
 use push_callback::PushGatewayCallbackInvoker;
 use stability_pool_server::StabilityPoolInit;
@@ -184,7 +183,8 @@ fn main() -> anyhow::Result<()> {
     if let Err(error) = huge_pages::disable() {
         eprintln!("could not disable transparent huge pages; continuing: {error}");
     }
-    // Do this before opening sockets or spawning seats, which inherit the limit.
+    // Do this before opening sockets or spawning seats, which inherit the
+    // limit.
     #[cfg(target_os = "linux")]
     if let Err(error) = file_limit::raise() {
         eprintln!("could not raise open-file limit; continuing with existing limit: {error}");
@@ -407,7 +407,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )),
         manifold_environment.setup_payment_publisher().is_some(),
     );
-    let phase = admin::OperatorPhase::onboarding(onboarding.clone());
+    let pairing =
+        mg_nostr::holder_pairing::HolderPairing::new(db.clone(), manifold_environment.clone())?;
+    pairing.adopt_legacy().await?;
+    let pairing_endpoint = Arc::new(holder_pairing::PairingEndpoint::new(pairing.clone()));
+    let phase = admin::OperatorPhase::onboarding(onboarding.clone())
+        .with_holder_pairing(pairing_endpoint.clone());
     let admin_task = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
     let admin_http_task = match operator_http {
         Some((bind, auth)) => {
@@ -455,6 +460,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?;
         // Retain the DB lock on a duplicate; the old instance disappearing
         // cannot resume startup and the fleet remains unopened.
+        if matches!(outcome, duplicate_instance::Outcome::DuplicateDetected) {
+            pairing_endpoint.fence(&db).await?;
+        }
         if !duplicate_instance::allow_activation(
             outcome,
             admin_task,
@@ -592,6 +600,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         db,
     );
     fleet.bind_guardian_link_policy(nostr.subscribe_features());
+    pairing.attach(nostr.clone()).await?;
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
     let rpc = ManifoldGuardianRpc::new(

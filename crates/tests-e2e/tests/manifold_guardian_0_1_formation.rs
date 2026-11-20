@@ -4,8 +4,7 @@ use std::io::Write as _;
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::OpenOptionsExt as _;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -31,7 +30,8 @@ use fedi_decentralized_service_manifold_guardian::{
     ScrapeGuardianMetricsRequest, SeatId, ServiceErrorCode, SignedRequest, TelemetryCapability,
     Timestamp,
 };
-use fedi_iroh_rpc::iroh::{Endpoint, endpoint::presets};
+use fedi_iroh_rpc::iroh::Endpoint;
+use fedi_iroh_rpc::iroh::endpoint::presets;
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use futures_util::future::join_all;
 use iroh_base_035::ticket::NodeTicket;
@@ -73,11 +73,14 @@ const FA_CLI_TIMEOUT: Duration = Duration::from_secs(60);
 const FEDIMINT_CLI_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// One consensus meta read against an already-joined federation.
 const FEDIMINT_CLI_META_TIMEOUT: Duration = Duration::from_secs(15);
-/// Loaded CI can need several consensus epochs before the initial metadata is visible.
+/// Loaded CI can need several consensus epochs before the initial metadata is
+/// visible.
 const FEDIMINT_META_CONSENSUS_TIMEOUT: Duration = Duration::from_secs(60);
-/// WalletV2's initial valid-address search is CPU-heavy in unoptimized CI builds.
+/// WalletV2's initial valid-address search is CPU-heavy in unoptimized CI
+/// builds.
 const FEDIMINT_CLI_WALLETV2_TIMEOUT: Duration = Duration::from_secs(120);
-/// Covers startup, formation, client join, metadata readiness, and clean shutdown.
+/// Covers startup, formation, client join, metadata readiness, and clean
+/// shutdown.
 const FORMATION_TIMEOUT: Duration = Duration::from_secs(180);
 /// A killed 15-second FA invocation retains its lease for at most another 60
 /// seconds. Guardians now form without waiting for FA resume, so callback
@@ -1629,8 +1632,9 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         std::fs::remove_file(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE))?;
         std::fs::remove_file(crash_seam)?;
         if let Some(candidate) = upgrade_to {
-            // Stop the other old guardians before switching the whole federation,
-            // just as devimint restart_all_with_bin does. Never re-onboard.
+            // Stop the other old guardians before switching the whole
+            // federation, just as devimint restart_all_with_bin does. Never
+            // re-onboard.
             shutdown_daemons(std::mem::take(daemons)).await?;
             let mut restarted_locators = Vec::new();
             for (index, (old_identity, old_seats)) in upgrade_identities.iter().enumerate() {
@@ -1955,8 +1959,9 @@ async fn exercise_guardian_telemetry(
             "the exact bundled fedi18 guardian must expose fm_{family}"
         );
     }
-    // Since fedi26, fedimintd publishes the per-peer transport statistics with the 10 s
-    // connection metadata refresh, so they appear once peers have connected.
+    // Since fedi26, fedimintd publishes the per-peer transport statistics with
+    // the 10 s connection metadata refresh, so they appear once peers have
+    // connected.
     for family in [
         "peer_transport_bytes_total",
         "peer_transport_lost_packets_total",
@@ -3619,7 +3624,8 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     eprintln!("paid E2E data dir: {}", temp.display());
 
     // The exclusive Defe node already has 101 blocks and mature wallet funds.
-    // Reuse them rather than creating another wallet and mining 101 more blocks.
+    // Reuse them rather than creating another wallet and mining 101 more
+    // blocks.
     let bitcoin_cli = BitcoinCli::new(&bitcoin_cli_bin, bitcoind)?;
     let miner_address = bitcoin_cli.funded_miner_address().await?;
 
@@ -4732,9 +4738,9 @@ async fn start_daemons(
     let ready = join_all(starting.into_iter().map(|(index, mut daemon)| {
         let data_dir = temp.join(format!("mg-{index}"));
         async move {
-            // A Manifold Guardian has no identity until it is onboarded, so it waits
-            // on its admin socket instead of serving RPC. This is the operator's
-            // first act, and the deployment's.
+            // A Manifold Guardian has no identity until it is onboarded, so it
+            // waits on its admin socket instead of serving RPC. This is the
+            // operator's first act, and the deployment's.
             onboard_new_manifold_guardian(
                 manifold_guardian_bin,
                 &data_dir,
@@ -5336,8 +5342,8 @@ async fn offer_free_seats(
     Ok(())
 }
 
-/// Onboard a freshly started daemon as a new Manifold Guardian, retrying while it
-/// binds its socket.
+/// Onboard a freshly started daemon as a new Manifold Guardian, retrying while
+/// it binds its socket.
 async fn onboard_new_manifold_guardian(
     manifold_guardian_bin: &Path,
     data_dir: &Path,
@@ -5366,7 +5372,27 @@ async fn complete_onboarding_stages(
     if stage == "complete" {
         return Ok(());
     }
-    if stage == "holder_authorization" {
+    if stage == "holder_authorization" && onboarding["holder_pairing_supported"] == true {
+        let mut command =
+            Command::new(manifold_guardian_bin.with_file_name("manifold-test-issuer"));
+        command
+            .args([
+                "--environment",
+                "development",
+                "--relay",
+                nostr.holder_relay_url,
+                "--pair-mg-data-dir",
+            ])
+            .arg(data_dir);
+        run_expect_success(
+            command,
+            "privately pair test Holder",
+            Duration::from_secs(30),
+        )
+        .await?;
+    } else if stage == "holder_authorization" {
+        // The previous-release upgrade fixture still enrolls the way that
+        // release supported. Never substitute this path for a failed pairing.
         let subject = onboarding["service_nostr_pubkey"]
             .as_str()
             .context("onboarding response has a service Nostr pubkey")?;

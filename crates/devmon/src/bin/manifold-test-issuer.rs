@@ -1,4 +1,5 @@
-//! Issue test-only PeerBadge material from the public development/staging roots.
+//! Issue test-only PeerBadge material from the public development/staging
+//! roots.
 
 use std::time::Duration;
 
@@ -13,7 +14,11 @@ use fedi_decentralized_nostr_clients::{
     HolderNostrClient as _, NostrHolderClient, NostrRelayClient, PublishFlipAuthorizationRequest,
     PublishMgAuthorizationRequest,
 };
-use nostr_sdk::{EventBuilder, Keys, Kind, SecretKey, Tag};
+use fedi_decentralized_service_manifold_guardian::holder_pairing::{
+    HOLDER_PAIRING_ALPN, HolderPairingInvite, HolderPairingService as _,
+    HolderPairingServiceClient, SubmitHolderAuthorization,
+};
+use nostr_sdk::{EventBuilder, JsonUtil as _, Keys, Kind, SecretKey, Tag};
 use peerbadge_protocol::{
     HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
     PendingIssuance,
@@ -26,7 +31,8 @@ const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Parser)]
 #[command(about = "Issue trust material from Manifold's unsafe test-only issuer roots")]
 struct Args {
-    /// Manifold environment (`development` or `staging`; production is refused).
+    /// Manifold environment (`development` or `staging`; production is
+    /// refused).
     #[arg(long)]
     environment: ManifoldEnvironment,
 
@@ -44,9 +50,16 @@ struct Args {
     #[arg(long, conflicts_with = "authorization_request")]
     mint_authority_document: bool,
 
-    /// JSON-encoded SDK HolderAuthorizationRequest, matching the QR/deep-link payload.
-    #[arg(long, required_unless_present = "mint_authority_document")]
+    /// JSON-encoded SDK HolderAuthorizationRequest, matching the QR/deep-link
+    /// payload.
+    #[arg(long, required_unless_present_any = ["mint_authority_document", "pair_mg_data_dir"])]
     authorization_request: Option<String>,
+
+    /// Issue a test badge and pair it through this host's private admin socket.
+    /// Reads the one-time QR from fman-cli's private output, never argv or a
+    /// log.
+    #[arg(long, conflicts_with_all=["authorization_request", "publish_mg_authorization", "publish_flip_authorization", "mint_authority_document"])]
+    pair_mg_data_dir: Option<std::path::PathBuf>,
 
     /// Publish the holder authorization event that an MG discovers.
     #[arg(long)]
@@ -130,12 +143,40 @@ async fn main() -> anyhow::Result<()> {
         })
         .context("the environment pins no authority document for the committed issuer")?;
     let issuer_metadata = authority.verify()?;
-    let authorization_request: HolderAuthorizationRequest = serde_json::from_str(
-        args.authorization_request
-            .as_deref()
-            .expect("clap requires --authorization-request unless minting"),
-    )
-    .context("parse --authorization-request as HolderAuthorizationRequest JSON")?;
+    let pairing: Option<HolderPairingInvite> = if let Some(dir) = &args.pair_mg_data_dir {
+        let cli = std::env::current_exe()?.with_file_name("fman-cli");
+        let output = tokio::process::Command::new(cli)
+            .arg("--data-dir")
+            .arg(dir)
+            .arg("create-holder-pairing")
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "creating private pairing invitation failed"
+        );
+        let invite: HolderPairingInvite =
+            serde_json::from_slice(&output.stdout).context("invalid pairing invitation")?;
+        ensure!(
+            invite.environment == args.environment.to_string(),
+            "pairing environment mismatch"
+        );
+        Some(invite)
+    } else {
+        None
+    };
+    let authorization_request: HolderAuthorizationRequest = if let Some(invite) = &pairing {
+        HolderAuthorizationRequest {
+            subject_pubkey: peerbadge_protocol::SubjectPubkey(invite.subject_pubkey),
+        }
+    } else {
+        serde_json::from_str(
+            args.authorization_request
+                .as_deref()
+                .expect("clap requires --authorization-request unless minting"),
+        )
+        .context("parse --authorization-request as HolderAuthorizationRequest JSON")?
+    };
     let subject = authorization_request.subject_pubkey.clone();
 
     let holder = HolderContext::generate();
@@ -216,6 +257,45 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(invite) = pairing {
+        let event = EventBuilder::new(
+            Kind::Custom(fedi_decentralized_nostr::mg::HOLDER_AUTHORIZATION_EVENT_KIND),
+            serde_json::to_string(
+                &json!({ "version":1, "holder_id_pubkey": holder.public_key(),
+                "holder_authorization":authorization, "signed_credential":credential }),
+            )?,
+        )
+        .sign_with_keys(&Keys::new(SecretKey::parse(&holder.export_secret_key())?))?;
+        let mut remote = iroh::EndpointAddr::new(invite.endpoint_id.parse()?);
+        let endpoint = if let Some(local) = invite.direct_address {
+            ensure!(
+                args.environment == ManifoldEnvironment::Development && local.ip().is_loopback(),
+                "invalid test pairing route"
+            );
+            remote = remote.with_ip_addr(local);
+            iroh::Endpoint::builder(iroh::endpoint::presets::N0DisableRelay)
+                .bind()
+                .await?
+        } else {
+            iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                .bind()
+                .await?
+        };
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let connection = endpoint.connect(remote, HOLDER_PAIRING_ALPN).await?;
+            let reply = HolderPairingServiceClient::new(connection)
+                .submit_holder_authorization(SubmitHolderAuthorization {
+                    version: serde_json::from_value(json!(1))?,
+                    secret: invite.secret,
+                    event_json: event.as_json(),
+                })
+                .await?;
+            ensure!(reply.event_id == event.id, "unexpected pairing receipt");
+            anyhow::Ok(())
+        })
+        .await??;
+        authorization_event_ids.push(event.id.to_hex());
+    }
     println!(
         "{}",
         serde_json::to_string(&json!({

@@ -253,6 +253,7 @@ export interface MgVersionReport {
 }
 
 export interface OnboardingResponse {
+  holder_pairing_supported?: boolean;
   stage: 'holder_authorization' | 'initial_offer' | 'complete';
   runtime: 'starting' | 'ready';
   minimum_max_seats?: number;
@@ -409,6 +410,15 @@ export interface ResetUptimeResponse {
   uptime_reset: 'rechecking';
 }
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
+export interface HolderPairingInvite {
+  protocol: 'mg_holder_pairing_v1';
+  environment: string;
+  subject_pubkey: string;
+  endpoint_id: string;
+  direct_address?: string;
+  secret: string;
+  expires_at_ms: number;
+}
 // The operator's NIP-17 chat with Fedi support (SPEC-mg-support-chat).
 export type SupportAuthor = 'operator' | 'fedi';
 export interface SupportMessage {
@@ -566,6 +576,7 @@ export interface AdminResponseByName {
   SweepGuardianFees: SweepGuardianFeesResponse;
   Onboarding: OnboardingResponse;
   RefreshHolderAuthorizations: RefreshHolderAuthorizationsResponse;
+  CreateHolderPairing: HolderPairingInvite;
   ConfigureInitialOffer: ConfigureInitialOfferResponse;
   ShowMnemonic: ShowMnemonicResponse;
   OnboardAsNew: OnboardAsNewResponse;

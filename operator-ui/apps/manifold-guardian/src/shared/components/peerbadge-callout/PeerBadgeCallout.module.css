@@ -5,3 +5,8 @@
 .arrow {
   @apply absolute -right-14 top-1 h-6 w-14 fill-none stroke-info stroke-[1.5];
 }
+@container peerbadge-steps (max-width: 39.999rem) {
+  .arrow {
+    @apply hidden;
+  }
+}

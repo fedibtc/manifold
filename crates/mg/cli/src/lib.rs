@@ -50,6 +50,8 @@ pub enum AdminVerb {
     Onboarding,
     /// Fetch and durably retain Holder authorizations published for this MG.
     RefreshHolderAuthorizations,
+    /// Issue a private five-minute invitation to submit a Holder authorization.
+    CreateHolderPairing,
     /// Rotate the MG-wide telemetry capability and register it immediately.
     ReenrollTelemetry,
     /// Print the root mnemonic phrase (stdout only; treat it like the
@@ -69,8 +71,8 @@ pub enum AdminVerb {
 
 #[derive(Debug, Subcommand)]
 pub enum OnboardVerb {
-    /// Become a Manifold Guardian that has never existed before: generate the root
-    /// mnemonic and start with no seats.
+    /// Become a Manifold Guardian that has never existed before: generate the
+    /// root mnemonic and start with no seats.
     New {
         /// Succeed instead of refusing when this host is already onboarded.
         /// For orchestrators whose want is "ensure onboarded"; an operator
@@ -376,6 +378,7 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
         } => AdminRequest::TestGuardianLinkNotification,
         AdminVerb::Onboarding => AdminRequest::Onboarding,
         AdminVerb::RefreshHolderAuthorizations => AdminRequest::RefreshHolderAuthorizations,
+        AdminVerb::CreateHolderPairing => AdminRequest::CreateHolderPairing,
         AdminVerb::ReenrollTelemetry => AdminRequest::ReenrollTelemetry,
         AdminVerb::ShowMnemonic => AdminRequest::ShowMnemonic,
         AdminVerb::Onboard {

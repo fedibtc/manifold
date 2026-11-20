@@ -3,9 +3,9 @@
 //! Decoupled from the fleet's verb machinery: each cycle takes a read-only
 //! snapshot of the fleet (availability and plans), combines it with durably
 //! enrolled Holder authorizations, and publishes the portable signed
-//! advertisement in both formats: kind 37701 and the kind-37709 v2. Enrollment is the Holder publishing a kind-37705
-//! authorization for this MG's pubkey followed by the operator UI requesting
-//! one bounded, verified relay reconciliation.
+//! advertisement in both formats: kind 37701 and the kind-37709 v2. Enrollment
+//! and holder changes use private Iroh pairing. An operator-triggered relay
+//! read can renew only the holder already pinned by the MG.
 //!
 //! The published document is the shared typed rendering of the
 //! `SPEC-mg-nostr-events` schema (`crates/nostr/specs/`) — that record is
@@ -15,6 +15,7 @@
 
 pub mod backup;
 pub mod format;
+pub mod holder_pairing;
 pub mod replacement_guardian;
 mod support;
 
@@ -23,8 +24,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
-use fedi_decentralized_domain::AdmittedFeaturePolicy;
-use fedi_decentralized_domain::MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS;
+use fedi_decentralized_domain::{
+    AdmittedFeaturePolicy, MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS,
+};
 pub use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, HolderAuthorizationEnvelope};
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr::feature_config::{FeatureConfigEvent, feature_config_filter};
@@ -51,12 +53,11 @@ use mg_core::identity::RootMnemonic;
 use mg_core::onboarding::{FetchedHolderAuthorization, HolderAuthorizationFetcher};
 use nostr_sdk::{Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
 use serde_json::Value;
-use tokio::sync::watch;
-use tokio::time::Instant;
-
 pub use support::{
     MAX_SUPPORT_MESSAGE_CHARS, support_chat_json, support_message_json, support_read_json,
 };
+use tokio::sync::watch;
+use tokio::time::Instant;
 
 /// Advertisement republish cadence. fa-client's consumer-side
 /// `MG_ADVERTISEMENT_MAX_AGE` is derived from this value (4x the cadence),
@@ -116,14 +117,22 @@ impl HolderAuthorizationFetcher for NostrHolderAuthorizationFetcher {
         identity: &RootMnemonic,
     ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
         let keys = identity.derive_service_nostr_keys();
-        let authorization =
-            fetch_newest_holder_authorization(keys.public_key(), &self.manifold_environment)
-                .await?
-                .map(|candidate| FetchedHolderAuthorization {
-                    authorization_issued_at: candidate.authorization_issued_at,
-                    event_json: candidate.event.as_json(),
-                    authorization: candidate.authorization,
-                });
+        let pinned = self
+            .store
+            .pinned_holder()
+            .await?
+            .context("create a private pairing invitation first")?;
+        let authorization = fetch_newest_holder_authorization(
+            keys.public_key(),
+            &self.manifold_environment,
+            pinned,
+        )
+        .await?
+        .map(|candidate| FetchedHolderAuthorization {
+            authorization_issued_at: candidate.authorization_issued_at,
+            event_json: candidate.event.as_json(),
+            authorization: candidate.authorization,
+        });
         Ok((
             authorization,
             holder_authorization_max_issued_at(now_secs())?,
@@ -257,6 +266,10 @@ struct Inner {
 }
 
 impl ManifoldGuardianNostr {
+    async fn reload_holder(&self) -> anyhow::Result<()> {
+        let _guard = self.inner.authorization_refresh.lock().await;
+        self.inner.retain_authorization(None).await
+    }
     /// Construct the MG Nostr boundary.
     ///
     /// Takes no daemon handles and does no I/O: the policy the watch starts
@@ -379,7 +392,8 @@ impl ManifoldGuardianNostr {
         Ok(proof)
     }
 
-    /// Subscribe to feature policy independently of whether paid setup is available.
+    /// Subscribe to feature policy independently of whether paid setup is
+    /// available.
     pub fn subscribe_features(&self) -> watch::Receiver<Option<AdmittedFeaturePolicy>> {
         self.inner.features.subscribe()
     }
@@ -402,9 +416,15 @@ impl mg_core::directory::HolderAuthorizationRefresher for ManifoldGuardianNostr 
                 .authorization_refresh
                 .try_lock()
                 .context("an authorization refresh is already in progress")?;
+            let pinned = inner
+                .authorization_store
+                .pinned_holder()
+                .await?
+                .context("pair a holder first")?;
             let fetched = fetch_newest_holder_authorization(
                 inner.keys.public_key(),
                 &inner.manifold_environment,
+                pinned,
             )
             .await?;
             inner.retain_authorization(fetched).await
@@ -447,11 +467,15 @@ impl Inner {
         let retained =
             load_retained_holder_authorizations(&self.authorization_store, self.keys.public_key())
                 .await?;
+        self.project_holder(retained);
+        Ok(())
+    }
+
+    fn project_holder(&self, retained: Vec<HolderAuthorizationEnvelope>) {
         let status = observed_status(&retained, Some(now_secs()));
         self.holder_authorizations.send_replace(retained);
         self.presence
             .send_modify(|presence| presence.onboarding = status);
-        Ok(())
     }
 
     async fn run(
@@ -743,12 +767,14 @@ fn verified_holder_authorization_event(
 async fn fetch_newest_holder_authorization(
     holder: PublicKey,
     manifold_environment: &ManifoldEnvironmentProfile,
+    pinned: PublicKey,
 ) -> anyhow::Result<Option<VerifiedHolderAuthorizationEvent>> {
     let deadline = Instant::now() + AUTHORIZATION_REFRESH_TIMEOUT;
     let issuers = PeerBadgeVerifier::try_from_profile(manifold_environment)
         .context("resolve this environment's trusted PeerBadge issuers")?;
     let max_issued_at = holder_authorization_max_issued_at(now_secs())?;
     let filter = Filter::new()
+        .author(pinned)
         .kind(Kind::Custom(
             fedi_decentralized_nostr::mg::HOLDER_AUTHORIZATION_EVENT_KIND,
         ))
@@ -778,7 +804,10 @@ async fn fetch_newest_holder_authorization(
         .collect();
     let complete_reads = complete.len();
     let newest = newest_issued_candidate(
-        complete.into_iter().flatten(),
+        complete
+            .into_iter()
+            .flatten()
+            .filter(|event| event.pubkey == pinned),
         &holder,
         &issuers,
         max_issued_at,
@@ -842,11 +871,18 @@ pub async fn load_retained_holder_authorizations(
     mg_pubkey: PublicKey,
 ) -> anyhow::Result<Vec<HolderAuthorizationEnvelope>> {
     let max_issued_at = holder_authorization_max_issued_at(now_secs())?;
-    decode_retained_holder_authorizations(
+    let Some(pinned) = store.pinned_holder().await? else {
+        return Ok(vec![]);
+    };
+    let verified = decode_retained_holder_authorizations(
         store.load(max_issued_at).await?,
         mg_pubkey,
         max_issued_at,
-    )
+    )?;
+    Ok(verified
+        .into_iter()
+        .filter(|auth| auth.holder_authorization.authorization.holder_id_pubkey.0 == pinned)
+        .collect())
 }
 
 fn decode_retained_holder_authorizations(
@@ -902,10 +938,11 @@ pub struct RetainedPolicy {
     features: Option<AdmittedFeaturePolicy>,
 }
 
-/// Restore the payment event and the selected publisher's feature snapshot before serving RPCs.
-/// Authentic but unsupported content supplies only a replacement floor. A rotated
-/// payment publisher or an integrity error in either selected record fails startup.
-/// Other feature publishers' records are neither read nor overwritten.
+/// Restore the payment event and the selected publisher's feature snapshot
+/// before serving RPCs. Authentic but unsupported content supplies only a
+/// replacement floor. A rotated payment publisher or an integrity error in
+/// either selected record fails startup. Other feature publishers' records are
+/// neither read nor overwritten.
 pub async fn load_retained_setup_payment_policy(
     store: &FleetSetupPaymentPolicyStore,
     publisher: Option<PublicKey>,

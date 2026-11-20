@@ -236,6 +236,12 @@ async fn a_restore_returns_the_identity_its_documents_belong_to() {
         db.wallet_origin().await.unwrap(),
         crate::db::WalletOrigin::Restored
     );
+    assert!(db.legacy_holder_evidence().await.unwrap().is_none());
+    assert!(db.pinned_holder().await.unwrap().is_none());
+    assert_eq!(
+        db.onboarding_stage().await.unwrap(),
+        crate::db::OnboardingStage::HolderAuthorization
+    );
     // And a second onboarding of any kind is now impossible.
     assert!(matches!(
         crate::restore::install(&db, &process(&temp), &identity, &recovered).await,

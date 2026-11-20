@@ -81,6 +81,26 @@ const ISSUES: Issue[] = [
   }
 ];
 
+const PAIRING_ISSUES: Issue[] = [
+  {
+    title: 'PeerBadge won’t scan the code',
+    detail:
+      'Open the scanner from Authorize application inside PeerBadge. Use a version that supports private pairing, and open this dashboard on another screen.'
+  },
+  {
+    title: 'No Authorize application button',
+    detail: 'New badges stay locked for a while. Try again later.'
+  },
+  {
+    title: 'The code expired or was replaced',
+    detail: 'Create a fresh code and only show it to the intended holder.'
+  },
+  {
+    title: 'Still waiting after pairing',
+    detail: 'If PeerBadge confirmed the pairing, click Check status to update this page.'
+  }
+];
+
 const HELP_PANEL_ID = 'peerbadge-help-panel';
 
 const renderIssue = (issue: Issue) => (
@@ -112,7 +132,11 @@ const PANELS: Record<HelpTopic, ReactNode> = {
   trouble: <ul className={styles.issues}>{ISSUES.map(renderIssue)}</ul>
 };
 
-export const PeerBadgeHelp = () => {
+interface PeerBadgeHelpProps {
+  privatePairing?: boolean;
+}
+
+export const PeerBadgeHelp = ({ privatePairing = false }: PeerBadgeHelpProps) => {
   const [openTopic, setOpenTopic] = useState<HelpTopic | null>(null);
 
   const renderCard = (topic: TopicCard) => {
@@ -143,7 +167,11 @@ export const PeerBadgeHelp = () => {
 
       {openTopic ? (
         <div id={HELP_PANEL_ID} className={styles.panel}>
-          {PANELS[openTopic]}
+          {openTopic === 'trouble' && privatePairing ? (
+            <ul className={styles.issues}>{PAIRING_ISSUES.map(renderIssue)}</ul>
+          ) : (
+            PANELS[openTopic]
+          )}
         </div>
       ) : null}
     </div>

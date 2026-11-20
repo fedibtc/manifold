@@ -39,10 +39,11 @@ operator's holder key, which is the decisive reason identity sharing was
 rejected. Subject possession is proven separately by the service's own
 signatures (advertisement proof, RPC authentication).
 
-The authorization request shown to the Holder (QR/deep-link, not a Nostr
-event) is the SDK `HolderAuthorizationRequest` carrying only the subject
-pubkey; the Holder app selects the badge locally, signs, and publishes the
-kind-`37705` event
+For an MG's first enrollment or holder switch, the host shows a private,
+one-time pairing QR, and the Holder app submits the signed kind-37705 event
+privately to that MG via Iroh ([SPEC-advertisement](../../mg/specs/SPEC-advertisement.md)).
+The subject-only SDK `HolderAuthorizationRequest` and relay publication remain
+valid for a pinned MG holder's renewal and for FLIP enrollment
 ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md)).
 
 ## Trust badge schema `fedi-trust-score-v1.0`

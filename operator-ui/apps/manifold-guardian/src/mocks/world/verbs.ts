@@ -656,6 +656,14 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SweepGuardianFees: sweepGuardianFees,
   Onboarding: onboarding,
   RefreshHolderAuthorizations: refreshHolderAuthorizations,
+  CreateHolderPairing: () => ({
+    protocol: 'mg_holder_pairing_v1',
+    environment: 'development',
+    subject_pubkey: getState().onboarding.service_nostr_pubkey,
+    endpoint_id: '01'.repeat(32),
+    secret: '02'.repeat(32),
+    expires_at_ms: Date.now() + 300_000
+  }),
   ConfigureInitialOffer: configureInitialOffer,
   ShowMnemonic: showMnemonic
 };
@@ -721,6 +729,7 @@ const isAdminVerb = (method: string): method is AdminRequestName => method in ve
 const STAGE_VERBS: Record<'holder_authorization' | 'initial_offer', ReadonlySet<string>> = {
   holder_authorization: new Set([
     'Onboarding',
+    'CreateHolderPairing',
     'RefreshHolderAuthorizations',
     'ShowMnemonic',
     'OnboardAsNew',

@@ -642,3 +642,44 @@ async fn recommended_seat_limits_migrate_to_automatic() {
         );
     }
 }
+#[tokio::test]
+async fn pairing_grants_rotate_and_commit_only_one_holder() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = Db::open(temp.path()).await.unwrap();
+    let mg = crate::identity::RootMnemonic::generate().unwrap();
+    db.install_identity(&mg).await.unwrap();
+    let a = nostr_sdk::Keys::generate().public_key();
+    let b = nostr_sdk::Keys::generate().public_key();
+    db.install_holder_grant([1; 32], i64::MAX).await.unwrap();
+    db.install_holder_grant([2; 32], i64::MAX).await.unwrap();
+    assert!(
+        !db.commit_holder_pairing([1; 32], a, 1, "first")
+            .await
+            .unwrap()
+    );
+    let (one, two) = tokio::join!(
+        db.commit_holder_pairing([2; 32], a, 2, "one"),
+        db.commit_holder_pairing([2; 32], b, 2, "two")
+    );
+    let (one, two) = (one.unwrap(), two.unwrap());
+    assert_ne!(one, two);
+    let (winner, other) = if one { (a, b) } else { (b, a) };
+    assert!(db.renew_holder(other, 3, "other").await.is_err());
+    db.renew_holder(winner, 3, "renewed").await.unwrap();
+    db.install_holder_grant([3; 32], 0).await.unwrap();
+    assert!(
+        !db.commit_holder_pairing([3; 32], other, 4, "expired")
+            .await
+            .unwrap()
+    );
+    drop(db);
+    let db = Db::open(temp.path()).await.unwrap();
+    assert_eq!(db.pinned_holder().await.unwrap(), Some(winner));
+    assert_eq!(
+        db.holder_authorization_event_json(5)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("renewed")
+    );
+}

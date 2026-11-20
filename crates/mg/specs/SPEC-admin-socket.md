@@ -58,9 +58,10 @@ At `identity` it answers two choosing verbs:
   Manager's seats from its encrypted backup documents
   ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)).
 
-At `holder_authorization`, `RefreshHolderAuthorizations` performs and awaits one
-bounded Nostr fetch. The stage advances once at least one structurally
-verified, subject-bound complete event is durably retained, or when the
+At `holder_authorization`, `CreateHolderPairing` returns a private, single-use
+invitation for the host to present as a QR code. The Holder submits its signed
+authorization privately via Iroh. Setup advances once the MG authenticates the
+authorization, pins the holder, and consumes the grant. The host may also advance when the
 operator explicitly skips it to run without a badge
 ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
 An MG without a badge publishes no advertisement and takes seats only through
@@ -360,9 +361,12 @@ the fleet.
   (kind 37710 when admitted, otherwise the legacy kind 37707 projection) (or null before one is admitted), and whether
   SemVer ordering requires an update. Consumers decide how to present that
   information; the daemon does not stop its guardian children.
-- `RefreshHolderAuthorizations` is available during the onboarding
-  Holder-authorization stage and after the fleet opens. It awaits one bounded Nostr reconciliation and
-  returns the resulting onboarding projection. Verified events merge into
+- `CreateHolderPairing` returns an operator-only, short-lived invitation, never
+  part of ordinary status. Issuing another invitation replaces the old one.
+  Use it for first enrollment or changing holders. Upgraded dashboards
+  recognize `holder_pairing_supported` on `Onboarding`.
+- `RefreshHolderAuthorizations` is for renewal only. It awaits one bounded Nostr reconciliation and
+  returns the resulting onboarding projection. Later verified events from the pinned holder merge into
   durable enrollment state; failures and empty answers retain the last accepted
   state. Post-fleet refreshes update the live trust material and wake advertisement
   publication only after durable merge and revalidation. A failed post-fleet

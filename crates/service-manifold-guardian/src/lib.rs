@@ -21,6 +21,7 @@ mod decommission;
 mod dkg;
 mod error;
 pub mod guardian_link;
+pub mod holder_pairing;
 mod locator;
 mod locked_payment;
 mod maintenance;
