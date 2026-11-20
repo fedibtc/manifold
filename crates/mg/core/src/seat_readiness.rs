@@ -379,8 +379,7 @@ const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Run until aborted: probe, record this uptime slot, apply the verdict to
 /// `fleet`, journal it, and wait for the next slot while ready or a minute
-/// while failing, or until the setup-payment policy changes or the operator
-/// resets the uptime history. `clock` is the
+/// while failing, or until the setup-payment policy changes. `clock` is the
 /// wall clock slots are counted in, and `read_pressure` reads the cgroup's
 /// pressure counters ([`host_pressure::read_cgroup_pressure`]); a deployment
 /// without it, such as a local end-to-end test whose MGs share one busy
@@ -475,23 +474,20 @@ pub async fn run(
         } else {
             NOT_READY_INTERVAL
         };
-        wait_for_next_run(wait, &mut feature_policy, fleet.readiness_rerun_requested()).await;
+        wait_for_next_run(wait, &mut feature_policy).await;
     }
 }
 
 /// Wait `wait`, or less if the setup-payment policy changes first, since a
-/// new policy can change the verdict (its minimum release or uptime), or if
-/// `rerun` asks for a run first, as the operator does by resetting the uptime
-/// history. A policy that can no longer change only leaves the other two.
+/// new policy can change the verdict (its minimum release or uptime). A
+/// policy that can no longer change only leaves the timer.
 async fn wait_for_next_run(
     wait: Duration,
     policy: &mut watch::Receiver<Option<AdmittedFeaturePolicy>>,
-    rerun: impl Future<Output = ()>,
 ) {
     tokio::select! {
         () = tokio::time::sleep(wait) => {}
         Ok(()) = policy.changed() => {}
-        () = rerun => {}
     }
 }
 
@@ -1132,12 +1128,7 @@ mod tests {
     async fn a_policy_change_ends_the_wait_for_the_next_run() {
         let (sender, mut policy) = watch::channel(None);
         let waiting = tokio::spawn(async move {
-            wait_for_next_run(
-                Duration::from_secs(3600),
-                &mut policy,
-                std::future::pending(),
-            )
-            .await;
+            wait_for_next_run(Duration::from_secs(3600), &mut policy).await;
             policy
         });
         tokio::task::yield_now().await;
@@ -1149,12 +1140,7 @@ mod tests {
 
         drop(sender);
         let started = std::time::Instant::now();
-        wait_for_next_run(
-            Duration::from_millis(200),
-            &mut policy,
-            std::future::pending(),
-        )
-        .await;
+        wait_for_next_run(Duration::from_millis(200), &mut policy).await;
         assert!(started.elapsed() >= Duration::from_millis(200));
     }
 

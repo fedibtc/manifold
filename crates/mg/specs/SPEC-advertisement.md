@@ -221,11 +221,7 @@ up, so a low uptime alone never keeps itself low, and failed prerequisites
 are retried but the uptime check is not. With the defaults, an outage of up
 to about 8.5 hours costs nothing, 12 hours down closes the MG for about 6
 hours (1 day), one day down for about two days (7 days), and an MG down
-about 2 hours every day stays closed (30 days). The operator can reset the
-history with the `ResetUptime` admin verb ([SPEC-admin-socket](SPEC-admin-socket.md)),
-which restarts it at 95% and reruns the checks at once; it exists for an
-outage that was not the host's fault, such as an MG bug, and is the badge
-issuer's to approve.
+about 2 hours every day stays closed (30 days).
 
 The verdict is durable in `offer_state`, so a restart resumes it: a ready MG
 keeps selling and a failing one stays closed until a run passes. A fresh,

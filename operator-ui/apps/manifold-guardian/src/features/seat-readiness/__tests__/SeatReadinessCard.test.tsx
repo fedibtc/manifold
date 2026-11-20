@@ -1,7 +1,5 @@
 import type { ReadinessReport } from '@operator-ui/types';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render as renderUi, screen } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   guidance,
@@ -11,10 +9,6 @@ import {
   updateGuidance
 } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
-
-// The uptime title holds the reset's mutation, so the card needs a query client.
-const render = (ui: ReactElement) =>
-  renderUi(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
 
