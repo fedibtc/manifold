@@ -22,9 +22,40 @@ use crate::{
     mg_reports::{MgReport, Stated},
 };
 
+/// Bounds on the seats' latest snapshots, in uncompressed samples JSON.
 const MAX_METRIC_STATE_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_METRIC_STATE_SAMPLES: i64 = 200_000;
 const MAX_METRIC_SNAPSHOT_ROWS: i64 = MAX_TARGETS * 64;
+/// Bound on one stored observation, uncompressed and compressed.
+const MAX_METRIC_ROW_BYTES: usize = 4 * 1024 * 1024;
+/// A seat keeps at most one observation per bucket. Migration
+/// `0008_metric_observations` indexes the same bucket.
+const METRIC_HISTORY_BUCKET_MS: i64 = 15 * 60 * 1000;
+/// Observations older than this are pruned, except each seat's latest.
+const METRIC_HISTORY_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Bounds on all stored observations, latest included. When they are reached
+/// the oldest observations that are not a seat's latest are pruned first.
+const MAX_METRIC_HISTORY_BYTES: i64 = 1024 * 1024 * 1024;
+const MAX_METRIC_HISTORY_ROWS: i64 = 1_000_000;
+
+/// How much decoded sample text one read may hold in memory.
+#[derive(Clone, Copy)]
+struct SnapshotBudget {
+    bytes: i64,
+    samples: i64,
+}
+
+/// One private exposition of every seat's latest snapshot.
+const LATEST_BUDGET: SnapshotBudget = SnapshotBudget {
+    bytes: MAX_METRIC_STATE_BYTES,
+    samples: MAX_METRIC_STATE_SAMPLES,
+};
+
+/// One seat history response.
+const HISTORY_BUDGET: SnapshotBudget = SnapshotBudget {
+    bytes: 128 * 1024 * 1024,
+    samples: 1_000_000,
+};
 
 /// One federation whose invite an authenticated MG asserted for a current seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -233,6 +264,7 @@ impl Store {
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
+        compress_uncompressed_metric_snapshots(&pool).await?;
         let metadata = sqlx::query(
             "SELECT trust_profile, key_id, target_secret_format,
                     key_sentinel_nonce, key_sentinel_ciphertext
@@ -469,7 +501,7 @@ impl Store {
         .bind(now).bind(now).bind(revision_bump).execute(&mut *transaction).await?;
         if expired {
             sqlx::query(
-                "DELETE FROM metric_snapshots WHERE target_id =
+                "DELETE FROM metric_observations WHERE target_id =
                  (SELECT target_id FROM targets WHERE fman_pubkey = ?)",
             )
             .bind(target.mg_pubkey)
@@ -563,7 +595,7 @@ impl Store {
         if status == "quarantined"
             && let Some(target_id) = target_id
         {
-            sqlx::query("DELETE FROM metric_snapshots WHERE target_id = ?")
+            sqlx::query("DELETE FROM metric_observations WHERE target_id = ?")
                 .bind(&target_id)
                 .execute(&mut *transaction)
                 .await?;
@@ -594,7 +626,7 @@ impl Store {
                 .fetch_optional(&mut *transaction)
                 .await?;
         if current.as_deref() != Some(fingerprint) {
-            sqlx::query("DELETE FROM metric_snapshots")
+            sqlx::query("DELETE FROM metric_observations")
                 .execute(&mut *transaction)
                 .await?;
             sqlx::query("DELETE FROM metric_poll_state")
@@ -624,7 +656,7 @@ impl Store {
     ) -> Result<Vec<CollectionTarget>, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let removed = sqlx::query(
-            "DELETE FROM metric_snapshots WHERE target_id IN
+            "DELETE FROM metric_observations WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now)
@@ -881,15 +913,18 @@ impl Store {
         )))
     }
 
-    /// Atomically replace successful seat snapshots if the target fence is still current.
+    /// Atomically add successful seat observations as the seats' latest
+    /// snapshots if the target fence is still current, then prune history.
     ///
-    /// Persisted metric state is capped across all targets. A snapshot that
+    /// Latest snapshots are capped across all targets. A snapshot that
     /// would take the total over the cap is skipped: the seat keeps its previous
     /// snapshot, which ages into staleness, and the commit is not complete.
     /// Within one commit, snapshots of seats that already have one are applied
     /// before new seats, so new seats do not take capacity ahead of existing
     /// replacements. A replacement that itself grows past the remaining
     /// capacity is skipped the same way and keeps its old observation time.
+    /// Older observations stay as history, one per seat and bucket, until
+    /// retention or the history bounds prune them.
     pub(crate) async fn commit_metrics(
         &self,
         target: &WorkTarget,
@@ -898,7 +933,7 @@ impl Store {
     ) -> Result<MetricsCommitOutcome, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
-            "DELETE FROM metric_snapshots WHERE target_id IN
+            "DELETE FROM metric_observations WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now)
@@ -922,7 +957,7 @@ impl Store {
                 .await?;
             }
             let existing: Vec<String> = sqlx::query_scalar(
-                "SELECT guardian_seat_id FROM metric_snapshots WHERE target_id = ?",
+                "SELECT DISTINCT guardian_seat_id FROM metric_observations WHERE target_id = ?",
             )
             .bind(target.target_id())
             .fetch_all(&mut *transaction)
@@ -930,7 +965,7 @@ impl Store {
             for seat in existing {
                 if !listed_seats.contains(&seat) {
                     sqlx::query(
-                        "DELETE FROM metric_snapshots
+                        "DELETE FROM metric_observations
                          WHERE target_id = ? AND guardian_seat_id = ?",
                     )
                     .bind(target.target_id())
@@ -941,13 +976,13 @@ impl Store {
             }
         }
         let (mut stored_bytes, mut stored_samples): (i64, i64) = sqlx::query_as(
-            "SELECT COALESCE(SUM(length(samples_json)),0),COALESCE(SUM(sample_count),0)
+            "SELECT COALESCE(SUM(samples_json_bytes),0),COALESCE(SUM(sample_count),0)
              FROM metric_snapshots",
         )
         .fetch_one(&mut *transaction)
         .await?;
         let existing: BTreeMap<String, (i64, i64)> = sqlx::query_as(
-            "SELECT guardian_seat_id,length(samples_json),sample_count
+            "SELECT guardian_seat_id,samples_json_bytes,sample_count
              FROM metric_snapshots WHERE target_id = ?",
         )
         .bind(target.target_id())
@@ -963,7 +998,7 @@ impl Store {
             let sample_count =
                 i64::try_from(snapshot.samples.len()).map_err(|_| StoreError::Saturated)?;
             let samples = serde_json::to_vec(&snapshot.samples).map_err(|_| StoreError::Corrupt)?;
-            if samples.len() > 4 * 1024 * 1024 {
+            if samples.len() > MAX_METRIC_ROW_BYTES {
                 return Err(StoreError::Saturated);
             }
             let row_bytes = i64::try_from(samples.len()).map_err(|_| StoreError::Saturated)?;
@@ -977,6 +1012,7 @@ impl Store {
                 saturated = true;
                 continue;
             }
+            let samples_zstd = compress_samples(&samples)?;
             stored_bytes = next_bytes;
             stored_samples = next_samples;
             let invite_aad = seat_invite_aad(
@@ -996,29 +1032,57 @@ impl Store {
                 }
                 None => (None, None),
             };
+            // The new observation becomes the seat's latest: it replaces the
+            // row of its own bucket and any row a wall-clock step back left
+            // dated after it, and only it keeps the seat invite.
             sqlx::query(
-                "INSERT INTO metric_snapshots(
-                    target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count,
-                    invite_nonce,invite_ciphertext
-                 ) VALUES (?,?,?,?,?,?,?,?)
-                 ON CONFLICT(target_id,guardian_seat_id) DO UPDATE SET
-                     federation_id=excluded.federation_id,
-                     observed_at_ms=excluded.observed_at_ms,
-                     samples_json=excluded.samples_json,sample_count=excluded.sample_count,
-                     invite_nonce=excluded.invite_nonce,
-                     invite_ciphertext=excluded.invite_ciphertext",
+                "DELETE FROM metric_observations
+                 WHERE target_id = ? AND guardian_seat_id = ?
+                   AND (observed_at_ms >= ? OR observed_at_ms / ? = ? / ?)",
+            )
+            .bind(target.target_id())
+            .bind(&snapshot.guardian_seat_id)
+            .bind(snapshot.observed_at_ms)
+            .bind(METRIC_HISTORY_BUCKET_MS)
+            .bind(snapshot.observed_at_ms)
+            .bind(METRIC_HISTORY_BUCKET_MS)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE metric_observations SET invite_nonce=NULL,invite_ciphertext=NULL
+                 WHERE target_id = ? AND guardian_seat_id = ? AND invite_ciphertext IS NOT NULL",
+            )
+            .bind(target.target_id())
+            .bind(&snapshot.guardian_seat_id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "INSERT INTO metric_observations(
+                    target_id,guardian_seat_id,observed_at_ms,federation_id,
+                    samples_zstd,samples_json_bytes,sample_count,invite_nonce,invite_ciphertext
+                 ) VALUES (?,?,?,?,?,?,?,?,?)",
             )
             .bind(target.target_id())
             .bind(snapshot.guardian_seat_id)
-            .bind(snapshot.federation_id)
             .bind(snapshot.observed_at_ms)
-            .bind(samples)
+            .bind(snapshot.federation_id)
+            .bind(samples_zstd)
+            .bind(row_bytes)
             .bind(sample_count)
             .bind(invite_nonce)
             .bind(invite_ciphertext)
             .execute(&mut *transaction)
             .await?;
         }
+        prune_metric_history(
+            &mut transaction,
+            now.checked_mul(1000)
+                .and_then(|now_ms| now_ms.checked_sub(METRIC_HISTORY_RETENTION_MS))
+                .ok_or(StoreError::Corrupt)?,
+            MAX_METRIC_HISTORY_BYTES,
+            MAX_METRIC_HISTORY_ROWS,
+        )
+        .await?;
         if commit.complete && !saturated {
             sqlx::query("UPDATE metric_poll_state SET last_complete_at=? WHERE target_id=?")
                 .bind(now)
@@ -1153,7 +1217,7 @@ impl Store {
     ) -> Result<MetricExpositionView, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let removed = sqlx::query(
-            "DELETE FROM metric_snapshots WHERE target_id IN
+            "DELETE FROM metric_observations WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now)
@@ -1189,8 +1253,8 @@ impl Store {
                  ORDER BY fman_pubkey,target_id LIMIT ?
              ), candidates AS (
                   SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.federation_id,
-                         typeof(s.samples_json) AS samples_type,
-                         length(CAST(s.samples_json AS BLOB)) AS stored_bytes
+                         typeof(s.samples_zstd) AS samples_type,
+                         length(CAST(s.samples_zstd AS BLOB)) AS stored_bytes
                    FROM metric_snapshots s JOIN active_targets t ON t.target_id=s.target_id
                  ORDER BY t.fman_pubkey,t.target_id,s.guardian_seat_id LIMIT ?
              ), evaluated AS (
@@ -1213,7 +1277,7 @@ impl Store {
             SELECT summary.rejected_resources,accepted.target_id IS NULL AS no_accepted,
                      accepted.fman_pubkey,accepted.fman_name,accepted.guardian_seat_id,
                      accepted.federation_id,
-                    s.observed_at_ms,s.samples_json
+                    s.observed_at_ms,s.samples_zstd
              FROM summary LEFT JOIN accepted ON true
              LEFT JOIN metric_snapshots s
                  ON s.target_id=accepted.target_id
@@ -1244,113 +1308,13 @@ impl Store {
         let mut listed_seats = active_listed_seats(&mut transaction, now).await?;
         transaction.commit().await?;
 
-        let mut snapshots = Vec::new();
-        let mut rejected = snapshot_rows
+        let rejected = snapshot_rows
             .first()
             .and_then(|row| row.try_get::<i64, _>("rejected_resources").ok())
             .and_then(|count| usize::try_from(count).ok())
             .unwrap_or(usize::MAX);
-        let mut sample_count = 0i64;
-        let mut sample_bytes = 0i64;
-        for row in snapshot_rows {
-            if row.try_get::<i64, _>("no_accepted").unwrap_or(0) != 0 {
-                continue;
-            }
-            let loaded = (|| {
-                Ok::<_, sqlx::Error>((
-                    row.try_get::<Option<String>, _>("fman_pubkey")?,
-                    row.try_get::<Option<String>, _>("fman_name")?,
-                    row.try_get::<Option<String>, _>("guardian_seat_id")?,
-                    row.try_get::<Option<String>, _>("federation_id")?,
-                    row.try_get::<Option<i64>, _>("observed_at_ms")?,
-                    row.try_get::<Option<Vec<u8>>, _>("samples_json")?,
-                ))
-            })();
-            let Ok((
-                Some(mg_id),
-                Some(mg_name),
-                Some(guardian_seat_id),
-                Some(federation_id),
-                Some(observed_at_ms),
-                Some(samples_json),
-            )) = loaded
-            else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            if observed_at_ms < 0 || observed_at_ms > now_ms {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            if !canonical_federation_id(&federation_id) {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            let samples: Vec<String> = match serde_json::from_slice(&samples_json) {
-                Ok(samples) => samples,
-                Err(_) => {
-                    rejected = rejected.saturating_add(1);
-                    continue;
-                }
-            };
-            if policy
-                .revalidate_persisted(
-                    &samples,
-                    MetricsIdentity {
-                        mg_id: &mg_id,
-                        mg_name: &mg_name,
-                        guardian_seat_id: &guardian_seat_id,
-                        federation_id: &federation_id,
-                    },
-                )
-                .is_err()
-            {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            let row_samples = match i64::try_from(samples.len()) {
-                Ok(count) => count,
-                Err(_) => {
-                    rejected = rejected.saturating_add(1);
-                    continue;
-                }
-            };
-            let row_bytes = samples.iter().try_fold(0i64, |total, sample| {
-                total
-                    .checked_add(i64::try_from(sample.len()).ok()?)?
-                    .checked_add(1)
-            });
-            let Some(row_bytes) = row_bytes else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            let Some(next_samples) = sample_count.checked_add(row_samples) else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            let Some(next_bytes) = sample_bytes.checked_add(row_bytes) else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            if next_samples > MAX_METRIC_STATE_SAMPLES || next_bytes > MAX_METRIC_STATE_BYTES {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            sample_count = next_samples;
-            sample_bytes = next_bytes;
-            snapshots.push(MetricsSnapshot {
-                mg_id,
-                mg_name,
-                guardian_seat_id,
-                federation_id,
-                observed_at_ms,
-                samples,
-            });
-        }
-        let snapshots = LoadedMetricSnapshots {
-            snapshots,
-            rejected,
-        };
+        let snapshots =
+            revalidate_snapshot_rows(policy, snapshot_rows, rejected, now_ms, LATEST_BUDGET);
         let targets = target_rows
             .into_iter()
             .map(|row| {
@@ -1381,7 +1345,7 @@ impl Store {
         now_ms: i64,
     ) -> Result<LoadedMetricSnapshots, StoreError> {
         sqlx::query(
-            "DELETE FROM metric_snapshots WHERE target_id IN
+            "DELETE FROM metric_observations WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now_seconds)
@@ -1394,8 +1358,8 @@ impl Store {
                  ORDER BY fman_pubkey,target_id LIMIT ?
              ), candidates AS (
                   SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.federation_id,
-                         typeof(s.samples_json) AS samples_type,
-                         length(CAST(s.samples_json AS BLOB)) AS stored_bytes
+                         typeof(s.samples_zstd) AS samples_type,
+                         length(CAST(s.samples_zstd AS BLOB)) AS stored_bytes
                    FROM metric_snapshots s JOIN active_targets t ON t.target_id=s.target_id
                  ORDER BY t.fman_pubkey,t.target_id,s.guardian_seat_id LIMIT ?
              ), evaluated AS (
@@ -1418,7 +1382,7 @@ impl Store {
             SELECT summary.rejected_resources,accepted.target_id IS NULL AS no_accepted,
                      accepted.fman_pubkey,accepted.fman_name,accepted.guardian_seat_id,
                      accepted.federation_id,
-                    s.observed_at_ms,s.samples_json
+                    s.observed_at_ms,s.samples_zstd
              FROM summary LEFT JOIN accepted ON true
              LEFT JOIN metric_snapshots s
                  ON s.target_id=accepted.target_id
@@ -1435,113 +1399,73 @@ impl Store {
         .bind(MAX_METRIC_STATE_BYTES)
         .fetch_all(&self.pool)
         .await?;
-        let mut snapshots = Vec::new();
-        let mut rejected = rows
+        let rejected = rows
             .first()
             .and_then(|row| row.try_get::<i64, _>("rejected_resources").ok())
             .and_then(|count| usize::try_from(count).ok())
             .unwrap_or(usize::MAX);
-        let mut sample_count = 0i64;
-        let mut sample_bytes = 0i64;
-        for row in rows {
-            if row.try_get::<i64, _>("no_accepted").unwrap_or(0) != 0 {
-                continue;
-            }
-            let loaded = (|| {
-                Ok::<_, sqlx::Error>((
-                    row.try_get::<Option<String>, _>("fman_pubkey")?,
-                    row.try_get::<Option<String>, _>("fman_name")?,
-                    row.try_get::<Option<String>, _>("guardian_seat_id")?,
-                    row.try_get::<Option<String>, _>("federation_id")?,
-                    row.try_get::<Option<i64>, _>("observed_at_ms")?,
-                    row.try_get::<Option<Vec<u8>>, _>("samples_json")?,
-                ))
-            })();
-            let Ok((
-                Some(mg_id),
-                Some(mg_name),
-                Some(guardian_seat_id),
-                Some(federation_id),
-                Some(observed_at_ms),
-                Some(samples_json),
-            )) = loaded
-            else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            if observed_at_ms < 0 || observed_at_ms > now_ms {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            if !canonical_federation_id(&federation_id) {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            let samples: Vec<String> = match serde_json::from_slice(&samples_json) {
-                Ok(samples) => samples,
-                Err(_) => {
-                    rejected = rejected.saturating_add(1);
-                    continue;
-                }
-            };
-            if policy
-                .revalidate_persisted(
-                    &samples,
-                    MetricsIdentity {
-                        mg_id: &mg_id,
-                        mg_name: &mg_name,
-                        guardian_seat_id: &guardian_seat_id,
-                        federation_id: &federation_id,
-                    },
-                )
-                .is_err()
-            {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            let row_samples = match i64::try_from(samples.len()) {
-                Ok(count) => count,
-                Err(_) => {
-                    rejected = rejected.saturating_add(1);
-                    continue;
-                }
-            };
-            let row_bytes = samples.iter().try_fold(0i64, |total, sample| {
-                total
-                    .checked_add(i64::try_from(sample.len()).ok()?)?
-                    .checked_add(1)
-            });
-            let Some(row_bytes) = row_bytes else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            let Some(next_samples) = sample_count.checked_add(row_samples) else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            let Some(next_bytes) = sample_bytes.checked_add(row_bytes) else {
-                rejected = rejected.saturating_add(1);
-                continue;
-            };
-            if next_samples > MAX_METRIC_STATE_SAMPLES || next_bytes > MAX_METRIC_STATE_BYTES {
-                rejected = rejected.saturating_add(1);
-                continue;
-            }
-            sample_count = next_samples;
-            sample_bytes = next_bytes;
-            snapshots.push(MetricsSnapshot {
-                mg_id,
-                mg_name,
-                guardian_seat_id,
-                federation_id,
-                observed_at_ms,
-                samples,
-            });
-        }
-        Ok(LoadedMetricSnapshots {
-            snapshots,
+        Ok(revalidate_snapshot_rows(
+            policy,
+            rows,
             rejected,
-        })
+            now_ms,
+            LATEST_BUDGET,
+        ))
+    }
+
+    /// The revalidated observations of one active, unexpired target's seat
+    /// observed in the retention window and before `before_ms`, oldest first.
+    /// The newest that fit one response's budget are kept; `rejected` counts
+    /// the rows that failed revalidation or did not fit.
+    pub(crate) async fn metric_history(
+        &self,
+        policy: &MetricsPolicy,
+        mg_id: &str,
+        guardian_seat_id: &str,
+        before_ms: i64,
+        now_ms: i64,
+    ) -> Result<LoadedMetricSnapshots, StoreError> {
+        let rows = sqlx::query(
+            "WITH candidates AS (
+                 SELECT o.target_id,t.fman_pubkey,t.fman_name,o.guardian_seat_id,o.federation_id,
+                        o.observed_at_ms,typeof(o.samples_zstd) AS samples_type,
+                        length(CAST(o.samples_zstd AS BLOB)) AS stored_bytes
+                 FROM metric_observations o JOIN targets t ON t.target_id=o.target_id
+                 WHERE t.status='active' AND t.lease_until > ?
+                   AND t.fman_pubkey=? AND o.guardian_seat_id=?
+                   AND o.observed_at_ms >= ? AND o.observed_at_ms < ?
+                 ORDER BY o.observed_at_ms DESC LIMIT ?
+             ), evaluated AS (
+                 SELECT *,
+                        SUM(
+                            CASE WHEN samples_type='blob' AND stored_bytes <= ? THEN stored_bytes
+                                 ELSE 0 END
+                        ) OVER (ORDER BY observed_at_ms DESC ROWS UNBOUNDED PRECEDING)
+                            AS cumulative_bytes
+                 FROM candidates
+             )
+             SELECT e.fman_pubkey,e.fman_name,e.guardian_seat_id,e.federation_id,
+                    e.observed_at_ms,o.samples_zstd
+             FROM evaluated e LEFT JOIN metric_observations o
+                 ON o.target_id=e.target_id AND o.guardian_seat_id=e.guardian_seat_id
+                AND o.observed_at_ms=e.observed_at_ms
+                AND e.samples_type='blob' AND e.stored_bytes <= ? AND e.cumulative_bytes <= ?
+             ORDER BY e.observed_at_ms DESC",
+        )
+        .bind(now_ms.div_euclid(1000))
+        .bind(mg_id)
+        .bind(guardian_seat_id)
+        .bind(now_ms.saturating_sub(METRIC_HISTORY_RETENTION_MS))
+        .bind(before_ms)
+        .bind(METRIC_HISTORY_RETENTION_MS / METRIC_HISTORY_BUCKET_MS + 1)
+        .bind(MAX_METRIC_ROW_BYTES as i64)
+        .bind(MAX_METRIC_ROW_BYTES as i64)
+        .bind(HISTORY_BUDGET.bytes)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut history = revalidate_snapshot_rows(policy, rows, 0, now_ms, HISTORY_BUDGET);
+        history.snapshots.reverse();
+        Ok(history)
     }
 
     /// Report remote freshness without coupling it to process readiness.
@@ -1583,7 +1507,7 @@ impl Store {
     ) -> Result<MetricExpositionVersion, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let removed = sqlx::query(
-            "DELETE FROM metric_snapshots WHERE target_id IN
+            "DELETE FROM metric_observations WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now)
@@ -1951,6 +1875,244 @@ async fn store_mg_report<T: MgReport>(
     Ok(())
 }
 
+fn compress_samples(samples_json: &[u8]) -> Result<Vec<u8>, StoreError> {
+    let compressed = zstd::bulk::compress(samples_json, 3).map_err(|_| StoreError::Corrupt)?;
+    if compressed.len() > MAX_METRIC_ROW_BYTES {
+        return Err(StoreError::Saturated);
+    }
+    Ok(compressed)
+}
+
+/// Samples of one stored observation, or `None` when the row does not decode
+/// within the row bound.
+fn decompress_samples(samples_zstd: &[u8]) -> Option<Vec<String>> {
+    let samples_json = zstd::bulk::decompress(samples_zstd, MAX_METRIC_ROW_BYTES).ok()?;
+    serde_json::from_slice(&samples_json).ok()
+}
+
+/// Prune observations that are not their seat's latest: those observed before
+/// `cutoff_ms`, then, while all observations exceed the history bounds, the
+/// oldest. Latest snapshots have their own smaller bounds, so they always fit.
+async fn prune_metric_history(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    cutoff_ms: i64,
+    max_bytes: i64,
+    max_rows: i64,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "DELETE FROM metric_observations WHERE observed_at_ms < ? AND observed_at_ms < (
+             SELECT MAX(n.observed_at_ms) FROM metric_observations n
+             WHERE n.target_id=metric_observations.target_id
+               AND n.guardian_seat_id=metric_observations.guardian_seat_id
+         )",
+    )
+    .bind(cutoff_ms)
+    .execute(&mut **transaction)
+    .await?;
+    let (stored_bytes, stored_rows): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(length(samples_zstd)),0),COUNT(*) FROM metric_observations",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if stored_bytes <= max_bytes && stored_rows <= max_rows {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM metric_observations WHERE rowid IN (
+             SELECT id FROM (
+                 SELECT o.rowid AS id,o.observed_at_ms=l.latest_ms AS latest,
+                        SUM(length(o.samples_zstd)) OVER kept AS kept_bytes,
+                        COUNT(*) OVER kept AS kept_rows
+                 FROM metric_observations o JOIN (
+                     SELECT target_id,guardian_seat_id,MAX(observed_at_ms) AS latest_ms
+                     FROM metric_observations GROUP BY target_id,guardian_seat_id
+                 ) l ON l.target_id=o.target_id AND l.guardian_seat_id=o.guardian_seat_id
+                 WINDOW kept AS (
+                     ORDER BY o.observed_at_ms=l.latest_ms DESC,o.observed_at_ms DESC,o.rowid DESC
+                     ROWS UNBOUNDED PRECEDING
+                 )
+             ) WHERE NOT latest AND (kept_bytes > ? OR kept_rows > ?)
+         )",
+    )
+    .bind(max_bytes)
+    .bind(max_rows)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+/// Finish migration `0008_metric_observations`: move the latest snapshots it
+/// set aside into `metric_observations`, compressed, and drop their old table.
+/// Runs at every open and does nothing once that table is gone.
+async fn compress_uncompressed_metric_snapshots(pool: &SqlitePool) -> Result<(), StoreError> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let pending: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master
+         WHERE type='table' AND name='metric_snapshots_uncompressed'",
+    )
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if pending.is_none() {
+        transaction.rollback().await?;
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT target_id,guardian_seat_id,observed_at_ms,federation_id,
+                CAST(samples_json AS BLOB) AS samples_json,sample_count,
+                invite_nonce,invite_ciphertext
+         FROM metric_snapshots_uncompressed",
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let mut skipped = 0_usize;
+    for row in rows {
+        let samples_json: Vec<u8> = row.try_get("samples_json")?;
+        // Only incompressible JSON within a few hundred bytes of the row bound
+        // can grow past it; such a row could not hold admitted samples.
+        let Ok(samples_zstd) = compress_samples(&samples_json) else {
+            skipped += 1;
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO metric_observations(
+                target_id,guardian_seat_id,observed_at_ms,federation_id,
+                samples_zstd,samples_json_bytes,sample_count,invite_nonce,invite_ciphertext
+             ) VALUES (?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(row.try_get::<String, _>("target_id")?)
+        .bind(row.try_get::<String, _>("guardian_seat_id")?)
+        .bind(row.try_get::<i64, _>("observed_at_ms")?)
+        .bind(row.try_get::<String, _>("federation_id")?)
+        .bind(samples_zstd)
+        .bind(i64::try_from(samples_json.len()).map_err(|_| StoreError::Corrupt)?)
+        .bind(row.try_get::<i64, _>("sample_count")?)
+        .bind(row.try_get::<Option<Vec<u8>>, _>("invite_nonce")?)
+        .bind(row.try_get::<Option<Vec<u8>>, _>("invite_ciphertext")?)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    sqlx::query("DROP TABLE metric_snapshots_uncompressed")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    if skipped > 0 {
+        // The message and field are fixed or a count.
+        tracing::warn!(skipped, "stored metric snapshots too large to compress");
+    }
+    Ok(())
+}
+
+/// Decode and revalidate loaded snapshot rows in order until the budget is
+/// spent. A row that is missing a field, future-dated, undecodable, fails the
+/// current policy, or does not fit is counted in `rejected`.
+fn revalidate_snapshot_rows(
+    policy: &MetricsPolicy,
+    rows: Vec<sqlx::sqlite::SqliteRow>,
+    mut rejected: usize,
+    now_ms: i64,
+    budget: SnapshotBudget,
+) -> LoadedMetricSnapshots {
+    let mut snapshots = Vec::new();
+    let mut sample_count = 0i64;
+    let mut sample_bytes = 0i64;
+    for row in rows {
+        if row.try_get::<i64, _>("no_accepted").unwrap_or(0) != 0 {
+            continue;
+        }
+        let loaded = (|| {
+            Ok::<_, sqlx::Error>((
+                row.try_get::<Option<String>, _>("fman_pubkey")?,
+                row.try_get::<Option<String>, _>("fman_name")?,
+                row.try_get::<Option<String>, _>("guardian_seat_id")?,
+                row.try_get::<Option<String>, _>("federation_id")?,
+                row.try_get::<Option<i64>, _>("observed_at_ms")?,
+                row.try_get::<Option<Vec<u8>>, _>("samples_zstd")?,
+            ))
+        })();
+        let Ok((
+            Some(mg_id),
+            Some(mg_name),
+            Some(guardian_seat_id),
+            Some(federation_id),
+            Some(observed_at_ms),
+            Some(samples_zstd),
+        )) = loaded
+        else {
+            rejected = rejected.saturating_add(1);
+            continue;
+        };
+        if observed_at_ms < 0 || observed_at_ms > now_ms {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        if !canonical_federation_id(&federation_id) {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        let Some(samples) = decompress_samples(&samples_zstd) else {
+            rejected = rejected.saturating_add(1);
+            continue;
+        };
+        if policy
+            .revalidate_persisted(
+                &samples,
+                MetricsIdentity {
+                    mg_id: &mg_id,
+                    mg_name: &mg_name,
+                    guardian_seat_id: &guardian_seat_id,
+                    federation_id: &federation_id,
+                },
+            )
+            .is_err()
+        {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        let row_samples = match i64::try_from(samples.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                rejected = rejected.saturating_add(1);
+                continue;
+            }
+        };
+        let row_bytes = samples.iter().try_fold(0i64, |total, sample| {
+            total
+                .checked_add(i64::try_from(sample.len()).ok()?)?
+                .checked_add(1)
+        });
+        let Some(row_bytes) = row_bytes else {
+            rejected = rejected.saturating_add(1);
+            continue;
+        };
+        let Some(next_samples) = sample_count.checked_add(row_samples) else {
+            rejected = rejected.saturating_add(1);
+            continue;
+        };
+        let Some(next_bytes) = sample_bytes.checked_add(row_bytes) else {
+            rejected = rejected.saturating_add(1);
+            continue;
+        };
+        if next_samples > budget.samples || next_bytes > budget.bytes {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        sample_count = next_samples;
+        sample_bytes = next_bytes;
+        snapshots.push(MetricsSnapshot {
+            mg_id,
+            mg_name,
+            guardian_seat_id,
+            federation_id,
+            observed_at_ms,
+            samples,
+        });
+    }
+    LoadedMetricSnapshots {
+        snapshots,
+        rejected,
+    }
+}
+
 /// Seats from each active target's latest successful listing, by MG id.
 ///
 /// A row that does not decode is skipped; the seat then has no freshness
@@ -2290,16 +2452,19 @@ mod tests {
                 .fetch_one(&store.pool)
                 .await
                 .unwrap();
+        let samples_json = serde_json::to_vec(samples).unwrap();
         sqlx::query(
-            "INSERT INTO metric_snapshots(
-                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
-             ) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO metric_observations(
+                 target_id,guardian_seat_id,federation_id,observed_at_ms,
+                 samples_zstd,samples_json_bytes,sample_count
+             ) VALUES (?,?,?,?,?,?,?)",
         )
         .bind(target_id)
         .bind(seat)
         .bind("0000000000000000000000000000000000000000000000000000000000000000")
         .bind(observed_at_ms)
-        .bind(serde_json::to_vec(samples).unwrap())
+        .bind(compress_samples(&samples_json).unwrap())
+        .bind(i64::try_from(samples_json.len()).unwrap())
         .bind(i64::try_from(samples.len()).unwrap())
         .execute(&store.pool)
         .await
@@ -3027,7 +3192,7 @@ mod tests {
 
         // A ciphertext moved to another seat no longer authenticates.
         sqlx::query(
-            "UPDATE metric_snapshots SET guardian_seat_id='moved' WHERE guardian_seat_id='s3'",
+            "UPDATE metric_observations SET guardian_seat_id='moved' WHERE guardian_seat_id='s3'",
         )
         .execute(&store.pool)
         .await
@@ -3037,7 +3202,7 @@ mod tests {
             Err(StoreError::Secret)
         ));
         sqlx::query(
-            "UPDATE metric_snapshots SET guardian_seat_id='s3' WHERE guardian_seat_id='moved'",
+            "UPDATE metric_observations SET guardian_seat_id='s3' WHERE guardian_seat_id='moved'",
         )
         .execute(&store.pool)
         .await
@@ -3093,15 +3258,17 @@ mod tests {
                 .await
                 .unwrap();
         sqlx::query(
-            "INSERT INTO metric_snapshots(
-                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
-             ) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO metric_observations(
+                 target_id,guardian_seat_id,federation_id,observed_at_ms,
+                 samples_zstd,samples_json_bytes,sample_count
+             ) VALUES (?,?,?,?,?,?,?)",
         )
         .bind(target_id)
         .bind("gg")
         .bind("0000000000000000000000000000000000000000000000000000000000000000")
         .bind(100_006)
         .bind(123_i64)
+        .bind(0_i64)
         .bind(0_i64)
         .execute(&first.pool)
         .await
@@ -3114,14 +3281,14 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "UPDATE metric_snapshots SET federation_id='NOT-CANONICAL'
+            "UPDATE metric_observations SET federation_id='NOT-CANONICAL'
              WHERE guardian_seat_id='hh'",
         )
         .execute(&mut *connection)
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE metric_snapshots
+            "UPDATE metric_observations
              SET federation_id=?
              WHERE guardian_seat_id='ii'",
         )
@@ -3282,7 +3449,7 @@ mod tests {
         insert_snapshot(&store, "cc", 100_000, &["fm_not_inventoried 1".to_owned()]).await;
         insert_snapshot(&store, "dd", 100_000, &stored_samples("dd", 1)).await;
         sqlx::query(
-            "UPDATE metric_snapshots SET observed_at_ms='soon' WHERE guardian_seat_id='dd'",
+            "UPDATE metric_observations SET observed_at_ms='soon' WHERE guardian_seat_id='dd'",
         )
         .execute(&store.pool)
         .await
@@ -3377,7 +3544,7 @@ mod tests {
             .unwrap();
         let samples = |count: usize, length: usize| vec!["a".repeat(length); count];
         let stored_bytes = |store: Store| async move {
-            sqlx::query_scalar::<_, i64>("SELECT SUM(length(samples_json)) FROM metric_snapshots")
+            sqlx::query_scalar::<_, i64>("SELECT SUM(samples_json_bytes) FROM metric_snapshots")
                 .fetch_one(&store.pool)
                 .await
                 .unwrap()
@@ -3813,5 +3980,529 @@ mod tests {
         assert_eq!(restarted.next_metric_due_at(101).await.unwrap(), Some(1900));
         assert!(restarted.due_metric_targets(1899).await.unwrap().is_empty());
         assert_eq!(restarted.due_metric_targets(1900).await.unwrap().len(), 1);
+    }
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    const ZERO_FEDERATION: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
+    /// A store whose one admitted target `11` stays leased for 30 days from
+    /// `now`, with work ready to commit.
+    async fn history_store(directory: &TempDir, now: i64) -> (Store, WorkTarget) {
+        let data_dir = data_dir(directory);
+        let _lock = crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap();
+        let store = Store::open(
+            &data_dir.join("state.sqlite"),
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            30 * 24 * 60 * 60,
+            32,
+        )
+        .await
+        .unwrap();
+        store
+            .reserve_auth(&auth("history", now), now)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("history", now), target(1), now)
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(now)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_metric_work(&scheduled, now, 900)
+            .await
+            .unwrap()
+            .unwrap();
+        (store, work)
+    }
+
+    fn observation(seat: &str, observed_at_ms: i64, value: u64, invite: &str) -> SeatObservation {
+        SeatObservation {
+            guardian_seat_id: seat.to_owned(),
+            federation_id: ZERO_FEDERATION.to_owned(),
+            invite_code: Some(invite.to_owned()),
+            observed_at_ms,
+            samples: stored_samples(seat, value),
+        }
+    }
+
+    /// Commit `observations` at their own time, with `seats` listed.
+    async fn commit_at(
+        store: &Store,
+        work: &WorkTarget,
+        seats: &[&str],
+        observations: Vec<SeatObservation>,
+        now_ms: i64,
+    ) {
+        assert_eq!(
+            store
+                .commit_metrics(
+                    work,
+                    MetricsCommit {
+                        listed_seats: Some(seats.iter().map(|seat| (*seat).to_owned()).collect()),
+                        snapshots: observations,
+                        complete: true,
+                    },
+                    now_ms / 1000,
+                )
+                .await
+                .unwrap(),
+            MetricsCommitOutcome::Committed
+        );
+    }
+
+    /// Stored observations as (seat, observed_at_ms, has invite), in order.
+    async fn stored_observations(store: &Store) -> Vec<(String, i64, bool)> {
+        sqlx::query_as(
+            "SELECT guardian_seat_id,observed_at_ms,invite_ciphertext IS NOT NULL
+             FROM metric_observations ORDER BY guardian_seat_id,observed_at_ms",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+    }
+
+    fn session_count(snapshot: &MetricsSnapshot) -> &str {
+        snapshot
+            .samples
+            .iter()
+            .find(|sample| sample.starts_with("fm_consensus_session_count"))
+            .and_then(|sample| sample.rsplit_once(' '))
+            .unwrap()
+            .1
+    }
+
+    #[tokio::test]
+    async fn history_keeps_the_last_observation_of_each_bucket_and_the_invite_only_on_the_latest() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, work) = history_store(&directory, 1).await;
+        // 1.0 s and 1.1e3 s share the bucket [900 s, 1800 s); 1.9e3 s is in
+        // the next one although it is less than 15 minutes after 1.1e3 s.
+        for (observed_at_ms, value, invite) in [
+            (1_000_000, 9, "invite-1"),
+            (1_100_000, 10, "invite-2"),
+            (1_900_000, 11, "invite-3"),
+        ] {
+            commit_at(
+                &store,
+                &work,
+                &["aa"],
+                vec![observation("aa", observed_at_ms, value, invite)],
+                observed_at_ms,
+            )
+            .await;
+        }
+        assert_eq!(
+            stored_observations(&store).await,
+            vec![
+                ("aa".to_owned(), 1_100_000, false),
+                ("aa".to_owned(), 1_900_000, true),
+            ]
+        );
+        let latest = store
+            .metric_snapshots(&metrics_policy(), 2_000, 2_000_000)
+            .await
+            .unwrap();
+        assert_eq!(latest.rejected, 0);
+        assert_eq!(latest.snapshots.len(), 1);
+        assert_eq!(latest.snapshots[0].observed_at_ms, 1_900_000);
+        assert_eq!(session_count(&latest.snapshots[0]), "11");
+        assert_eq!(
+            store.exported_federations(2_000).await.unwrap()[0].invite_code,
+            "invite-3"
+        );
+
+        let history = store
+            .metric_history(&metrics_policy(), "11", "aa", i64::MAX, 2_000_000)
+            .await
+            .unwrap();
+        assert_eq!(history.rejected, 0);
+        assert_eq!(
+            history
+                .snapshots
+                .iter()
+                .map(|snapshot| (snapshot.observed_at_ms, session_count(snapshot)))
+                .collect::<Vec<_>>(),
+            vec![(1_100_000, "10"), (1_900_000, "11")]
+        );
+        let paged = store
+            .metric_history(&metrics_policy(), "11", "aa", 1_900_000, 2_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            paged
+                .snapshots
+                .iter()
+                .map(|snapshot| snapshot.observed_at_ms)
+                .collect::<Vec<_>>(),
+            vec![1_100_000]
+        );
+        // Another MG's key or another seat reads nothing.
+        for (mg_id, seat) in [("22", "aa"), ("11", "bb")] {
+            let other = store
+                .metric_history(&metrics_policy(), mg_id, seat, i64::MAX, 2_000_000)
+                .await
+                .unwrap();
+            assert!(other.snapshots.is_empty() && other.rejected == 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_observation_after_a_clock_step_back_replaces_the_later_dated_ones() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, work) = history_store(&directory, 1).await;
+        for (observed_at_ms, value) in [(2_000_000, 1), (5_000_000, 2), (3_000_000, 3)] {
+            commit_at(
+                &store,
+                &work,
+                &["aa"],
+                vec![observation("aa", observed_at_ms, value, "invite")],
+                observed_at_ms,
+            )
+            .await;
+        }
+        assert_eq!(
+            stored_observations(&store).await,
+            vec![
+                ("aa".to_owned(), 2_000_000, false),
+                ("aa".to_owned(), 3_000_000, true),
+            ]
+        );
+        let latest = store
+            .metric_snapshots(&metrics_policy(), 3_000, 3_000_000)
+            .await
+            .unwrap();
+        assert_eq!(session_count(&latest.snapshots[0]), "3");
+    }
+
+    #[tokio::test]
+    async fn retention_prunes_week_old_history_but_keeps_every_seats_latest() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = 10 * DAY_MS;
+        let (store, work) = history_store(&directory, start / 1000).await;
+        commit_at(
+            &store,
+            &work,
+            &["aa", "bb"],
+            vec![
+                observation("aa", start, 1, "invite-a"),
+                observation("bb", start, 1, "invite-b"),
+            ],
+            start,
+        )
+        .await;
+        commit_at(
+            &store,
+            &work,
+            &["aa", "bb"],
+            vec![observation("aa", start + DAY_MS, 2, "invite-a")],
+            start + DAY_MS,
+        )
+        .await;
+        // One second (the commit clock's resolution) past 7 days after the
+        // first commit, aa's first observation is past retention and its
+        // second is not. bb's only one is its latest, so it stays.
+        let now = start + 7 * DAY_MS + 1000;
+        commit_at(
+            &store,
+            &work,
+            &["aa", "bb"],
+            vec![observation("aa", now, 3, "invite-a")],
+            now,
+        )
+        .await;
+        assert_eq!(
+            stored_observations(&store).await,
+            vec![
+                ("aa".to_owned(), start + DAY_MS, false),
+                ("aa".to_owned(), now, true),
+                ("bb".to_owned(), start, true),
+            ]
+        );
+        // The history read covers the same window.
+        let history = store
+            .metric_history(&metrics_policy(), "11", "bb", i64::MAX, now)
+            .await
+            .unwrap();
+        assert!(history.snapshots.is_empty());
+        let latest = store
+            .metric_snapshots(&metrics_policy(), now / 1000, now)
+            .await
+            .unwrap();
+        assert_eq!(latest.snapshots.len(), 2);
+
+        // Unlisting a seat and quarantining the target remove their history.
+        commit_at(&store, &work, &["aa"], Vec::new(), now).await;
+        assert_eq!(
+            stored_observations(&store)
+                .await
+                .into_iter()
+                .map(|(seat, ..)| seat)
+                .collect::<Vec<_>>(),
+            ["aa", "aa"]
+        );
+        assert!(store.quarantine("11").await.unwrap());
+        assert!(stored_observations(&store).await.is_empty());
+        let history = store
+            .metric_history(&metrics_policy(), "11", "aa", i64::MAX, now)
+            .await
+            .unwrap();
+        assert!(history.snapshots.is_empty() && history.rejected == 0);
+    }
+
+    #[tokio::test]
+    async fn history_bounds_prune_the_oldest_observations_that_are_not_latest() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, _work) = history_store(&directory, 1).await;
+        let bucket = METRIC_HISTORY_BUCKET_MS;
+        for index in 0..6 {
+            insert_snapshot(&store, "aa", index * bucket, &stored_samples("aa", 1)).await;
+        }
+        for index in 0..3 {
+            insert_snapshot(&store, "bb", index * bucket, &stored_samples("bb", 1)).await;
+        }
+        let prune = |max_bytes, max_rows| {
+            let store = store.clone();
+            async move {
+                let mut transaction = store.pool.begin().await.unwrap();
+                prune_metric_history(&mut transaction, 0, max_bytes, max_rows)
+                    .await
+                    .unwrap();
+                transaction.commit().await.unwrap();
+                stored_observations(&store)
+                    .await
+                    .into_iter()
+                    .map(|(seat, observed_at_ms, _)| (seat, observed_at_ms / bucket))
+                    .collect::<Vec<_>>()
+            }
+        };
+        let kept = |rows: &[(&str, i64)]| {
+            rows.iter()
+                .map(|(seat, index)| ((*seat).to_owned(), *index))
+                .collect::<Vec<_>>()
+        };
+        // Under both bounds nothing goes.
+        assert_eq!(prune(i64::MAX, 9).await.len(), 9);
+        // Five rows: both latest, then the newest others, aa's before bb's
+        // older one.
+        assert_eq!(
+            prune(i64::MAX, 5).await,
+            kept(&[("aa", 2), ("aa", 3), ("aa", 4), ("aa", 5), ("bb", 2)])
+        );
+        // The byte bound counts compressed bytes the same way.
+        let row_bytes: i64 =
+            sqlx::query_scalar("SELECT MAX(length(samples_zstd)) FROM metric_observations")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            prune(3 * row_bytes, i64::MAX).await,
+            kept(&[("aa", 4), ("aa", 5), ("bb", 2)])
+        );
+        // A bound below the latest snapshots never removes one.
+        assert_eq!(prune(0, 0).await, kept(&[("aa", 5), ("bb", 2)]));
+    }
+
+    #[tokio::test]
+    async fn history_read_skips_a_row_that_fails_revalidation() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, _work) = history_store(&directory, 1).await;
+        let bucket = METRIC_HISTORY_BUCKET_MS;
+        insert_snapshot(&store, "aa", bucket, &stored_samples("aa", 1)).await;
+        let foreign = stored_samples("bb", 2);
+        insert_snapshot(&store, "aa", 2 * bucket, &foreign).await;
+        insert_snapshot(&store, "aa", 3 * bucket, &stored_samples("aa", 3)).await;
+        // Future-dated relative to the read.
+        insert_snapshot(&store, "aa", 5 * bucket, &stored_samples("aa", 4)).await;
+        let history = store
+            .metric_history(&metrics_policy(), "11", "aa", i64::MAX, 4 * bucket)
+            .await
+            .unwrap();
+        assert_eq!(history.rejected, 2);
+        assert_eq!(
+            history
+                .snapshots
+                .iter()
+                .map(|snapshot| snapshot.observed_at_ms)
+                .collect::<Vec<_>>(),
+            vec![bucket, 3 * bucket]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_compresses_existing_latest_snapshots_without_loss() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, work) = history_store(&directory, 1).await;
+        let mut long = stored_counter_samples("bb", 50);
+        long.sort();
+        commit_at(
+            &store,
+            &work,
+            &["aa", "bb"],
+            vec![
+                observation("aa", 1_000_000, 7, "invite-a"),
+                SeatObservation {
+                    guardian_seat_id: "bb".to_owned(),
+                    federation_id: ZERO_FEDERATION.to_owned(),
+                    invite_code: None,
+                    observed_at_ms: 1_100_000,
+                    samples: long,
+                },
+            ],
+            1_100_000,
+        )
+        .await;
+        let before = store
+            .metric_snapshots(&metrics_policy(), 1_200, 1_200_000)
+            .await
+            .unwrap();
+        let federations = store.exported_federations(1_200).await.unwrap();
+        assert_eq!(federations.len(), 1);
+
+        // Put the database back at migration 7: the latest snapshots in the
+        // uncompressed table that migrations 0004 and 0005 define, the one as
+        // TEXT as a hand-edited row could hold it.
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            i64,
+            Vec<u8>,
+            i64,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+        )> = sqlx::query_as(
+            "SELECT target_id,guardian_seat_id,federation_id,observed_at_ms,samples_zstd,
+                        sample_count,invite_nonce,invite_ciphertext
+                 FROM metric_snapshots",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let mut connection = store.pool.acquire().await.unwrap();
+        sqlx::raw_sql(
+            "DROP VIEW metric_snapshots;
+             DROP TABLE metric_observations;
+             DELETE FROM _sqlx_migrations WHERE version = 8;
+             CREATE TABLE metric_snapshots (placeholder INTEGER);",
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/0004_metric_snapshot_federation.sql"
+        ))
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/0005_metric_snapshot_invite.sql"
+        ))
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        for (target_id, seat, federation_id, observed_at_ms, samples_zstd, count, nonce, invite) in
+            rows
+        {
+            let samples_json = zstd::bulk::decompress(&samples_zstd, MAX_METRIC_ROW_BYTES).unwrap();
+            let insert = if seat == "bb" {
+                "INSERT INTO metric_snapshots VALUES (?,?,?,?,CAST(? AS TEXT),?,?,?)"
+            } else {
+                "INSERT INTO metric_snapshots VALUES (?,?,?,?,?,?,?,?)"
+            };
+            sqlx::query(insert)
+                .bind(target_id)
+                .bind(seat)
+                .bind(federation_id)
+                .bind(observed_at_ms)
+                .bind(samples_json)
+                .bind(count)
+                .bind(nonce)
+                .bind(invite)
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+        }
+        let text_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM metric_snapshots WHERE typeof(samples_json)='text'",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(text_rows, 1);
+        drop(connection);
+        drop(store);
+
+        let (migrated, _work) = {
+            let data_dir = data_dir(&directory);
+            let _lock = crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap();
+            let store = Store::open(
+                &data_dir.join("state.sqlite"),
+                "development",
+                SecretCipher::new(&[7; 32]),
+                "test".into(),
+                30 * 24 * 60 * 60,
+                32,
+            )
+            .await
+            .unwrap();
+            (store, ())
+        };
+        let after = migrated
+            .metric_snapshots(&metrics_policy(), 1_200, 1_200_000)
+            .await
+            .unwrap();
+        assert_eq!(after.rejected, 0);
+        assert_eq!(
+            after
+                .snapshots
+                .iter()
+                .map(|snapshot| (
+                    &snapshot.guardian_seat_id,
+                    snapshot.observed_at_ms,
+                    &snapshot.samples
+                ))
+                .collect::<Vec<_>>(),
+            before
+                .snapshots
+                .iter()
+                .map(|snapshot| (
+                    &snapshot.guardian_seat_id,
+                    snapshot.observed_at_ms,
+                    &snapshot.samples
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(after.snapshots.len(), 2);
+        assert_eq!(
+            migrated.exported_federations(1_200).await.unwrap(),
+            federations
+        );
+        let legacy: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE name='metric_snapshots_uncompressed'",
+        )
+        .fetch_optional(&migrated.pool)
+        .await
+        .unwrap();
+        assert!(legacy.is_none());
+        let sizes: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT samples_json_bytes,length(samples_zstd) FROM metric_observations
+             ORDER BY guardian_seat_id",
+        )
+        .fetch_all(&migrated.pool)
+        .await
+        .unwrap();
+        for ((json_bytes, zstd_bytes), snapshot) in sizes.iter().zip(&before.snapshots) {
+            assert_eq!(
+                *json_bytes,
+                i64::try_from(serde_json::to_vec(&snapshot.samples).unwrap().len()).unwrap()
+            );
+            assert!(zstd_bytes < json_bytes);
+        }
     }
 }

@@ -92,12 +92,11 @@ pub(crate) fn render_metrics(
         )
         .map_err(|_| ExpositionError)?;
     }
-    let mut forwarded: ForwardedFamilies = BTreeMap::new();
-    for snapshot in snapshots {
+    for snapshot in &snapshots {
         if snapshot.observed_at_ms < 0 || snapshot.observed_at_ms > now_ms {
             return Err(ExpositionError);
         }
-        let labels = identity_labels(&snapshot);
+        let labels = identity_labels(snapshot);
         let stale = i64::from(now_ms.saturating_sub(snapshot.observed_at_ms) > stale_after_ms);
         writeln!(
             observation_samples,
@@ -110,19 +109,8 @@ pub(crate) fn render_metrics(
             "cloud_fman_telemetry_snapshot_stale{{{labels}}} {stale} {now_ms}"
         )
         .map_err(|_| ExpositionError)?;
-        for sample in snapshot.samples {
-            if sample.contains('\n') || sample.starts_with('#') {
-                return Err(ExpositionError);
-            }
-            let (family, kind) =
-                exposition_family(&sample, method_source_ready).ok_or(ExpositionError)?;
-            let group = forwarded.entry(family).or_insert((kind, Vec::new()));
-            if group.0 != kind {
-                return Err(ExpositionError);
-            }
-            group.1.push((sample, snapshot.observed_at_ms));
-        }
     }
+    let forwarded = forwarded_families(snapshots, method_source_ready)?;
     let mut output = String::new();
     output.push_str("# HELP cloud_fman_telemetry_target_fresh Whether the active MG completed a full metrics poll within two configured polling intervals.\n");
     output.push_str("# TYPE cloud_fman_telemetry_target_fresh gauge\n");
@@ -147,6 +135,80 @@ pub(crate) fn render_metrics(
     observability
         .render(&mut output, now_ms)
         .map_err(|_| ExpositionError)?;
+    write_forwarded(&mut output, forwarded)?;
+    Ok(output)
+}
+
+/// Render one seat's retained observations, each sample at its own
+/// observation time. Within a family, each series' samples are contiguous
+/// and in observation order.
+///
+/// `omitted` counts the observations of the requested window that are not
+/// rendered; the comment then tells the reader where to continue.
+pub(crate) fn render_metric_history(
+    snapshots: Vec<MetricsSnapshot>,
+    omitted: usize,
+    method_source_ready: bool,
+) -> Result<String, ExpositionError> {
+    let mut output = String::new();
+    if omitted > 0
+        && let Some(oldest) = snapshots.first()
+    {
+        writeln!(
+            output,
+            "# {omitted} observations were invalid or did not fit; older ones: before_ms={}",
+            oldest.observed_at_ms
+        )
+        .map_err(|_| ExpositionError)?;
+    }
+    if snapshots
+        .windows(2)
+        .any(|pair| pair[0].observed_at_ms >= pair[1].observed_at_ms)
+    {
+        return Err(ExpositionError);
+    }
+    let mut forwarded = forwarded_families(snapshots, method_source_ready)?;
+    for (_, samples) in forwarded.values_mut() {
+        // A stable sort on the series, not the value, keeps each series'
+        // observations in time order.
+        samples.sort_by(|left, right| series(&left.0).cmp(series(&right.0)));
+    }
+    write_forwarded(&mut output, forwarded)?;
+    Ok(output)
+}
+
+/// The series of a canonical sample line: everything before its value.
+fn series(sample: &str) -> &str {
+    sample.rsplit_once(' ').map_or(sample, |(series, _)| series)
+}
+
+/// Group admitted samples by family, each with its observation time.
+fn forwarded_families(
+    snapshots: Vec<MetricsSnapshot>,
+    method_source_ready: bool,
+) -> Result<ForwardedFamilies, ExpositionError> {
+    let mut forwarded: ForwardedFamilies = BTreeMap::new();
+    for snapshot in snapshots {
+        for sample in snapshot.samples {
+            if sample.contains('\n') || sample.starts_with('#') {
+                return Err(ExpositionError);
+            }
+            let (family, kind) =
+                exposition_family(&sample, method_source_ready).ok_or(ExpositionError)?;
+            let group = forwarded.entry(family).or_insert((kind, Vec::new()));
+            if group.0 != kind {
+                return Err(ExpositionError);
+            }
+            group.1.push((sample, snapshot.observed_at_ms));
+        }
+    }
+    Ok(forwarded)
+}
+
+fn write_forwarded(
+    output: &mut String,
+    forwarded: ForwardedFamilies,
+) -> Result<(), ExpositionError> {
     for (family, (kind, samples)) in forwarded {
         writeln!(
             output,
@@ -158,7 +220,7 @@ pub(crate) fn render_metrics(
             writeln!(output, "{sample} {observed_at_ms}").map_err(|_| ExpositionError)?;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn identity_labels(snapshot: &MetricsSnapshot) -> String {

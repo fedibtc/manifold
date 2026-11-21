@@ -259,3 +259,79 @@ fn exposes_fixed_collection_failure_stages() {
         5
     );
 }
+
+fn observed(observed_at_ms: i64, samples: &[(&str, u64)]) -> MetricsSnapshot {
+    MetricsSnapshot {
+        samples: samples
+            .iter()
+            .map(|(peer, value)| {
+                format!("fm_consensus_items_processed_total{{guardian_seat_id=\"aa\",peer_id=\"{peer}\"}} {value}")
+            })
+            .collect(),
+        ..snapshot("11", "aa", observed_at_ms)
+    }
+}
+
+#[test]
+fn seat_history_keeps_each_series_contiguous_and_in_observation_order() {
+    use std::io::BufRead as _;
+
+    // Values that sort the other way round as text than in time.
+    let output = metrics_snapshot::render_metric_history(
+        vec![
+            observed(1_000, &[("1", 9), ("0", 90)]),
+            observed(2_000, &[("1", 10), ("0", 100)]),
+        ],
+        0,
+        false,
+    )
+    .unwrap();
+    let samples: Vec<&str> = output
+        .lines()
+        .filter(|line| line.starts_with("fm_consensus_items_processed_total"))
+        .collect();
+    assert_eq!(
+        samples,
+        [
+            "fm_consensus_items_processed_total{guardian_seat_id=\"aa\",peer_id=\"0\"} 90 1000",
+            "fm_consensus_items_processed_total{guardian_seat_id=\"aa\",peer_id=\"0\"} 100 2000",
+            "fm_consensus_items_processed_total{guardian_seat_id=\"aa\",peer_id=\"1\"} 9 1000",
+            "fm_consensus_items_processed_total{guardian_seat_id=\"aa\",peer_id=\"1\"} 10 2000",
+        ]
+    );
+    assert_eq!(
+        output
+            .matches("# TYPE fm_consensus_items_processed_total counter\n")
+            .count(),
+        1
+    );
+    assert!(!output.contains("cloud_fman_telemetry_"));
+    assert!(!output.contains("omitted"));
+    let scrape = prometheus_parse::Scrape::parse(std::io::Cursor::new(output).lines()).unwrap();
+    assert_eq!(scrape.samples.len(), 4);
+}
+
+#[test]
+fn seat_history_names_where_to_continue_after_omitted_observations() {
+    let output = metrics_snapshot::render_metric_history(
+        vec![observed(5_000, &[("0", 1)]), observed(6_000, &[("0", 2)])],
+        3,
+        false,
+    )
+    .unwrap();
+    assert!(
+        output.starts_with(
+            "# 3 observations were invalid or did not fit; older ones: before_ms=5000\n"
+        )
+    );
+}
+
+#[test]
+fn seat_history_rejects_observations_out_of_time_order() {
+    for snapshots in [
+        vec![observed(2_000, &[("0", 1)]), observed(1_000, &[("0", 2)])],
+        vec![observed(1_000, &[("0", 1)]), observed(1_000, &[("0", 2)])],
+    ] {
+        assert!(metrics_snapshot::render_metric_history(snapshots, 0, false).is_err());
+    }
+}

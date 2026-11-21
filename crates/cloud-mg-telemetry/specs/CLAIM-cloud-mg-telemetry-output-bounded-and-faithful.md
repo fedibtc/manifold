@@ -13,7 +13,10 @@ private listener's seat report exports return only fields decoded from an
 active, unexpired target's latest valid `seat capacity` and `seat readiness
 check completed` MG-journal safe events, as
 [ARCH-cloud-mg-telemetry](../../../specs/ARCH-cloud-mg-telemetry.md) defines
-them, observed no later than their reception. The collector does not inject that held material into archive bytes; those bytes are the exact
+them, observed no later than their reception. The private listener's seat
+metric history returns only forwarded samples of one active, unexpired
+target's seat that pass the same persisted-row revalidation as the private
+scrape, each at its own observation time. The collector does not inject that held material into archive bytes; those bytes are the exact
 upstream-approved safe-event payload and may contain fields approved at the
 source. These surfaces neither merge distinct MG identities, accept unbounded
 source cardinality, nor retime an old metric observation as fresh. Authorized

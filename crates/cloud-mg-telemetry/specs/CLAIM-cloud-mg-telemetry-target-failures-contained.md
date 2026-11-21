@@ -7,7 +7,8 @@ bounded collection opportunity, present an old observation as fresh, escape
 resource bounds, make shutdown detach an in-progress durability segment, or
 start a queued target's connection, listing, or fetch after shutdown is observed.
 A target cannot appear in a private metrics scrape whose transactional lifecycle
-view is ordered after that target's quarantine commit or lease expiry.
+view is ordered after that target's quarantine commit or lease expiry, nor in a
+seat metric history read made after them.
 
 ## Status
 

@@ -37,7 +37,8 @@ the public registration route. The same private listener also serves
 `GET /v1/federations`, which returns full invite codes; like `/metrics` it has
 no application-layer authentication, so every caller admitted to the private
 listener, Prometheus scrapers and health probes included, is trusted with every
-exported invite. The private listener also serves `GET /v1/seat-capacity`
+exported invite. `GET /metrics/history` returns one seat's retained
+`/metrics` samples with their own observation times. The private listener also serves `GET /v1/seat-capacity`
 and `GET /v1/seat-readiness`. They return the target's public key, collector
 times and fields decoded from the MG's own safe events, and no invite,
 capability, endpoint or journal position. The collector checks those fields for
@@ -433,11 +434,14 @@ the process readiness route fail. Per-seat freshness derives only from snapshots
 that passed persisted-row revalidation in the same exposition view, never from a
 raw stored timestamp. Readiness covers the local database and
 ability to serve. Quarantined/expired targets are suppressed immediately and
-their latest metric snapshots are deleted rather than reappearing after renewal.
+their metric snapshots and history are deleted rather than reappearing after renewal.
 
-Metrics persistence is capped globally at 64 MiB and 200,000 samples. A
+Latest metric snapshots are capped globally at 64 MiB and 200,000 samples. A
 commit stores the snapshots that fit, refreshing already stored seats first,
-and leaves the other seats on their previous, aging snapshot. One
+and leaves the other seats on their previous, aging snapshot. Each seat's
+older observations stay for seven days, one per 15-minute bucket, compressed
+and bounded to 1 GiB and 1,000,000 rows in all; past a bound the oldest that
+are not a seat's latest are pruned first. One
 immutable exposition generation may be live at a time; concurrent scrapes
 share it, while a changed revision gets HTTP 429 until slow readers release the
 old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization stays
@@ -445,7 +449,7 @@ within the 4 MiB durable row bound. A policy fingerprint covers the inventory
 revision and unconditional static method allowlist. MG, Fedimint, and build
 release metadata do not authorize targets or enable metric families; a
 non-allowlisted method taints only its own family. A fingerprint change atomically
-discards snapshots and poll deadlines; Prometheus owns history.
+discards snapshots, their history and poll deadlines.
 Shutdown and worker-failure paths stop new metrics work but join any cadence
 reservation or snapshot commit already in its durability segment. As with
 safe-journal commits, storage-device completion retains the operating system
