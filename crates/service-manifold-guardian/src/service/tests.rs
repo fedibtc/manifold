@@ -290,6 +290,7 @@ async fn generated_client_round_trips_get_quote_and_create_seat() {
             },
             payment_federation_id: None,
             refund_issuance: None,
+            seat_grant: None,
         })
         .await
         .expect("RPC transport succeeds")
