@@ -756,6 +756,32 @@ mod tests {
     }
 
     #[test]
+    fn reopening_seals_older_segments_and_continues_the_newest() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+        appender.append_record(b"one\n").unwrap();
+        appender.append_record(b"two\n").unwrap();
+        appender.append_record(b"tri\n").unwrap();
+        drop(appender);
+
+        let segments = test_segments(directory.path());
+        assert_eq!(segments.len(), 2);
+        let mode = |number| {
+            std::fs::metadata(&segments[&number])
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        assert_eq!((mode(0), mode(1)), (0o600, 0o600));
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+        assert_eq!((mode(0), mode(1)), (0o400, 0o600));
+        appender.append_record(b"end\n").unwrap();
+        assert_eq!(std::fs::read(&segments[&0]).unwrap(), b"one\ntwo\n");
+        assert_eq!(std::fs::read(&segments[&1]).unwrap(), b"tri\nend\n");
+    }
+
+    #[test]
     fn a_sealed_segment_from_an_earlier_release_is_continued() {
         let directory = tempfile::tempdir().unwrap();
         let segment = directory.path().join(segment_name(3));
