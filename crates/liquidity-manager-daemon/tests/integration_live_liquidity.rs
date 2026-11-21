@@ -1466,22 +1466,10 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     Ok(())
 }
 
-/// A dependency outage takes the provider off the market, and only the operator
-/// puts it back.
-///
-/// Three transitions, in the order an operator meets them. Validation fails, so
-/// the advertisement leaves the relay and requests are refused with
-/// `provider_unavailable`. The dependency returns, so requests are admitted
-/// again — but the advertisement is not, because
-/// [`SPEC-flip-advertisement`](../specs/SPEC-flip-advertisement.md) makes a
-/// withdrawal durable and lets no automatic pass undo one. The operator's
-/// explicit republish is what returns it.
-///
-/// The middle transition is the one worth having a live test for: an FA holding
-/// an advertisement can still transact against a provider that no relay is
-/// offering, and an operator reading only the relay would conclude the opposite.
+/// A dependency outage withdraws the readiness assertion and refuses requests;
+/// repairing the dependency restores both without an explicit republish.
 #[tokio::test(flavor = "multi_thread")]
-async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_republishes()
+async fn live_dependency_outage_withdraws_the_advertisement_until_readiness_recovers()
 -> anyhow::Result<()> {
     init_logging();
 
@@ -1543,9 +1531,10 @@ async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_r
         admin_post(&http, &admin_url, "get_advertisement_state", &json!({})).await?;
     assert_eq!(withdrawn_state["ready"], false);
     assert_eq!(withdrawn_state["publication_status"], "not_ready");
-    ensure!(
-        withdrawn_state["withdrawn_at"].is_number(),
-        "a withdrawal must be recorded where the operator can read it: {withdrawn_state}"
+    assert_eq!(
+        withdrawn_state["withdrawn_at"],
+        Value::Null,
+        "readiness loss must not record operator withdrawal: {withdrawn_state}"
     );
 
     let refused = rpc
@@ -1567,27 +1556,14 @@ async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_r
     // The dependency comes back.
     stack.wallet.apply_setup(&endpoint_addr).await?;
 
-    // Readiness recovers, and the standing withdrawal outlives it. This is the
-    // durable-withdrawal rule, seen from the outside: the deployment is fit to
-    // advertise and is still not advertised.
+    // Setup reconciliation advertises the recovered provider automatically.
     let repaired_state =
         admin_post(&http, &admin_url, "get_advertisement_state", &json!({})).await?;
     assert_eq!(repaired_state["ready"], true);
-    ensure!(
-        repaired_state["withdrawn_at"].is_number(),
-        "repairing the dependency must not clear the standing withdrawal: {repaired_state}"
-    );
-    ensure!(
-        find_advertisement_event(
-            &relay_url,
-            &provider_pubkey_hex,
-            FLIP_PROVIDER_ADVERTISEMENT_EVENT_KIND,
-            FLIP_PROVIDER_ADVERTISEMENT_D_TAG,
-            FLIP_PROVIDER_ADVERTISEMENT_HASHTAG,
-        )
-        .await?
-        .is_none(),
-        "a repaired deployment must not re-advertise itself"
+    assert_eq!(
+        repaired_state["withdrawn_at"],
+        Value::Null,
+        "repairing the dependency must not require explicit republish: {repaired_state}"
     );
 
     // The RPC surface does not wait for the advertisement. An FA that already
@@ -1604,9 +1580,9 @@ async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_r
         }
     }
 
-    // The operator says otherwise, which is the only thing that can.
+    // Assert the automatic publication without asking the daemon to republish.
     let republished =
-        publish_and_assert_advertisement(&http, &admin_url, &relay_url, &endpoint_addr).await?;
+        assert_published_advertisement(&http, &admin_url, &relay_url, &endpoint_addr).await?;
     assert_eq!(
         republished.payload.provider_pubkey.0, provider_pubkey_hex,
         "a republish must not change the advertised provider identity"
@@ -1617,7 +1593,7 @@ async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_r
     assert_eq!(
         published_state["withdrawn_at"],
         Value::Null,
-        "publishing must clear the standing withdrawal: {published_state}"
+        "automatic recovery must leave operator intent unset: {published_state}"
     );
 
     stack.wallet.stop_daemon()?;
@@ -2850,7 +2826,16 @@ async fn publish_and_assert_advertisement(
         republished["publication_status"] == "published",
         "advertisement did not publish: {republished}"
     );
+    assert_published_advertisement(http, admin_url, relay_url, endpoint_addr).await
+}
 
+/// Checks the current publication on the admin API and relay without changing it.
+async fn assert_published_advertisement(
+    http: &Client,
+    admin_url: &str,
+    relay_url: &str,
+    endpoint_addr: &EndpointAddr,
+) -> anyhow::Result<Signed<LiquidityProviderAdvertisement>> {
     let state = admin_post(http, admin_url, "get_advertisement_state", &json!({})).await?;
     ensure!(
         state["ready"] == true,
@@ -2864,10 +2849,8 @@ async fn publish_and_assert_advertisement(
         serde_json::from_value(state["advertisement"].clone())
             .context("deserialize admin advertisement")?;
 
-    // Setup reconciliation may have published an earlier advertisement moments
-    // before this forced republish; the relay replaces the
-    // parameterized-replaceable event asynchronously, so poll briefly until it
-    // serves the latest publication.
+    // The relay replaces the parameterized-replaceable event asynchronously, so
+    // poll briefly until it serves the latest publication.
     let mut relay_advertisement: Option<Signed<LiquidityProviderAdvertisement>> = None;
     for _ in 0..10 {
         let event = query_advertisement_event(
