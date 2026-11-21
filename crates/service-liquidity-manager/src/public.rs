@@ -583,6 +583,15 @@ pub enum PublicRejectionCode {
     #[strum(serialize = "invalid_credentials")]
     InvalidCredentials,
 
+    /// Credentials exceed the reader's freshness limit.
+    ///
+    /// Reserved for reader rollout; FLIP must still emit `InvalidCredentials`.
+    /// Older FA readers reject unknown rejection codes during deserialization.
+    /// Revisit enabling this around 2026-12-06, once compatible readers have
+    /// shipped; the date alone does not authorize changing the emitted code.
+    #[strum(serialize = "expired_credentials")]
+    ExpiredCredentials,
+
     /// MG peer attestation is missing or invalid.
     #[strum(serialize = "invalid_seat_binding")]
     InvalidSeatBinding,
