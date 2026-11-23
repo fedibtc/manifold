@@ -22,8 +22,10 @@
       flake = false;
     };
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
-    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning. fedi31 adds
+    # the walletv2 pending_outputs endpoint that reports deposits before they
+    # are claimable.
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi31";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -295,7 +297,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi31.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1002,12 +1004,12 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi30";
+        fedimintdRelease = "0.12.0-fedi31";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
+        fedimintSourceRev = "cd18d6eae9cbabc9a21beef9f375e8c6fb749777";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1219,7 +1221,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi31.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fediPatched}
