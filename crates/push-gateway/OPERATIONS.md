@@ -147,10 +147,11 @@ registration writes/hour/source across rotating recipient keys, 120 authenticate
 management events/minute/source before replay insertion, and 60 public hook
 invocations/hour/source prefix plus 60/hour/hook before any lower persisted
 per-hook policy. Configure trusted reverse proxies with
-`--trusted-proxy-cidrs`; `X-Forwarded-For` is used only when the direct peer IP
-is trusted, and RFC `Forwarded` is never read. Trusted proxies should strip or
-overwrite inbound `X-Forwarded-For` from clients before forwarding to the
-gateway.
+`--trusted-proxy-cidrs`; `X-Forwarded-For` or RFC `Forwarded` is used only when
+the direct peer IP is trusted, and a trusted-proxy request whose two headers
+name different clients is refused with `400 ambiguous_forwarding_headers`.
+Trusted proxies must strip or overwrite every forwarding header they write;
+ingress-nginx overwrites `X-Forwarded-For` by default.
 
 ## Database-write backpressure and timeouts
 

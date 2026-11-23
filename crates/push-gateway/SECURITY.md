@@ -147,7 +147,8 @@ still-fresh ids, authorization fails closed
 instead of evicting replay protection. The cache is not persisted, resets on
 restart, and is not shared between gateway processes. Source-based limits use
 the socket peer IP unless that direct peer is in configured trusted-proxy CIDRs;
-only then is `X-Forwarded-For` honored. RFC `Forwarded` is never read. There is no distributed
+only then is `X-Forwarded-For` or RFC `Forwarded` honored, and a request whose
+two headers name different clients is refused. There is no distributed
 multi-replica rate-limit or replay backend. The durable
 delivery outbox is scoped to the same
 single-active-process deployment policy: exactly one active gateway process,

@@ -534,9 +534,10 @@ variables. Command-line flags take precedence over environment variables; run
   - backlog caps: `--max-global-outbox-backlog` returns `503`, and
     `--max-recipient-outbox-backlog` returns `429`; `0` disables either cap.
   - `--trusted-proxy-cidrs` / `PUSH_GATEWAY_TRUSTED_PROXY_CIDRS`: only direct
-    socket peers in these CIDRs may supply `X-Forwarded-For`. Untrusted peers'
-    forwarding headers and every RFC `Forwarded` header are ignored. Configure
-    trusted proxies to strip or overwrite inbound `X-Forwarded-For` from clients.
+    socket peers in these CIDRs may supply `X-Forwarded-For` or RFC `Forwarded`;
+    a request from them whose two headers name different clients is refused
+    with `400`. Untrusted peers' forwarding headers are ignored. Configure
+    trusted proxies to strip or overwrite every forwarding header they write.
 - `--fcm-service-account-file` / `FCM_SERVICE_ACCOUNT_FILE`
   - path to a Firebase service-account JSON file used when
      `PUSH_GATEWAY_PROVIDER=fcm`.

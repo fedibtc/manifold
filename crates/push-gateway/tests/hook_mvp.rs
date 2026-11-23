@@ -2969,6 +2969,72 @@ async fn assert_unavailable_then_refreshes_once(
     assert_eq!(outbox, 1);
 }
 
+#[tokio::test]
+async fn trusted_proxy_request_with_disagreeing_forwarding_headers_is_refused() {
+    let limits = RateLimitConfig {
+        trusted_proxy_cidrs: Some(
+            fedi_decentralized_push_gateway::TrustedProxyCidrs::parse_csv("10.0.0.0/8")
+                .expect("trusted proxy CIDRs"),
+        ),
+        ..RateLimitConfig::default()
+    };
+    let harness = Harness::new_with_limits(limits).await;
+    let registration = |installation_id: &str| {
+        Body::from(
+            json!({
+                "installation_id": installation_id,
+                "fcm_token": format!("fcm-token-{installation_id}"),
+                "platform": "android"
+            })
+            .to_string(),
+        )
+    };
+    let proxy: std::net::SocketAddr = "10.1.2.3:443".parse().unwrap();
+    let send =
+        |installation_id: &'static str, headers: &'static [(&'static str, &'static str)], peer| {
+            request_with_state_and_headers_from_peer(
+                harness.state.clone(),
+                &harness.recipient_keys,
+                "POST",
+                "/registrations",
+                registration(installation_id),
+                headers,
+                peer,
+            )
+        };
+
+    let both = &[
+        ("x-forwarded-for", "198.51.100.9"),
+        ("forwarded", "for=192.0.2.44"),
+    ];
+    let refused = send("device-1", both, proxy).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.body["error"]["code"],
+        "ambiguous_forwarding_headers"
+    );
+
+    // Either header alone, or both naming the same client, is accepted.
+    let agreeing = send(
+        "device-4",
+        &[
+            ("x-forwarded-for", "198.51.100.9"),
+            ("forwarded", "for=198.51.100.9"),
+        ],
+        proxy,
+    )
+    .await;
+    assert_eq!(agreeing.status, StatusCode::OK);
+    let xff_only = send("device-1", &[("x-forwarded-for", "198.51.100.9")], proxy).await;
+    assert_eq!(xff_only.status, StatusCode::OK);
+    let forwarded_only = send("device-2", &[("forwarded", "for=192.0.2.44")], proxy).await;
+    assert_eq!(forwarded_only.status, StatusCode::OK);
+
+    // An untrusted direct peer's forwarding headers are never read.
+    let direct = send("device-3", both, "203.0.113.7:443".parse().unwrap()).await;
+    assert_eq!(direct.status, StatusCode::OK);
+}
+
 async fn register_installation(harness: &Harness, _recipient_id: &str) {
     let response = harness
         .json(
@@ -3258,6 +3324,27 @@ async fn request_with_state_and_header_from_peer(
     header: Option<(&str, &str)>,
     peer: std::net::SocketAddr,
 ) -> Response {
+    request_with_state_and_headers_from_peer(
+        state,
+        recipient_keys,
+        method,
+        uri,
+        body,
+        header.as_slice(),
+        peer,
+    )
+    .await
+}
+
+async fn request_with_state_and_headers_from_peer(
+    state: AppState,
+    recipient_keys: &Keys,
+    method: &str,
+    uri: &str,
+    body: Body,
+    headers: &[(&str, &str)],
+    peer: std::net::SocketAddr,
+) -> Response {
     let body_bytes = to_bytes(body, 1024 * 1024).await.expect("request body");
     let request = Request::builder()
         .method(method)
@@ -3266,7 +3353,7 @@ async fn request_with_state_and_header_from_peer(
         .body(Body::from(body_bytes.clone()));
     let mut request = request.expect("request");
     request.extensions_mut().insert(ConnectInfo(peer));
-    if let Some((name, value)) = header {
+    for (name, value) in headers {
         request.headers_mut().insert(
             HeaderName::from_bytes(name.as_bytes()).expect("header name"),
             value.parse().expect("header value"),
