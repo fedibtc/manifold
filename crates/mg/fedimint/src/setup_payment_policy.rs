@@ -7,15 +7,19 @@
 //! operator), and quote acceptance — not this task — is what stops selling
 //! against it.
 //!
-//! Each federation is attempted once per daemon process. A failed or cancelled
-//! join can leave a dependency-owned database task running, so restart is the
-//! retry boundary: it clears stale tasks before the durable prefix is reused.
+//! A join that fails before the wallet starts opening a client, such as a
+//! config download from a federation not reachable yet, is retried with a
+//! bounded backoff for as long as the federation stays admitted. Once an open
+//! has started, a failed or cancelled join can leave a dependency-owned
+//! database task running; the wallet then refuses every further open of that
+//! client, and only a restart retries it (see [`JoinError`]).
 //! Admitted members join independently: one stalled federation cannot prevent
 //! another member or a replacement policy from being processed. The reconciler
 //! owns every join task and cancels removed members and all work on shutdown.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use fedi_decentralized_domain::{
     AdmittedSetupPaymentFederations, FederationId as SetupPaymentFederationId,
@@ -24,13 +28,14 @@ use fedi_decentralized_domain::{
 use tokio::sync::{oneshot, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
-use mg_core::wallet::EcashWallet;
+use mg_core::wallet::{EcashWallet, JoinError};
 
-type AttemptedFederationIds = Arc<Mutex<BTreeSet<SetupPaymentFederationId>>>;
-
-/// Process-lifetime ledger shared by every production reconciler task.
-static ATTEMPTED_FEDERATION_IDS: LazyLock<AttemptedFederationIds> =
-    LazyLock::new(|| Arc::new(Mutex::new(BTreeSet::new())));
+/// Wait before the first retry of a retryable join failure; it doubles per
+/// failure up to [`JOIN_RETRY_MAX_DELAY`].
+const JOIN_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(5);
+/// Longest wait between retries. It bounds how long a federation that became
+/// reachable stays unsellable, on top of one join attempt.
+const JOIN_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 
 /// Owned setup-payment join reconciler with graceful child-task shutdown.
 pub struct SetupPaymentJoinReconciler {
@@ -57,38 +62,28 @@ impl SetupPaymentJoinReconciler {
     }
 }
 
-/// Spawn the reconciler: on every change of the admitted set, make one
-/// process-lifetime join attempt for each member federation the wallet does not
-/// hold yet. Exits when the policy sender is dropped.
+/// Spawn the reconciler: on every change of the admitted set, start a join for
+/// each member federation the wallet does not hold yet and is not already
+/// joining. Exits when the policy sender is dropped.
 ///
-/// Joins run concurrently, bounded by the admitted set's protocol limit.
-/// Failed attempts are retried only after a daemon restart. The Fedimint client
-/// can leave database-owning tasks behind before a failed join returns, so an
-/// in-process retry could create concurrent writers for one wallet partition.
+/// Joins run concurrently, bounded by the admitted set's protocol limit. Each
+/// join retries retryable failures until it succeeds, the wallet requires a
+/// restart, or the federation leaves the admitted set.
 pub fn spawn_setup_payment_join_reconciler(
     wallet: Arc<dyn EcashWallet>,
-    policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
-) -> SetupPaymentJoinReconciler {
-    spawn_setup_payment_join_reconciler_with_attempts(
-        wallet,
-        policy,
-        ATTEMPTED_FEDERATION_IDS.clone(),
-    )
-}
-
-fn spawn_setup_payment_join_reconciler_with_attempts(
-    wallet: Arc<dyn EcashWallet>,
     mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
-    attempted_federation_ids: AttemptedFederationIds,
 ) -> SetupPaymentJoinReconciler {
     let (shutdown, mut shutdown_requested) = oneshot::channel();
     let task = tokio::spawn(async move {
         let mut joins = JoinSet::new();
         let mut active = std::collections::BTreeMap::<SetupPaymentFederationId, AbortHandle>::new();
+        // The wallet refuses these until restart; attempting them again
+        // would only repeat the refusal.
+        let mut awaiting_restart = BTreeSet::<SetupPaymentFederationId>::new();
         'reconcile: loop {
             while let Some(completed) = joins.try_join_next() {
-                if let Ok(federation_id) = completed {
-                    active.remove(&federation_id);
+                if let Ok(settled) = completed {
+                    settle(&mut active, &mut awaiting_restart, settled);
                 }
             }
 
@@ -125,42 +120,18 @@ fn spawn_setup_payment_join_reconciler_with_attempts(
                     if joins.len() == SETUP_PAYMENT_FEDERATIONS_MAX_COUNT {
                         break;
                     }
-                    if joined.contains(&federation_id.0) || active.contains_key(federation_id) {
-                        continue;
-                    }
-                    // Register before awaiting join. Task cancellation or
-                    // replacement must not permit another same-process attempt.
-                    if !attempted_federation_ids
-                        .lock()
-                        .expect("setup-payment attempt ledger is not poisoned")
-                        .insert(federation_id.clone())
+                    if joined.contains(&federation_id.0)
+                        || active.contains_key(federation_id)
+                        || awaiting_restart.contains(federation_id)
                     {
                         continue;
                     }
-                    let wallet = wallet.clone();
-                    let federation_id = federation_id.clone();
-                    let active_federation_id = federation_id.clone();
-                    let invite_code = invite_code.0.clone();
-                    let join = joins.spawn(async move {
-                        match wallet.join(&invite_code).await {
-                            Ok(_) => {
-                                tracing::info!(
-                                    federation_id = %federation_id.0,
-                                    "joined setup-payment federation"
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    safe_to_share = true,
-                                    federation_id = %federation_id.0,
-                                    failure_kind = "join_failed",
-                                    "failed to join setup-payment federation; restart to retry"
-                                );
-                            }
-                        }
-                        federation_id
-                    });
-                    active.insert(active_federation_id, join);
+                    let join = joins.spawn(join_until_settled(
+                        wallet.clone(),
+                        federation_id.clone(),
+                        invite_code.0.clone(),
+                    ));
+                    active.insert(federation_id.clone(), join);
                 }
             }
 
@@ -174,8 +145,8 @@ fn spawn_setup_payment_join_reconciler_with_attempts(
                     }
                 }
                 completed = joins.join_next(), if !joins.is_empty() => {
-                    if let Some(Ok(federation_id)) = completed {
-                        active.remove(&federation_id);
+                    if let Some(Ok(settled)) = completed {
+                        settle(&mut active, &mut awaiting_restart, settled);
                     }
                 }
             }
@@ -184,6 +155,71 @@ fn spawn_setup_payment_join_reconciler_with_attempts(
         while joins.join_next().await.is_some() {}
     });
     SetupPaymentJoinReconciler { shutdown, task }
+}
+
+/// How a join task ended, other than by cancellation.
+enum Settled {
+    Joined(SetupPaymentFederationId),
+    RestartRequired(SetupPaymentFederationId),
+}
+
+/// Release a finished join's slot, remembering a federation the wallet will
+/// refuse until restart.
+fn settle(
+    active: &mut std::collections::BTreeMap<SetupPaymentFederationId, AbortHandle>,
+    awaiting_restart: &mut BTreeSet<SetupPaymentFederationId>,
+    settled: Settled,
+) {
+    match settled {
+        Settled::Joined(federation_id) => {
+            active.remove(&federation_id);
+        }
+        Settled::RestartRequired(federation_id) => {
+            active.remove(&federation_id);
+            awaiting_restart.insert(federation_id);
+        }
+    }
+}
+
+/// Join one admitted federation, retrying retryable failures with a bounded
+/// backoff, until it is joined or the wallet requires a restart.
+async fn join_until_settled(
+    wallet: Arc<dyn EcashWallet>,
+    federation_id: SetupPaymentFederationId,
+    invite_code: String,
+) -> Settled {
+    let mut retry_delay = JOIN_RETRY_INITIAL_DELAY;
+    loop {
+        match wallet.join(&invite_code).await {
+            Ok(_) => {
+                tracing::info!(
+                    federation_id = %federation_id.0,
+                    "joined setup-payment federation"
+                );
+                return Settled::Joined(federation_id);
+            }
+            Err(JoinError::RestartRequired(_)) => {
+                tracing::warn!(
+                    safe_to_share = true,
+                    federation_id = %federation_id.0,
+                    failure_kind = "join_open_failed",
+                    "failed to join setup-payment federation; restart to retry"
+                );
+                return Settled::RestartRequired(federation_id);
+            }
+            Err(JoinError::Retryable(_)) => {
+                tracing::warn!(
+                    safe_to_share = true,
+                    federation_id = %federation_id.0,
+                    failure_kind = "join_failed",
+                    retry_in_secs = retry_delay.as_secs(),
+                    "failed to join setup-payment federation; retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = (retry_delay * 2).min(JOIN_RETRY_MAX_DELAY);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

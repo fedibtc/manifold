@@ -10,7 +10,7 @@ use fedimint_core::encoding::DynRawFallback;
 use fedimint_core::module::registry::ModuleRegistry;
 use fedimint_core::module::{AmountUnit, CoreConsensusVersion};
 use locked_payments::standard_module_root_secret;
-use mg_core::wallet::{EcashWallet as _, LockedPaymentPrepareError};
+use mg_core::wallet::{EcashWallet, JoinError, LockedPaymentPrepareError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -875,6 +875,86 @@ async fn preview_timeout_does_not_fence_same_process_retry() {
         ));
         assert!(!wallet.open_attempted.lock().await.contains(&scope));
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn payment_join_is_retryable_until_its_open_is_fenced() {
+    // Nothing listens on the invite's address, so the config download fails
+    // before the wallet opens anything.
+    let address = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let invite = InviteCode::new(
+        fedimint_core::util::SafeUrl::parse(&format!("http://{address}")).unwrap(),
+        fedimint_core::PeerId::from(0),
+        FederationId::dummy(),
+        None,
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+
+    let first = EcashWallet::join(&wallet, &invite.to_string()).await;
+    assert!(matches!(first, Err(JoinError::Retryable(_))), "{first:?}");
+
+    // Once an open of the scope has started in this process, the same failure
+    // must be reported as needing a restart.
+    wallet
+        .open_attempted
+        .lock()
+        .await
+        .insert(ClientScope::Payment(invite.federation_id()));
+    let fenced = EcashWallet::join(&wallet, &invite.to_string()).await;
+    assert!(
+        matches!(fenced, Err(JoinError::RestartRequired(_))),
+        "{fenced:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reservation_reuses_a_scope_mapping_missing_from_memory() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    // A join cancelled after its reservation committed never recorded the
+    // prefix in memory; the retried join reserves again.
+    assert_eq!(
+        reserve_prefix(&wallet.database, &payment(1)).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        reserve_prefix(&wallet.database, &payment(2)).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        reserve_prefix(&wallet.database, &payment(1)).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        reserve_prefix(&wallet.database, &payment(3)).await.unwrap(),
+        3
+    );
+    drop(wallet);
+
+    let reopened = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .expect("one scope is never mapped twice");
+    assert_eq!(reopened.prefixes.read().await.get(&payment(1)), Some(&1));
 }
 
 #[tokio::test(flavor = "multi_thread")]

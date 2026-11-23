@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fedi_decentralized_service_manifold_guardian::{
     FederationId, LockedBlindedSignature, PaymentTerms, QuoteId, QuoteTerms, RefundIssuance,
@@ -42,14 +42,17 @@ fn admitted_set(indices: &[usize]) -> AdmittedSetupPaymentFederations {
         .expect("test set is admissible")
 }
 
-/// Join-recording wallet: joins succeed unless all joins are marked failing or
-/// the invite's federation is configured to remain pending. Successful joins
-/// become durable membership.
+/// Join-recording wallet: joins succeed unless the invite's federation is
+/// unreachable, fails its client open, or is configured to remain pending.
+/// Successful joins become durable membership. Like the real wallet, a failed
+/// open fences that federation for the rest of the process.
 #[derive(Default)]
 struct RecordingWallet {
     joined: std::sync::Mutex<BTreeSet<String>>,
     join_calls: std::sync::Mutex<Vec<String>>,
-    fail_joins: AtomicBool,
+    unreachable: std::sync::Mutex<BTreeSet<String>>,
+    failing_opens: std::sync::Mutex<BTreeSet<String>>,
+    fenced: std::sync::Mutex<BTreeSet<String>>,
     pending_joins: std::sync::Mutex<BTreeSet<String>>,
     cancelled_joins: std::sync::Mutex<BTreeSet<String>>,
     active_joins: AtomicUsize,
@@ -134,8 +137,8 @@ impl EcashWallet for RecordingWallet {
             .collect()
     }
 
-    async fn join(&self, invite_code: &str) -> anyhow::Result<FederationId> {
-        let invite: FedimintInviteCode = invite_code.parse()?;
+    async fn join(&self, invite_code: &str) -> Result<FederationId, JoinError> {
+        let invite: FedimintInviteCode = invite_code.parse().map_err(JoinError::Retryable)?;
         let federation_id = invite.federation_id().to_string();
         self.join_calls.lock().unwrap().push(federation_id.clone());
         let active = self.active_joins.fetch_add(1, Ordering::SeqCst) + 1;
@@ -149,8 +152,21 @@ impl EcashWallet for RecordingWallet {
             };
             std::future::pending().await
         }
-        if self.fail_joins.load(Ordering::SeqCst) {
-            anyhow::bail!("injected join failure");
+        if self.fenced.lock().unwrap().contains(&federation_id) {
+            return Err(JoinError::RestartRequired(anyhow::anyhow!(
+                "injected open fence"
+            )));
+        }
+        if self.unreachable.lock().unwrap().contains(&federation_id) {
+            return Err(JoinError::Retryable(anyhow::anyhow!(
+                "injected config download failure"
+            )));
+        }
+        if self.failing_opens.lock().unwrap().contains(&federation_id) {
+            self.fenced.lock().unwrap().insert(federation_id);
+            return Err(JoinError::RestartRequired(anyhow::anyhow!(
+                "injected open failure"
+            )));
         }
         self.joined.lock().unwrap().insert(federation_id.clone());
         Ok(FederationId(federation_id))
@@ -167,19 +183,22 @@ async fn wait_until(budget: std::time::Duration, mut condition: impl AsyncFnMut(
     .expect("condition within test budget");
 }
 
-fn fresh_attempted_federation_ids() -> AttemptedFederationIds {
-    Arc::new(std::sync::Mutex::new(BTreeSet::new()))
+impl RecordingWallet {
+    fn join_calls_for(&self, federation_id: &str) -> usize {
+        self.join_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| id.as_str() == federation_id)
+            .count()
+    }
 }
 
 #[tokio::test]
 async fn joins_every_member_and_only_missing_members_on_update() {
     let wallet = Arc::new(RecordingWallet::default());
     let (sender, receiver) = watch::channel(Some(admitted_set(&[1, 2])));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        fresh_attempted_federation_ids(),
-    );
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
 
     wait_until(std::time::Duration::from_secs(5), async || {
         wallet.joined.lock().unwrap().len() == 2
@@ -212,98 +231,41 @@ async fn joins_every_member_and_only_missing_members_on_update() {
         .expect("reconciler task exits cleanly");
 }
 
+/// Joins started at t=0 with retry waits of 5, 10, 20, 40 and then the 60 s
+/// cap: attempts at 0, 5, 15, 35, 75, 135, 195, 255, 315, 375, 435, 495, 555.
+const ATTEMPTS_IN_TEN_UNREACHABLE_MINUTES: usize = 13;
+
 #[tokio::test(start_paused = true)]
-async fn failed_joins_wait_for_restart_but_new_members_are_attempted() {
+async fn retryable_failures_back_off_and_join_once_reachable() {
     let wallet = Arc::new(RecordingWallet::default());
-    let failed_id = invite_for_id(7).0;
-    let new_id = invite_for_id(8).0;
-    let readmitted_companion_id = invite_for_id(9).0;
-    let replacement_companion_id = invite_for_id(10).0;
-    let attempted_federation_ids = fresh_attempted_federation_ids();
-    wallet.fail_joins.store(true, Ordering::SeqCst);
+    let unreachable_id = invite_for_id(7).0;
+    wallet
+        .unreachable
+        .lock()
+        .unwrap()
+        .insert(unreachable_id.clone());
     let (sender, receiver) = watch::channel(Some(admitted_set(&[7])));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        attempted_federation_ids.clone(),
-    );
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
 
-    wait_until(std::time::Duration::from_secs(5), async || {
-        !wallet.join_calls.lock().unwrap().is_empty()
-    })
-    .await;
-    assert!(wallet.joined.lock().unwrap().is_empty());
-
-    wallet.fail_joins.store(false, Ordering::SeqCst);
-    tokio::time::advance(std::time::Duration::from_secs(61)).await;
-    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
     assert_eq!(
-        wallet
-            .join_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| id.as_str() == failed_id)
-            .count(),
-        1,
-        "time passing must not retry a failed join"
+        wallet.join_calls_for(&unreachable_id),
+        ATTEMPTS_IN_TEN_UNREACHABLE_MINUTES,
+        "retries must double from 5 s up to a 60 s cap"
     );
 
-    // Process a policy that removes the failed ID, then re-admit it alongside
-    // another new ID. Neither transition resets its process-lifetime attempt.
-    sender.send(Some(admitted_set(&[8]))).unwrap();
-    wait_until(std::time::Duration::from_secs(5), async || {
-        wallet.joined.lock().unwrap().contains(&new_id)
-    })
-    .await;
-    sender.send(Some(admitted_set(&[7, 8, 9]))).unwrap();
-    wait_until(std::time::Duration::from_secs(5), async || {
-        wallet
-            .joined
-            .lock()
-            .unwrap()
-            .contains(&readmitted_companion_id)
-    })
-    .await;
+    // Reachable again: the next scheduled retry joins without a restart or
+    // a policy change.
+    wallet.unreachable.lock().unwrap().clear();
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    assert!(wallet.joined.lock().unwrap().contains(&unreachable_id));
+    let calls = wallet.join_calls_for(&unreachable_id);
+    assert_eq!(calls, ATTEMPTS_IN_TEN_UNREACHABLE_MINUTES + 1);
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
     assert_eq!(
-        wallet
-            .join_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| id.as_str() == failed_id)
-            .count(),
-        1,
-        "removal and re-admission must not retry in the same process"
-    );
-
-    task.shutdown().await.unwrap();
-
-    // A replacement reconciler in the same process shares the attempt ledger.
-    let (sender, receiver) = watch::channel(Some(admitted_set(&[7, 8, 9, 10])));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        attempted_federation_ids,
-    );
-    wait_until(std::time::Duration::from_secs(5), async || {
-        wallet
-            .joined
-            .lock()
-            .unwrap()
-            .contains(&replacement_companion_id)
-    })
-    .await;
-    assert_eq!(
-        wallet
-            .join_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| id.as_str() == failed_id)
-            .count(),
-        1,
-        "replacing the reconciler must not retry in the same process"
+        wallet.join_calls_for(&unreachable_id),
+        calls,
+        "a joined federation is not attempted again"
     );
 
     drop(sender);
@@ -311,29 +273,80 @@ async fn failed_joins_wait_for_restart_but_new_members_are_attempted() {
         .await
         .expect("reconciler exits when policy sender drops")
         .expect("reconciler task exits cleanly");
+}
 
-    // A fresh process-owned ledger models restart after stale tasks are gone.
+#[tokio::test(start_paused = true)]
+async fn refused_open_is_not_retried() {
+    let wallet = Arc::new(RecordingWallet::default());
+    let fenced_id = invite_for_id(7).0;
+    wallet
+        .failing_opens
+        .lock()
+        .unwrap()
+        .insert(fenced_id.clone());
     let (sender, receiver) = watch::channel(Some(admitted_set(&[7])));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        fresh_attempted_federation_ids(),
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
+
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    assert_eq!(
+        wallet.join_calls_for(&fenced_id),
+        1,
+        "a join the wallet fenced must wait for a restart"
     );
+
+    // Later policy updates keep it waiting too; other members still join.
+    let other_id = invite_for_id(8).0;
+    sender.send(Some(admitted_set(&[7, 8]))).unwrap();
     wait_until(std::time::Duration::from_secs(5), async || {
-        wallet.joined.lock().unwrap().contains(&failed_id)
+        wallet.joined.lock().unwrap().contains(&other_id)
     })
     .await;
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    assert_eq!(wallet.join_calls_for(&fenced_id), 1);
+    assert!(!wallet.joined.lock().unwrap().contains(&fenced_id));
+
+    drop(sender);
+    tokio::time::timeout(std::time::Duration::from_secs(5), task.join())
+        .await
+        .expect("reconciler exits when policy sender drops")
+        .expect("reconciler task exits cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn removal_stops_retrying_and_readmission_retries_at_once() {
+    let wallet = Arc::new(RecordingWallet::default());
+    let unreachable_id = invite_for_id(7).0;
+    let replacement_id = invite_for_id(8).0;
+    wallet
+        .unreachable
+        .lock()
+        .unwrap()
+        .insert(unreachable_id.clone());
+    let (sender, receiver) = watch::channel(Some(admitted_set(&[7])));
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
+    wait_until(std::time::Duration::from_secs(5), async || {
+        wallet.join_calls_for(&unreachable_id) == 1
+    })
+    .await;
+
+    sender.send(Some(admitted_set(&[8]))).unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    assert!(wallet.joined.lock().unwrap().contains(&replacement_id));
     assert_eq!(
-        wallet
-            .join_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| id.as_str() == failed_id)
-            .count(),
-        2,
-        "a fresh process ledger retries the failed join"
+        wallet.join_calls_for(&unreachable_id),
+        1,
+        "a removed federation is not retried"
     );
+
+    // Re-admission starts a fresh attempt immediately, not after the backoff
+    // the removed attempt had reached.
+    wallet.unreachable.lock().unwrap().clear();
+    sender.send(Some(admitted_set(&[7, 8]))).unwrap();
+    wait_until(std::time::Duration::from_secs(1), async || {
+        wallet.joined.lock().unwrap().contains(&unreachable_id)
+    })
+    .await;
+    assert_eq!(wallet.join_calls_for(&unreachable_id), 2);
 
     drop(sender);
     tokio::time::timeout(std::time::Duration::from_secs(5), task.join())
@@ -355,11 +368,7 @@ async fn stalled_member_does_not_block_others_or_policy_replacement() {
         .insert(stalled_id.clone());
 
     let (sender, receiver) = watch::channel(Some(admitted_set(&[11, 12])));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        fresh_attempted_federation_ids(),
-    );
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
     wait_until(std::time::Duration::from_secs(5), async || {
         wallet.joined.lock().unwrap().contains(&healthy_id)
     })
@@ -392,11 +401,7 @@ async fn rapid_full_set_replacement_never_exceeds_the_protocol_limit() {
         .extend(first.iter().map(|index| invite_for_id(*index).0));
 
     let (sender, receiver) = watch::channel(Some(admitted_set(&first)));
-    let task = spawn_setup_payment_join_reconciler_with_attempts(
-        wallet.clone(),
-        receiver,
-        fresh_attempted_federation_ids(),
-    );
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
     wait_until(std::time::Duration::from_secs(5), async || {
         wallet.active_joins.load(Ordering::SeqCst) == SETUP_PAYMENT_FEDERATIONS_MAX_COUNT
     })
@@ -425,10 +430,9 @@ async fn rapid_full_set_replacement_never_exceeds_the_protocol_limit() {
 }
 
 #[tokio::test]
-async fn cancellation_cannot_reset_production_process_attempts() {
+async fn shutdown_cancels_pending_joins_before_returning() {
     let wallet = Arc::new(RecordingWallet::default());
     let pending_id = invite_for_id(11).0;
-    let new_id = invite_for_id(12).0;
     wallet
         .pending_joins
         .lock()
@@ -446,29 +450,4 @@ async fn cancellation_cannot_reset_production_process_attempts() {
         wallet.cancelled_joins.lock().unwrap().contains(&pending_id),
         "graceful shutdown must finish child cancellation before returning"
     );
-
-    wallet.pending_joins.lock().unwrap().clear();
-    let (sender, receiver) = watch::channel(Some(admitted_set(&[11, 12])));
-    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
-    wait_until(std::time::Duration::from_secs(5), async || {
-        wallet.joined.lock().unwrap().contains(&new_id)
-    })
-    .await;
-    assert_eq!(
-        wallet
-            .join_calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| **id == pending_id)
-            .count(),
-        1,
-        "replacement through the production wrapper must share pre-await attempts"
-    );
-
-    drop(sender);
-    tokio::time::timeout(std::time::Duration::from_secs(5), task.join())
-        .await
-        .expect("reconciler exits when policy sender drops")
-        .expect("reconciler task exits cleanly");
 }
