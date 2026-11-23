@@ -22,9 +22,7 @@
       flake = false;
     };
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
-    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning. fedi31 adds
-    # the walletv2 pending_outputs endpoint that reports deposits before they
-    # are claimable.
+    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
     fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi31";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
