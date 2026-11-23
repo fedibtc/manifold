@@ -196,13 +196,17 @@ can therefore run concurrently with a stale writer over one partition. Restart
 clears it. The wallet therefore fences every client-scope join and lazy payment
 reopen through one process-owned registry of attempted scopes.
 Cancelling or replacing a reconciler task does not reset it, and a lazy reopen
-cannot bypass a join attempt (or vice versa). Newly admitted federations are
-still attempted, but a transient failure leaves that federation unavailable
-until restart. A failed guardian-fee open likewise leaves that seat's fee wallet
+cannot bypass a join attempt (or vice versa). A join that fails before the
+fence, while previewing the federation configuration, has opened no database
+and left no writer, so the setup-payment reconciler retries it in process
+with a bounded backoff; it never cancels an attempt that may be opening a
+client merely because the admitted invite changed. Once the fence is taken, a
+failed or cancelled open leaves that payment federation unavailable until
+restart. A failed guardian-fee open likewise leaves that seat's fee wallet
 unavailable until restart; the scope-keyed fence does not mark another seat or
 the payment wallet in the same federation as attempted. All scopes still share
-one RocksDB and runtime and may contend for those common resources. Do not add
-an automatic in-process retry loop or reset the wallet registry before process
+one RocksDB and runtime and may contend for those common resources. Do not
+retry past the fence in process or reset the wallet registry before process
 teardown without closing the stale-writer window first.
 
 Clients in one `Wallet` share networking endpoints and connections. Spending

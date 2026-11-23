@@ -27,11 +27,30 @@ fn invite_for_id(index: usize) -> (String, String) {
     (federation_id.to_string(), invite.to_string())
 }
 
+/// A second invite for federation `index`, naming a different guardian URL.
+fn other_invite_for_id(index: usize) -> String {
+    let federation_id: fedimint_core::config::FederationId = format!("{index:064x}")
+        .parse()
+        .expect("test federation ID is valid");
+    FedimintInviteCode::new(
+        SafeUrl::parse(&format!("https://other-{index}.example/")).expect("test URL is valid"),
+        PeerId::from(0),
+        federation_id,
+        None,
+    )
+    .to_string()
+}
+
 fn admitted_set(indices: &[usize]) -> AdmittedSetupPaymentFederations {
-    let invites: Vec<String> = indices
-        .iter()
-        .map(|index| invite_for_id(*index).1)
-        .collect();
+    admitted_invites(
+        indices
+            .iter()
+            .map(|index| invite_for_id(*index).1)
+            .collect(),
+    )
+}
+
+fn admitted_invites(invites: Vec<String>) -> AdmittedSetupPaymentFederations {
     let content = serde_json::json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -51,6 +70,8 @@ struct RecordingWallet {
     joined: std::sync::Mutex<BTreeSet<String>>,
     join_calls: std::sync::Mutex<Vec<String>>,
     unreachable: std::sync::Mutex<BTreeSet<String>>,
+    unreachable_invites: std::sync::Mutex<BTreeSet<String>>,
+    joined_with: std::sync::Mutex<Vec<String>>,
     failing_opens: std::sync::Mutex<BTreeSet<String>>,
     fenced: std::sync::Mutex<BTreeSet<String>>,
     pending_joins: std::sync::Mutex<BTreeSet<String>>,
@@ -157,7 +178,13 @@ impl EcashWallet for RecordingWallet {
                 "injected open fence"
             )));
         }
-        if self.unreachable.lock().unwrap().contains(&federation_id) {
+        if self.unreachable.lock().unwrap().contains(&federation_id)
+            || self
+                .unreachable_invites
+                .lock()
+                .unwrap()
+                .contains(invite_code)
+        {
             return Err(JoinError::Retryable(anyhow::anyhow!(
                 "injected config download failure"
             )));
@@ -168,6 +195,10 @@ impl EcashWallet for RecordingWallet {
                 "injected open failure"
             )));
         }
+        self.joined_with
+            .lock()
+            .unwrap()
+            .push(invite_code.to_owned());
         self.joined.lock().unwrap().insert(federation_id.clone());
         Ok(FederationId(federation_id))
     }
@@ -303,6 +334,16 @@ async fn refused_open_is_not_retried() {
     .await;
     tokio::time::sleep(std::time::Duration::from_secs(600)).await;
     assert_eq!(wallet.join_calls_for(&fenced_id), 1);
+
+    // The fence is per federation: a replaced invite does not lift it.
+    sender
+        .send(Some(admitted_invites(vec![
+            other_invite_for_id(7),
+            invite_for_id(8).1,
+        ])))
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    assert_eq!(wallet.join_calls_for(&fenced_id), 1);
     assert!(!wallet.joined.lock().unwrap().contains(&fenced_id));
 
     drop(sender);
@@ -310,6 +351,72 @@ async fn refused_open_is_not_retried() {
         .await
         .expect("reconciler exits when policy sender drops")
         .expect("reconciler task exits cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_invite_restarts_a_retrying_join() {
+    let wallet = Arc::new(RecordingWallet::default());
+    let federation_id = invite_for_id(7).0;
+    let broken_invite = other_invite_for_id(7);
+    let working_invite = invite_for_id(7).1;
+    wallet
+        .unreachable_invites
+        .lock()
+        .unwrap()
+        .insert(broken_invite.clone());
+    let (sender, receiver) = watch::channel(Some(admitted_invites(vec![broken_invite])));
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
+
+    // Let the broken invite reach a long backoff.
+    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+    let failed_calls = wallet.join_calls_for(&federation_id);
+    assert!(failed_calls > 1);
+    assert!(wallet.joined.lock().unwrap().is_empty());
+
+    // Same federation, new invite: joined at once, not after the backoff.
+    sender
+        .send(Some(admitted_invites(vec![working_invite.clone()])))
+        .unwrap();
+    wait_until(std::time::Duration::from_secs(1), async || {
+        wallet.joined.lock().unwrap().contains(&federation_id)
+    })
+    .await;
+    assert_eq!(*wallet.joined_with.lock().unwrap(), vec![working_invite]);
+    assert_eq!(wallet.join_calls_for(&federation_id), failed_calls + 1);
+
+    drop(sender);
+    tokio::time::timeout(std::time::Duration::from_secs(5), task.join())
+        .await
+        .expect("reconciler exits when policy sender drops")
+        .expect("reconciler task exits cleanly");
+}
+
+#[tokio::test]
+async fn replaced_invite_does_not_cancel_an_attempt_in_flight() {
+    let wallet = Arc::new(RecordingWallet::default());
+    let federation_id = invite_for_id(7).0;
+    wallet
+        .pending_joins
+        .lock()
+        .unwrap()
+        .insert(federation_id.clone());
+    let (sender, receiver) = watch::channel(Some(admitted_set(&[7])));
+    let task = spawn_setup_payment_join_reconciler(wallet.clone(), receiver);
+    wait_until(std::time::Duration::from_secs(5), async || {
+        wallet.join_calls_for(&federation_id) == 1
+    })
+    .await;
+
+    // Cancelling an attempt that may be opening the client would fence the
+    // wallet until restart.
+    sender
+        .send(Some(admitted_invites(vec![other_invite_for_id(7)])))
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(wallet.cancelled_joins.lock().unwrap().is_empty());
+    assert_eq!(wallet.join_calls_for(&federation_id), 1);
+
+    task.shutdown().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]

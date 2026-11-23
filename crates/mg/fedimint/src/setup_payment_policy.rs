@@ -17,7 +17,7 @@
 //! another member or a replacement policy from being processed. The reconciler
 //! owns every join task and cancels removed members and all work on shutdown.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,19 +76,20 @@ pub fn spawn_setup_payment_join_reconciler(
     let (shutdown, mut shutdown_requested) = oneshot::channel();
     let task = tokio::spawn(async move {
         let mut joins = JoinSet::new();
-        let mut active = std::collections::BTreeMap::<SetupPaymentFederationId, AbortHandle>::new();
-        // The wallet refuses these until restart; attempting them again
-        // would only repeat the refusal.
+        let mut active = BTreeMap::<SetupPaymentFederationId, AbortHandle>::new();
+        // The wallet refuses these until restart, whatever their invite:
+        // its open fence is per client scope. Attempting them again would
+        // only repeat the refusal.
         let mut awaiting_restart = BTreeSet::<SetupPaymentFederationId>::new();
         'reconcile: loop {
-            while let Some(completed) = joins.try_join_next() {
-                if let Ok(settled) = completed {
-                    settle(&mut active, &mut awaiting_restart, settled);
+            while let Some(completed) = joins.try_join_next_with_id() {
+                if let Ok((task_id, settled)) = completed {
+                    settle(&mut active, &mut awaiting_restart, task_id, settled);
                 }
             }
 
-            let set = policy.borrow_and_update().clone();
-            let admitted_ids = set
+            let admitted = policy
+                .borrow_and_update()
                 .as_ref()
                 .map(|set| {
                     set.iter()
@@ -98,7 +99,7 @@ pub fn spawn_setup_payment_join_reconciler(
                 .unwrap_or_default();
 
             active.retain(|federation_id, join| {
-                if admitted_ids.contains(federation_id) {
+                if admitted.contains(federation_id) {
                     true
                 } else {
                     join.abort();
@@ -106,7 +107,7 @@ pub fn spawn_setup_payment_join_reconciler(
                 }
             });
 
-            if let Some(set) = set {
+            if !admitted.is_empty() {
                 // The policy speaks the domain crate's federation id and the
                 // wallet speaks the wire one; both newtype the same canonical
                 // string, which is where they can meet.
@@ -116,7 +117,7 @@ pub fn spawn_setup_payment_join_reconciler(
                     .into_iter()
                     .map(|federation_id| federation_id.0)
                     .collect();
-                for (federation_id, invite_code) in set.iter() {
+                for federation_id in &admitted {
                     if joins.len() == SETUP_PAYMENT_FEDERATIONS_MAX_COUNT {
                         break;
                     }
@@ -129,7 +130,7 @@ pub fn spawn_setup_payment_join_reconciler(
                     let join = joins.spawn(join_until_settled(
                         wallet.clone(),
                         federation_id.clone(),
-                        invite_code.0.clone(),
+                        policy.clone(),
                     ));
                     active.insert(federation_id.clone(), join);
                 }
@@ -144,9 +145,9 @@ pub fn spawn_setup_payment_join_reconciler(
                         break 'reconcile;
                     }
                 }
-                completed = joins.join_next(), if !joins.is_empty() => {
-                    if let Some(Ok(settled)) = completed {
-                        settle(&mut active, &mut awaiting_restart, settled);
+                completed = joins.join_next_with_id(), if !joins.is_empty() => {
+                    if let Some(Ok((task_id, settled))) = completed {
+                        settle(&mut active, &mut awaiting_restart, task_id, settled);
                     }
                 }
             }
@@ -161,35 +162,63 @@ pub fn spawn_setup_payment_join_reconciler(
 enum Settled {
     Joined(SetupPaymentFederationId),
     RestartRequired(SetupPaymentFederationId),
+    /// The policy no longer admits the federation; the reconciler aborts
+    /// such joins too, but the join can see the policy first.
+    Removed(SetupPaymentFederationId),
 }
 
 /// Release a finished join's slot, remembering a federation the wallet will
-/// refuse until restart.
+/// refuse until restart. A join aborted on removal can finish before its abort
+/// lands; only the federation's current join releases the slot.
 fn settle(
-    active: &mut std::collections::BTreeMap<SetupPaymentFederationId, AbortHandle>,
+    active: &mut BTreeMap<SetupPaymentFederationId, AbortHandle>,
     awaiting_restart: &mut BTreeSet<SetupPaymentFederationId>,
+    task_id: tokio::task::Id,
     settled: Settled,
 ) {
-    match settled {
-        Settled::Joined(federation_id) => {
-            active.remove(&federation_id);
-        }
-        Settled::RestartRequired(federation_id) => {
-            active.remove(&federation_id);
-            awaiting_restart.insert(federation_id);
-        }
+    let (Settled::Joined(federation_id)
+    | Settled::RestartRequired(federation_id)
+    | Settled::Removed(federation_id)) = &settled;
+    if active
+        .get(federation_id)
+        .is_some_and(|join| join.id() == task_id)
+    {
+        active.remove(federation_id);
     }
+    if let Settled::RestartRequired(federation_id) = settled {
+        awaiting_restart.insert(federation_id);
+    }
+}
+
+/// The invite the policy currently admits for `federation_id`.
+fn admitted_invite(
+    policy: &watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    federation_id: &SetupPaymentFederationId,
+) -> Option<String> {
+    policy.borrow().as_ref().and_then(|set| {
+        set.iter()
+            .find(|(admitted, _)| *admitted == federation_id)
+            .map(|(_, invite_code)| invite_code.0.clone())
+    })
 }
 
 /// Join one admitted federation, retrying retryable failures with a bounded
 /// backoff, until it is joined or the wallet requires a restart.
+///
+/// Each attempt uses the invite the policy admits at that moment, so a
+/// replacement invite takes effect without cancelling an attempt in flight:
+/// cancelling one during a client open would leave the wallet fenced until
+/// restart. A replaced invite also ends the current backoff wait.
 async fn join_until_settled(
     wallet: Arc<dyn EcashWallet>,
     federation_id: SetupPaymentFederationId,
-    invite_code: String,
+    mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
 ) -> Settled {
     let mut retry_delay = JOIN_RETRY_INITIAL_DELAY;
     loop {
+        let Some(invite_code) = admitted_invite(&policy, &federation_id) else {
+            return Settled::Removed(federation_id);
+        };
         match wallet.join(&invite_code).await {
             Ok(_) => {
                 tracing::info!(
@@ -215,8 +244,26 @@ async fn join_until_settled(
                     retry_in_secs = retry_delay.as_secs(),
                     "failed to join setup-payment federation; retrying"
                 );
-                tokio::time::sleep(retry_delay).await;
+                let retry_at = tokio::time::Instant::now() + retry_delay;
                 retry_delay = (retry_delay * 2).min(JOIN_RETRY_MAX_DELAY);
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(retry_at) => break,
+                        changed = policy.changed() => {
+                            if changed.is_err() {
+                                // The reconciler is shutting down and will
+                                // abort this join.
+                                tokio::time::sleep_until(retry_at).await;
+                                break;
+                            }
+                            if admitted_invite(&policy, &federation_id).as_ref()
+                                != Some(&invite_code)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
