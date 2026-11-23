@@ -202,11 +202,16 @@ async fn rate_limit_hook_attempt(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(peer)| *peer);
-    let source = crate::rate_limits::effective_source_prefix(
+    let source = match crate::rate_limits::effective_source_prefix(
         peer,
         request.headers(),
         limits.trusted_proxy_cidrs.as_ref(),
-    );
+    ) {
+        Ok(source) => source,
+        Err(ambiguous) => {
+            return Ok(crate::error_response::ApiError::from(ambiguous).into_response());
+        }
+    };
     if limits.hook_invocations_per_source_prefix > 0
         && !state
             .rate_limiters()

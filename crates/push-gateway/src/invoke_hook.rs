@@ -36,7 +36,7 @@ pub(crate) async fn invoke_hook(
         &state,
         &headers,
         peer.map(|Extension(ConnectInfo(peer))| peer),
-    );
+    )?;
     let limits = state.config().rate_limits().clone();
 
     let invocation_guard = state
@@ -444,9 +444,13 @@ fn invocation_source_prefix(
     state: &AppState,
     headers: &HeaderMap,
     peer: Option<SocketAddr>,
-) -> String {
+) -> Result<String, ApiError> {
     let limits = state.config().rate_limits();
-    crate::rate_limits::effective_source_prefix(peer, headers, limits.trusted_proxy_cidrs.as_ref())
+    Ok(crate::rate_limits::effective_source_prefix(
+        peer,
+        headers,
+        limits.trusted_proxy_cidrs.as_ref(),
+    )?)
 }
 
 async fn enforce_invocation_rate_limits(

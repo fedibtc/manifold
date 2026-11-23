@@ -203,20 +203,42 @@ fn v6_mask(prefix: u8) -> u128 {
     }
 }
 
+/// A trusted proxy forwarded both `X-Forwarded-For` and RFC `Forwarded`, and
+/// they name different clients.
+///
+/// A trusted proxy overwrites the forwarding header it writes and may pass the
+/// other through from the caller, so disagreeing headers mean the caller wrote
+/// one of them, and the gateway cannot tell which. The request is refused
+/// instead of guessing. Headers that agree, as from a proxy that writes both,
+/// are accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmbiguousForwardingHeaders;
+
+impl From<AmbiguousForwardingHeaders> for crate::error_response::ApiError {
+    fn from(_: AmbiguousForwardingHeaders) -> Self {
+        Self::bad_request(
+            "ambiguous_forwarding_headers",
+            "X-Forwarded-For and Forwarded name different clients",
+        )
+    }
+}
+
 pub fn effective_source_prefix(
     direct_peer: Option<SocketAddr>,
     headers: &HeaderMap,
     trusted_proxies: Option<&TrustedProxyCidrs>,
-) -> String {
+) -> Result<String, AmbiguousForwardingHeaders> {
     let Some(direct_ip) = direct_peer.map(|addr| addr.ip()) else {
-        return normalize_source_prefix(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        return Ok(normalize_source_prefix(IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        )));
     };
     let source_ip = if trusted_proxies.is_some_and(|proxies| proxies.is_trusted(direct_ip)) {
-        forwarded_for(headers, trusted_proxies).unwrap_or(direct_ip)
+        forwarded_for(headers, trusted_proxies)?.unwrap_or(direct_ip)
     } else {
         direct_ip
     };
-    normalize_source_prefix(source_ip)
+    Ok(normalize_source_prefix(source_ip))
 }
 
 pub fn normalize_source_prefix(ip: IpAddr) -> String {
@@ -240,36 +262,49 @@ pub fn normalize_source_prefix(ip: IpAddr) -> String {
     }
 }
 
+/// Reads the client from the forwarding headers the trusted proxy wrote:
+/// `X-Forwarded-For` (ingress-nginx), RFC `Forwarded`, or both. When both are
+/// present they must select the same client, see
+/// [`AmbiguousForwardingHeaders`].
 fn forwarded_for(
     headers: &HeaderMap,
     trusted_proxies: Option<&TrustedProxyCidrs>,
-) -> Option<IpAddr> {
-    let mut chain = Vec::new();
-    if let Some(value) = headers.get("forwarded")
-        && let Ok(value) = value.to_str()
-    {
-        for item in value.split(',') {
-            for param in item.split(';') {
-                if let Some((name, value)) = param.trim().split_once('=')
-                    && name.trim().eq_ignore_ascii_case("for")
-                    && let Some(ip) = parse_forwarded_ip(value.trim())
-                {
-                    chain.push(ip);
-                }
-            }
+) -> Result<Option<IpAddr>, AmbiguousForwardingHeaders> {
+    let x_forwarded_for = headers.contains_key("x-forwarded-for").then(|| {
+        let chain: Vec<IpAddr> = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .filter_map(|ip| parse_forwarded_ip(ip.trim()))
+            .collect();
+        select_client_from_forwarded_chain(&chain, trusted_proxies)
+    });
+    let forwarded = headers.contains_key("forwarded").then(|| {
+        let chain: Vec<IpAddr> = headers
+            .get_all("forwarded")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .filter_map(|element| {
+                element.split(';').find_map(|pair| {
+                    let (name, value) = pair.trim().split_once('=')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("for")
+                        .then(|| parse_forwarded_ip(value.trim()))
+                        .flatten()
+                })
+            })
+            .collect();
+        select_client_from_forwarded_chain(&chain, trusted_proxies)
+    });
+    match (x_forwarded_for, forwarded) {
+        (Some(x_forwarded_for), Some(forwarded)) if x_forwarded_for != forwarded => {
+            Err(AmbiguousForwardingHeaders)
         }
+        (Some(client), _) | (None, Some(client)) => Ok(client),
+        (None, None) => Ok(None),
     }
-    if chain.is_empty()
-        && let Some(value) = headers.get("x-forwarded-for")
-        && let Ok(value) = value.to_str()
-    {
-        chain.extend(
-            value
-                .split(',')
-                .filter_map(|ip| parse_forwarded_ip(ip.trim())),
-        );
-    }
-    select_client_from_forwarded_chain(&chain, trusted_proxies)
 }
 
 fn select_client_from_forwarded_chain(
@@ -351,7 +386,7 @@ mod tests {
                 &headers,
                 Some(&proxies)
             ),
-            "198.51.100.9"
+            Ok("198.51.100.9".to_owned())
         );
     }
 
@@ -366,7 +401,78 @@ mod tests {
                 &headers,
                 Some(&proxies)
             ),
-            "203.0.113.7"
+            Ok("203.0.113.7".to_owned())
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_refuses_disagreeing_forwarding_headers() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", HeaderValue::from_static("for=192.0.2.44"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        assert_eq!(
+            effective_source_prefix(
+                Some("10.1.2.3:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            Err(AmbiguousForwardingHeaders)
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_accepts_agreeing_forwarding_headers() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("for=192.0.2.1, for=198.51.100.9;proto=https"),
+        );
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        assert_eq!(
+            effective_source_prefix(
+                Some("10.1.2.3:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            Ok("198.51.100.9".to_owned())
+        );
+    }
+
+    #[test]
+    fn untrusted_peer_with_both_forwarding_headers_uses_peer() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", HeaderValue::from_static("for=192.0.2.44"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        assert_eq!(
+            effective_source_prefix(
+                Some("203.0.113.7:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            Ok("203.0.113.7".to_owned())
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_uses_rightmost_untrusted_rfc_forwarded_entry() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static(
+                "for=198.51.100.9;proto=https, for=\"[2001:db8:cafe::17]:4711\", for=10.2.0.1",
+            ),
+        );
+        assert_eq!(
+            effective_source_prefix(
+                Some("10.1.2.3:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            Ok("2001:db8:cafe::/64".to_owned())
         );
     }
 
@@ -384,7 +490,7 @@ mod tests {
                 &headers,
                 Some(&proxies)
             ),
-            "203.0.113.7"
+            Ok("203.0.113.7".to_owned())
         );
     }
 }
