@@ -402,7 +402,12 @@ a stop for new paid formation, filters the authenticated set by wallet
 capability, and submits the canonical selected federation ID to `GetQuote`.
 MG-local rejection remains an actionable quote failure rather than a
 discovery-policy input. Joining, MG reconciliation, and publisher deployment
-belong to their consuming components.
+belong to their consuming components, with one cross-component guarantee: MG
+keeps retrying the join of an admitted member while it stays admitted, so a
+member that was unreachable when admitted becomes quotable once it is
+reachable, without an MG restart. Until then its quotes fail with the
+retryable `PaymentFederationUnavailable`. Only a join that failed after the
+wallet started opening its client waits for a restart.
 
 MG couples replacement to its quote pricing: it retains the admitted event,
 replaces its derived accepted membership, and — whenever any previously

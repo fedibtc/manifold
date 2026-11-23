@@ -176,7 +176,9 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   accepted evidence against Fedimint's durable operation log with periodic
   retries, `guardian_fee` is the fee vault, and
   `setup_payment_policy` the join reconciler consuming the Nostr boundary's
-  admitted-set watch. Its clients share one RocksDB, partitioned by a
+  admitted-set watch; it retries joins that fail before a client open with a
+  bounded backoff, while the wallet's per-process open fence leaves a failed
+  open to a restart. Its clients share one RocksDB, partitioned by a
   monotonically allocated prefix per client scope, with the allocator and its
    prefix-to-scope map under prefix zero. The prefix is reserved before
   Fedimint is handed the database and never reused, so a join that fails

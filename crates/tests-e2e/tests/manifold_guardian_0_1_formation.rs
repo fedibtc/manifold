@@ -47,6 +47,8 @@ use tokio::process::{Child, Command};
 mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
 mod restart_dkg;
+#[path = "manifold_guardian_0_1_formation/setup_payment_join_retry.rs"]
+mod setup_payment_join_retry;
 
 const OPT_IN_ENV: &str = "MG_E2E";
 const MANIFOLD_GUARDIAN_BIN_ENV: &str = "MG_E2E_MANIFOLD_GUARDIAN_BIN";
