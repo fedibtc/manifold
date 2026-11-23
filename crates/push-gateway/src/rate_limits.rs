@@ -240,12 +240,9 @@ pub fn normalize_source_prefix(ip: IpAddr) -> String {
     }
 }
 
-/// Reads the client address from `X-Forwarded-For` only.
-///
-/// RFC `Forwarded` is ignored. Common proxies, ingress-nginx among them,
-/// overwrite `X-Forwarded-For` but pass a caller's `Forwarded` through
-/// unchanged, so honoring it would let a caller choose its own rate-limit
-/// source.
+/// Reads the client IP from `X-Forwarded-For` only. RFC `Forwarded` is
+/// ignored because proxies such as ingress-nginx pass it through from the
+/// caller unchanged.
 fn forwarded_for(
     headers: &HeaderMap,
     trusted_proxies: Option<&TrustedProxyCidrs>,
