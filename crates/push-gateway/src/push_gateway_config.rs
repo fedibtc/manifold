@@ -1014,7 +1014,7 @@ struct PushGatewayConfigArgs {
         default_value_t = 0
     )]
     max_recipient_outbox_backlog: u64,
-    /// Trusted direct proxy CIDRs allowed to supply X-Forwarded-For/Forwarded client IPs.
+    /// Trusted direct proxy CIDRs allowed to supply X-Forwarded-For client IPs.
     #[arg(long, env = "PUSH_GATEWAY_TRUSTED_PROXY_CIDRS", hide_env_values = true)]
     trusted_proxy_cidrs: Option<String>,
     /// Path to a Firebase service-account JSON file for FCM mode.

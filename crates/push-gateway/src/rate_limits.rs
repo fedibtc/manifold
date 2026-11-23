@@ -240,35 +240,21 @@ pub fn normalize_source_prefix(ip: IpAddr) -> String {
     }
 }
 
+/// Reads the client address from `X-Forwarded-For` only.
+///
+/// RFC `Forwarded` is ignored. Common proxies, ingress-nginx among them,
+/// overwrite `X-Forwarded-For` but pass a caller's `Forwarded` through
+/// unchanged, so honoring it would let a caller choose its own rate-limit
+/// source.
 fn forwarded_for(
     headers: &HeaderMap,
     trusted_proxies: Option<&TrustedProxyCidrs>,
 ) -> Option<IpAddr> {
-    let mut chain = Vec::new();
-    if let Some(value) = headers.get("forwarded")
-        && let Ok(value) = value.to_str()
-    {
-        for item in value.split(',') {
-            for param in item.split(';') {
-                if let Some((name, value)) = param.trim().split_once('=')
-                    && name.trim().eq_ignore_ascii_case("for")
-                    && let Some(ip) = parse_forwarded_ip(value.trim())
-                {
-                    chain.push(ip);
-                }
-            }
-        }
-    }
-    if chain.is_empty()
-        && let Some(value) = headers.get("x-forwarded-for")
-        && let Ok(value) = value.to_str()
-    {
-        chain.extend(
-            value
-                .split(',')
-                .filter_map(|ip| parse_forwarded_ip(ip.trim())),
-        );
-    }
+    let value = headers.get("x-forwarded-for")?.to_str().ok()?;
+    let chain: Vec<IpAddr> = value
+        .split(',')
+        .filter_map(|ip| parse_forwarded_ip(ip.trim()))
+        .collect();
     select_client_from_forwarded_chain(&chain, trusted_proxies)
 }
 
@@ -367,6 +353,37 @@ mod tests {
                 Some(&proxies)
             ),
             "203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_ignores_rfc_forwarded_header() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", HeaderValue::from_static("for=192.0.2.44"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        assert_eq!(
+            effective_source_prefix(
+                Some("10.1.2.3:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            "198.51.100.9"
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_without_forwarded_for_uses_peer_even_with_rfc_forwarded() {
+        let proxies = TrustedProxyCidrs::parse_csv("10.0.0.0/8").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", HeaderValue::from_static("for=192.0.2.44"));
+        assert_eq!(
+            effective_source_prefix(
+                Some("10.1.2.3:443".parse().unwrap()),
+                &headers,
+                Some(&proxies)
+            ),
+            "10.1.2.3"
         );
     }
 

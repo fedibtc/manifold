@@ -113,9 +113,10 @@ grace period.
 ## Source identity
 
 Public caller source identity is the direct socket peer IP unless that peer
-is inside configured trusted-proxy CIDRs; only then may `X-Forwarded-For` or
-RFC `Forwarded` influence it, and the gateway selects the rightmost
-untrusted forwarded entry so a client-prepended spoofed address is not
-accepted in common append-style configurations. Trusted proxies are expected
-to strip/overwrite inbound forwarding headers. Rate-limit source keys
+is inside configured trusted-proxy CIDRs; only then may `X-Forwarded-For`
+influence it, and the gateway selects the rightmost untrusted entry so a
+client-prepended spoofed address is not accepted in common append-style
+configurations. RFC `Forwarded` is never read, because common proxies pass it
+through from the caller unchanged. Trusted proxies are expected to
+strip/overwrite inbound `X-Forwarded-For`. Rate-limit source keys
 normalize IPv4 to the address and IPv6 to the `/64` prefix.

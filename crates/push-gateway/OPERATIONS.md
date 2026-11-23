@@ -147,9 +147,10 @@ registration writes/hour/source across rotating recipient keys, 120 authenticate
 management events/minute/source before replay insertion, and 60 public hook
 invocations/hour/source prefix plus 60/hour/hook before any lower persisted
 per-hook policy. Configure trusted reverse proxies with
-`--trusted-proxy-cidrs`; `X-Forwarded-For`/`Forwarded` are used only when the
-direct peer IP is trusted. Trusted proxies should strip or overwrite inbound
-forwarding headers from clients before forwarding to the gateway.
+`--trusted-proxy-cidrs`; `X-Forwarded-For` is used only when the direct peer IP
+is trusted, and RFC `Forwarded` is never read. Trusted proxies should strip or
+overwrite inbound `X-Forwarded-For` from clients before forwarding to the
+gateway.
 
 ## Database-write backpressure and timeouts
 
