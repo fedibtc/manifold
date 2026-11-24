@@ -32,8 +32,9 @@ Admission sells up to the lowest of six limits on total seats:
   publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
   field there is no CPU limit;
 - a disk limit: the size of the filesystem holding the MG data directory
-  divided by the publication's `seat_disk_gb` (default 80 GB), rounded down
-  ([Disk](#disk)). Without a measurement there is no disk limit;
+  divided by the publication's `seat_disk_gb` (default 80 GB), or on btrfs
+  its `seat_disk_gb_btrfs` (default 160 GB), rounded down ([Disk](#disk)).
+  Without a measurement there is no disk limit;
 - a data limit: the operator's monthly data budget divided by the
   publication's `seat_monthly_data_gb` (default 65 GB), rounded down. It
   binds only when the operator gave a budget in GB.
@@ -144,6 +145,17 @@ seats that cost almost nothing, and one that would stop every MG.
 The figure does not model writes per seat. Fedi measures those across the
 fleet (`cgroup_block_write_bytes` in the resource sample) and moves the
 figure when they change, for example when seats sync less often.
+
+What a seat writes per sync depends on the filesystem, so btrfs has its own
+figure, `seat_disk_gb_btrfs`, by default twice the general one: 160 GB, 12
+seats on the 2 TB drive of a StartOS server. btrfs copies its metadata tree
+on every sync, about 90 KB however little the seat stores, against about
+5 KB on ext4 and 6 KB on ZFS in a lab measurement of the seats' sync
+pattern, so the same drive wears out many times sooner. StartOS formats or
+converts every data volume to btrfs, so its hosts cannot choose another
+filesystem. Every other kind, including one the MG cannot name, takes the
+general figure. The MG names the kind by its `statfs` magic, read at daemon
+start with the size.
 
 ## Data budget
 

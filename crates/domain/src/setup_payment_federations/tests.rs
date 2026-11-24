@@ -56,6 +56,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             seat_cpu_iterations_per_sec: None,
             seat_monthly_data_gb: None,
             seat_disk_gb: None,
+            seat_disk_gb_btrfs: None,
             max_seats_per_mg: None,
             seat_memory_budget_mib_v2: None,
             max_seats_per_mg_v2: None,
@@ -251,6 +252,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
                 seat_cpu_iterations_per_sec: None,
                 seat_monthly_data_gb: None,
                 seat_disk_gb: None,
+                seat_disk_gb_btrfs: None,
                 max_seats_per_mg: None,
                 seat_memory_budget_mib_v2: None,
                 max_seats_per_mg_v2: None,
@@ -525,6 +527,32 @@ fn seat_disk_defaults_to_80_and_is_bounded() {
     for gb in ["0", "100001"] {
         assert_eq!(
             AdmittedSetupPaymentFederations::parse(raw(gb).as_bytes()),
+            Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
+            "{gb}"
+        );
+    }
+}
+
+/// The btrfs figure has its own default, which the general figure does not
+/// move, and the same bounds.
+#[test]
+fn seat_disk_on_btrfs_defaults_to_160_independently_and_is_bounded() {
+    let raw = |fields: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{fields}}}"#
+        )
+    };
+    let parse = |fields: &str| AdmittedSetupPaymentFederations::parse(raw(fields).as_bytes());
+    assert_eq!(DEFAULT_SEAT_DISK_GB_BTRFS, 160);
+    let general_only = parse(r#","seat_disk_gb":100"#).unwrap();
+    assert_eq!(general_only.features().seat_disk_gb().get(), 100);
+    assert_eq!(general_only.features().seat_disk_gb_btrfs().get(), 160);
+    let btrfs_only = parse(r#","seat_disk_gb_btrfs":240"#).unwrap();
+    assert_eq!(btrfs_only.features().seat_disk_gb().get(), 80);
+    assert_eq!(btrfs_only.features().seat_disk_gb_btrfs().get(), 240);
+    for gb in ["0", "100001"] {
+        assert_eq!(
+            parse(&format!(r#","seat_disk_gb_btrfs":{gb}"#)),
             Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
             "{gb}"
         );

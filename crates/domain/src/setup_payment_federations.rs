@@ -86,6 +86,16 @@ pub const SETUP_PAYMENT_SEAT_DISK_GB_RANGE: std::ops::RangeInclusive<u32> = 1..=
 const DEFAULT_SEAT_DISK: NonZeroU32 =
     NonZeroU32::new(DEFAULT_SEAT_DISK_GB).expect("the default is nonzero");
 
+/// Data filesystem size, in GB (10^9 bytes), an MG on btrfs needs per seat
+/// when a publication does not say. btrfs writes far more per synced write
+/// than ext4 or ZFS, so the same drive wears out several times sooner under
+/// the same seats; twice [`DEFAULT_SEAT_DISK_GB`] halves the seats it carries.
+/// The bounds are [`SETUP_PAYMENT_SEAT_DISK_GB_RANGE`].
+pub const DEFAULT_SEAT_DISK_GB_BTRFS: u32 = 160;
+
+const DEFAULT_SEAT_DISK_BTRFS: NonZeroU32 =
+    NonZeroU32::new(DEFAULT_SEAT_DISK_GB_BTRFS).expect("the default is nonzero");
+
 /// Seats one MG may host when a publication does not say.
 pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
 
@@ -369,6 +379,13 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_disk_gb: Option<u32>,
 
+    /// [`Self::seat_disk_gb`] for an MG whose data filesystem is btrfs.
+    /// Optional on the wire: absent means [`DEFAULT_SEAT_DISK_GB_BTRFS`],
+    /// whatever [`Self::seat_disk_gb`] says. Omitted when unset, like
+    /// [`Self::seat_disk_gb`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_disk_gb_btrfs: Option<u32>,
+
     /// Seats one MG before 0.1.16 may host. This release ignores it and
     /// reads [`Self::max_seats_per_mg_v2`]. Admission still checks its bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -456,6 +473,7 @@ pub struct AdmittedFeaturePolicy {
     seat_memory_budget_mib: u32,
     seat_monthly_data_gb: NonZeroU32,
     seat_disk_gb: NonZeroU32,
+    seat_disk_gb_btrfs: NonZeroU32,
     max_seats_per_mg: u32,
     seat_cpu_iterations_per_sec: Option<NonZeroU32>,
     max_pressure_percent: MaxPressurePercent,
@@ -607,13 +625,15 @@ impl FeaturePolicy {
             }
             Some(_) => return Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
         };
-        let seat_disk_gb = match content.seat_disk_gb {
-            None => DEFAULT_SEAT_DISK,
+        let seat_disk = |figure: Option<u32>, default| match figure {
+            None => Ok(default),
             Some(gb) if SETUP_PAYMENT_SEAT_DISK_GB_RANGE.contains(&gb) => {
-                NonZeroU32::new(gb).expect("the range starts at 1")
+                Ok(NonZeroU32::new(gb).expect("the range starts at 1"))
             }
-            Some(_) => return Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
+            Some(_) => Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
         };
+        let seat_disk_gb = seat_disk(content.seat_disk_gb, DEFAULT_SEAT_DISK)?;
+        let seat_disk_gb_btrfs = seat_disk(content.seat_disk_gb_btrfs, DEFAULT_SEAT_DISK_BTRFS)?;
         if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
             .into_iter()
             .flatten()
@@ -671,6 +691,7 @@ impl FeaturePolicy {
                 .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
             seat_monthly_data_gb,
             seat_disk_gb,
+            seat_disk_gb_btrfs,
             max_seats_per_mg: content
                 .max_seats_per_mg_v2
                 .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
@@ -741,6 +762,12 @@ impl AdmittedFeaturePolicy {
     #[must_use]
     pub fn seat_disk_gb(&self) -> NonZeroU32 {
         self.seat_disk_gb
+    }
+
+    /// Return the data filesystem size one seat needs on btrfs, in GB.
+    #[must_use]
+    pub fn seat_disk_gb_btrfs(&self) -> NonZeroU32 {
+        self.seat_disk_gb_btrfs
     }
 
     /// Return how many seats one MG may host.

@@ -1601,15 +1601,15 @@ async fn runtime_seat_limits_divide_the_data_filesystem_by_the_published_disk_fi
             .await
             .unwrap(),
     );
-    let policy = |figure: Option<u32>| {
+    let policy = |figure: Option<(&str, u32)>| {
         let mut content = serde_json::json!({
             "version": 1,
             "fman_version": "0.1.0",
             "federations": [],
             "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
         });
-        if let Some(figure) = figure {
-            content["seat_disk_gb"] = serde_json::json!(figure);
+        if let Some((field, figure)) = figure {
+            content[field] = serde_json::json!(figure);
         }
         Some(
             fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
@@ -1621,20 +1621,34 @@ async fn runtime_seat_limits_divide_the_data_filesystem_by_the_published_disk_fi
         )
     };
     // A 1 TB drive's ext4 size: 12 seats at the default 80 GB, 6 at 160 GB.
-    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
-    let limits = crate::seat_capacity::spawn_runtime_seat_limits(
-        fleet.clone(),
-        receiver,
-        None,
-        Some(984_000_000_000),
-    );
+    let ext4 = crate::seat_capacity::DataFilesystem {
+        kind: crate::seat_capacity::FilesystemKind::Known("ext4"),
+        bytes: 984_000_000_000,
+    };
+    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 160))));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, Some(ext4));
     disk_limit_becomes(&fleet, Some(6)).await;
     publish.send_replace(policy(None));
     disk_limit_becomes(&fleet, Some(12)).await;
     limits.abort();
 
+    // The same size on btrfs takes the btrfs figure, which defaults to 160 GB
+    // whatever the general one says, and which a publication can move.
+    let btrfs = crate::seat_capacity::DataFilesystem {
+        kind: crate::seat_capacity::FilesystemKind::BTRFS,
+        ..ext4
+    };
+    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 40))));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, Some(btrfs));
+    disk_limit_becomes(&fleet, Some(6)).await;
+    publish.send_replace(policy(Some(("seat_disk_gb_btrfs", 240))));
+    disk_limit_becomes(&fleet, Some(4)).await;
+    limits.abort();
+
     // Without a measurement there is no disk limit: it clears a stored one.
-    let (_publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
+    let (_publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 160))));
     let limits =
         crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, None);
     disk_limit_becomes(&fleet, None).await;
