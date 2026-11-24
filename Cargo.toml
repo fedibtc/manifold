@@ -292,13 +292,12 @@ netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd66
 # iroh 0.35 (Fedimint p2p and API clients) with fixes for a send livelock that
 # pins every tokio worker, and for a magicsock actor that deadlocks on its own
 # full inbox when relays are disabled, as in Fedimint API clients; it then leaks
-# every unanswered disco ping (fedibtc/iroh
-# `roboman/magicsock-actor-self-send-0.35`, on `fedi/v0.35.0-no-send-spin`).
+# every unanswered disco ping (fedibtc/iroh `v0.35.0-fedi1`).
 # `iroh-base` and `iroh-relay` come from the same checkout because git `iroh`
 # uses them by path.
-iroh = { git = "https://github.com/fedibtc/iroh", rev = "8384cc9a83f539c648c942863adc0a9ca8af80e6" }
-iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "8384cc9a83f539c648c942863adc0a9ca8af80e6" }
-iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "8384cc9a83f539c648c942863adc0a9ca8af80e6" }
+iroh = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
+iroh-base = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
+iroh-relay = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
 # iroh 1.4.1 (MG endpoint, Fedimint) with bounded waits in the relay actor
 # (fedibtc/iroh `roboman/relay-actor-bounded-waits-1.4.1`). Without it, a relay
 # that goes silent while an idle relay connection closes wedges the relay
