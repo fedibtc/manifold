@@ -3,10 +3,9 @@
 //! Every input comes from the seat's own `fedimintd`. Custody and volume are
 //! derived from consensus, so in-sync guardians agree on them. Active wallets
 //! come from client backups, which each guardian stores locally. A guardian
-//! that moved or was restored therefore starts a new 30-day backup window,
-//! and the figure says so instead of under-counting silently.
-
-use std::time::Duration;
+//! that moved or was restored therefore starts a new 30-day backup window and
+//! undercounts until it passes, which the FA's median over the guardians
+//! absorbs while only a minority of them do.
 
 use anyhow::{Context as _, ensure};
 use fedi_decentralized_service_manifold_guardian::{
@@ -15,15 +14,6 @@ use fedi_decentralized_service_manifold_guardian::{
 use fedimint_core::module::audit::AuditSummary;
 use fedimint_lnv2_common::{LightningVolume, LightningVolumeStats};
 use fedimint_walletv2_common::{WalletVolume, WalletVolumeStats};
-
-/// The window `backup_statistics` reports as `refreshed_1m`.
-const BACKUP_WINDOW: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-
-/// How long after the federation's first session a guardian may first hold
-/// its config and still count as present from formation. The MG records a
-/// DKG-formed seat when it observes the finished ceremony, a few seconds to
-/// minutes after the first session.
-const FORMATION_TOLERANCE: Duration = Duration::from_secs(60 * 60);
 
 /// Everything one guardian's `fedimintd` reported for the figures.
 pub(crate) struct GuardianReadings {
@@ -62,21 +52,6 @@ fn custodied_msats(audit: &AuditSummary) -> anyhow::Result<u64> {
         "the audit has more than one walletv2 module"
     );
     u64::try_from(wallet.net_assets).context("the walletv2 audit value is negative")
-}
-
-/// Whether this guardian's client backups cover the last 30 days: it has held
-/// the guardian since the federation formed, or for at least 30 days.
-pub(crate) fn held_for_backup_window(formed_at_ms: i64, observed_ms: i64) -> bool {
-    i128::from(observed_ms) - i128::from(formed_at_ms) >= i128::from(millis(BACKUP_WINDOW))
-}
-
-pub(crate) fn held_from_formation(formed_at_ms: i64, federation_start_unix: u64) -> bool {
-    let start_ms = i128::from(federation_start_unix) * 1000;
-    i128::from(formed_at_ms) - start_ms <= i128::from(millis(FORMATION_TOLERANCE))
-}
-
-fn millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).expect("a constant window fits in u64 milliseconds")
 }
 
 /// Lightning sent and received plus on-chain deposited and withdrawn. The
