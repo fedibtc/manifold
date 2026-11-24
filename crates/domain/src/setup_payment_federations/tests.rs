@@ -59,6 +59,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             seat_disk_gb_btrfs: None,
             max_seats_per_mg: None,
             seat_memory_budget_mib_v2: None,
+            seat_memory_budget_mib_v3: None,
             max_seats_per_mg_v2: None,
             max_pressure_percent: None,
             guardian_transfer_v2: None,
@@ -255,6 +256,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
                 seat_disk_gb_btrfs: None,
                 max_seats_per_mg: None,
                 seat_memory_budget_mib_v2: None,
+                seat_memory_budget_mib_v3: None,
                 max_seats_per_mg_v2: None,
                 max_pressure_percent: None,
                 guardian_transfer_v2: None,
@@ -444,32 +446,41 @@ fn parse_with_fields(
 }
 
 #[test]
-fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
+fn seat_memory_budget_comes_from_v3_only_and_every_field_is_bounded() {
     let budget = |fields: &str| {
         parse_with_fields(fields)
             .unwrap()
             .features()
             .seat_memory_budget_mib()
     };
-    assert_eq!(budget(""), DEFAULT_SEAT_MEMORY_BUDGET_MIB);
-    // The field for older MGs does not reach this release, not even as a
-    // fallback when v2 is absent.
+    // Written out rather than taken from the constant, so a changed default
+    // fails here.
+    assert_eq!(budget(""), 1_024);
+    // The fields for older MGs do not reach this release, not even as a
+    // fallback when v3 is absent.
+    assert_eq!(budget(r#","seat_memory_budget_mib_v2":750"#), 1_024);
     assert_eq!(
-        budget(r#","seat_memory_budget_mib":2048"#),
-        DEFAULT_SEAT_MEMORY_BUDGET_MIB
+        budget(r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":750"#),
+        1_024
     );
     assert_eq!(
-        budget(r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":512"#),
-        512
+        budget(
+            r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":1229,"seat_memory_budget_mib_v3":750"#
+        ),
+        750
     );
     for mib in [256, 16_384] {
         assert_eq!(
-            budget(&format!(r#","seat_memory_budget_mib_v2":{mib}"#)),
+            budget(&format!(r#","seat_memory_budget_mib_v3":{mib}"#)),
             mib
         );
     }
 
-    for field in ["seat_memory_budget_mib", "seat_memory_budget_mib_v2"] {
+    for field in [
+        "seat_memory_budget_mib",
+        "seat_memory_budget_mib_v2",
+        "seat_memory_budget_mib_v3",
+    ] {
         for mib in ["0", "255", "16385"] {
             assert_eq!(
                 parse_with_fields(&format!(r#","{field}":{mib}"#)),
@@ -478,9 +489,15 @@ fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
             );
         }
     }
+    // An out-of-range v3 is refused even beside in-range older fields.
+    assert_eq!(
+        parse_with_fields(
+            r#","seat_memory_budget_mib":1024,"seat_memory_budget_mib_v2":1024,"seat_memory_budget_mib_v3":255"#
+        ),
+        Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange)
+    );
 }
 
-/// Like the memory budget, an absent data figure takes the built-in default.
 #[test]
 fn seat_monthly_data_defaults_to_65_and_is_bounded() {
     let raw = |gb: &str| {

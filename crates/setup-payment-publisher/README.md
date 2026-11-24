@@ -127,6 +127,12 @@ GB (10^9 bytes), from 1 to 100,000. Tune it from the fleet's
 `cgroup_block_write_bytes` and `data_filesystem_bytes` in the `cgroup
 resource sample`.
 
+MGs from 0.1.20 on reserve `"seat_memory_budget_mib_v3"` MiB of available
+memory per seat, from 256 to 16,384, default 1,024. They ignore
+`"seat_memory_budget_mib_v2"`, which MGs from 0.1.16 to 0.1.19 read, and
+`"seat_memory_budget_mib"`, which older MGs read; those default to 1,229.
+Set each field for the releases it should reach.
+
 MGs from 0.1.20 on whose data filesystem is btrfs divide by a figure of its
 own, `"seat_disk_gb_btrfs"`, default 160, with the same bounds. Older MGs
 apply `seat_disk_gb` on btrfs too. Compare the fleet's writes per seat within

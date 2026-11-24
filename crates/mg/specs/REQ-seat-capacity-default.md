@@ -5,7 +5,7 @@ cost simulation's CPU benchmark, and operators whose hosts share a capped
 internet plan.
 
 The MG limits seats from **available** RAM at runtime: one seat per whole
-per-seat budget, by default 1,229 MiB (about 1.2 GiB). For memory, GB means
+per-seat budget, by default 1,024 MiB (1 GiB). For memory, GB means
 GiB (2³⁰ bytes, the kernel's binary units); for data it means 10⁹ bytes. A fractional budget truncates toward fewer
 seats. Onboarding asks for no seat count: the operator limit starts
 automatic, and the operator can set one later. It does ask whether the
@@ -40,7 +40,7 @@ Admission sells up to the lowest of six limits on total seats:
   binds only when the operator gave a budget in GB.
 
 The effective feature snapshot (37710, or the legacy 37707 projection before admission)
-supplies `seat_memory_budget_mib_v2`, which replaces the default budget
+supplies `seat_memory_budget_mib_v3`, which replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release.
@@ -226,8 +226,8 @@ basis.
 
 The budget moved from 1.5 GiB to 1.2 GiB as a conservative first step after
 a 7-guardian federation under a 30-minute payment and ecash workload measured
-`fedimintd` at 129 MiB peak RSS per seat with a bounded blocking pool. The
-publication can move it further without a release.
+`fedimintd` at 129 MiB peak RSS per seat with a bounded blocking pool, and to
+1 GiB from 0.1.20. The publication can move it further without a release.
 
 Peak RSS depends on the host's transparent huge page mode. With
 `transparent_hugepage=always`, a local 10-guardian federation with production
