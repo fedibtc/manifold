@@ -80,6 +80,8 @@ pub(crate) struct FakeApiState {
     pub invite_gate: Option<Arc<Notify>>,
     /// The `auth` of each `shutdown_after_current_session` request.
     pub shutdown_after_current_session: Vec<Option<String>>,
+    /// Each `set_aleph_quiescence` request as `(enabled, auth)`, in order.
+    pub aleph_quiescence_requests: Vec<(bool, Option<String>)>,
     /// Fail every local API request at the transport, as if the connection
     /// between the MG and its child were cut while consensus continues.
     pub api_cut: bool,
@@ -224,6 +226,22 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
                 return Err(method_not_found());
             }
             state.shutdown_after_current_session.push(auth);
+            Ok::<_, ErrorObjectOwned>(Value::Null)
+        })
+        .unwrap();
+    module
+        .register_method("set_aleph_quiescence", |params, state, _ext| {
+            let request: Value = params.one()?;
+            let auth = request["auth"].as_str().map(str::to_owned);
+            let enabled = request["params"].as_bool().expect("a boolean request");
+            let mut state = state.lock().unwrap();
+            if state.api_cut {
+                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
+            }
+            if !state.consensus_running {
+                return Err(method_not_found());
+            }
+            state.aleph_quiescence_requests.push((enabled, auth));
             Ok::<_, ErrorObjectOwned>(Value::Null)
         })
         .unwrap();

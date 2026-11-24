@@ -1134,10 +1134,35 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
             nostr_relay_lease.descriptor
         );
     };
-    let setup_payment_publisher =
-        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
-            .public_key()
-            .to_string();
+    let setup_payment_keys =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?;
+    let setup_payment_publisher = setup_payment_keys.public_key().to_string();
+    // The seats run with Aleph quiescence, so the pegin, Lightning payments
+    // and fee remittance below are ordered by guardians that create units
+    // only while they have work.
+    NostrRelayClient::connect(
+        &nostr_relay.url,
+        setup_payment_keys,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("connect setup-payment publisher to relay: {err}"))?
+    .publish_event(
+        EventBuilder::new(
+            Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+            serde_json::json!({
+                "version": 1,
+                "fman_version": "0.1.0",
+                "federations": [],
+                "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
+                "aleph_quiescence": true,
+            })
+            .to_string(),
+        )
+        .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG)),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("publish setup-payment feature policy: {err}"))?;
 
     let temp = mg_e2e_temp_dir()?;
     let bitcoin_cli = BitcoinCli::new(&bitcoin_cli_bin, bitcoind)?;
@@ -1151,6 +1176,11 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
     }
     let port_base = reserve_mg_port_grid(GUARDIAN_COUNT)?;
     let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
+    let nostr = NostrEnv {
+        relay_urls: &nostr_relay.url,
+        holder_relay_url: &nostr_relay.url,
+        setup_payment_publisher: &setup_payment_publisher,
+    };
     let (mut daemons, locators) = start_daemons(
         manifold_guardian_bin,
         &temp,
@@ -1159,11 +1189,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
-        Some(NostrEnv {
-            relay_urls: &nostr_relay.url,
-            holder_relay_url: &nostr_relay.url,
-            setup_payment_publisher: &setup_payment_publisher,
-        }),
+        Some(nostr),
         None,
     )
     .await;
@@ -1216,11 +1242,24 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         &invite,
         &mut daemons,
         &locators,
+        nostr,
         upgrade_to,
     )
     .await?;
 
     shutdown_daemons(daemons).await?;
+    // The operations above ran on quiescent guardians.
+    for index in 0..GUARDIAN_COUNT {
+        let mg_root = temp.join(format!("mg-{index}"));
+        assert_safe_event_journal(
+            &mg_root.join("safe-events/fman"),
+            &["seat aleph quiescence applied"],
+        )?;
+        assert_safe_event_journal(
+            &mg_root.join("seats/0/safe-events"),
+            &["Aleph quiescence switched"],
+        )?;
+    }
     defe.release(nostr_relay_lease.handle_id).await?;
     defe.release(bitcoind_lease.handle_id).await?;
     std::fs::remove_dir_all(&temp).context("remove post-formation E2E tempdir")?;
@@ -1301,6 +1340,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     invite: &str,
     daemons: &mut Vec<Child>,
     locators: &[String],
+    nostr: NostrEnv<'_>,
     upgrade_to: Option<&Path>,
 ) -> anyhow::Result<()> {
     const REMITTANCE_MSAT: u64 = 200_000;
@@ -1645,7 +1685,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                     &bitcoind.rpc_password,
                     port_base + u16::try_from(index)? * MG_PORT_STRIDE,
                     Some(iroh_overrides),
-                    None,
+                    Some(nostr),
                     None,
                 )?;
                 let locator = read_locator(&mut daemon, index).await?;
@@ -1687,7 +1727,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                 &bitcoind.rpc_password,
                 port_base,
                 Some(iroh_overrides),
-                None,
+                Some(nostr),
                 None,
             )?;
             let mut restarted_locators = locators.to_vec();
@@ -1929,7 +1969,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"15671ec113a28273ccfca84c549a9dcfd03eb67d\"")
+                && line.contains("version_hash=\"ecf33873352e277b272c2b49890f5b3023997b3c\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );

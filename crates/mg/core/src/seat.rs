@@ -143,6 +143,14 @@ impl SeatVerbError {
     }
 }
 
+fn fedimint_api_error_kind(error: &FedimintApiError) -> &'static str {
+    match error {
+        FedimintApiError::Unreachable(_) => "unreachable",
+        FedimintApiError::Rejected { .. } => "rejected",
+        FedimintApiError::InvalidResponse { .. } => "invalid_response",
+    }
+}
+
 fn seat_verb_error_kind(error: &SeatVerbError) -> &'static str {
     match error {
         SeatVerbError::UnknownSeat => "unknown_seat",
@@ -290,6 +298,12 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
+    /// Whether the child should run with Aleph quiescence on; `None` once the
+    /// fleet's switch is gone.
+    aleph_quiescence: Option<watch::Receiver<bool>>,
+    /// The setting the current child process runs with: off from its start
+    /// until a call succeeds.
+    aleph_quiescence_applied: bool,
 }
 
 enum ProcessSlot {
@@ -419,6 +433,9 @@ pub(crate) struct SeatRuntimeDependencies {
     pub(crate) completion_hooks: CompletionHookWake,
     pub(crate) transfer_wake: crate::transfer_worker::TransferWake,
     pub(crate) process_spawner: SeatProcessSpawner,
+    /// Whether the child should run with Aleph quiescence on
+    /// ([`crate::aleph_quiescence`]).
+    pub(crate) aleph_quiescence: watch::Receiver<bool>,
 }
 
 #[derive(Clone)]
@@ -585,6 +602,7 @@ impl Seat {
             completion_hooks,
             transfer_wake,
             process_spawner,
+            aleph_quiescence,
         } = runtime;
         let facts = Arc::new(facts);
         let data_dir = seat_data_dir(&process, facts.seat_no);
@@ -630,6 +648,8 @@ impl Seat {
                 watchdog_at: None,
                 unresponsive_since: None,
                 backoff: policy.initial_backoff,
+                aleph_quiescence: Some(aleph_quiescence),
+                aleph_quiescence_applied: false,
             };
             tokio::spawn(async move {
                 // Sampling is independent of lifecycle commands, but ends with this seat.
@@ -1072,15 +1092,10 @@ impl SeatLoop {
         let (health, failure_kind) = match result {
             Ok(Ok(())) => (SeatHealth::Healthy, None),
             Err(_) => (SeatHealth::Unavailable, Some("timeout")),
-            Ok(Err(FedimintApiError::Unreachable(_))) => {
-                (SeatHealth::Unavailable, Some("unreachable"))
-            }
-            Ok(Err(FedimintApiError::Rejected { .. })) => {
-                (SeatHealth::Unavailable, Some("rejected"))
-            }
-            Ok(Err(FedimintApiError::InvalidResponse { .. })) => {
-                (SeatHealth::Unavailable, Some("invalid_response"))
-            }
+            Ok(Err(error)) => (
+                SeatHealth::Unavailable,
+                Some(fedimint_api_error_kind(&error)),
+            ),
         };
         let interval = if health == SeatHealth::Healthy {
             HEALTHY_WATCHDOG_INTERVAL
@@ -1091,8 +1106,40 @@ impl SeatLoop {
         self.watchdog_at = Some(tokio::time::Instant::now() + interval);
         if health == SeatHealth::Healthy {
             self.unresponsive_since = None;
+            self.apply_aleph_quiescence().await;
         } else {
             self.restart_if_unresponsive(failure_kind).await;
+        }
+    }
+
+    /// Bring the answering child's Aleph quiescence to the fleet's setting.
+    /// A failed call leaves the child as it was; the next healthy watchdog
+    /// probe or a change of the setting tries again.
+    async fn apply_aleph_quiescence(&mut self) {
+        let Some(switch) = &mut self.aleph_quiescence else {
+            return;
+        };
+        let enabled = *switch.borrow_and_update();
+        if enabled == self.aleph_quiescence_applied {
+            return;
+        }
+        match self.fedimint_api.set_aleph_quiescence(enabled).await {
+            Ok(()) => {
+                self.aleph_quiescence_applied = enabled;
+                tracing::info!(
+                    safe_to_share = true,
+                    seat_id = %self.facts.seat_id,
+                    enabled,
+                    "seat aleph quiescence applied"
+                );
+            }
+            Err(error) => tracing::warn!(
+                safe_to_share = true,
+                seat_id = %self.facts.seat_id,
+                enabled,
+                failure_kind = fedimint_api_error_kind(&error),
+                "seat aleph quiescence not applied"
+            ),
         }
     }
 
@@ -1222,6 +1269,14 @@ impl SeatLoop {
                 _ = async { tokio::time::sleep_until(self.watchdog_at.expect("watchdog deadline is present")).await }, if self.watchdog_at.is_some() => {
                     self.watchdog_at = None;
                     self.watchdog_tick().await;
+                    continue;
+                }
+                changed = async { self.aleph_quiescence.as_mut().expect("switch is present").changed().await }, if self.aleph_quiescence.is_some() => {
+                    if changed.is_err() {
+                        self.aleph_quiescence = None;
+                    } else if self.state.borrow().health == SeatHealth::Healthy {
+                        self.apply_aleph_quiescence().await;
+                    }
                     continue;
                 }
                 command = commands.recv() => command,
@@ -1593,6 +1648,7 @@ impl SeatLoop {
         });
         self.child_started = Some(tokio::time::Instant::now());
         self.unresponsive_since = None;
+        self.aleph_quiescence_applied = false;
         if let Err(error) = self.handle_child_state(state).await {
             // Revalidation or a database read may fail before RunDkg begins.
             // Do not leave that child parked while respawn is scheduled: the

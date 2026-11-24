@@ -41,6 +41,7 @@ fn content(invites: &[&str]) -> String {
             max_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
+            aleph_quiescence: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
         },

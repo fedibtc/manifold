@@ -5817,3 +5817,120 @@ async fn a_later_publication_never_drops_a_seats_payment() {
 }
 #[path = "fleet/callback.rs"]
 mod callback;
+
+/// A feature policy whose `aleph_quiescence` flag is `enabled`.
+fn quiescence_policy(enabled: bool) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
+    let content = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+        "aleph_quiescence": enabled,
+    });
+    fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+        content.to_string().as_bytes(),
+    )
+    .expect("test policy parses")
+    .features()
+    .clone()
+}
+
+async fn quiescence_requests_reach(fake: &FakeSeatChildHandle, count: usize) -> Vec<bool> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let requests = fake.state().aleph_quiescence_requests;
+            if requests.len() >= count {
+                for (_, auth) in &requests {
+                    assert!(
+                        auth.as_deref().is_some_and(|auth| !auth.is_empty()),
+                        "admin auth"
+                    );
+                }
+                return requests.into_iter().map(|(enabled, _)| enabled).collect();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the seat applies the switch")
+}
+
+#[tokio::test]
+async fn seats_follow_the_published_aleph_quiescence_flag_across_restarts() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_290).await;
+    config.respawn.initial_backoff = Duration::from_millis(10);
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::Hello {
+            proto: PROTOCOL_VERSION,
+            code_version: "fake-fedimintd".to_owned(),
+            state: ChildState::AlreadyConfigured {
+                invite_code: invite,
+            },
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (policy, policy_rx) = tokio::sync::watch::channel(None);
+    fleet.bind_aleph_quiescence_policy(policy_rx);
+    let (_, seat_id) = create_free_seat(&fleet, 133).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+
+    // No policy, or one without the flag: a child starts off, so nothing is
+    // sent.
+    seat.watchdog_tick_for_test().await;
+    policy.send_replace(Some(quiescence_policy(false)));
+    seat.watchdog_tick_for_test().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(fake.state().aleph_quiescence_requests.is_empty());
+
+    // Turning it on reaches the healthy child without waiting for a probe,
+    // once.
+    policy.send_replace(Some(quiescence_policy(true)));
+    assert_eq!(quiescence_requests_reach(&fake, 1).await, vec![true]);
+    seat.watchdog_tick_for_test().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fake.state().aleph_quiescence_requests.len(), 1);
+
+    // A child that refuses keeps being asked on later healthy probes.
+    fake.set_consensus_running(false);
+    policy.send_replace(Some(quiescence_policy(false)));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    seat.watchdog_tick_for_test().await;
+    assert_eq!(fake.state().aleph_quiescence_requests.len(), 1);
+    fake.set_consensus_running(true);
+    seat.watchdog_tick_for_test().await;
+    assert_eq!(quiescence_requests_reach(&fake, 2).await, vec![true, false]);
+
+    // A replacement process starts off again, so the seat turns it back on.
+    policy.send_replace(Some(quiescence_policy(true)));
+    assert_eq!(
+        quiescence_requests_reach(&fake, 3).await,
+        vec![true, false, true]
+    );
+    let spawns = spawner.spawn_count();
+    fake.exit(1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while spawner.spawn_count() == spawns {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the exited child is replaced");
+    let replacement = fleet
+        .configure_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    for _ in 0..3 {
+        seat.watchdog_tick_for_test().await;
+        if !replacement.state().aleph_quiescence_requests.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(quiescence_requests_reach(&replacement, 1).await, vec![true]);
+    fleet.shutdown().await;
+}

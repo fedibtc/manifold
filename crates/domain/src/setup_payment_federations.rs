@@ -446,6 +446,14 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_link: Option<bool>,
 
+    /// Whether MGs turn on Aleph quiescence in their seats' fedimintd: a
+    /// guardian creates consensus units only while it has something to order
+    /// ([`mg_core::aleph_quiescence`](../../mg/core/src/aleph_quiescence.rs)).
+    /// Optional on the wire: absent means off. Turning it off reaches every
+    /// running seat without a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aleph_quiescence: Option<bool>,
+
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
     /// running its seats but stops selling new ones until it is updated.
@@ -489,6 +497,7 @@ pub struct AdmittedFeaturePolicy {
     max_pressure_percent: MaxPressurePercent,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
+    aleph_quiescence: bool,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
 }
@@ -710,6 +719,7 @@ impl FeaturePolicy {
             max_pressure_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
+            aleph_quiescence: content.aleph_quiescence.unwrap_or(false),
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
         })
@@ -808,6 +818,13 @@ impl AdmittedFeaturePolicy {
     #[must_use]
     pub fn guardian_link(&self) -> Option<bool> {
         self.guardian_link
+    }
+
+    /// Return whether seats run with Aleph quiescence on; off when the event
+    /// omits the flag.
+    #[must_use]
+    pub fn aleph_quiescence(&self) -> bool {
+        self.aleph_quiescence
     }
 
     /// Return the oldest MG release that may advertise new seats, or `None`

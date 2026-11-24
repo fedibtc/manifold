@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795180262,
-        "narHash": "sha256-0XXd5dmqgTtVQLcmJZ4o3YeFZc6haipBU5WZFaw2mHo=",
+        "lastModified": 1795549587,
+        "narHash": "sha256-FiOLphkvQtbHiSes50h/aos9onG7amaK/ymTXyDPScw=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "15671ec113a28273ccfca84c549a9dcfd03eb67d",
+        "rev": "ecf33873352e277b272c2b49890f5b3023997b3c",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi30",
+        "ref": "roboman/fedi30-aleph-quiescence",
         "repo": "fedimint",
         "type": "github"
       }

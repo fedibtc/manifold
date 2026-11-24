@@ -380,6 +380,9 @@ pub struct Fleet {
     /// The operator's linked phone: offer and evaluator memory
     /// ([`crate::guardian_link`]).
     pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
+    /// Whether seats run their fedimintd with Aleph quiescence on
+    /// ([`crate::aleph_quiescence`]); every seat loop watches it.
+    pub(crate) aleph_quiescence: tokio::sync::watch::Sender<bool>,
     /// This daemon's Iroh endpoint id, bound once the router exists; the link
     /// offer names it so the phone can dial back.
     iroh_endpoint_id: std::sync::OnceLock<String>,
@@ -526,6 +529,7 @@ impl Fleet {
                 .await
                 .context("bind native Fedimint API connectors")?;
         let transfer_wake = crate::transfer_worker::TransferWake::default();
+        let (aleph_quiescence, _) = tokio::sync::watch::channel(false);
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {
@@ -558,6 +562,7 @@ impl Fleet {
                     completion_hooks: completion_hooks.wake_handle(),
                     transfer_wake: transfer_wake.clone(),
                     process_spawner: config.process_spawner.clone(),
+                    aleph_quiescence: aleph_quiescence.subscribe(),
                 },
             );
             map.insert(seat.facts().seat_id.clone(), seat);
@@ -591,6 +596,7 @@ impl Fleet {
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
             guardian_link: Default::default(),
+            aleph_quiescence,
             iroh_endpoint_id: std::sync::OnceLock::new(),
         };
         Ok(fleet)
@@ -1147,6 +1153,7 @@ impl Fleet {
                 completion_hooks: self.completion_hooks.wake_handle(),
                 transfer_wake: self.transfers.wake_handle(),
                 process_spawner: self.config.process_spawner.clone(),
+                aleph_quiescence: self.aleph_quiescence.subscribe(),
             },
         );
         seats.insert(seat.facts().seat_id.clone(), seat.clone());

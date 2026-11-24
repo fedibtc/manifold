@@ -17,6 +17,7 @@
 
 pub mod admin;
 pub mod admin_http;
+pub mod aleph_quiescence;
 pub mod backup;
 pub mod backup_worker;
 pub mod bundled_fedimintd;

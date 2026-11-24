@@ -279,7 +279,13 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
   ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
   Optional: absent means the Manifold environment's default, on in
   development and staging and off in production. Older MGs and FAs that
-  admit unknown fields ignore it; and
+  admit unknown fields ignore it;
+- `aleph_quiescence`, a boolean that turns on Aleph quiescence in the MG's
+  seats: each seat's fedimintd creates consensus units only while it has
+  something to order. Optional: absent means off in every environment. MGs
+  apply a change to their running seats without restarting them, so
+  publishing `false` is the rollback. Older MGs and FAs that admit unknown
+  fields ignore it; and
 - `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
   guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
