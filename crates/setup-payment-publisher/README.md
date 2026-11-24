@@ -127,6 +127,11 @@ GB (10^9 bytes), from 1 to 100,000. Tune it from the fleet's
 `cgroup_block_write_bytes` and `data_filesystem_bytes` in the `cgroup
 resource sample`.
 
+MGs from 0.1.20 on whose data filesystem is btrfs divide by a figure of its
+own, `"seat_disk_gb_btrfs"`, default 160, with the same bounds. Older MGs
+apply `seat_disk_gb` on btrfs too. Compare the fleet's writes per seat within
+one `data_filesystem` kind when tuning either figure.
+
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files. Older consumers

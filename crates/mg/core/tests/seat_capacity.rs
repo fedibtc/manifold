@@ -45,6 +45,49 @@ fn disk_limit_is_whole_per_seat_figures_of_the_filesystem_size() {
 }
 
 #[test]
+fn btrfs_takes_its_own_disk_figure_and_every_other_kind_the_general_one() {
+    let gb = |gb| NonZeroU32::new(gb).unwrap();
+    // What a 2 TB StartOS drive reports as its btrfs size.
+    let filesystem = |kind| DataFilesystem {
+        kind,
+        bytes: 1_974_502_162_432,
+    };
+    assert_eq!(
+        filesystem(FilesystemKind::BTRFS).max_seats(gb(80), gb(160)),
+        12
+    );
+    for kind in [
+        FilesystemKind::Known("ext4"),
+        FilesystemKind::Known("zfs"),
+        FilesystemKind::Other(0x1234_5678),
+        FilesystemKind::Unknown,
+    ] {
+        assert_eq!(filesystem(kind).max_seats(gb(80), gb(160)), 24, "{kind}");
+    }
+}
+
+#[test]
+fn names_filesystems_by_statfs_magic() {
+    assert_eq!(
+        FilesystemKind::from_magic(0x9123_683E),
+        FilesystemKind::BTRFS
+    );
+    assert_eq!(FilesystemKind::from_magic(0x2FC1_2FC1).to_string(), "zfs");
+    assert_eq!(
+        FilesystemKind::from_magic(0x1234_5678).to_string(),
+        "0x12345678"
+    );
+    assert_ne!(
+        FilesystemKind::of(&std::env::temp_dir()),
+        FilesystemKind::Unknown
+    );
+    assert_eq!(
+        FilesystemKind::of(Path::new("/nonexistent/mg-data")),
+        FilesystemKind::Unknown
+    );
+}
+
+#[test]
 fn data_filesystem_size_is_the_whole_filesystem_not_its_free_space() {
     let dir = tempfile::TempDir::new().unwrap();
     let size = data_filesystem_bytes(dir.path()).unwrap();
