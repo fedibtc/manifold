@@ -314,7 +314,8 @@ result warnings into one.
 Records use `tracing_subscriber`'s standard JSON formatter with current-span
 and span-list output disabled.
 MG and each child exclusively own separate directories with 0700 directory
-and 0600 file permissions; a lifetime-held nonblocking writer lock prevents
+permissions. Segment files are 0600 when active; older segments are sealed to
+0400 on reopen. A lifetime-held nonblocking writer lock prevents
 cross-process append and rotation races. After bounded formatting, event
 emitters use nonblocking sends into a fixed 128-record queue; a dedicated OS
 thread owns the appender and all filesystem I/O. A full or disconnected queue,
@@ -348,7 +349,7 @@ operations; regular entries with unexpected types or link counts fail closed.
 Deployment must provide these local-filesystem semantics. Syscall errors fail
 journal initialization, but the process cannot detect a network/FUSE filesystem
 that returns success without honoring them; behavior outside this envelope is
-not detectably safe. Older segments become read-only at reopen, and the writer
+not detectably safe. On reopen, older segments become read-only and the writer
 continues the newest segment. Written bytes are never rewritten or truncated, so
 a served cursor keeps naming the same bytes; the one exception is power loss
 between a write and its sync, which can drop a record a reader already saw and
