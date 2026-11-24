@@ -51,8 +51,6 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   host_pressure_unavailable: 'This host’s CPU, disk and memory pressure could not be read.',
   host_pressure_measuring: 'Measuring. The first figures arrive a minute after the host starts.',
   ordering_latency_high: 'Too slow over the last 6 hours.',
-  ordering_latency_measuring:
-    'Measuring. The first figure arrives a few minutes after a guardian starts running.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
   uptime_30d_low: 'This host was offline too much recently.'
@@ -61,7 +59,8 @@ export const outcomes: Record<ReadinessOutcome, string> = {
 /** What a check that does not apply means for that check. */
 const notApplicable: Partial<Record<ReadinessCheck, string>> = {
   version: 'No minimum set.',
-  ordering_latency: 'No guardian is running yet.'
+  ordering_latency:
+    'No figure yet. One arrives within about 20 minutes of a guardian taking part in consensus.'
 };
 
 /** The host-facing words for one check's outcome. */

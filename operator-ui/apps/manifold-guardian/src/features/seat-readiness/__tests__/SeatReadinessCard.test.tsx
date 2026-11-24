@@ -2,6 +2,7 @@ import type { ReadinessReport } from '@operator-ui/types';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
+  describeOutcome,
   guidance,
   labels,
   orderingLatencyGuidance,
@@ -46,7 +47,7 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not checked in this deployment.')).toBeTruthy();
     // No published minimum is said as such, not as a check that is off.
     expect(screen.getByText('No minimum set.')).toBeTruthy();
-    expect(screen.getByText('No guardian is running yet.')).toBeTruthy();
+    expect(screen.getByText(describeOutcome('ordering_latency', 'not_applicable'))).toBeTruthy();
     expect(screen.getByText(/Last checked 2026-10-01 12:34 UTC/)).toBeTruthy();
   });
 
@@ -246,21 +247,23 @@ describe('SeatReadinessCard', () => {
     expect(screen.queryByText(orderingLatencyGuidance, { exact: false })).toBeNull();
   });
 
-  it('should say the consensus speed is still measuring, without guidance', () => {
+  it('should say the consensus speed has no figure yet, without closing the host', () => {
     render(
       <SeatReadinessCard
         readiness={{
-          ready_for_new_seats: false,
+          ready_for_new_seats: true,
           report: report({
-            ordering_latency: 'ordering_latency_measuring',
+            ordering_latency: 'not_applicable',
+            ordering_latency_6h_ms: null,
             max_ordering_latency_6h_ms: 5000
           })
         }}
       />
     );
 
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
     expect(screen.getByText(labels.ordering_latency)).toBeTruthy();
-    expect(screen.getByText(outcomes.ordering_latency_measuring)).toBeTruthy();
+    expect(screen.getByText(describeOutcome('ordering_latency', 'not_applicable'))).toBeTruthy();
     expect(screen.queryByText(orderingLatencyGuidance, { exact: false })).toBeNull();
     expect(screen.queryAllByRole('meter')).toHaveLength(0);
   });

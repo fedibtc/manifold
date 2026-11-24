@@ -2096,8 +2096,8 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     fleet.shutdown().await;
 }
 
-/// The ordering latency check: without running seats it does not apply;
-/// running seats fail it until an interval is measured; the median seat
+/// The ordering latency check: it does not apply without running seats, nor
+/// to running seats until one orders items over an interval; the median seat
 /// decides, so one slow seat does not close the MG; a slow median closes it
 /// to new seats while every slot stays up; and the average survives a
 /// restart, which leaves the seats' baselines to start again.
@@ -2105,7 +2105,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
 async fn the_ordering_latency_check_closes_new_seats_without_costing_uptime() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use ReadinessOutcome::{NotApplicable, OrderingLatencyHigh, OrderingLatencyMeasuring, Pass};
+    use ReadinessOutcome::{NotApplicable, OrderingLatencyHigh, Pass};
 
     use crate::host_pressure::PressureTotals;
     use crate::ordering_latency::MAX_ORDERING_LATENCY_MS;
@@ -2221,21 +2221,21 @@ async fn the_ordering_latency_check_closes_new_seats_without_costing_uptime() {
     );
     assert!(idle.ready());
 
-    // Running seats with no history fail until an interval is measured.
-    let first = run_once(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]).await;
-    assert_eq!(
-        (
-            first.ordering_latency,
-            first.ordering_latency_6h_ms,
-            first.max_ordering_latency_6h_ms
-        ),
-        (
-            OrderingLatencyMeasuring,
-            None,
-            Some(MAX_ORDERING_LATENCY_MS)
-        )
-    );
-    assert!(!first.ready());
+    // Running seats with no history: their first readings are baselines,
+    // and seats whose federations order nothing never give an interval.
+    // Neither closes the MG.
+    for _ in 0..2 {
+        let unmeasured = run_once(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]).await;
+        assert_eq!(
+            (
+                unmeasured.ordering_latency,
+                unmeasured.ordering_latency_6h_ms,
+                unmeasured.max_ordering_latency_6h_ms
+            ),
+            (NotApplicable, None, Some(MAX_ORDERING_LATENCY_MS))
+        );
+        assert!(unmeasured.ready());
+    }
 
     // Two seats at 1 s and one at 40 s: the median, 1 s, passes.
     let healthy = run_once(&[(1, 10.0, 10.0), (2, 10.0, 10.0), (3, 400.0, 10.0)]).await;

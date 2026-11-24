@@ -147,7 +147,8 @@ fn a_seat_without_items_or_metrics_says_nothing() {
 
 /// One seat in a slow federation does not move the run's value: the median
 /// of 1 s, 1 s and 40 s is 1 s, where the mean would be 14 s. An even number
-/// of seats takes the middle two's mean.
+/// of seats takes the lower middle one: of 40 s and 1 s it is 1 s, where the
+/// mean of the two is 20.5 s, and of 40 s, 1 s, 30 s and 2 s it is 2 s.
 #[test]
 fn the_run_takes_the_median_seat() {
     let mut baselines = SeatBaselines::default();
@@ -173,7 +174,20 @@ fn the_run_takes_the_median_seat() {
     };
     baselines.interval_median(&two([0.0, 0.0], 0.0));
     assert_eq!(
-        baselines.interval_median(&two([10.0, 30.0], 10.0)),
+        baselines.interval_median(&two([400.0, 10.0], 10.0)),
+        Some(1.0)
+    );
+    let mut baselines = SeatBaselines::default();
+    let four = |sums: [f64; 4], count: f64| {
+        [1, 2, 3, 4]
+            .into_iter()
+            .zip(sums)
+            .map(|(byte, sum)| (seat(byte), Some(totals(sum, count))))
+            .collect::<Vec<_>>()
+    };
+    baselines.interval_median(&four([0.0; 4], 0.0));
+    assert_eq!(
+        baselines.interval_median(&four([400.0, 10.0, 300.0, 20.0], 10.0)),
         Some(2.0)
     );
 }
@@ -287,19 +301,23 @@ fn an_interval_that_says_nothing_leaves_the_average() {
     );
 }
 
-/// Without running seats the check does not apply; with them it fails
-/// until an interval is measured, and when the history cannot be stored.
+/// The check applies only to an average: not without running seats, not
+/// before an interval is measured, and not when the history cannot be
+/// stored. A slow average fails it.
 #[test]
-fn the_check_applies_only_to_running_seats_and_fails_while_measuring() {
+fn the_check_applies_only_to_a_measured_average() {
     assert_eq!(outcome(None), (ReadinessOutcome::NotApplicable, None));
     assert_eq!(
-        outcome(Some(Ok(steady(1.0, 0)))),
-        (ReadinessOutcome::OrderingLatencyMeasuring, None)
+        outcome(Some(Ok(steady(40.0, 0)))),
+        (ReadinessOutcome::NotApplicable, None)
     );
     assert_eq!(
         outcome(Some(Err(anyhow::anyhow!("database is locked")))),
-        (ReadinessOutcome::OrderingLatencyMeasuring, None)
+        (ReadinessOutcome::NotApplicable, None)
     );
-    assert!(!ReadinessOutcome::OrderingLatencyMeasuring.passed());
+    assert_eq!(
+        outcome(Some(Ok(steady(40.0, 1)))),
+        (ReadinessOutcome::OrderingLatencyHigh, Some(40_000))
+    );
     assert!(!ReadinessOutcome::OrderingLatencyHigh.passed());
 }

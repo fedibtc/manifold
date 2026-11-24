@@ -58,9 +58,6 @@ pub enum ReadinessOutcome {
     /// The 6-hour average time this MG's seats take to order their own
     /// consensus items is over the 5-second maximum.
     OrderingLatencyHigh,
-    /// Seats are running but no ordering latency interval has been measured
-    /// yet: an MG measures one before it sells.
-    OrderingLatencyMeasuring,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -94,7 +91,6 @@ impl ReadinessOutcome {
             Self::HostPressureUnavailable => "host_pressure_unavailable",
             Self::HostPressureMeasuring => "host_pressure_measuring",
             Self::OrderingLatencyHigh => "ordering_latency_high",
-            Self::OrderingLatencyMeasuring => "ordering_latency_measuring",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -980,21 +976,25 @@ mod tests {
         };
         assert!(too_old.prerequisites_passed());
         assert!(!too_old.ready());
-        // Slow ordering, or none measured yet, closes the gate the same way.
-        for ordering_latency in [
-            ReadinessOutcome::OrderingLatencyHigh,
-            ReadinessOutcome::OrderingLatencyMeasuring,
-        ] {
-            let slow = ReadinessReport {
-                version: ReadinessOutcome::Pass,
-                ordering_latency,
-                ordering_latency_6h_ms: Some(20_800),
-                max_ordering_latency_6h_ms: Some(5_000),
-                ..too_old
-            };
-            assert!(slow.prerequisites_passed());
-            assert!(!slow.ready());
-        }
+        // Slow ordering closes the gate the same way.
+        let slow = ReadinessReport {
+            version: ReadinessOutcome::Pass,
+            ordering_latency: ReadinessOutcome::OrderingLatencyHigh,
+            ordering_latency_6h_ms: Some(20_800),
+            max_ordering_latency_6h_ms: Some(5_000),
+            ..too_old
+        };
+        assert!(slow.prerequisites_passed());
+        assert!(!slow.ready());
+        // Running seats with no average yet leave it open.
+        assert!(
+            ReadinessReport {
+                ordering_latency: ReadinessOutcome::NotApplicable,
+                ordering_latency_6h_ms: None,
+                ..slow
+            }
+            .ready()
+        );
         assert!(
             ReadinessReport {
                 version: ReadinessOutcome::Pass,

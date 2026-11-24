@@ -217,18 +217,21 @@ port of every seat whose child is running. A seat's mean is the sum added
 over the count added since its previous reading by this daemon process; a
 seat that ordered nothing, could not be read, or whose counters went
 backwards, as a restarted child's do, gives none and its reading becomes its
-new baseline. The run's value is the median of the seats' means, so one seat
-in a slow federation does not close the MG, while a slow host is slow in all
-of them. The run folds that value into a bias-corrected exponential moving
+new baseline. The run's value is the median of the seats' means, the lower
+middle one for an even count, so one seat in a slow federation does not
+close the MG, while a slow host is slow in all of them. The run folds that value into a bias-corrected exponential moving
 average with a 6-hour time constant exactly as it folds a pressure share,
 with the same rules for an interval that says nothing, which includes a run
 with no seat mean; the comparison is in whole milliseconds, and an average
 equal to the bound passes (`ordering_latency_high` otherwise). The average,
 its weight and the last reading time are durable, so a restart keeps the
 average while each seat's baseline, held only in memory, starts again. The
-check does not apply while no seat is running, and it fails while running
-seats have no average yet (`ordering_latency_measuring`), so an MG measures
-before it sells; a history that cannot be stored fails it the same way.
+check applies only to an average: it does not apply while no seat is
+running, before running seats have measured an interval, or when the history
+cannot be stored. A seat whose federation orders nothing never measures one,
+so failing without an average could close an MG for good; an MG that starts
+selling before its first average can sell for one interval longer than it
+should.
 Like the pressure check it is not a prerequisite and never marks a slot
 down, and local E2E skips it with the pressure check.
 

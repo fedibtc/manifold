@@ -8,8 +8,9 @@
 //! its items late, whatever the cause of the slowness, so its federations go
 //! ahead without it. Each run takes, per running seat, the mean latency of
 //! the items ordered since that seat's previous reading in this process, and
-//! the median over seats: one seat in a slow federation does not close the
-//! MG, while a slow host is slow in all of them. It folds that median into a
+//! the median over seats, the lower middle one for an even count: one seat in
+//! a slow federation does not close the MG, while a slow host is slow in all
+//! of them. It folds that median into a
 //! bias-corrected, time-weighted exponential moving average exactly as the
 //! pressure averages do ([`crate::host_pressure`]).
 
@@ -104,15 +105,11 @@ fn interval_mean(earlier: OrderingTotals, later: OrderingTotals) -> Option<f64> 
     (count > 0.0 && sum >= 0.0).then(|| sum / count)
 }
 
-/// The median of `values`, the mean of the middle two for an even count.
+/// The median of `values`, the lower of the middle two for an even count,
+/// so that one slow seat of two does not close an MG either.
 fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
-    let middle = values.len() / 2;
-    match values.len() {
-        0 => None,
-        len if len % 2 == 1 => Some(values[middle]),
-        _ => Some((values[middle - 1] + values[middle]) / 2.0),
-    }
+    values.get(values.len().checked_sub(1)? / 2).copied()
 }
 
 /// Each running seat's last reading in this process. A seat's first reading
@@ -219,10 +216,12 @@ impl OrderingLatencyState {
 }
 
 /// The ordering latency check for one run, from whether any seat is running
-/// and, when one is, recording the run (the history after it). Without
-/// running seats the check does not apply. A history that cannot be stored,
-/// or no interval measured yet, fails the check as still measuring. Returns
-/// the outcome and the average to report, in milliseconds.
+/// and, when one is, recording the run (the history after it). The check
+/// applies only to an average: without running seats, before an interval is
+/// measured, or when the history cannot be stored, it does not apply. A seat
+/// whose federation orders nothing never yields an interval, so failing
+/// without one could close the MG for good. Returns the outcome and the
+/// average to report, in milliseconds.
 pub fn outcome(
     recorded: Option<anyhow::Result<OrderingLatencyState>>,
 ) -> (ReadinessOutcome, Option<u32>) {
@@ -234,7 +233,7 @@ pub fn outcome(
         .and_then(|state| state.average)
         .map(OrderingLatencyAverage::millis)
     {
-        None => (ReadinessOutcome::OrderingLatencyMeasuring, None),
+        None => (ReadinessOutcome::NotApplicable, None),
         Some(millis) if millis > MAX_ORDERING_LATENCY_MS => {
             (ReadinessOutcome::OrderingLatencyHigh, Some(millis))
         }
