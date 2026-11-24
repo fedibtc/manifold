@@ -1929,7 +1929,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"15671ec113a28273ccfca84c549a9dcfd03eb67d\"")
+                && line.contains("version_hash=\"cd18d6eae9cbabc9a21beef9f375e8c6fb749777\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
