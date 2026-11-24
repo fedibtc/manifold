@@ -1671,8 +1671,40 @@ fn readiness(ready: bool) -> ReadinessReport {
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
         max_host_pressure: None,
+        ordering_latency: ReadinessOutcome::NotApplicable,
+        ordering_latency_6h_ms: None,
+        max_ordering_latency_6h_ms: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
+    }
+}
+
+/// The ordering latency readings of the running seats, as a test sets them
+/// before each run.
+#[derive(Clone, Default)]
+struct SeatReadings(Arc<std::sync::Mutex<Vec<SeatReading>>>);
+
+type SeatReading = (SeatId, Option<crate::ordering_latency::OrderingTotals>);
+
+impl SeatReadings {
+    /// Running seats with these cumulative `(sum seconds, count)` totals.
+    fn set(&self, totals: &[(u8, f64, f64)]) {
+        *self.0.lock().unwrap() = totals
+            .iter()
+            .map(|&(byte, sum_secs, count)| {
+                (
+                    SeatId::new(hex::encode([byte; 32])).unwrap(),
+                    Some(crate::ordering_latency::OrderingTotals { sum_secs, count }),
+                )
+            })
+            .collect();
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::seat_readiness::OrderingLatencySource for SeatReadings {
+    async fn read(&mut self) -> Vec<SeatReading> {
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -1962,6 +1994,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         policies,
         clock,
         Some(read_pressure),
+        None::<SeatReadings>,
     ));
 
     let this = env!("CARGO_PKG_VERSION");
@@ -2063,6 +2096,187 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     fleet.shutdown().await;
 }
 
+/// The ordering latency check: without running seats it does not apply;
+/// running seats fail it until an interval is measured; the median seat
+/// decides, so one slow seat does not close the MG; a slow median closes it
+/// to new seats while every slot stays up; and the average survives a
+/// restart, which leaves the seats' baselines to start again.
+#[tokio::test]
+async fn the_ordering_latency_check_closes_new_seats_without_costing_uptime() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use ReadinessOutcome::{NotApplicable, OrderingLatencyHigh, OrderingLatencyMeasuring, Pass};
+
+    use crate::host_pressure::PressureTotals;
+    use crate::ordering_latency::MAX_ORDERING_LATENCY_MS;
+    use crate::seat_readiness::{ReadinessProbe, run};
+
+    /// Passing prerequisites, one run per step, each in the next slot.
+    struct SteppedProbe {
+        slot: Arc<AtomicU64>,
+        steps: tokio::sync::mpsc::Receiver<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for SteppedProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            if self.steps.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
+            ReadinessReport {
+                checked_at_ms: self.slot.fetch_add(1, Ordering::SeqCst) + 1,
+                ..readiness(true)
+            }
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 2, 31_700).await;
+    let open = || async {
+        let fleet = Arc::new(
+            open_fleet(config.clone(), Arc::new(NoWallet))
+                .await
+                .unwrap(),
+        );
+        fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+        fleet
+    };
+    let slot = Arc::new(AtomicU64::new(3_000_000));
+    let clock = {
+        let slot = slot.clone();
+        move || {
+            std::time::UNIX_EPOCH
+                + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
+        }
+    };
+    let readings = SeatReadings::default();
+    let start = |fleet: Arc<Fleet>| {
+        let (step, steps) = tokio::sync::mpsc::channel(1);
+        let (publish, policies) = tokio::sync::watch::channel(None);
+        let worker = tokio::spawn(run(
+            SteppedProbe {
+                slot: slot.clone(),
+                steps,
+            },
+            fleet,
+            policies,
+            clock.clone(),
+            None::<fn() -> anyhow::Result<PressureTotals>>,
+            Some(readings.clone()),
+        ));
+        ((step, publish), worker)
+    };
+    /// Let one run go and return its report once its verdict is stored.
+    async fn step(
+        fleet: &Fleet,
+        (step, publish): &(
+            tokio::sync::mpsc::Sender<()>,
+            tokio::sync::watch::Sender<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>>,
+        ),
+        slot: &AtomicU64,
+    ) -> ReadinessReport {
+        let checked = slot.load(Ordering::SeqCst) + 1;
+        // A policy change ends the worker's wait for the next slot.
+        publish.send_replace(None);
+        step.send(()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(report) = fleet.seat_readiness()
+                    && report.checked_at_ms == checked
+                    && fleet.ready_for_new_seats().await == report.ready()
+                {
+                    break report;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run's verdict is stored")
+    }
+
+    let fleet = open().await;
+    let (stepper, worker) = start(fleet.clone());
+    let mut day = fleet.uptime().await.unwrap().day;
+    let mut run_once = async |totals: &[(u8, f64, f64)]| {
+        readings.set(totals);
+        let report = step(&fleet, &stepper, &slot).await;
+        // Every run's slot is up, whatever the ordering latency check says.
+        assert!(report.prerequisites_passed());
+        let after = fleet.uptime().await.unwrap().day;
+        assert!(after > day, "{after} after {day}");
+        day = after;
+        assert_eq!(fleet.ready_for_new_seats().await, report.ready());
+        report
+    };
+
+    // No running seat: nothing to measure.
+    let idle = run_once(&[]).await;
+    assert_eq!(
+        (
+            idle.ordering_latency,
+            idle.ordering_latency_6h_ms,
+            idle.max_ordering_latency_6h_ms
+        ),
+        (NotApplicable, None, None)
+    );
+    assert!(idle.ready());
+
+    // Running seats with no history fail until an interval is measured.
+    let first = run_once(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]).await;
+    assert_eq!(
+        (
+            first.ordering_latency,
+            first.ordering_latency_6h_ms,
+            first.max_ordering_latency_6h_ms
+        ),
+        (
+            OrderingLatencyMeasuring,
+            None,
+            Some(MAX_ORDERING_LATENCY_MS)
+        )
+    );
+    assert!(!first.ready());
+
+    // Two seats at 1 s and one at 40 s: the median, 1 s, passes.
+    let healthy = run_once(&[(1, 10.0, 10.0), (2, 10.0, 10.0), (3, 400.0, 10.0)]).await;
+    assert_eq!(
+        (healthy.ordering_latency, healthy.ordering_latency_6h_ms),
+        (Pass, Some(1000))
+    );
+    assert!(healthy.ready());
+
+    // Every seat at 40 s for the next 10 minutes. The two equal intervals
+    // weigh 1 and 1 - g against each other, g = 1 - e^(-10 min / 6 h):
+    // 1 s + 39 s / (2 - g), about 20.8 s.
+    let slow = run_once(&[(1, 410.0, 20.0), (2, 410.0, 20.0), (3, 800.0, 20.0)]).await;
+    let gain = 1.0 - (-(UPTIME_SLOT_SECS as f64) / (6.0 * 3600.0)).exp();
+    let expected = ((1.0 + 39.0 / (2.0 - gain)) * 1000.0).round() as u32;
+    assert_eq!(
+        (slow.ordering_latency, slow.ordering_latency_6h_ms),
+        (OrderingLatencyHigh, Some(expected))
+    );
+    assert!(!slow.ready());
+    assert!(!fleet.ready_for_new_seats().await);
+    worker.abort();
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // After a restart the seats' first readings are baselines again, and the
+    // stored average decides.
+    let fleet = open().await;
+    let (stepper, worker) = start(fleet.clone());
+    readings.set(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]);
+    let restarted = step(&fleet, &stepper, &slot).await;
+    assert_eq!(
+        (restarted.ordering_latency, restarted.ordering_latency_6h_ms),
+        (OrderingLatencyHigh, Some(expected))
+    );
+    assert!(restarted.prerequisites_passed());
+    assert!(!fleet.ready_for_new_seats().await);
+    worker.abort();
+    fleet.shutdown().await;
+}
+
 /// The pressure history is durable: a restart keeps the averages and the
 /// last reading, so the interval across a quick restart is measured; a
 /// cgroup recreated by the restart starts its counters again, which leaves
@@ -2111,6 +2325,7 @@ async fn the_pressure_history_survives_restart() {
             policies,
             move || now,
             Some(move || reading.lock().unwrap().take().expect("one run reads once")),
+            None::<SeatReadings>,
         ));
         let report = tokio::time::timeout(Duration::from_secs(10), async {
             loop {

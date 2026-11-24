@@ -205,6 +205,33 @@ it is not a prerequisite and never marks a slot down. Local E2E, whose MGs
 all share one busy test host's cgroup, skips the pressure check as it skips
 the relay and discovery checks.
 
+Each run also requires the time this MG's seats take to order their own
+consensus items to average at most 5 seconds over 6 hours, a fixed bound
+that healthy MGs, at 1-2 seconds, stay well under. Pressure counts only the
+waits of this MG's tasks, so it misses a disk made slow by other software on
+the host; ordering latency measures what a slow host costs its federations,
+whose consensus goes ahead without a guardian whose items arrive late. Each
+run reads `fedimintd`'s `fm_consensus_ordering_latency_seconds` histogram,
+its `_sum` and `_count` added over label sets, from the loopback metrics
+port of every seat whose child is running. A seat's mean is the sum added
+over the count added since its previous reading by this daemon process; a
+seat that ordered nothing, could not be read, or whose counters went
+backwards, as a restarted child's do, gives none and its reading becomes its
+new baseline. The run's value is the median of the seats' means, so one seat
+in a slow federation does not close the MG, while a slow host is slow in all
+of them. The run folds that value into a bias-corrected exponential moving
+average with a 6-hour time constant exactly as it folds a pressure share,
+with the same rules for an interval that says nothing, which includes a run
+with no seat mean; the comparison is in whole milliseconds, and an average
+equal to the bound passes (`ordering_latency_high` otherwise). The average,
+its weight and the last reading time are durable, so a restart keeps the
+average while each seat's baseline, held only in memory, starts again. The
+check does not apply while no seat is running, and it fails while running
+seats have no average yet (`ordering_latency_measuring`), so an MG measures
+before it sells; a history that cannot be stored fails it the same way.
+Like the pressure check it is not a prerequisite and never marks a slot
+down, and local E2E skips it with the pressure check.
+
 Each run also requires three uptime scores of at least the feature
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
@@ -233,7 +260,8 @@ FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
 fixed code per check, the three uptime scores, the minimums they were held to,
-and the pressure averages and thresholds for telemetry, and the latest report is served to the
+the pressure averages and thresholds, and the ordering latency average and
+bound for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

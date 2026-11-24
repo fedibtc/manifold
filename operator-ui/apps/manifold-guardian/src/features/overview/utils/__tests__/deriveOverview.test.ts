@@ -167,6 +167,9 @@ const failingReport = {
     io: { '6h': 250, '3.5d': 150 },
     memory: { '6h': 700, '3.5d': 700 }
   },
+  ordering_latency: 'ordering_latency_high',
+  ordering_latency_6h_ms: 6200,
+  max_ordering_latency_6h_ms: 5000,
   uptime: 'pass',
   uptime_comparison: null
 } as const;
@@ -182,7 +185,7 @@ it('should send the operator to Health when a readiness check fails, naming only
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
       detail:
-        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU, disk and memory pressure. Open Health for what to check.',
+        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU, disk and memory pressure, Consensus speed. Open Health for what to check.',
       path: '/health'
     }
   ]);
@@ -204,6 +207,9 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     pressure: 'pass',
     host_pressure: null,
     max_host_pressure: null,
+    ordering_latency: 'not_applicable',
+    ordering_latency_6h_ms: null,
+    max_ordering_latency_6h_ms: null,
     uptime: 'pass',
     uptime_comparison: null
   } as const;

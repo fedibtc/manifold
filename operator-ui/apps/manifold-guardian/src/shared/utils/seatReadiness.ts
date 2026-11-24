@@ -6,7 +6,14 @@ import type {
 } from '@operator-ui/types';
 
 /** The checks one daemon readiness run makes, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'version' | 'pressure' | 'uptime';
+export type ReadinessCheck =
+  | 'relay'
+  | 'discovery'
+  | 'bitcoin'
+  | 'version'
+  | 'pressure'
+  | 'ordering_latency'
+  | 'uptime';
 
 export const CHECKS: readonly ReadinessCheck[] = [
   'relay',
@@ -14,6 +21,7 @@ export const CHECKS: readonly ReadinessCheck[] = [
   'bitcoin',
   'version',
   'pressure',
+  'ordering_latency',
   'uptime'
 ];
 
@@ -23,6 +31,7 @@ export const labels: Record<ReadinessCheck, string> = {
   bitcoin: 'Bitcoin backend',
   version: 'Software version',
   pressure: 'CPU, disk and memory pressure',
+  ordering_latency: 'Consensus speed',
   uptime: 'Uptime'
 };
 
@@ -41,6 +50,9 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   host_pressure_3_5d_high: 'Too busy over the last 3.5 days.',
   host_pressure_unavailable: 'This host’s CPU, disk and memory pressure could not be read.',
   host_pressure_measuring: 'Measuring. The first figures arrive a minute after the host starts.',
+  ordering_latency_high: 'Too slow over the last 6 hours.',
+  ordering_latency_measuring:
+    'Measuring. The first figure arrives a few minutes after a guardian starts running.',
   uptime_1d_low: 'This host was offline too much recently.',
   uptime_7d_low: 'This host was offline too much recently.',
   uptime_30d_low: 'This host was offline too much recently.'
@@ -48,17 +60,19 @@ export const outcomes: Record<ReadinessOutcome, string> = {
 
 /** What a check that does not apply means for that check. */
 const notApplicable: Partial<Record<ReadinessCheck, string>> = {
-  version: 'No minimum set.'
+  version: 'No minimum set.',
+  ordering_latency: 'No guardian is running yet.'
 };
 
 /** The host-facing words for one check's outcome. */
 export const describeOutcome = (check: ReadinessCheck, outcome: ReadinessOutcome): string =>
   (outcome === 'not_applicable' && notApplicable[check]) || outcomes[outcome];
 
-/** What to do about a failing check, shown under it. The version check, and a pressure average
- * over its maximum, have a one-line outcome like the others; what to do about them is in the
- * not-ready banner ({@link updateGuidance}, {@link pressureGuidance}). */
-export const guidance: Record<Exclude<ReadinessCheck, 'version'>, string> = {
+/** What to do about a failing check, shown under it. The version and consensus speed checks, and
+ * a pressure average over its maximum, have a one-line outcome like the others; what to do about
+ * them is in the not-ready banner ({@link updateGuidance}, {@link pressureGuidance},
+ * {@link orderingLatencyGuidance}). */
+export const guidance: Record<Exclude<ReadinessCheck, 'version' | 'ordering_latency'>, string> = {
   relay:
     'Check that this host can hold long-lived outbound connections to the relay. No inbound port is needed.',
   discovery:
@@ -75,6 +89,9 @@ export const updateGuidance =
 
 export const pressureGuidance =
   'This host has been too busy for more seats: its tasks spent too long waiting for CPU, disk or memory. Move other work off it, or add CPU, memory or faster disks; this does not count against uptime.';
+
+export const orderingLatencyGuidance =
+  'This host’s guardians have been slow to get their own consensus items ordered, which costs their federations margin. A slow or busy disk is the usual cause, often from other software on this host. Move disk-heavy work off it, or use a faster disk; this does not count against uptime.';
 
 /** Whether a pressure outcome is an average over its maximum, rather than missing figures. */
 export const pressureHigh = (outcome: ReadinessOutcome | undefined): boolean =>
@@ -101,6 +118,12 @@ export const uptimeLabels: Record<keyof UptimePermille, string> = {
 
 /** A per-mille figure as the percent the gate compares, e.g. 899 → "89.9%". */
 export const formatPermille = (permille: number): string => `${(permille / 10).toFixed(1)}%`;
+
+/** A millisecond figure as seconds, e.g. 6200 → "6.2 s". */
+export const formatMillis = (millis: number): string => `${(millis / 1000).toFixed(1)} s`;
+
+/** The consensus speed figure the gate compares. */
+export const orderingLatencyLabel = 'Ordering time, 6-hour average';
 
 /** The pressure resources the gate compares, as the operator reads them. */
 export const PRESSURE_RESOURCES = ['cpu', 'io', 'memory'] as const;

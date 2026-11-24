@@ -151,6 +151,10 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                             three_and_a_half_days: 650,
                         },
                     }),
+                    // 6.2 s, above the 5 s maximum.
+                    ordering_latency: ReadinessOutcome::OrderingLatencyHigh,
+                    ordering_latency_6h_ms: Some(6_200),
+                    max_ordering_latency_6h_ms: Some(5_000),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {
