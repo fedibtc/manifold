@@ -33,6 +33,7 @@ pub mod host_pressure;
 pub mod identity;
 pub mod legacy_layout;
 pub mod onboarding;
+pub mod ordering_latency;
 pub mod payout_wire;
 pub mod push_callback;
 pub mod remittance_metadata;

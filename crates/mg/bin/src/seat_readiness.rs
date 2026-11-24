@@ -3,13 +3,15 @@
 //! An MG that can advertise and sell a seat but cannot reach its relay,
 //! be discovered, or use its Bitcoin backend becomes the cause of a failed
 //! DKG. This module probes those prerequisites against the endpoint and the
-//! Bitcoin backend; [`mg_core::seat_readiness::run`] turns each probe into a
-//! verdict for the fleet and a shareable telemetry event.
+//! Bitcoin backend, and reads its running seats' consensus ordering latency
+//! from their loopback metrics ports; [`mg_core::seat_readiness::run`] turns
+//! each probe into a verdict for the fleet and a shareable telemetry event.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::AdmittedFeaturePolicy;
+use fedi_decentralized_service_manifold_guardian::{MAX_GUARDIAN_METRICS_BODY_BYTES, SeatId};
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_bitcoin_rpc::bitcoind::BitcoindClient;
@@ -21,9 +23,11 @@ use iroh::address_lookup::{
 };
 use iroh::{Endpoint, RelayUrl, Watcher as _};
 use mg_core::fleet::Fleet;
+use mg_core::ordering_latency::OrderingTotals;
 use mg_core::seat_process::{BitcoinBackend, SeatProcessConfig};
 use mg_core::seat_readiness::{
-    self, ReadinessOutcome as Outcome, ReadinessProbe, ReadinessReport as Report,
+    self, OrderingLatencySource, ReadinessOutcome as Outcome, ReadinessProbe,
+    ReadinessReport as Report,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -33,6 +37,7 @@ use tokio::time::Instant;
 const RETRY_BUDGET: Duration = Duration::from_secs(60);
 const RETRY_DELAY: Duration = Duration::from_secs(10);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+const METRICS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) struct SeatReadiness {
     endpoint: Endpoint,
@@ -45,6 +50,9 @@ pub(super) struct SeatReadiness {
     /// it rather than starting another, so a stalled backend holds at most
     /// one thread.
     stalled_bitcoin: Option<tokio::task::JoinHandle<Outcome>>,
+    /// The client that reads the seats' loopback metrics; `None` in local
+    /// E2E, which skips the ordering latency check.
+    seat_metrics: Option<reqwest::Client>,
 }
 
 impl SeatReadiness {
@@ -64,19 +72,37 @@ impl SeatReadiness {
                 Box::new(DnsAddressLookup::n0_dns().into_address_lookup(&endpoint)?),
             ])
         };
+        // Every MG in a local end-to-end test runs on one busy host, so its
+        // seats' ordering latency says nothing about any one MG.
+        let seat_metrics = if local_e2e {
+            None
+        } else {
+            // Plain-HTTP loopback only, as the telemetry proxy reads the same
+            // ports: no redirects, so a seat cannot point the daemon
+            // elsewhere, and no TLS roots it can never need.
+            Some(
+                reqwest::Client::builder()
+                    .connect_timeout(METRICS_CONNECT_TIMEOUT)
+                    .timeout(CHECK_TIMEOUT)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .tls_built_in_root_certs(false)
+                    .build()?,
+            )
+        };
         Ok(Self {
             endpoint,
             discovery,
             bitcoin_backend: process.bitcoin_backend.clone(),
             network: process.bitcoin_network,
             stalled_bitcoin: None,
+            seat_metrics,
         })
     }
 
     /// Run the readiness worker on this MG's probes until aborted
     /// ([`mg_core::seat_readiness::run`]).
     pub(super) fn spawn(
-        self,
+        mut self,
         fleet: Arc<Fleet>,
         feature_policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     ) -> tokio::task::JoinHandle<()> {
@@ -86,12 +112,17 @@ impl SeatReadiness {
             .discovery
             .is_some()
             .then_some(mg_core::host_pressure::read_cgroup_pressure);
+        let ordering_latency = self.seat_metrics.take().map(|http| SeatOrderingLatency {
+            fleet: fleet.clone(),
+            http,
+        });
         tokio::spawn(seat_readiness::run(
             self,
             fleet,
             feature_policy,
             SystemTime::now,
             read_pressure,
+            ordering_latency,
         ))
     }
 
@@ -127,6 +158,9 @@ impl SeatReadiness {
             pressure: Outcome::NotApplicable,
             host_pressure: None,
             max_host_pressure: None,
+            ordering_latency: Outcome::NotApplicable,
+            ordering_latency_6h_ms: None,
+            max_ordering_latency_6h_ms: None,
             uptime: Outcome::NotApplicable,
             uptime_comparison: None,
         }
@@ -183,6 +217,51 @@ impl ReadinessProbe for SeatReadiness {
         }
         report
     }
+}
+
+/// Reads each running seat's ordering latency counters from the fedimintd
+/// metrics endpoint the seat binds on loopback.
+struct SeatOrderingLatency {
+    fleet: Arc<Fleet>,
+    http: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl OrderingLatencySource for SeatOrderingLatency {
+    async fn read(&mut self) -> Vec<(SeatId, Option<OrderingTotals>)> {
+        let http = &self.http;
+        futures::future::join_all(
+            self.fleet
+                .running_seat_metrics_ports()
+                .await
+                .into_iter()
+                .map(|(seat_id, port)| async move {
+                    (seat_id, read_ordering_totals(http, port).await)
+                }),
+        )
+        .await
+    }
+}
+
+/// The ordering latency totals in the metrics a seat serves on loopback
+/// `port`, or `None` when they cannot be read.
+async fn read_ordering_totals(http: &reqwest::Client, port: u16) -> Option<OrderingTotals> {
+    let mut response = http
+        .get(format!("http://127.0.0.1:{port}/metrics"))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if MAX_GUARDIAN_METRICS_BODY_BYTES.saturating_sub(body.len()) < chunk.len() {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    OrderingTotals::parse(std::str::from_utf8(&body).ok()?)
 }
 
 /// Check Bitcoin on a blocking thread with a client built for this attempt.
@@ -336,6 +415,58 @@ mod tests {
 
     fn core_rpc(url: String, password: &str) -> DynServerBitcoinRpc {
         bitcoin_rpc(&core_backend(url, password)).unwrap()
+    }
+
+    fn metrics_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(CHECK_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+
+    /// A seat metrics endpoint answering `status` with `body`; its port.
+    async fn serve_metrics(status: StatusCode, body: String) -> u16 {
+        let app = axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(move || async move { (status, body) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        port
+    }
+
+    /// The totals come from the seat's own exposition; an error status, an
+    /// oversized body or a port nothing listens on reads as no reading.
+    #[tokio::test]
+    async fn a_seat_s_ordering_latency_is_read_from_its_metrics_port() {
+        let http = metrics_client();
+        let exposition = "fm_consensus_ordering_latency_seconds_sum 12.5\n\
+            fm_consensus_ordering_latency_seconds_count 5\n";
+        let port = serve_metrics(StatusCode::OK, exposition.to_owned()).await;
+        assert_eq!(
+            read_ordering_totals(&http, port).await,
+            Some(OrderingTotals {
+                sum_secs: 12.5,
+                count: 5.0,
+            })
+        );
+        let failing = serve_metrics(StatusCode::INTERNAL_SERVER_ERROR, exposition.to_owned()).await;
+        assert_eq!(read_ordering_totals(&http, failing).await, None);
+        let oversized = serve_metrics(
+            StatusCode::OK,
+            format!(
+                "{exposition}{}",
+                "# padding\n".repeat(MAX_GUARDIAN_METRICS_BODY_BYTES / 10 + 1)
+            ),
+        )
+        .await;
+        assert_eq!(read_ordering_totals(&http, oversized).await, None);
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert_eq!(read_ordering_totals(&http, closed_port).await, None);
     }
 
     /// The deadline holds against a Core that accepts and never answers: the

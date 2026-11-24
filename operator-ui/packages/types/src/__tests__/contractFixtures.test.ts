@@ -370,6 +370,10 @@ const mgSeatReadinessMirror = {
       io: { '6h': 100, '3.5d': 50 },
       memory: { '6h': 700, '3.5d': 650 }
     },
+    ordering_latency: 'ordering_latency_high',
+    // Milliseconds: 6.2 s over the 5 s maximum.
+    ordering_latency_6h_ms: 6200,
+    max_ordering_latency_6h_ms: 5000,
     uptime: 'uptime_7d_low',
     uptime_comparison: {
       scores: { '1d': 887, '7d': 899, '30d': 935 },

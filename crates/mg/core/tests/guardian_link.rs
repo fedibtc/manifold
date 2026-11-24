@@ -139,6 +139,9 @@ fn readiness(failing: &[&str]) -> ReadinessReport {
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
         max_host_pressure: None,
+        ordering_latency: ReadinessOutcome::NotApplicable,
+        ordering_latency_6h_ms: None,
+        max_ordering_latency_6h_ms: None,
         uptime: outcome("uptime", ReadinessOutcome::DayUptimeLow),
         uptime_comparison: None,
     }
