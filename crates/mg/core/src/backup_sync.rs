@@ -4,9 +4,14 @@
 //! which StartOS gives every data volume, each sync writes a fixed amount of
 //! metadata however little it stores, but syncs that run at the same moment
 //! share one filesystem commit. The seats' rounds already end on a shared
-//! wall-clock grid (fedimintd aligns them when it is given this socket); the
-//! coordinator closes the remaining gap by releasing the seats' commits
-//! together.
+//! grid (fedimintd aligns them to the host's phase when it is given this
+//! socket and phase); the coordinator closes the remaining gap by releasing
+//! the seats' commits together.
+//!
+//! The phase is random per daemon start. All seats of a host share it, so
+//! their units, and syncs, line up. The peers of one federation sit on
+//! different hosts, so they keep different phases: a whole federation in
+//! lockstep orders its items several rounds later.
 //!
 //! Protocol, per connection: the seat sends `r` when its backup commit is
 //! ready and commits when it reads `g`. The first `r` opens a window. The
@@ -17,9 +22,10 @@
 //! so the coordinator can only delay a commit, never block it.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -38,20 +44,45 @@ const WINDOW: Duration = Duration::from_millis(10);
 /// recent: a few rounds.
 const ACTIVE_FOR: Duration = Duration::from_millis(250);
 
+/// fedimintd's round delay, which the phase is an offset into.
+const ROUND_PERIOD: Duration = Duration::from_millis(50);
+
 const READY: u8 = b'r';
 const GO: u8 = b'g';
 
-/// The coordinator socket of the MG whose data root is `data_root`.
-pub fn socket_path(data_root: &Path) -> PathBuf {
-    data_root.join(SOCKET_FILE)
+/// The running coordinator, which every seat of this daemon joins.
+struct Joined {
+    socket: PathBuf,
+    phase: Duration,
 }
 
-/// Binds the coordinator socket and serves it for the life of the daemon.
+static JOINED: OnceLock<Joined> = OnceLock::new();
+
+/// The environment that makes a seat's fedimintd join this daemon's
+/// coordinator: none while no coordinator runs, as in tests that spawn seats
+/// without a daemon.
+pub fn seat_env() -> Vec<(&'static str, OsString)> {
+    JOINED.get().map_or_else(Vec::new, |joined| {
+        vec![
+            (
+                fedimint_core::envs::FM_BACKUP_SYNC_COORDINATOR_ENV,
+                joined.socket.clone().into_os_string(),
+            ),
+            (
+                fedimint_core::envs::FM_BACKUP_SYNC_PHASE_US_ENV,
+                joined.phase.as_micros().to_string().into(),
+            ),
+        ]
+    })
+}
+
+/// Binds the coordinator socket in `data_root` and serves it for the life of
+/// the daemon; seats spawned afterwards join it ([`seat_env`]).
 ///
-/// Call with the data-root lock held: it replaces a socket left by an earlier
-/// daemon.
+/// Call once, with the data-root lock held: it replaces a socket left by an
+/// earlier daemon.
 pub fn spawn(data_root: &Path) -> io::Result<()> {
-    let path = socket_path(data_root);
+    let path = data_root.join(SOCKET_FILE);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -59,6 +90,13 @@ pub fn spawn(data_root: &Path) -> io::Result<()> {
     }
     let listener = UnixListener::bind(&path)?;
     tokio::spawn(serve(listener));
+    let phase = Duration::from_micros(rand::random::<u64>() % ROUND_PERIOD.as_micros() as u64);
+    JOINED
+        .set(Joined {
+            socket: path,
+            phase,
+        })
+        .map_err(|_| io::Error::other("the backup sync coordinator already runs"))?;
     Ok(())
 }
 
