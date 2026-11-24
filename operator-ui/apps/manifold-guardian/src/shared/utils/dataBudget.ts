@@ -23,6 +23,12 @@ export const DATA_BUDGET_EXPLAINER =
   'If your plan has a limit, this host stops selling new seats once its seats would use about the amount you enter. ' +
   'It is not a hard limit: seats you already run keep running, and a busy federation can use more than estimated.';
 
+/** The same answer for a host without a badge, which sells nothing: it only
+ *  takes seats through guardian codes. */
+export const DATA_BUDGET_EXPLAINER_WITHOUT_BADGE =
+  'If your plan has a limit, this host stops taking new seats once its seats would use about the amount you enter. ' +
+  'It is not a hard limit: seats you already run keep running, and a busy federation can use more than estimated.';
+
 /** The units of the amount, said once, in the amount's help text. */
 export const DATA_AMOUNT_HINT =
   'How much of your plan this guardian may use, in GB per 30 days (1 GB is 1,000,000,000 bytes).';

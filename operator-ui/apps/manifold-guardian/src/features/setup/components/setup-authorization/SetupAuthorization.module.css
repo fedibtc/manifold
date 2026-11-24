@@ -27,5 +27,13 @@
 }
 
 .actions {
-  @apply flex flex-wrap gap-3;
+  @apply uActionsWrap;
+}
+
+.alternative {
+  @apply uStack2 mt-4 border-t border-muted pt-6;
+}
+
+.alternativeTitle {
+  @apply uCardTitle;
 }

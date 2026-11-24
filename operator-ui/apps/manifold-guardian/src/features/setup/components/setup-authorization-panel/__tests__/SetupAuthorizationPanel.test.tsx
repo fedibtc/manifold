@@ -21,31 +21,15 @@ const waiting: OnboardingResponse = {
   fman_version: { current: '0.1.0', latest: '0.1.0', update_required: false }
 };
 
-const checkStatus = <button type="button">Check status</button>;
-
 describe('SetupAuthorizationPanel', () => {
   it('should render the service nostr key in full', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={null}
-        statusAction={checkStatus}
-      />
-    );
+    render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeTruthy();
   });
 
   it('should encode a holder-parsable authorization request in the QR', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={null}
-        statusAction={checkStatus}
-      />
-    );
+    render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByTestId('qr').textContent).toBe(
       `{"subject_pubkey":"${MOCK_SERVICE_NOSTR_PUBKEY}"}`
@@ -53,14 +37,7 @@ describe('SetupAuthorizationPanel', () => {
   });
 
   it('should name the request copy control on screen, not just to a reader', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={null}
-        statusAction={checkStatus}
-      />
-    );
+    render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByText('Copy the authorization request')).toBeTruthy();
   });
@@ -76,14 +53,7 @@ describe('SetupAuthorizationPanel', () => {
     const clickAndReadClipboard = async (name: RegExp) => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.assign(navigator, { clipboard: { writeText } });
-      render(
-        <SetupAuthorizationPanel
-          data={waiting}
-          isLoading={false}
-          error={null}
-          statusAction={checkStatus}
-        />
-      );
+      render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
       fireEvent.click(screen.getByRole('button', { name }));
 
@@ -106,14 +76,7 @@ describe('SetupAuthorizationPanel', () => {
   });
 
   it('should walk the operator through the three PeerBadge steps', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={null}
-        statusAction={checkStatus}
-      />
-    );
+    render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByRole('heading', { name: 'Open PeerBadge' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Open your badge' })).toBeTruthy();
@@ -122,24 +85,8 @@ describe('SetupAuthorizationPanel', () => {
     expect(screen.queryByText(/(?<!Manifold Fedimint )guardian ID/i)).toBeNull();
   });
 
-  it('should show the re-check control inside the waiting status', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={null}
-        statusAction={checkStatus}
-      />
-    );
-
-    const status = screen.getByRole('heading', { name: 'Waiting for approval' }).closest('section');
-    expect(status?.textContent).toContain('Check status');
-  });
-
   it('should show a loading state instead of waiting text before the first response', () => {
-    render(
-      <SetupAuthorizationPanel data={undefined} isLoading error={null} statusAction={checkStatus} />
-    );
+    render(<SetupAuthorizationPanel data={undefined} isLoading error={null} />);
 
     expect(screen.getByText(/reading the authorization state/i)).toBeTruthy();
     expect(screen.queryByText(/Waiting for approval/i)).toBeNull();
@@ -151,7 +98,6 @@ describe('SetupAuthorizationPanel', () => {
         data={undefined}
         isLoading={false}
         error={new AdminApiError('relay unavailable')}
-        statusAction={checkStatus}
       />
     );
 
@@ -160,14 +106,7 @@ describe('SetupAuthorizationPanel', () => {
   });
 
   it('should keep the last known state and warn when a refresh fails', () => {
-    render(
-      <SetupAuthorizationPanel
-        data={waiting}
-        isLoading={false}
-        error={new NetworkError()}
-        statusAction={checkStatus}
-      />
-    );
+    render(<SetupAuthorizationPanel data={waiting} isLoading={false} error={new NetworkError()} />);
 
     expect(screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeTruthy();
     expect(screen.getByText(/Waiting for approval/i)).toBeTruthy();

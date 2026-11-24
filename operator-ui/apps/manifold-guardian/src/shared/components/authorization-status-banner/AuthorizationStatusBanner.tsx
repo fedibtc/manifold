@@ -5,6 +5,9 @@ import { formatCheckedAt } from '@/shared/utils/format';
 
 interface AuthorizationStatusBannerProps {
   nostr: OnboardingNostrStatus;
+  /** The host runs without a badge, so no stored approval is its normal
+   *  state rather than something it lacks. */
+  badgeless?: boolean;
 }
 
 // One banner per daemon state, because the four states are four different facts
@@ -15,7 +18,22 @@ interface AuthorizationStatusBannerProps {
 // fleet waits in for a holder to sign; a relay error is the operator's to
 // chase. Folding any of them together would produce a sentence that is true of
 // one and false of another.
-export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerProps) => {
+export const AuthorizationStatusBanner = ({
+  nostr,
+  badgeless = false
+}: AuthorizationStatusBannerProps) => {
+  if (badgeless && (nostr.state === 'checking' || nostr.state === 'not_observed')) {
+    return (
+      <Banner variant="info" title="No badge connected">
+        Guardian codes work without one. After you approve this host in the PeerBadge app, check for
+        your badge here.
+        {nostr.state === 'not_observed'
+          ? ` Last checked ${formatCheckedAt(nostr.checked_at)}.`
+          : ''}
+      </Banner>
+    );
+  }
+
   // What an unapproved host loses is the operator's first question: the daemon
   // advertises only with a stored approval (SPEC-advertisement).
   if (nostr.state === 'checking') {

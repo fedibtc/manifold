@@ -165,6 +165,8 @@ const runningSeat = (seat_id: string, invite: string) =>
     report: { state: 'active', health: 'healthy', phase: 'running', invite_code: invite }
   });
 
+const noAuthorization: MockState['onboarding']['nostr'] = { state: 'checking' };
+
 const base = (): Pick<
   MockState,
   | 'onboarded'
@@ -292,13 +294,14 @@ const builders = {
     // so there is no latest release to compare against yet.
     onboarding: onboarding({ state: 'checking' }, version({ latest: null }))
   }),
+  // Production: no badgeless path, so a missing approval is a problem to report.
   'awaiting-authorization': () => ({
     ...base(),
     relayAuthorization: 'absent',
     seats: [],
     paymentFederations: [],
     price: null,
-    onboarding: onboarding()
+    onboarding: { ...onboarding(), badgeless_mg: false }
   }),
   'setup-awaiting-authorization': () => ({
     ...base(),
@@ -338,16 +341,16 @@ const builders = {
       minimum_max_seats: 0
     }
   }),
-  // No stored authorization and no relay read since startup: a host set up
-  // without a badge, or one whose operator has not asked for a read yet. It is
-  // not advertised, and the Overview says so.
+  // No stored authorization and no relay read since startup, in production: an
+  // operator who has not asked for a read yet. It is not advertised, and the
+  // Overview says so. The badgeless counterpart is 'badgeless-ready'.
   'authorization-checking': () => ({
     ...base(),
     relayAuthorization: 'absent',
     seats: [],
     paymentFederations: [],
     price: null,
-    onboarding: onboarding({ state: 'checking' })
+    onboarding: { ...onboarding({ state: 'checking' }), badgeless_mg: false }
   }),
   // The relay refused the read. Distinct from an absent authorization: the fleet
   // may or may not be authorized, and the operator is the one who can act.
@@ -389,6 +392,16 @@ const builders = {
       authorizationObserved,
       version({ latest: '0.2.0', update_required: true })
     )
+  }),
+  // Set up without a badge: no stored authorization and no price; seats come
+  // only through guardian codes.
+  'badgeless-ready': () => ({
+    ...base(),
+    relayAuthorization: 'absent',
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: onboarding(noAuthorization)
   }),
   'seats-empty': () => ({
     ...base(),
@@ -879,6 +892,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
       'backup',
       'support'
     ]
+  },
+  'badgeless-ready': {
+    desc: 'Set up without a badge: no authorization and no price.',
+    affects: ['overview', 'authorization']
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',

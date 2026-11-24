@@ -17,7 +17,3 @@
 .text {
   @apply uMutedSm;
 }
-
-.action {
-  @apply shrink-0 self-start sm:self-center;
-}

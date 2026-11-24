@@ -11,7 +11,7 @@
 }
 
 .body {
-  @apply uIntro uStack2;
+  @apply uConfirmBody;
 }
 
 .error {

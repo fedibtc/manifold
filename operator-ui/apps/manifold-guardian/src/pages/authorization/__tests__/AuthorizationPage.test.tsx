@@ -73,6 +73,24 @@ describe('AuthorizationPage', () => {
     await screen.findByText('not-a-key');
   });
 
+  // Without a badge the page offers adding one, not renewing one, and does not
+  // call the host unapproved: guardian codes already work.
+  it('should offer adding a badge to a host set up without one', async () => {
+    const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      ...waiting,
+      badgeless_mg: true,
+      nostr: { state: 'checking' }
+    });
+    renderPage();
+
+    await screen.findByText('No badge connected');
+    expect(screen.queryByText(/Not approved/i)).toBeNull();
+    expect(screen.queryByText('Update authorization')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for my badge' }));
+    await waitFor(() => expect(call).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+  });
+
   // The intro used to ask for a scan in both states, contradicting the
   // "Approved" banner rendered directly below it.
   it('should stop asking for a scan once the fleet is approved', async () => {
@@ -83,7 +101,7 @@ describe('AuthorizationPage', () => {
     expect(
       screen.queryByText(/Scan the code below with the PeerBadge app to approve it/i)
     ).toBeNull();
-    expect(screen.getByText(/This host is approved\. The code below/i)).toBeTruthy();
+    expect(screen.getByText(/This host has a Trusted badge/i)).toBeTruthy();
   });
 
   it('should refresh authorization after approval without fetching relays on mount', async () => {

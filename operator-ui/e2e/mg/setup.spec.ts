@@ -37,7 +37,7 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
   await expect(page.getByRole('heading', { name: 'Approve your host' })).toBeVisible();
-  await page.getByRole('button', { name: 'Check status' }).click();
+  await page.getByRole('button', { name: 'Check approval' }).click();
   await page.getByRole('button', { name: 'Continue now' }).click();
 
   await expect(page.getByRole('heading', { name: 'Accept the terms of service' })).toBeVisible();
@@ -100,13 +100,14 @@ test('should hold setup at the authorization step until one is observed', async 
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
   await expect(page.getByText(/Not checked yet/i)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Check approval' })).toBeVisible();
+  // One way forward on the badge path: no greyed-out Continue beside it.
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
 });
 
 // An operator without a badge finishes setup by skipping the authorization. The
-// host then runs unlisted, and the Authorization page is where it is approved
-// later.
+// host then runs unlisted with no price, and the Guardian badge page is where a
+// badge can be added later.
 test('should set a host up without a badge when the operator skips approval', async ({ page }) => {
   await resetScenario(page, 'not-onboarded');
 
@@ -116,16 +117,20 @@ test('should set a host up without a badge when the operator skips approval', as
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
   await expect(page.getByRole('heading', { name: 'Approve your host' })).toBeVisible();
-  await page.getByRole('button', { name: 'Continue without a badge' }).click();
+  await page.getByRole('button', { name: 'Set up without a badge' }).click();
 
   await expect(page.getByRole('heading', { name: 'Accept the terms of service' })).toBeVisible();
   await page.getByRole('button', { name: 'Accept and continue' }).click();
+  await expect(page.getByRole('heading', { name: 'Set your monthly data' })).toBeVisible();
+  await expect(page.getByLabel('Price per seat (sats)')).toHaveCount(0);
   await page.getByLabel('No monthly limit').check();
   await page.getByRole('button', { name: 'Finish setup' }).click();
 
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await page.goto('/authorization');
-  await expect(page.getByText(/needs to be approved before Federation Ambassadors/)).toBeVisible();
+  await expect(
+    page.getByText(/runs without a badge and takes seats through guardian codes/)
+  ).toBeVisible();
 });
 
 test('should require the acknowledgement before recovering from a phrase', async ({ page }) => {
@@ -165,7 +170,7 @@ test('should recover a fleet and stop at the authorization step while it waits',
   await page.getByRole('button', { name: 'Continue' }).click();
 
   await expect(page.getByRole('heading', { name: 'Approve your host' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Check status' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check approval' })).toBeVisible();
 });
 
 test('should not offer setup to a fleet that is already running', async ({ page }) => {

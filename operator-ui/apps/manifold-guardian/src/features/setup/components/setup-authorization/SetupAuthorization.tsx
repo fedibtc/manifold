@@ -1,7 +1,6 @@
 import { Banner, Button } from '@operator-ui/common-ui';
 import { useEffect, useRef } from 'react';
 import { useSkipHolderAuthorization } from '@/features/setup/api/hooks/use-skip-holder-authorization/useSkipHolderAuthorization';
-import { CheckStatusButton } from '@/features/setup/components/check-status-button/CheckStatusButton';
 import { PeerBadgeHelp } from '@/features/setup/components/peerbadge-help/PeerBadgeHelp';
 import { SetupAuthorizationPanel } from '@/features/setup/components/setup-authorization-panel/SetupAuthorizationPanel';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
@@ -43,8 +42,6 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   const handleSkip = () => {
     skip.mutate(undefined, { onSuccess: settleOnce });
   };
-
-  const checkStatus = <CheckStatusButton loading={refresh.isPending} onClick={handleCheckNow} />;
 
   useEffect(() => {
     if (!authorized) return;
@@ -94,29 +91,42 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
         data={onboarding.data}
         isLoading={onboarding.isLoading}
         error={refresh.error ?? onboarding.error}
-        statusAction={checkStatus}
       />
 
       <PeerBadgeHelp />
 
-      {badgeless ? (
-        <p className={styles.hint}>
-          No badge? You can set this host up without one. Federation Ambassadors can’t find it until
-          you approve it later on the Authorization page.
-        </p>
-      ) : null}
-
+      {/* One primary action: the badge path. Approval continues on its own, so
+          there is no Continue to grey out beside it. */}
       <div className={styles.actions}>
-        <Button disabled>Continue</Button>
-
-        {badgeless ? (
-          <Button variant="secondary" loading={skip.isPending} onClick={handleSkip}>
-            Continue without a badge
-          </Button>
-        ) : null}
+        <Button loading={refresh.isPending} onClick={handleCheckNow}>
+          Check approval
+        </Button>
       </div>
 
-      {skip.error ? <Banner variant="error">{describeActionError(skip.error)}</Banner> : null}
+      {/* The badgeless route sits below the badge steps and stays quiet: most
+          hosts should take the badge path. */}
+      {badgeless ? (
+        <section className={styles.alternative} aria-labelledby="setup-without-badge">
+          <h2 id="setup-without-badge" className={styles.alternativeTitle}>
+            No Trusted badge?
+          </h2>
+
+          <p className={styles.hint}>
+            Hosting for yourself or people you know? Set this host up without a badge. Federation
+            Ambassadors you give a guardian code to can still add it to their federation, free. It
+            won’t appear in Fedi-verified selection, so there is no seat price to set. You can add a
+            badge later on the Guardian badge page.
+          </p>
+
+          <div className={styles.actions}>
+            <Button variant="secondary" size="small" loading={skip.isPending} onClick={handleSkip}>
+              Set up without a badge
+            </Button>
+          </div>
+
+          {skip.error ? <Banner variant="error">{describeActionError(skip.error)}</Banner> : null}
+        </section>
+      ) : null}
     </div>
   );
 };

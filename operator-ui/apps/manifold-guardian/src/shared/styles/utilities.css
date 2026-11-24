@@ -25,6 +25,9 @@
   .uActionsRow {
     @apply flex gap-3;
   }
+  .uActionsWrap {
+    @apply flex flex-wrap gap-3;
+  }
   .uMonoHeading {
     @apply uPageHeading font-mono;
   }
@@ -67,6 +70,9 @@
   /* A confirmation dialog over the page: the dimmed backdrop and its card. */
   .uConfirmBackdrop {
     @apply fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4;
+  }
+  .uConfirmBody {
+    @apply uIntro uStack2;
   }
   .uConfirmCard {
     @apply uModalCard uStack4 bg-surface;
