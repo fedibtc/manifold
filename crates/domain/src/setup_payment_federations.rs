@@ -38,8 +38,8 @@ pub const DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM: u64 = 1_500;
 pub const SETUP_PAYMENT_MAX_MIN_FEE_PPM: u64 = 210_000;
 
 /// Available memory, in MiB, an MG needs per seat when a publication does not
-/// say: about 1.2 GiB.
-pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_229;
+/// say: 1 GiB. Releases before 0.1.20 default to 1,229 MiB (about 1.2 GiB).
+pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_024;
 
 /// Smallest and largest per-seat memory budget a publication may set, in MiB.
 /// The bounds refuse a publisher mistake that would let MGs admit seats with
@@ -356,7 +356,7 @@ pub struct FeaturePolicy {
     pub support_nostr_pubkey: Option<nostr::PublicKey>,
 
     /// Available memory, in MiB, an MG before 0.1.16 needs per seat. This
-    /// release ignores it and reads [`Self::seat_memory_budget_mib_v2`], so
+    /// release ignores it and reads [`Self::seat_memory_budget_mib_v3`], so
     /// Fedi can give older MGs a different budget. Admission still checks
     /// its range, which older consumers enforce. Omitted when unset so that
     /// consumers that refuse unknown fields keep admitting publications that
@@ -368,7 +368,7 @@ pub struct FeaturePolicy {
     /// whose operator set a monthly data budget sells at most the budget
     /// divided by this. Optional on the wire: absent means
     /// [`DEFAULT_SEAT_MONTHLY_DATA_GB`]. Omitted when unset, like
-    /// [`Self::seat_memory_budget_mib_v2`].
+    /// [`Self::seat_memory_budget_mib_v3`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_monthly_data_gb: Option<u32>,
 
@@ -391,11 +391,21 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
 
-    /// Available memory, in MiB, an MG needs per seat. Optional on the
-    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`], whatever
-    /// [`Self::seat_memory_budget_mib`] says.
+    /// Available memory, in MiB, an MG from 0.1.16 to 0.1.19 needs per seat.
+    /// This release ignores it and reads [`Self::seat_memory_budget_mib_v3`],
+    /// so Fedi can give older MGs a different budget. Admission still checks
+    /// its range, which older consumers enforce. Omitted when unset, like
+    /// [`Self::seat_memory_budget_mib`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_memory_budget_mib_v2: Option<u32>,
+
+    /// Available memory, in MiB, an MG needs per seat. Optional on the
+    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`], whatever
+    /// [`Self::seat_memory_budget_mib`] and
+    /// [`Self::seat_memory_budget_mib_v2`] say. Omitted when unset, like
+    /// [`Self::seat_memory_budget_mib`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_memory_budget_mib_v3: Option<u32>,
 
     /// Seats one MG may host, below its operator's own limit. Optional on the
     /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`], whatever
@@ -599,6 +609,7 @@ impl FeaturePolicy {
         if [
             content.seat_memory_budget_mib,
             content.seat_memory_budget_mib_v2,
+            content.seat_memory_budget_mib_v3,
         ]
         .into_iter()
         .flatten()
@@ -687,7 +698,7 @@ impl FeaturePolicy {
             max_guardian_offline_secs,
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content
-                .seat_memory_budget_mib_v2
+                .seat_memory_budget_mib_v3
                 .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
             seat_monthly_data_gb,
             seat_disk_gb,

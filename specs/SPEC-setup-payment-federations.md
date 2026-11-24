@@ -192,9 +192,11 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
   enough consumers have upgraded;
-- `seat_memory_budget_mib_v2`, the RAM in MiB that each MG reserves per seat
+- `seat_memory_budget_mib_v3`, the RAM in MiB that each MG reserves per seat
   when it computes its memory seat limit, from 256 to 16,384. Optional:
-  absent means 1,229 (about 1.2 GiB);
+  absent means 1,024 (1 GiB), whatever the older budget fields say. The
+  field is new in 0.1.20. Consumers that admit unknown fields but predate
+  it, which includes every MG and FA release from 0.1.1 to 0.1.19, ignore it;
 - `seat_cpu_iterations_per_sec`, the CPU capacity, in iterations per second
   of version 1 of the MG CPU benchmark, that each MG reserves per seat when
   it computes its CPU seat limit, from 1 to 100,000
@@ -227,10 +229,16 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
 - `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
 - `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
-  MGs before 0.1.16, with the same ranges and defaults. MGs from 0.1.16 on
-  ignore them and read only the `_v2` fields, with no fallback, so Fedi can
-  publish separate limits for releases that run the newer readiness checks.
-  A publication that wants the same limit for every release sets both;
+  MGs before 0.1.16, with the same ranges. Absent, those MGs use 1,229 MiB
+  and 12 seats. MGs from 0.1.16 on ignore them and read only the newer
+  fields, with no fallback, so Fedi can publish separate limits for releases
+  that run the newer readiness checks. A publication that wants the same
+  limit for every release sets every version of the field;
+- `seat_memory_budget_mib_v2`, the per-seat memory budget for MGs from 0.1.16
+  to 0.1.19, with the same range. Absent, those MGs use 1,229 MiB. MGs from
+  0.1.20 on ignore it and read only `seat_memory_budget_mib_v3`, with no
+  fallback, so Fedi can give MGs from 0.1.20 on a budget apart from older
+  releases;
 - `max_pressure_percent`, an object of CPU, IO and memory pressure averages,
   each in percent of wall time from 1 to 100, above which an MG stops
   accepting new seats: `{"cpu": {"6h": ..., "3.5d": ...}, "io": {...},
@@ -329,8 +337,9 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
-12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
-    256 to 16,384, a `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
+12. reject a `seat_memory_budget_mib`, `seat_memory_budget_mib_v2` or
+    `seat_memory_budget_mib_v3` outside 256 to 16,384, a
+    `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
     `seat_monthly_data_gb` outside 1 to 10,000, a `seat_disk_gb` or
     `seat_disk_gb_btrfs` outside 1 to 100,000, a `max_seats_per_mg` or
     `max_seats_per_mg_v2` above 256, or a `max_pressure_percent` window
