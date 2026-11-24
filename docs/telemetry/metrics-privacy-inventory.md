@@ -9,7 +9,7 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`ecf33873352e277b272c2b49890f5b3023997b3c` (branch `roboman/fedi30-aleph-quiescence`). The machine-checked
+`bcce0db63d70265b1bd0aca85f618fb22f64d414` (branch `roboman/fedi30-aleph-quiescence`). The machine-checked
 [`fedimint-metrics-v0.12.0-fedi30-quiescence.tsv`](./fedimint-metrics-v0.12.0-fedi30-quiescence.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
@@ -37,7 +37,7 @@ per-guardian settled-volume counters to LNv2 and Walletv2, kept in the module
 database and read through an admin API endpoint; it registers no metrics. fedi30 stores
 AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metrics either.
 fedi30-quiescence lets a guardian stop creating AlephBFT units while idle and
-adds the `set_aleph_quiescence` admin endpoint; it registers no metrics. The existing
+lets the driven control channel switch it at runtime; it registers no metrics. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at

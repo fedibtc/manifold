@@ -23,7 +23,7 @@
     };
     # fedi30-quiescence is fedi30 (batched AlephBFT backup write with
     # fedibtc/AlephBFT v0.36.0-fedi1, RocksDB WAL tuning) plus Aleph
-    # quiescence behind the `set_aleph_quiescence` admin switch, off at start.
+    # quiescence, off at start and switched over the driven control channel.
     fedimint.url = "github:fedibtc/fedimint/roboman/fedi30-aleph-quiescence";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
@@ -1011,7 +1011,7 @@
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "ecf33873352e277b272c2b49890f5b3023997b3c";
+        fedimintSourceRev = "bcce0db63d70265b1bd0aca85f618fb22f64d414";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the

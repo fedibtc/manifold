@@ -80,8 +80,8 @@ pub(crate) struct FakeApiState {
     pub invite_gate: Option<Arc<Notify>>,
     /// The `auth` of each `shutdown_after_current_session` request.
     pub shutdown_after_current_session: Vec<Option<String>>,
-    /// Each `set_aleph_quiescence` request as `(enabled, auth)`, in order.
-    pub aleph_quiescence_requests: Vec<(bool, Option<String>)>,
+    /// Each features frame the parent sent after consensus started, in order.
+    pub features: Vec<fedimint_server::config::driven::Features>,
     /// Fail every local API request at the transport, as if the connection
     /// between the MG and its child were cut while consensus continues.
     pub api_cut: bool,
@@ -226,22 +226,6 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
                 return Err(method_not_found());
             }
             state.shutdown_after_current_session.push(auth);
-            Ok::<_, ErrorObjectOwned>(Value::Null)
-        })
-        .unwrap();
-    module
-        .register_method("set_aleph_quiescence", |params, state, _ext| {
-            let request: Value = params.one()?;
-            let auth = request["auth"].as_str().map(str::to_owned);
-            let enabled = request["params"].as_bool().expect("a boolean request");
-            let mut state = state.lock().unwrap();
-            if state.api_cut {
-                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
-            }
-            if !state.consensus_running {
-                return Err(method_not_found());
-            }
-            state.aleph_quiescence_requests.push((enabled, auth));
             Ok::<_, ErrorObjectOwned>(Value::Null)
         })
         .unwrap();
@@ -643,6 +627,19 @@ impl FakeSeatProcessSpawner {
     }
 }
 
+/// Record the features frames the parent sends once consensus started, as
+/// the bundled child applies them; runs for the rest of the child's life.
+#[cfg(test)]
+async fn follow_features(
+    mut control: tokio::net::UnixStream,
+    api_state: &Mutex<FakeApiState>,
+) -> ! {
+    while let Ok(features) = read_frame(&mut control).await {
+        api_state.lock().unwrap().features.push(features);
+    }
+    std::future::pending().await
+}
+
 #[cfg(test)]
 async fn run_fake_child(
     mut control: tokio::net::UnixStream,
@@ -722,8 +719,7 @@ async fn run_fake_child(
             .await;
         }
         let _ = write_frame(&mut control, &ChildMessage::ConsensusStarted {}).await;
-        let _ = control.shutdown().await;
-        std::future::pending::<()>().await;
+        follow_features(control, &api_state).await;
     }
 
     for step in steps {
@@ -751,8 +747,7 @@ async fn run_fake_child(
                     return;
                 }
                 if consensus {
-                    let _ = control.shutdown().await;
-                    std::future::pending::<()>().await;
+                    follow_features(control, &api_state).await;
                 }
             }
             FakeDkgStep::Crash => {

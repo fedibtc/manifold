@@ -448,7 +448,7 @@ pub struct FeaturePolicy {
 
     /// Whether MGs turn on Aleph quiescence in their seats' fedimintd: a
     /// guardian creates consensus units only while it has something to order
-    /// ([`mg_core::aleph_quiescence`](../../mg/core/src/aleph_quiescence.rs)).
+    /// ([`mg_core::fedimintd_features`](../../mg/core/src/fedimintd_features.rs)).
     /// Optional on the wire: absent means off. Turning it off reaches every
     /// running seat without a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]

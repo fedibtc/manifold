@@ -1253,7 +1253,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         let mg_root = temp.join(format!("mg-{index}"));
         assert_safe_event_journal(
             &mg_root.join("safe-events/fman"),
-            &["seat aleph quiescence applied"],
+            &["seat fedimintd features set"],
         )?;
         assert_safe_event_journal(
             &mg_root.join("seats/0/safe-events"),
@@ -1969,7 +1969,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"ecf33873352e277b272c2b49890f5b3023997b3c\"")
+                && line.contains("version_hash=\"bcce0db63d70265b1bd0aca85f618fb22f64d414\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );

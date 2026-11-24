@@ -14,7 +14,7 @@ use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::endpoint_constants::{
     AUDIT_ENDPOINT, BACKUP_STATISTICS_ENDPOINT, CLIENT_CONFIG_ENDPOINT,
-    SET_ALEPH_QUIESCENCE_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+    SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
 use fedimint_core::module::audit::AuditSummary;
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
@@ -117,20 +117,6 @@ impl FedimintApi {
             self.api
                 .clone()
                 .shutdown_after_current_session(self.auth.clone()),
-        )
-        .await
-    }
-
-    /// Turn the guardian's Aleph quiescence on or off. The setting lives only
-    /// in the running process, which starts with it off.
-    pub async fn set_aleph_quiescence(&self, enabled: bool) -> Result<(), FedimintApiError> {
-        self.request(
-            SET_ALEPH_QUIESCENCE_ENDPOINT,
-            self.api.clone().request_admin(
-                SET_ALEPH_QUIESCENCE_ENDPOINT,
-                ApiRequestErased::new(enabled),
-                self.auth.clone(),
-            ),
         )
         .await
     }

@@ -45,7 +45,9 @@ use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::setup_code::{PeerEndpoints, PeerSetupCode};
 use fedimint_core::util::SafeUrl;
 use fedimint_meta_common::{DEFAULT_META_KEY, MetaValue};
-use fedimint_server::config::driven::{ChildState, DrivenDkgClient, DrivenDkgEvent, RunDkgParams};
+use fedimint_server::config::driven::{
+    ChildState, DrivenDkgClient, DrivenDkgEvent, DrivenFeatures, RunDkgParams,
+};
 use mg_meta_fields::{MetaFieldError, validate_meta_field};
 use stability_pool_client::common::Account;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -55,6 +57,7 @@ use crate::db::Db;
 use crate::facts::{CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatPorts};
 use crate::fedimint_api::{FedimintApi, FedimintApiError};
 use crate::fedimint_stats::{GuardianReadings, fedimint_stats};
+use crate::fedimintd_features::Features;
 use crate::guardian_fee::{AccountId, FeePolicy};
 use crate::identity::SeatKeys;
 use crate::push_callback::{CompletionHookWake, ValidatedDkgCompletionCallback};
@@ -140,14 +143,6 @@ impl SeatVerbError {
             FedimintApiError::Unreachable(_) => SeatVerbError::SeatUnavailable,
             other => SeatVerbError::internal(other),
         }
-    }
-}
-
-fn fedimint_api_error_kind(error: &FedimintApiError) -> &'static str {
-    match error {
-        FedimintApiError::Unreachable(_) => "unreachable",
-        FedimintApiError::Rejected { .. } => "rejected",
-        FedimintApiError::InvalidResponse { .. } => "invalid_response",
     }
 }
 
@@ -298,12 +293,9 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
-    /// Whether the child should run with Aleph quiescence on; `None` once the
-    /// fleet's switch is gone.
-    aleph_quiescence: Option<watch::Receiver<bool>>,
-    /// The setting the current child process runs with: off from its start
-    /// until a call succeeds.
-    aleph_quiescence_applied: bool,
+    /// The runtime switches the child should run with; `None` once the
+    /// fleet's watch is gone.
+    fedimintd_features: Option<watch::Receiver<Features>>,
 }
 
 enum ProcessSlot {
@@ -318,11 +310,19 @@ enum ProcessSlot {
     },
     Configured {
         child: SeatProcess,
-        client: Option<DrivenDkgClient<tokio::net::UnixStream>>,
+        control: ConfiguredControl,
     },
     /// A consuming stop failed, so exit was not proved and replacement is
     /// permanently refused for this daemon lifetime.
     ExitUnproven,
+}
+
+/// The driven control channel of a configured child.
+enum ConfiguredControl {
+    /// Lifecycle events until consensus starts.
+    Setup(DrivenDkgClient<tokio::net::UnixStream>),
+    /// Runtime switches once consensus runs ([`crate::fedimintd_features`]).
+    Running(DrivenFeatures<tokio::net::UnixStream>),
 }
 
 #[derive(Clone, Copy)]
@@ -361,7 +361,7 @@ impl ProcessSlot {
             }
             Self::Configured {
                 child,
-                client: Some(client),
+                control: ConfiguredControl::Setup(client),
             } => tokio::select! {
                 biased;
                 event = client.next_event() => ProcessObservation::Driven(event),
@@ -369,7 +369,7 @@ impl ProcessSlot {
             },
             Self::Configured {
                 child,
-                client: None,
+                control: ConfiguredControl::Running(_),
             } => ProcessObservation::Exited(child.wait().await),
             Self::Empty | Self::ExitUnproven => unreachable!("live child guard"),
         }
@@ -378,16 +378,22 @@ impl ProcessSlot {
     fn client(&self) -> Option<&DrivenDkgClient<tokio::net::UnixStream>> {
         match self {
             Self::Parked { client, .. } | Self::DkgAcknowledged { client, .. } => Some(client),
-            Self::Configured { client, .. } => client.as_ref(),
-            Self::Empty | Self::ExitUnproven => None,
+            Self::Configured {
+                control: ConfiguredControl::Setup(client),
+                ..
+            } => Some(client),
+            Self::Configured { .. } | Self::Empty | Self::ExitUnproven => None,
         }
     }
 
     fn client_mut(&mut self) -> Option<&mut DrivenDkgClient<tokio::net::UnixStream>> {
         match self {
             Self::Parked { client, .. } | Self::DkgAcknowledged { client, .. } => Some(client),
-            Self::Configured { client, .. } => client.as_mut(),
-            Self::Empty | Self::ExitUnproven => None,
+            Self::Configured {
+                control: ConfiguredControl::Setup(client),
+                ..
+            } => Some(client),
+            Self::Configured { .. } | Self::Empty | Self::ExitUnproven => None,
         }
     }
 
@@ -433,9 +439,9 @@ pub(crate) struct SeatRuntimeDependencies {
     pub(crate) completion_hooks: CompletionHookWake,
     pub(crate) transfer_wake: crate::transfer_worker::TransferWake,
     pub(crate) process_spawner: SeatProcessSpawner,
-    /// Whether the child should run with Aleph quiescence on
-    /// ([`crate::aleph_quiescence`]).
-    pub(crate) aleph_quiescence: watch::Receiver<bool>,
+    /// The runtime switches the child should run with
+    /// ([`crate::fedimintd_features`]).
+    pub(crate) fedimintd_features: watch::Receiver<Features>,
 }
 
 #[derive(Clone)]
@@ -602,7 +608,7 @@ impl Seat {
             completion_hooks,
             transfer_wake,
             process_spawner,
-            aleph_quiescence,
+            fedimintd_features,
         } = runtime;
         let facts = Arc::new(facts);
         let data_dir = seat_data_dir(&process, facts.seat_no);
@@ -648,8 +654,7 @@ impl Seat {
                 watchdog_at: None,
                 unresponsive_since: None,
                 backoff: policy.initial_backoff,
-                aleph_quiescence: Some(aleph_quiescence),
-                aleph_quiescence_applied: false,
+                fedimintd_features: Some(fedimintd_features),
             };
             tokio::spawn(async move {
                 // Sampling is independent of lifecycle commands, but ends with this seat.
@@ -1092,10 +1097,15 @@ impl SeatLoop {
         let (health, failure_kind) = match result {
             Ok(Ok(())) => (SeatHealth::Healthy, None),
             Err(_) => (SeatHealth::Unavailable, Some("timeout")),
-            Ok(Err(error)) => (
-                SeatHealth::Unavailable,
-                Some(fedimint_api_error_kind(&error)),
-            ),
+            Ok(Err(FedimintApiError::Unreachable(_))) => {
+                (SeatHealth::Unavailable, Some("unreachable"))
+            }
+            Ok(Err(FedimintApiError::Rejected { .. })) => {
+                (SeatHealth::Unavailable, Some("rejected"))
+            }
+            Ok(Err(FedimintApiError::InvalidResponse { .. })) => {
+                (SeatHealth::Unavailable, Some("invalid_response"))
+            }
         };
         let interval = if health == SeatHealth::Healthy {
             HEALTHY_WATCHDOG_INTERVAL
@@ -1106,39 +1116,60 @@ impl SeatLoop {
         self.watchdog_at = Some(tokio::time::Instant::now() + interval);
         if health == SeatHealth::Healthy {
             self.unresponsive_since = None;
-            self.apply_aleph_quiescence().await;
         } else {
             self.restart_if_unresponsive(failure_kind).await;
         }
     }
 
-    /// Bring the answering child's Aleph quiescence to the fleet's setting.
-    /// A failed call leaves the child as it was; the next healthy watchdog
-    /// probe or a change of the setting tries again.
-    async fn apply_aleph_quiescence(&mut self) {
-        let Some(switch) = &mut self.aleph_quiescence else {
+    /// Turn a configured child's control channel into its feature channel
+    /// once it reports that consensus started, and send it the current
+    /// switches.
+    async fn start_fedimintd_features(&mut self) {
+        let slot = std::mem::replace(&mut self.child, ProcessSlot::Empty);
+        let slot = match slot {
+            ProcessSlot::Configured {
+                child,
+                control: ConfiguredControl::Setup(client),
+            } => ProcessSlot::Configured {
+                child,
+                control: ConfiguredControl::Running(
+                    client
+                        .into_features()
+                        .expect("called after the client reported ConsensusStarted"),
+                ),
+            },
+            other => other,
+        };
+        self.set_process_slot(slot);
+        self.send_fedimintd_features().await;
+    }
+
+    /// Send the current switches to a child whose consensus runs. A failed
+    /// write means the child is exiting; its replacement gets them when its
+    /// consensus starts.
+    async fn send_fedimintd_features(&mut self) {
+        let Some(switches) = &mut self.fedimintd_features else {
             return;
         };
-        let enabled = *switch.borrow_and_update();
-        if enabled == self.aleph_quiescence_applied {
+        let ProcessSlot::Configured {
+            control: ConfiguredControl::Running(channel),
+            ..
+        } = &mut self.child
+        else {
             return;
-        }
-        match self.fedimint_api.set_aleph_quiescence(enabled).await {
-            Ok(()) => {
-                self.aleph_quiescence_applied = enabled;
-                tracing::info!(
-                    safe_to_share = true,
-                    seat_id = %self.facts.seat_id,
-                    enabled,
-                    "seat aleph quiescence applied"
-                );
-            }
-            Err(error) => tracing::warn!(
+        };
+        let features = switches.borrow_and_update().clone();
+        match channel.set(&features).await {
+            Ok(()) => tracing::info!(
                 safe_to_share = true,
                 seat_id = %self.facts.seat_id,
-                enabled,
-                failure_kind = fedimint_api_error_kind(&error),
-                "seat aleph quiescence not applied"
+                aleph_quiescence = features.aleph_quiescence,
+                "seat fedimintd features set"
+            ),
+            Err(error) => tracing::warn!(
+                seat_id = %self.facts.seat_id,
+                error = format_args!("{error:#}"),
+                "seat fedimintd features not set"
             ),
         }
     }
@@ -1271,11 +1302,11 @@ impl SeatLoop {
                     self.watchdog_tick().await;
                     continue;
                 }
-                changed = async { self.aleph_quiescence.as_mut().expect("switch is present").changed().await }, if self.aleph_quiescence.is_some() => {
+                changed = async { self.fedimintd_features.as_mut().expect("watch is present").changed().await }, if self.fedimintd_features.is_some() => {
                     if changed.is_err() {
-                        self.aleph_quiescence = None;
-                    } else if self.state.borrow().health == SeatHealth::Healthy {
-                        self.apply_aleph_quiescence().await;
+                        self.fedimintd_features = None;
+                    } else {
+                        self.send_fedimintd_features().await;
                     }
                     continue;
                 }
@@ -1430,7 +1461,7 @@ impl SeatLoop {
                         event,
                         DrivenDkgEvent::ParamsRejected { .. } | DrivenDkgEvent::DkgFailed { .. }
                     );
-                    let retired = event == DrivenDkgEvent::ControlChannelRetired;
+                    let consensus_started = event == DrivenDkgEvent::ConsensusStarted;
                     if let Err(error) = self.handle_driven_event(Ok(event)).await {
                         tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "driven-DKG event handling failed");
                     }
@@ -1438,8 +1469,8 @@ impl SeatLoop {
                         if let Err(error) = self.retire_failed_ceremony().await {
                             tracing::warn!(seat_id = %self.facts.seat_id, %error, "failed to retire failed ceremony child");
                         }
-                    } else if retired {
-                        self.retire_control_channel();
+                    } else if consensus_started {
+                        self.start_fedimintd_features().await;
                     }
                 }
                 Some(Err(error)) => {
@@ -1467,7 +1498,14 @@ impl SeatLoop {
             ProcessSlot::Parked { client, .. } | ProcessSlot::DkgAcknowledged { client, .. } => {
                 Some(client)
             }
-            ProcessSlot::Configured { client, .. } => client,
+            ProcessSlot::Configured {
+                control: ConfiguredControl::Setup(client),
+                ..
+            } => Some(client),
+            ProcessSlot::Configured {
+                control: ConfiguredControl::Running(_),
+                ..
+            } => None,
             ProcessSlot::Empty | ProcessSlot::ExitUnproven => unreachable!("live child guard"),
         };
         if let Some(mut client) = client.take() {
@@ -1543,19 +1581,7 @@ impl SeatLoop {
             ProcessSlot::Parked { child, client }
             | ProcessSlot::DkgAcknowledged { child, client } => ProcessSlot::Configured {
                 child,
-                client: Some(client),
-            },
-            other => other,
-        };
-        self.set_process_slot(slot);
-    }
-
-    fn retire_control_channel(&mut self) {
-        let slot = std::mem::replace(&mut self.child, ProcessSlot::Empty);
-        let slot = match slot {
-            ProcessSlot::Configured { child, .. } => ProcessSlot::Configured {
-                child,
-                client: None,
+                control: ConfiguredControl::Setup(client),
             },
             other => other,
         };
@@ -1643,12 +1669,11 @@ impl SeatLoop {
             ChildState::NeedsParams => ProcessSlot::Parked { child, client },
             ChildState::AlreadyConfigured { .. } => ProcessSlot::Configured {
                 child,
-                client: Some(client),
+                control: ConfiguredControl::Setup(client),
             },
         });
         self.child_started = Some(tokio::time::Instant::now());
         self.unresponsive_since = None;
-        self.aleph_quiescence_applied = false;
         if let Err(error) = self.handle_child_state(state).await {
             // Revalidation or a database read may fail before RunDkg begins.
             // Do not leave that child parked while respawn is scheduled: the
@@ -1739,7 +1764,7 @@ impl SeatLoop {
             }
             DrivenDkgEvent::ParamsRejected { .. } => {}
             DrivenDkgEvent::DkgFailed { reason: _ } => {}
-            DrivenDkgEvent::ConsensusStarted | DrivenDkgEvent::ControlChannelRetired => {}
+            DrivenDkgEvent::ConsensusStarted => {}
         }
         Ok(())
     }
@@ -1962,6 +1987,7 @@ impl SeatLoop {
                     return Ok(());
                 }
                 DrivenDkgEvent::ConsensusStarted if self.state.borrow().formed_invite.is_some() => {
+                    self.start_fedimintd_features().await;
                     return Ok(());
                 }
                 DrivenDkgEvent::ParamsRejected { reason } => {
@@ -1970,10 +1996,15 @@ impl SeatLoop {
                 DrivenDkgEvent::DkgFailed { reason } => {
                     return Err(SeatVerbError::Internal(anyhow!("DKG failed: {reason}")));
                 }
-                other => self
-                    .handle_driven_event(Ok(other))
-                    .await
-                    .map_err(SeatVerbError::internal)?,
+                other => {
+                    let consensus_started = other == DrivenDkgEvent::ConsensusStarted;
+                    self.handle_driven_event(Ok(other))
+                        .await
+                        .map_err(SeatVerbError::internal)?;
+                    if consensus_started {
+                        self.start_fedimintd_features().await;
+                    }
+                }
             }
         }
     }

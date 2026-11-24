@@ -17,7 +17,6 @@
 
 pub mod admin;
 pub mod admin_http;
-pub mod aleph_quiescence;
 pub mod backup;
 pub mod backup_worker;
 pub mod bundled_fedimintd;
@@ -27,6 +26,7 @@ pub mod directory;
 pub mod facts;
 pub mod fedimint_api;
 mod fedimint_stats;
+pub mod fedimintd_features;
 pub mod fleet;
 pub mod guardian_fee;
 pub mod guardian_link;
