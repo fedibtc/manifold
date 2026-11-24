@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fedi_decentralized_service_manifold_guardian::SeatId;
-use fedimint_core::envs::FM_IROH_DNS_ENV;
+use fedimint_core::envs::{FM_BACKUP_SYNC_COORDINATOR_ENV, FM_IROH_DNS_ENV};
 use fedimint_core::util::SafeUrl;
 use fedimint_server::config::driven::DrivenDkgClient;
 #[cfg(test)]
@@ -545,6 +545,11 @@ async fn spawn_child(
         .env(
             FM_IROH_DNS_ENV,
             config.iroh_dns.clone().to_unsafe().as_str(),
+        )
+        // Lets the host's seats sync their AlephBFT backups together.
+        .env(
+            FM_BACKUP_SYNC_COORDINATOR_ENV,
+            crate::backup_sync::socket_path(&config.data_root),
         )
         .kill_on_drop(true)
         .stdout(Stdio::piped())

@@ -23,7 +23,7 @@
     };
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
     # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    fedimint.url = "github:fedibtc/fedimint/04bef79c3b6ac003e68630c62bd43bdf9a806e4e";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -1007,7 +1007,7 @@
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
+        fedimintSourceRev = "04bef79c3b6ac003e68630c62bd43bdf9a806e4e";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the

@@ -386,6 +386,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // including restored guardian children.
     tokio::fs::create_dir_all(&args.data_dir).await?;
     let db = mg_core::db::Db::open(&args.data_dir).await?;
+    // Under the data-root lock, which makes replacing a stale socket safe.
+    mg_core::backup_sync::spawn(&args.data_dir).context("start the backup sync coordinator")?;
     // After the data-root lock, so one daemon at a time writes the dump file.
     #[cfg(target_os = "linux")]
     heap_profile::spawn(args.data_dir.join("heap-profile.heap"));

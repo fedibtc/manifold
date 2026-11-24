@@ -18,6 +18,7 @@
 pub mod admin;
 pub mod admin_http;
 pub mod backup;
+pub mod backup_sync;
 pub mod backup_worker;
 pub mod bundled_fedimintd;
 pub mod cpu_capacity;
