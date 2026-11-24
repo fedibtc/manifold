@@ -454,17 +454,37 @@ async fn withdraw_with_clock(
     reason: Option<String>,
     clock: impl Fn() -> Timestamp,
 ) -> ServiceResult<AdvertisementRecord> {
-    let was_withdrawn = load_advertisement_record(context)
-        .await?
-        .withdrawn_at
-        .is_some();
-    persist_publication_status(
-        context,
-        AdvertisementPublicationStatus::Withdrawn,
-        reason.as_deref(),
-    )
-    .await?;
+    withdraw_inner(context, reason, true, clock).await
+}
+
+/// Expires relay events without turning a failed readiness check into operator intent.
+async fn withdraw_inner(
+    context: &DaemonContext,
+    reason: Option<String>,
+    operator: bool,
+    clock: impl Fn() -> Timestamp,
+) -> ServiceResult<AdvertisementRecord> {
+    let previous = load_advertisement_record(context).await?;
+    let was_withdrawn = previous.withdrawn_at.is_some()
+        || (!operator && previous.status == AdvertisementPublicationStatus::NotReady);
+    if operator {
+        persist_publication_status(
+            context,
+            AdvertisementPublicationStatus::Withdrawn,
+            reason.as_deref(),
+        )
+        .await?;
+    }
     let mut writer = context.advertisement_writer.lock().await;
+    if !operator {
+        // Readiness may have recovered while this pass waited behind another
+        // writer. Never expire that writer's now-ready publication.
+        let readiness = public_readiness(context).await?;
+        if readiness.ready {
+            return load_advertisement_record(context).await;
+        }
+        persist_not_ready(context, &readiness).await?;
+    }
     let relay_states = load_relay_states(context).await?;
     // Both are needed to reach a relay at all: the key that authored the
     // publication, and the advertisement to expire. Missing either means
@@ -473,7 +493,7 @@ async fn withdraw_with_clock(
     let auth_provider = context.auth_provider().await;
     let relay_secret_key = auth_provider.relay_signing_secret_hex();
     let stored = load_advertisement_record(context).await?;
-    if stored.withdrawn_at.is_none() {
+    if operator && stored.withdrawn_at.is_none() {
         // A newer explicit republish superseded this queued withdrawal.
         return Ok(stored);
     }
@@ -504,11 +524,16 @@ async fn withdraw_with_clock(
     };
 
     for relay in relay_states {
-        if load_advertisement_record(context)
-            .await?
-            .withdrawn_at
-            .is_none()
-        {
+        if operator {
+            if load_advertisement_record(context)
+                .await?
+                .withdrawn_at
+                .is_none()
+            {
+                return load_advertisement_record(context).await;
+            }
+        } else if public_readiness(context).await?.ready {
+            // Pacing and earlier relay writes can also outlast the readiness loss.
             return load_advertisement_record(context).await;
         }
         let mut withdraw_error = None;
@@ -641,8 +666,7 @@ pub(crate) async fn reconcile_after_config_change(context: &DaemonContext) -> Se
     if readiness.ready {
         republish(context, false).await?;
     } else {
-        withdraw(context, readiness.reason.clone()).await?;
-        persist_not_ready(context, &readiness).await?;
+        withdraw_inner(context, readiness.reason.clone(), false, now_timestamp).await?;
     }
     Ok(())
 }

@@ -27,15 +27,22 @@ the freshness rule below. They need no new message type. A client that never
 learns of the withdrawal is in the same position as one reading any other
 expired advertisement.
 
-A withdrawal is durable. Publication requires validation to pass *and* no
-standing withdrawal, so no automatic pass (periodic reconciliation, a config
-change, or a relay refresh) returns a withdrawn provider to the relays. Only an
-explicit operator republish does. Withdrawal changes no configuration, so
-without this latch, the next reconciliation would undo the operator's decision
-under a fresh signature while the operator believed they had left the market.
-Withdrawal and ready explicit-republish requests commit their intent before
-queueing for relay writes. The latest committed intent wins, including when a
-request is canceled while queued; superseded queued operations need not send.
+A deliberate operator withdrawal is durable. Publication requires validation to
+pass *and* no standing operator withdrawal, so no automatic pass (periodic
+reconciliation, a config change, or a relay refresh) returns an operator-withdrawn
+provider to the relays. Only an explicit operator republish does. Withdrawal
+changes no configuration, so without this latch, the next reconciliation would
+undo the operator's decision under a fresh signature while the operator believed
+they had left the market.
+Readiness-driven withdrawal does not set or clear that operator intent:
+automatic publication resumes when readiness recovers unless the operator has
+withdrawn. The daemon treats existing persisted withdrawal latches as operator
+intent because older state does not distinguish the two causes; explicit
+republish clears them.
+Operator withdrawal requests and explicit republish requests made while ready
+commit their intent before queueing for relay writes. The latest committed
+intent wins, including when a request is canceled while queued; superseded
+queued operations need not send.
 An in-flight publication cannot clear a newer withdrawal. Relay I/O that has
 started may finish, and a canceled withdrawal may leave that event live until
 expiry.
@@ -46,8 +53,8 @@ wall-clock second strictly newer than the last in-memory attempt. This assumes
 one writer and a nondecreasing wall clock across restart, not durable ordering
 through arbitrary clock rollback. Each clock wait has a separate, bounded budget that
 starts after writer admission; slow relay I/O does not consume the next caller's
-clock budget. A failed or canceled withdrawal retains its committed intent unless
-an explicit republish supersedes it. Relay acknowledgment alone does not prove
+clock budget. A failed or canceled operator withdrawal retains its committed
+intent unless an explicit republish supersedes it. Relay acknowledgment alone does not prove
 visibility on arbitrary relays.
 
 The signed document follows the shared MG/FLIP publication convention: a
