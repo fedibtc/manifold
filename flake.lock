@@ -895,11 +895,11 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795555506,
-        "narHash": "sha256-O3FdIpk/uE4VEyGnXwUWgdFbl54rUkbKgPyXWq5gCWs=",
+        "lastModified": 1795582894,
+        "narHash": "sha256-+rYzkV2FsBNN7GhiVxQ1bXNg+BzmJPRPuu8+VprHm+Q=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "7e4f9bfa1019d656badf288fedb6a49df71d1293",
+        "rev": "6aaf69b7761ecf04c45a2d3bcc8e7a4938f24e59",
         "type": "github"
       },
       "original": {
