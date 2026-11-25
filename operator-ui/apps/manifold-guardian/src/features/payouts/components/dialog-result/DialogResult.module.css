@@ -1,0 +1,23 @@
+.result {
+  @apply m-0 flex flex-col items-center gap-2 py-4 text-center text-sm text-gray-500;
+}
+
+.result p {
+  @apply m-0 max-w-prose;
+}
+
+.glyph {
+  @apply inline-flex h-12 w-12 items-center justify-center rounded-full text-xl;
+}
+
+.glyph[data-tone="success"] {
+  @apply bg-successSoft text-success;
+}
+
+.glyph[data-tone="warning"] {
+  @apply bg-warnSoft text-warning;
+}
+
+.heading {
+  @apply text-xl font-semibold text-ink;
+}

@@ -1,0 +1,23 @@
+.toRow {
+  @apply flex flex-wrap items-center justify-end gap-2;
+}
+
+.link {
+  @apply uLinkButton;
+}
+
+.pool {
+  @apply flex flex-col gap-2 rounded-card bg-warnSoft p-3;
+}
+
+.poolText {
+  @apply m-0 text-sm text-ink;
+}
+
+.caption {
+  @apply uCaption;
+}
+
+.error {
+  @apply uFieldError;
+}

@@ -49,5 +49,5 @@
 }
 
 .srOnly {
-  @apply sr-only;
+  @apply uSrOnly;
 }

@@ -54,18 +54,21 @@
   .uPhraseBox {
     @apply break-words rounded-card border border-muted p-4 font-mono text-sm text-ink;
   }
-  /* A money-out action and what it did. Both sweep surfaces carry the same
-     pair — the control stacked over its outcome sentence — because a sweep and
-     a two-step collection report the same way even though they differ in how
-     many buttons precede the sentence. */
-  .uActionStack {
-    @apply uStack2 items-start;
+  /* Small grey text under a figure: where it comes from, or what to mind. */
+  .uCaption {
+    @apply m-0 text-xs text-gray-500;
   }
-  .uActionOutcome {
-    @apply uStack1 text-sm text-ink;
+  /* An action that reads as a link: Change beside a value, a destructive
+     choice at a dialog's far left. */
+  .uLinkButton {
+    @apply cursor-pointer border-0 bg-transparent p-0 text-sm font-medium text-ink underline;
   }
-  .uTableIntro {
-    @apply border-b border-muted px-4 py-3;
+  /* Text only a screen reader announces, such as which row a button acts on. */
+  .uSrOnly {
+    @apply sr-only;
+  }
+  .uDangerLinkButton {
+    @apply uLinkButton text-error;
   }
   .uTableEmpty {
     @apply uMutedSm px-4 py-3;

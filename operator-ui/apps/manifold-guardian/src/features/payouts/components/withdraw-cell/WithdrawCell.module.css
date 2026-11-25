@@ -1,0 +1,7 @@
+.empty {
+  @apply whitespace-nowrap text-sm text-gray-500;
+}
+
+.hidden {
+  @apply uSrOnly;
+}
