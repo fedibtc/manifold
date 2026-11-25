@@ -8,8 +8,16 @@ use crate::wallet_drain::OutgoingOperation;
 pub struct PayoutJobStatus {
     /// Durable request and native-operation identity.
     pub job: PayoutJob,
-    /// Current native state, absent only before an operation has committed.
-    pub payout: Option<OutgoingOperation>,
+    /// Current native state, by the job's method.
+    pub native: PayoutNativeStatus,
+}
+
+/// The native projection of one job. Each variant is `None` only before an
+/// operation has committed.
+#[derive(Clone, Debug)]
+pub enum PayoutNativeStatus {
+    Lightning(Option<OutgoingOperation>),
+    Ecash(Option<EcashPayoutState>),
 }
 
 impl PayoutJobStatus {

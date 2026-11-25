@@ -19,6 +19,37 @@ pub struct DestinationCap {
     pub remaining_msat: u64,
 }
 
+/// How a payout leaves the wallet, fixed when its request is first recorded.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum PayoutMethod {
+    /// A native Lightning payment to this destination snapshot.
+    Lightning {
+        /// LNURL-pay or Lightning Address read from settings at creation.
+        destination: String,
+    },
+    /// One bearer ecash token of the whole balance, handed to the operator.
+    Ecash,
+}
+
+impl PayoutMethod {
+    pub(crate) fn rail(&self) -> PayoutRail {
+        match self {
+            Self::Lightning { .. } => PayoutRail::Lightning,
+            Self::Ecash => PayoutRail::Ecash,
+        }
+    }
+
+    pub(crate) fn to_wire(&self) -> mg_core::payout_wire::PayoutMethodWire {
+        match self {
+            Self::Lightning { destination } => mg_core::payout_wire::PayoutMethodWire::Lightning {
+                destination: destination.clone(),
+            },
+            Self::Ecash => mg_core::payout_wire::PayoutMethodWire::Ecash,
+        }
+    }
+}
+
 /// The exact wallet scope a payout job owns.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -47,8 +78,9 @@ pub struct PayoutJob {
     pub request_id: PayoutRequestId,
     /// Wallet scope permanently bound to the identity.
     pub scope: PayoutScope,
-    /// Destination snapshot permanently bound to the identity.
-    pub destination: String,
+    /// Method, and for Lightning the destination snapshot, permanently bound
+    /// to the identity.
+    pub method: PayoutMethod,
     /// Native operation recorded after its wallet commit.
     pub operation: Option<PayoutJobOperation>,
     /// Time at which the durable request row was created.
@@ -65,6 +97,8 @@ pub struct PayoutJobOperation {
     pub capped: Option<DestinationCap>,
     /// Time at which MG linked the native operation to the job.
     pub committed_at_ms: u64,
+    /// Time at which the operator confirmed redeeming an ecash payout's token.
+    pub confirmed_at_ms: Option<u64>,
 }
 
 fn serialize_invite_code<Serializer>(

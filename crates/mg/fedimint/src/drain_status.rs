@@ -234,11 +234,19 @@ pub(crate) async fn v1_payout_request_amount(
 pub(crate) async fn payout_for_request(
     client: &ClientHandleArc,
     request_id: &PayoutRequestId,
-    destination: &str,
+    method: &PayoutMethod,
+) -> anyhow::Result<Option<Payout>> {
+    payout_for_request_from(&ClientOperationSource(client), request_id, method).await
+}
+
+async fn payout_for_request_from(
+    source: &dyn OperationSource,
+    request_id: &PayoutRequestId,
+    method: &PayoutMethod,
 ) -> anyhow::Result<Option<Payout>> {
     let mut found = None;
-    for (key, entry) in ClientOperationSource(client).all().await? {
-        let Some(amount_msat) = payout_request_amount(&entry, request_id, destination)? else {
+    for (key, entry) in source.all().await? {
+        let Some(amount_msat) = payout_request_amount(&entry, request_id, method)? else {
             continue;
         };
         anyhow::ensure!(
@@ -255,11 +263,57 @@ pub(crate) async fn payout_for_request(
     Ok(found)
 }
 
+/// The amount of a native payout carrying this request id, `None` when the
+/// operation carries another request or none. An operation carrying the id
+/// under the other method, or a Lightning payment bound to another
+/// destination, fails closed: the ledger and wallet disagree about the request.
 fn payout_request_amount(
     entry: &fedimint_client_module::oplog::OperationLogEntry,
     request_id: &PayoutRequestId,
-    destination: &str,
+    method: &PayoutMethod,
 ) -> anyhow::Result<Option<u64>> {
+    let Some(native) = request_marked_payout(entry, request_id)? else {
+        return Ok(None);
+    };
+    match (method, native) {
+        (
+            PayoutMethod::Lightning { destination },
+            NativePayout::Lightning {
+                metadata,
+                amount_msat,
+            },
+        ) => {
+            ensure_destination_binding(&metadata, destination)?;
+            Ok(Some(amount_msat))
+        }
+        (PayoutMethod::Ecash, NativePayout::Ecash { amount_msat }) => Ok(Some(amount_msat)),
+        _ => anyhow::bail!("native payout request id is bound to another payout method"),
+    }
+}
+
+/// The amount of the exact ecash spend carrying this request id.
+pub(crate) fn ecash_payout_request_amount(
+    entry: &fedimint_client_module::oplog::OperationLogEntry,
+    request_id: &PayoutRequestId,
+) -> anyhow::Result<Option<u64>> {
+    payout_request_amount(entry, request_id, &PayoutMethod::Ecash)
+}
+
+/// One request-marked native payout, before its method is checked.
+enum NativePayout {
+    Lightning {
+        metadata: serde_json::Value,
+        amount_msat: u64,
+    },
+    Ecash {
+        amount_msat: u64,
+    },
+}
+
+fn request_marked_payout(
+    entry: &fedimint_client_module::oplog::OperationLogEntry,
+    request_id: &PayoutRequestId,
+) -> anyhow::Result<Option<NativePayout>> {
     Ok(match entry.operation_module_kind() {
         "ln" => {
             let metadata = entry
@@ -271,13 +325,13 @@ fn payout_request_amount(
             if !has_request_id(&metadata.extra_meta, request_id) {
                 return Ok(None);
             }
-            ensure_destination_binding(&metadata.extra_meta, destination)?;
-            Some(
-                payment
+            Some(NativePayout::Lightning {
+                amount_msat: payment
                     .invoice
                     .amount_milli_satoshis()
                     .context("Lightning v1 payout invoice has no amount")?,
-            )
+                metadata: metadata.extra_meta,
+            })
         }
         "lnv2" => {
             let metadata = entry
@@ -289,11 +343,49 @@ fn payout_request_amount(
             if !has_request_id(&payment.custom_meta, request_id) {
                 return Ok(None);
             }
-            ensure_destination_binding(&payment.custom_meta, destination)?;
-            Some(match &payment.invoice {
-                fedimint_lnv2_common::LightningInvoice::Bolt11(invoice) => invoice
-                    .amount_milli_satoshis()
-                    .context("Lightning v2 payout invoice has no amount")?,
+            Some(NativePayout::Lightning {
+                amount_msat: match &payment.invoice {
+                    fedimint_lnv2_common::LightningInvoice::Bolt11(invoice) => invoice
+                        .amount_milli_satoshis()
+                        .context("Lightning v2 payout invoice has no amount")?,
+                },
+                metadata: payment.custom_meta,
+            })
+        }
+        // Only the out-of-band spend is a payout. A reclaim reissue carries
+        // a different purpose, and a mint-v2 send's change-making reissue,
+        // which repeats the send's metadata, is a `Reissue`, not a `Send`.
+        "mint" => {
+            let metadata = entry
+                .try_meta::<MintV1OperationMeta>()
+                .context("decode mint operation metadata")?;
+            let MintOperationMetaVariant::SpendOOB { oob_notes, .. } = metadata.variant else {
+                return Ok(None);
+            };
+            if !has_request_id(&metadata.extra_meta, request_id) {
+                return Ok(None);
+            }
+            Some(NativePayout::Ecash {
+                amount_msat: oob_notes.total_amount().msats,
+            })
+        }
+        "mintv2" => {
+            let metadata = entry
+                .try_meta::<MintV2OperationMeta>()
+                .context("decode mint-v2 operation metadata")?;
+            let MintV2OperationMeta::Send { ecash, custom_meta } = metadata else {
+                return Ok(None);
+            };
+            if !has_request_id(&custom_meta, request_id) {
+                return Ok(None);
+            }
+            let ecash: fedimint_mintv2_client::ECash = fedimint_core::base32::decode_prefixed(
+                fedimint_core::base32::FEDIMINT_PREFIX,
+                &ecash,
+            )
+            .context("decode mint-v2 ecash payout")?;
+            Some(NativePayout::Ecash {
+                amount_msat: ecash.amount().msats,
             })
         }
         _ => None,

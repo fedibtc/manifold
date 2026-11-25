@@ -19,7 +19,7 @@ pub(crate) async fn create(
     db: &Db,
     request_id: &PayoutRequestId,
     scope: &PayoutScope,
-    destination: &str,
+    method: &PayoutMethod,
 ) -> anyhow::Result<PayoutJob> {
     let (kind, federation_id, seat_id, invite_code) = match scope {
         PayoutScope::PaymentFederation { federation_id } => {
@@ -36,13 +36,17 @@ pub(crate) async fn create(
             Some(invite_code.to_string()),
         ),
     };
-    sqlx::query("INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, invite_code, destination, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING")
-        .bind(request_id.as_str()).bind(kind).bind(federation_id).bind(seat_id).bind(invite_code).bind(destination).bind(now_ms()).execute(db.pool()).await?;
+    let (method_kind, destination) = match method {
+        PayoutMethod::Lightning { destination } => ("lightning", Some(destination.as_str())),
+        PayoutMethod::Ecash => ("ecash", None),
+    };
+    sqlx::query("INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING")
+        .bind(request_id.as_str()).bind(kind).bind(federation_id).bind(seat_id).bind(invite_code).bind(method_kind).bind(destination).bind(now_ms()).execute(db.pool()).await?;
     let job = get(db, request_id)
         .await?
         .expect("inserted payout row is readable");
     anyhow::ensure!(
-        job.scope == *scope && job.destination == destination,
+        job.scope == *scope && job.method == *method,
         "payout request id is already bound to different inputs"
     );
     Ok(job)
@@ -55,6 +59,43 @@ pub(crate) async fn get(
     let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
         .bind(request_id.as_str()).fetch_optional(db.pool()).await?;
     row.map(parse).transpose()
+}
+
+/// Ecash jobs the operator has not confirmed, oldest first. Reclaimed and
+/// already-spent jobs are among them: whether a reclaim exists is the wallet
+/// database's fact, not this ledger's.
+pub(crate) async fn unconfirmed_ecash(db: &Db) -> anyhow::Result<Vec<PayoutJob>> {
+    let rows: Vec<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs WHERE method = 'ecash' AND confirmed_at_ms IS NULL ORDER BY created_at_ms, request_id")
+        .fetch_all(db.pool()).await?;
+    rows.into_iter().map(parse).collect()
+}
+
+/// The newest `limit` jobs of both methods, newest first.
+pub(crate) async fn recent(db: &Db, limit: u32) -> anyhow::Result<Vec<PayoutJob>> {
+    let rows: Vec<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs ORDER BY created_at_ms DESC, request_id DESC LIMIT ?")
+        .bind(limit).fetch_all(db.pool()).await?;
+    rows.into_iter().map(parse).collect()
+}
+
+/// Record the operator's confirmation of a committed ecash payout once.
+/// Repeating it keeps the first time.
+pub(crate) async fn confirm(db: &Db, request_id: &PayoutRequestId) -> anyhow::Result<PayoutJob> {
+    sqlx::query("UPDATE payout_jobs SET confirmed_at_ms = ? WHERE request_id = ? AND method = 'ecash' AND operation_id IS NOT NULL AND confirmed_at_ms IS NULL")
+        .bind(now_ms()).bind(request_id.as_str()).execute(db.pool()).await?;
+    let job = get(db, request_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("payout request {request_id} does not exist"))?;
+    anyhow::ensure!(
+        job.method == PayoutMethod::Ecash,
+        "only an ecash payout can be confirmed"
+    );
+    anyhow::ensure!(
+        job.operation
+            .as_ref()
+            .is_some_and(|op| op.confirmed_at_ms.is_some()),
+        "ecash payout has no issued token to confirm"
+    );
+    Ok(job)
 }
 
 pub(crate) async fn commit(
@@ -97,13 +138,15 @@ struct Row {
     federation_id: String,
     seat_id: Option<String>,
     invite_code: Option<String>,
-    destination: String,
+    method: String,
+    destination: Option<String>,
     operation_id: Option<String>,
     amount_msat: Option<i64>,
     cap_maximum_msat: Option<i64>,
     cap_remaining_msat: Option<i64>,
     created_at_ms: i64,
     committed_at_ms: Option<i64>,
+    confirmed_at_ms: Option<i64>,
 }
 fn parse(r: Row) -> anyhow::Result<PayoutJob> {
     let request_id = PayoutRequestId::parse(&r.request_id)?;
@@ -117,6 +160,12 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
         },
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: invalid scope shape"),
     };
+    let method = match (r.method.as_str(), r.destination) {
+        ("lightning", Some(destination)) => PayoutMethod::Lightning { destination },
+        ("ecash", None) => PayoutMethod::Ecash,
+        _ => anyhow::bail!("corrupt payout_jobs row {request_id}: invalid method shape"),
+    };
+    let confirmed_at_ms = r.confirmed_at_ms.map(u64::try_from).transpose()?;
     let capped = match (r.cap_maximum_msat, r.cap_remaining_msat) {
         (None, None) => None,
         (Some(maximum), Some(remaining)) => Some(DestinationCap {
@@ -128,8 +177,8 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
     let operation = match (r.operation_id, r.amount_msat, r.committed_at_ms) {
         (None, None, None) => {
             anyhow::ensure!(
-                capped.is_none(),
-                "corrupt payout_jobs row {request_id}: destination cap without an operation"
+                capped.is_none() && confirmed_at_ms.is_none(),
+                "corrupt payout_jobs row {request_id}: operation facts without an operation"
             );
             None
         }
@@ -138,13 +187,14 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
             amount_msat: u64::try_from(amount)?,
             capped,
             committed_at_ms: u64::try_from(at)?,
+            confirmed_at_ms,
         }),
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: partial operation commit"),
     };
     Ok(PayoutJob {
         request_id,
         scope,
-        destination: r.destination,
+        method,
         operation,
         created_at_ms: u64::try_from(r.created_at_ms)?,
     })
