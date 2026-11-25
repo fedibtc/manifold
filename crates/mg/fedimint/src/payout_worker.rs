@@ -18,6 +18,10 @@ use crate::payout_job_status::PayoutJobStatus;
 use crate::wallet_drain::{OutgoingOperation, WalletDrainStatus};
 use crate::{ClientScope, OpenWait, Wallet};
 
+/// How many of the newest payouts a list holds. Every listed job opens its
+/// wallet to read its state.
+const RECENT_PAYOUTS: u32 = 20;
+
 pub(crate) struct PayoutWorker {
     wallet: Option<Arc<Wallet>>,
     db: Db,
@@ -64,7 +68,11 @@ trait PayoutNative: Send + Sync {
         job: &PayoutJob,
         id: crate::payout_operation_id::PayoutOperationId,
         wait: bool,
-    ) -> anyhow::Result<OutgoingOperation>;
+    ) -> anyhow::Result<PayoutNativeStatus>;
+
+    /// Submit, or find already submitted, the reclaim of one committed ecash
+    /// payout's notes.
+    async fn reclaim(&self, job: &PayoutJob, id: PayoutOperationId) -> anyhow::Result<()>;
 }
 
 /// Production Fedimint implementation of [`PayoutNative`].
@@ -116,6 +124,30 @@ impl EcashPayoutWorker for PayoutWorker {
         };
         let job = self.start_job(request_id, job.scope.clone()).await?;
         Ok(Some(job.to_wire()))
+    }
+    async fn confirm_ecash_payout(
+        &self,
+        request_id: &PayoutRequestId,
+    ) -> anyhow::Result<PayoutJobWire> {
+        Ok(crate::payout_store::confirm(&self.db, request_id)
+            .await?
+            .to_wire())
+    }
+    async fn cancel_ecash_payout(
+        &self,
+        request_id: &PayoutRequestId,
+    ) -> anyhow::Result<PayoutJobStatusWire> {
+        Ok(self.cancel(request_id).await?.to_wire(true))
+    }
+    async fn list_payouts(&self) -> anyhow::Result<PayoutsWire> {
+        Ok(PayoutsWire {
+            payouts: self
+                .list()
+                .await?
+                .iter()
+                .map(|status| status.to_wire(false))
+                .collect(),
+        })
     }
     async fn payout_status(
         &self,
@@ -470,15 +502,26 @@ impl PayoutWorker {
         &self,
         request_id: &PayoutRequestId,
         scope: PayoutScope,
+        rail: PayoutRail,
     ) -> anyhow::Result<PayoutJob> {
         let job = match crate::payout_store::get(&self.db, request_id).await? {
-            Some(j) if j.scope == scope => j,
-            Some(_) => anyhow::bail!("payout request id is already bound to a different scope"),
+            Some(j) if j.scope != scope => {
+                anyhow::bail!("payout request id is already bound to a different scope")
+            }
+            Some(j) if j.method.rail() != rail => {
+                anyhow::bail!("payout request id is already bound to a different payout method")
+            }
+            Some(j) => j,
             None => {
-                let dest = crate::payout_store::destination(&self.db)
-                    .await?
-                    .context("no payout destination configured")?;
-                crate::payout_store::create(&self.db, request_id, &scope, &dest).await?
+                let method = match rail {
+                    PayoutRail::Lightning => PayoutMethod::Lightning {
+                        destination: crate::payout_store::destination(&self.db)
+                            .await?
+                            .context("no payout destination configured")?,
+                    },
+                    PayoutRail::Ecash => PayoutMethod::Ecash,
+                };
+                crate::payout_store::create(&self.db, request_id, &scope, &method).await?
             }
         };
         validate_scope(&job.scope)?;
@@ -542,15 +585,21 @@ impl PayoutWorker {
         let job = crate::payout_store::get(&self.db, request_id)
             .await?
             .context("unknown payout request id")?;
+        self.project(job, wait).await
+    }
+
+    /// One job with its native state, read from the wallet.
+    async fn project(&self, job: PayoutJob, wait: bool) -> anyhow::Result<PayoutJobStatus> {
         let job = self.reconcile(job).await?;
-        let payout = if let Some(op) = &job.operation {
-            Some(self.observe(&job, op.operation_id.clone(), wait).await?)
-        } else if wait {
-            anyhow::bail!("payout request has no committed native operation")
-        } else {
-            None
+        let native = match (&job.method, &job.operation) {
+            (_, None) if wait => {
+                anyhow::bail!("payout request has no committed native operation")
+            }
+            (PayoutMethod::Lightning { .. }, None) => PayoutNativeStatus::Lightning(None),
+            (PayoutMethod::Ecash, None) => PayoutNativeStatus::Ecash(None),
+            (_, Some(op)) => self.observe(&job, op.operation_id.clone(), wait).await?,
         };
-        Ok(PayoutJobStatus { job, payout })
+        Ok(PayoutJobStatus { job, native })
     }
     async fn observe(
         &self,
@@ -560,6 +609,71 @@ impl PayoutWorker {
     ) -> anyhow::Result<OutgoingOperation> {
         validate_scope(&job.scope)?;
         self.native.observe(job, id, wait).await
+    }
+
+    /// The committed, linked ecash job for a reclaim.
+    async fn issued_ecash_job(
+        &self,
+        request_id: &PayoutRequestId,
+    ) -> anyhow::Result<(PayoutJob, PayoutOperationId)> {
+        let job = crate::payout_store::get(&self.db, request_id)
+            .await?
+            .context("unknown payout request id")?;
+        anyhow::ensure!(
+            job.method == PayoutMethod::Ecash,
+            "payout request is not an ecash payout"
+        );
+        let job = self.reconcile(job).await?;
+        let id = job
+            .operation
+            .as_ref()
+            .map(|op| op.operation_id.clone())
+            .context("ecash payout has no issued token")?;
+        Ok((job, id))
+    }
+
+    /// Submit the reclaim of a payout's notes under the scope fence, then
+    /// await the federation's answer outside it. A confirmation does not
+    /// prevent it: the operator's word that a token arrived can be wrong, and
+    /// the reclaim itself finds out whether the notes were spent.
+    async fn cancel(&self, request_id: &PayoutRequestId) -> anyhow::Result<PayoutJobStatus> {
+        let (job, id) = self.issued_ecash_job(request_id).await?;
+        {
+            let _fence = self.start_exclusion(&job.scope).await;
+            validate_scope(&job.scope)?;
+            self.native.reclaim(&job, id).await?;
+        }
+        self.status(request_id, true).await
+    }
+
+    /// The newest [`RECENT_PAYOUTS`] jobs of both methods, plus every older
+    /// ecash job still in progress, newest first. An issued token or a running reclaim
+    /// is never pushed out of the list by newer payouts. A job left without a
+    /// link by a crash is reconciled first, so a committed token is never
+    /// hidden. A job that still has no operation after that is a start that
+    /// never happened, not a payout, and is left out.
+    async fn list(&self) -> anyhow::Result<Vec<PayoutJobStatus>> {
+        let recent = crate::payout_store::recent(&self.db, RECENT_PAYOUTS).await?;
+        let mut listed = Vec::with_capacity(recent.len());
+        for job in crate::payout_store::unconfirmed_ecash(&self.db).await? {
+            if recent.iter().any(|r| r.request_id == job.request_id) {
+                continue;
+            }
+            let status = self.project(job, false).await?;
+            if matches!(&status.native, PayoutNativeStatus::Ecash(Some(state)) if state.is_open()) {
+                listed.push(status);
+            }
+        }
+        for job in recent {
+            let status = self.project(job, false).await?;
+            if status.job.operation.is_some() {
+                listed.push(status);
+            }
+        }
+        listed.sort_by(|a, b| {
+            (b.job.created_at_ms, &b.job.request_id).cmp(&(a.job.created_at_ms, &a.job.request_id))
+        });
+        Ok(listed)
     }
 }
 
@@ -580,81 +694,30 @@ fn validate_scope(scope: &PayoutScope) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[async_trait::async_trait]
-impl PayoutNative for WalletPayoutNative {
-    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
-        match &job.scope {
-            PayoutScope::PaymentFederation { federation_id } => {
-                let id = federation_id
+impl WalletPayoutNative {
+    /// The wallet's fence identity for one payout scope.
+    fn client_scope(scope: &PayoutScope) -> anyhow::Result<ClientScope> {
+        Ok(match scope {
+            PayoutScope::PaymentFederation { federation_id } => ClientScope::Payment(
+                federation_id
                     .0
                     .parse()
-                    .map_err(|_| anyhow::anyhow!("malformed federation id"))?;
-                let _lock = self.wallet.payout_exclusion(ClientScope::Payment(id)).await;
-                let client = self.wallet.client(id).await?;
-                if let Some(payout) =
-                    crate::payout_for_request(&client, &job.request_id, &job.destination).await?
-                {
-                    Ok(payout)
-                } else {
-                    crate::start_payout(&client, &job.request_id, &job.destination).await
-                }
-            }
+                    .map_err(|_| anyhow::anyhow!("malformed federation id"))?,
+            ),
             PayoutScope::GuardianFee {
                 invite_code,
                 seat_id,
                 ..
-            } => {
-                let key = (self.guardian_key)(seat_id);
-                let _lock = self
-                    .wallet
-                    .payout_exclusion(ClientScope::Guardian {
-                        federation_id: invite_code.federation_id(),
-                        seat_id: seat_id.to_string(),
-                    })
-                    .await;
-                let client = self
-                    .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
-                    .await?;
-                if let Some(payout) =
-                    crate::payout_for_request(&client, &job.request_id, &job.destination).await?
-                {
-                    Ok(payout)
-                } else {
-                    crate::start_payout(&client, &job.request_id, &job.destination).await
-                }
-            }
-        }
+            } => ClientScope::Guardian {
+                federation_id: invite_code.federation_id(),
+                seat_id: seat_id.to_string(),
+            },
+        })
     }
 
-    async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>> {
-        match &job.scope {
-            PayoutScope::PaymentFederation { federation_id } => {
-                let client = self.wallet.client(federation_id.0.parse()?).await?;
-                crate::payout_for_request(&client, &job.request_id, &job.destination).await
-            }
-            PayoutScope::GuardianFee {
-                invite_code,
-                seat_id,
-                ..
-            } => {
-                let key = (self.guardian_key)(seat_id);
-                let client = self
-                    .wallet
-                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
-                    .await?;
-                crate::payout_for_request(&client, &job.request_id, &job.destination).await
-            }
-        }
-    }
-
-    async fn observe(
-        &self,
-        job: &PayoutJob,
-        id: crate::payout_operation_id::PayoutOperationId,
-        wait: bool,
-    ) -> anyhow::Result<OutgoingOperation> {
-        let client = match &job.scope {
+    /// Open the ordinary client of one payout scope.
+    async fn client(&self, scope: &PayoutScope) -> anyhow::Result<ClientHandleArc> {
+        Ok(match scope {
             PayoutScope::PaymentFederation { federation_id } => {
                 self.wallet.client(federation_id.0.parse()?).await?
             }
@@ -668,12 +731,71 @@ impl PayoutNative for WalletPayoutNative {
                     .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
                     .await?
             }
-        };
-        if wait {
-            crate::await_payout(&client, &job.request_id, &job.destination, &id).await
-        } else {
-            crate::payout_status(&client, &job.request_id, &job.destination, &id).await
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl PayoutNative for WalletPayoutNative {
+    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+        let _lock = self
+            .wallet
+            .payout_exclusion(Self::client_scope(&job.scope)?)
+            .await;
+        let client = self.client(&job.scope).await?;
+        if let Some(payout) =
+            crate::payout_for_request(&client, &job.request_id, &job.method).await?
+        {
+            return Ok(payout);
         }
+        match &job.method {
+            PayoutMethod::Lightning { destination } => {
+                crate::start_payout(&client, &job.request_id, destination).await
+            }
+            PayoutMethod::Ecash => {
+                crate::payout_ecash::start_ecash_payout(&client, &job.request_id).await
+            }
+        }
+    }
+
+    async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>> {
+        let client = self.client(&job.scope).await?;
+        crate::payout_for_request(&client, &job.request_id, &job.method).await
+    }
+
+    async fn observe(
+        &self,
+        job: &PayoutJob,
+        id: PayoutOperationId,
+        wait: bool,
+    ) -> anyhow::Result<PayoutNativeStatus> {
+        let client = self.client(&job.scope).await?;
+        Ok(match &job.method {
+            PayoutMethod::Lightning { destination } => {
+                PayoutNativeStatus::Lightning(Some(if wait {
+                    crate::await_payout(&client, &job.request_id, destination, &id).await?
+                } else {
+                    crate::payout_status(&client, &job.request_id, destination, &id).await?
+                }))
+            }
+            PayoutMethod::Ecash => PayoutNativeStatus::Ecash(Some(
+                crate::payout_ecash::ecash_payout_state(&client, &job.request_id, &id, wait)
+                    .await?,
+            )),
+        })
+    }
+
+    async fn reclaim(&self, job: &PayoutJob, id: PayoutOperationId) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            job.method == PayoutMethod::Ecash,
+            "only an ecash payout can be reclaimed"
+        );
+        let _lock = self
+            .wallet
+            .payout_exclusion(Self::client_scope(&job.scope)?)
+            .await;
+        let client = self.client(&job.scope).await?;
+        crate::payout_ecash::start_ecash_reclaim(&client, &job.request_id, &id).await
     }
 }
 
