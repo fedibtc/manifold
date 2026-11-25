@@ -2,15 +2,17 @@
 
 use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 
+use lightning_invoice::Bolt11Invoice;
+
 use crate::payout_operation_id::PayoutOperationId;
+use crate::wallet_drain::OutgoingRail;
 pub use mg_core::wallet::{PayoutRail, PayoutRequestId};
 
-/// A native Fedimint Lightning payout committed to the wallet database.
+/// A native Fedimint payout committed to the wallet database.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Payout {
     pub operation_id: PayoutOperationId,
     pub amount_msat: u64,
-    pub capped: Option<DestinationCap>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -66,9 +68,41 @@ pub enum PayoutScope {
         /// Seat whose separately derived wallet is swept.
         seat_id: SeatId,
         /// Validated public client invite retained so decommission cannot orphan the job.
-        #[serde(serialize_with = "serialize_invite_code")]
+        #[serde(serialize_with = "serialize_display")]
         invite_code: fedimint_core::invite_code::InviteCode,
     },
+}
+
+/// The Lightning payment a job pays, written before it is paid. Its rail and
+/// invoice name the native operation, so recovery looks that one up.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct LightningAttempt {
+    pub rail: OutgoingRail,
+    #[serde(serialize_with = "serialize_display")]
+    pub invoice: Bolt11Invoice,
+    pub capped: Option<DestinationCap>,
+}
+
+impl LightningAttempt {
+    /// The operation the rail records the first payment of this invoice under.
+    pub(crate) fn operation_id(&self) -> PayoutOperationId {
+        PayoutOperationId::from_native(match self.rail {
+            OutgoingRail::Lnv2 => {
+                fedimint_lnv2_client::LightningClientModule::send_operation_id(&self.invoice)
+            }
+            // A new invoice's payment is its first attempt.
+            OutgoingRail::Lnv1 => fedimint_ln_client::LightningClientModule::get_payment_operation_id(
+                self.invoice.payment_hash(),
+                1,
+            ),
+        })
+    }
+
+    pub(crate) fn amount_msat(&self) -> u64 {
+        self.invoice
+            .amount_milli_satoshis()
+            .expect("an attempt's invoice comes from LNURL-pay with an amount")
+    }
 }
 
 /// One immutable durable payout request and its optional committed operation.
@@ -81,6 +115,9 @@ pub struct PayoutJob {
     /// Method, and for Lightning the destination snapshot, permanently bound
     /// to the identity.
     pub method: PayoutMethod,
+    /// The Lightning payment being paid. Replaceable until an operation is
+    /// committed, and only when the wallet has no operation for it.
+    pub attempt: Option<LightningAttempt>,
     /// Native operation recorded after its wallet commit.
     pub operation: Option<PayoutJobOperation>,
     /// Time at which the durable request row was created.
@@ -101,14 +138,11 @@ pub struct PayoutJobOperation {
     pub confirmed_at_ms: Option<u64>,
 }
 
-fn serialize_invite_code<Serializer>(
-    invite_code: &fedimint_core::invite_code::InviteCode,
+fn serialize_display<Value: std::fmt::Display, Serializer: serde::Serializer>(
+    value: &Value,
     serializer: Serializer,
-) -> Result<Serializer::Ok, Serializer::Error>
-where
-    Serializer: serde::Serializer,
-{
-    serializer.serialize_str(&invite_code.to_string())
+) -> Result<Serializer::Ok, Serializer::Error> {
+    serializer.collect_str(value)
 }
 
 #[cfg(test)]

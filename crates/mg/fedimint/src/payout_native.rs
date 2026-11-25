@@ -1,9 +1,6 @@
-//! Durable request-bound payout start and reconciliation.
+//! Native Lightning payout: prepare an attempt, pay it, and read it back.
 
-use std::str::FromStr as _;
-
-use crate::payout_job::Payout;
-use crate::payout_job::PayoutRequestId;
+use crate::payout_job::{LightningAttempt, Payout, PayoutRequestId};
 use crate::payout_operation_id::PayoutOperationId;
 use crate::wallet_drain::{OutgoingOperation, OutgoingRail};
 use anyhow::Context as _;
@@ -11,6 +8,7 @@ use bitcoin::secp256k1::PublicKey;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::Amount;
 use fedimint_core::core::OperationId;
+use fedimint_core::util::SafeUrl;
 use fedimint_ln_client::LightningClientModule;
 use fedimint_ln_common::config::FeeToAmount as _;
 use fedimint_lnv2_client::{LightningClientModule as LightningV2ClientModule, SelectGatewayError};
@@ -20,44 +18,26 @@ use tracing::{info, warn};
 
 use super::{drain_status, lnurl_pay, payout_observer, select_v1_gateway};
 
-/// Reject a v1 invoice whose payment hash already names a completed operation.
-pub(crate) async fn start_fresh_v1_payment<T, F, Fut>(
-    has_completed_payment: bool,
-    start: F,
-) -> anyhow::Result<T>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<T>>,
-{
-    anyhow::ensure!(
-        !has_completed_payment,
-        "LNURL endpoint reused an already-paid Lightning invoice"
-    );
-    start().await
+/// A Lightning payout sized and invoiced through a selected gateway, not yet
+/// paid.
+pub(crate) struct PreparedPayout {
+    pub(crate) attempt: LightningAttempt,
+    gateway: PreparedGateway,
+    gateway_fee_quote_msat: u64,
 }
 
-/// Require the exact operation returned by the v1 start to carry this payout's
-/// invoice amount after its rail and request metadata have been validated.
-fn validate_committed_v1_payout_amount(
-    committed_amount: anyhow::Result<u64>,
-    amount_msat: u64,
-) -> anyhow::Result<()> {
-    let committed_amount =
-        committed_amount.context("validate committed Lightning v1 payout metadata")?;
-    anyhow::ensure!(
-        committed_amount == amount_msat,
-        "committed Lightning v1 payout amount differs from requested amount"
-    );
-    Ok(())
+enum PreparedGateway {
+    V1(fedimint_ln_common::LightningGateway),
+    V2(SafeUrl, PublicKey),
 }
 
-/// Start a payout and return only after Fedimint has committed its native
-/// operation and state machines to the local wallet database.
-pub(crate) async fn start_payout(
+/// Select the rail and gateway, size the payout to the spendable balance, and
+/// fetch its invoice. Nothing is paid. The invoice must be new to this wallet,
+/// so the operation its attempt names can only be this payout's.
+pub(crate) async fn prepare_payout(
     client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
     destination: &str,
-) -> anyhow::Result<Payout> {
+) -> anyhow::Result<PreparedPayout> {
     let balance = client.get_balance_for_btc().await?;
     anyhow::ensure!(balance != Amount::ZERO, "no balance to sweep");
 
@@ -72,26 +52,21 @@ pub(crate) async fn start_payout(
                 let (invoice, amount, capped) = lnurl_pay(destination, spendable.msats).await?;
                 let gateway_fee_quote_msat =
                     routing_info.send_parameters(&invoice).0.fee(amount).msats;
-                let operation_id = lightning
-                    .send(
-                        invoice,
-                        Some(gateway.clone()),
-                        payout_metadata(request_id, destination),
-                    )
-                    .await?;
-                log_payout_start(
-                    client,
-                    OutgoingRail::Lnv2,
-                    &routing_info.module_public_key,
-                    operation_id,
-                    amount,
-                    gateway_fee_quote_msat,
-                );
-                return Ok(Payout {
-                    operation_id: PayoutOperationId::parse(&operation_id.fmt_full().to_string())
-                        .expect("Fedimint formats a canonical operation id"),
-                    amount_msat: amount,
+                let attempt = LightningAttempt {
+                    rail: OutgoingRail::Lnv2,
+                    invoice,
                     capped,
+                };
+                anyhow::ensure!(
+                    !client
+                        .operation_exists(attempt.operation_id().to_native())
+                        .await,
+                    "LNURL endpoint reused an already-paid Lightning invoice"
+                );
+                return Ok(PreparedPayout {
+                    attempt,
+                    gateway: PreparedGateway::V2(gateway, routing_info.module_public_key),
+                    gateway_fee_quote_msat,
                 });
             }
             Err(error) if has_v1_lightning => {
@@ -111,52 +86,103 @@ pub(crate) async fn start_payout(
         log_v2_fallback(client, V2Fallback::ModuleAbsentOrUnsupported);
     }
 
-    {
-        let lightning = v1_lightning.context("federation has no Lightning v1 module")?;
-        let gateway = select_v1_gateway(client, &lightning, balance).await?;
-        validate_v1_gateway_fees(balance, &gateway.fees)?;
-        let spendable = lightning
-            .spendable_amount(balance, Some(gateway.clone()))
-            .await?;
-        let (invoice, amount, capped) = lnurl_pay(destination, spendable.msats).await?;
-        let has_completed_payment = {
-            let mut dbtx = lightning.db.begin_transaction_nc().await;
-            lightning
-                .get_prev_payment_result(invoice.payment_hash(), &mut dbtx)
-                .await
-                .completed_payment
-                .is_some()
-        };
-        let payment = start_fresh_v1_payment(has_completed_payment, || {
-            lightning.pay_bolt11_invoice(
-                Some(gateway.clone()),
-                invoice,
-                payout_metadata(request_id, destination),
-            )
-        })
+    let lightning = v1_lightning.context("federation has no Lightning v1 module")?;
+    let gateway = select_v1_gateway(client, &lightning, balance).await?;
+    validate_v1_gateway_fees(balance, &gateway.fees)?;
+    let spendable = lightning
+        .spendable_amount(balance, Some(gateway.clone()))
         .await?;
-        let operation_id = payment.payment_type.operation_id();
-        validate_committed_v1_payout_amount(
-            drain_status::v1_payout_request_amount(client, operation_id, request_id, destination)
-                .await,
-            amount,
-        )?;
-        let gateway_fee_quote_msat = gateway.fees.to_amount(&Amount::from_msats(amount)).msats;
-        log_payout_start(
-            client,
-            OutgoingRail::Lnv1,
-            &gateway.gateway_id,
-            operation_id,
-            amount,
-            gateway_fee_quote_msat,
-        );
-        Ok(Payout {
-            operation_id: PayoutOperationId::parse(&operation_id.fmt_full().to_string())
-                .expect("Fedimint formats a canonical operation id"),
-            amount_msat: amount,
+    let (invoice, amount, capped) = lnurl_pay(destination, spendable.msats).await?;
+    // The v1 client numbers payment attempts per payment hash; the attempt's
+    // operation id is the first one's.
+    let attempted = {
+        let mut dbtx = lightning.db.begin_transaction_nc().await;
+        lightning
+            .get_prev_payment_result(invoice.payment_hash(), &mut dbtx)
+            .await
+            .index
+            != 0
+    };
+    anyhow::ensure!(
+        !attempted,
+        "LNURL endpoint reused an already-paid Lightning invoice"
+    );
+    let gateway_fee_quote_msat = gateway.fees.to_amount(&Amount::from_msats(amount)).msats;
+    Ok(PreparedPayout {
+        attempt: LightningAttempt {
+            rail: OutgoingRail::Lnv1,
+            invoice,
             capped,
+        },
+        gateway: PreparedGateway::V1(gateway),
+        gateway_fee_quote_msat,
+    })
+}
+
+/// Pay a prepared payout, whose attempt the ledger already holds, and return
+/// once Fedimint has committed its operation under the attempt's id.
+pub(crate) async fn pay_payout(
+    client: &ClientHandleArc,
+    request_id: &PayoutRequestId,
+    destination: &str,
+    prepared: PreparedPayout,
+) -> anyhow::Result<Payout> {
+    let PreparedPayout {
+        attempt,
+        gateway,
+        gateway_fee_quote_msat,
+    } = prepared;
+    let metadata = payout_metadata(request_id, destination);
+    let (operation_id, gateway_public_key) = match gateway {
+        PreparedGateway::V2(gateway, public_key) => (
+            client
+                .get_first_module::<LightningV2ClientModule>()?
+                .send(attempt.invoice.clone(), Some(gateway), metadata)
+                .await?,
+            public_key,
+        ),
+        PreparedGateway::V1(gateway) => {
+            let public_key = gateway.gateway_id;
+            let payment = client
+                .get_first_module::<LightningClientModule>()?
+                .pay_bolt11_invoice(Some(gateway), attempt.invoice.clone(), metadata)
+                .await?;
+            (payment.payment_type.operation_id(), public_key)
+        }
+    };
+    anyhow::ensure!(
+        PayoutOperationId::from_native(operation_id) == attempt.operation_id(),
+        "Lightning payout started under an operation other than its attempt's"
+    );
+    log_payout_start(
+        client,
+        attempt.rail,
+        &gateway_public_key,
+        operation_id,
+        attempt.amount_msat(),
+        gateway_fee_quote_msat,
+    );
+    Ok(Payout {
+        operation_id: attempt.operation_id(),
+        amount_msat: attempt.amount_msat(),
+    })
+}
+
+/// The payout of the job's recorded Lightning attempt, if the wallet has its
+/// operation.
+pub(crate) async fn attempted_payout(
+    client: &ClientHandleArc,
+    job: &crate::payout_job::PayoutJob,
+) -> Option<Payout> {
+    let attempt = job.attempt.as_ref()?;
+    let operation_id = attempt.operation_id();
+    client
+        .operation_exists(operation_id.to_native())
+        .await
+        .then(|| Payout {
+            operation_id,
+            amount_msat: attempt.amount_msat(),
         })
-    }
 }
 
 /// Enforce the shared send fee-schedule limits and checked native arithmetic
@@ -320,29 +346,13 @@ fn emit_v2_fallback(federation_id: &str, fallback: V2Fallback) {
     }
 }
 
-/// Find one request-marked native payout, Lightning or ecash, without creating
-/// an invoice, payment, or spend.
-pub(crate) async fn payout_for_request(
-    client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
-    method: &crate::payout_job::PayoutMethod,
-) -> anyhow::Result<Option<Payout>> {
-    drain_status::payout_for_request(client, request_id, method).await
-}
-
 /// Read the cached rail state and independent active-state-machine fact for one
 /// exact native payout.
 pub(crate) async fn payout_status(
     client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
-    destination: &str,
     operation_id: &PayoutOperationId,
 ) -> anyhow::Result<crate::wallet_drain::OutgoingOperation> {
-    let operation_id = OperationId::from_str(operation_id.as_str())
-        .expect("PayoutOperationId validates Fedimint's native encoding");
-    let status =
-        drain_status::payout_status(client, operation_id, Some(request_id), Some(destination))
-            .await?;
+    let status = drain_status::payout_status(client, operation_id.to_native()).await?;
     log_payout_rail(client, &status);
     Ok(status)
 }
@@ -351,13 +361,9 @@ pub(crate) async fn payout_status(
 /// rail and mint state without creating another payment.
 pub(crate) async fn await_payout(
     client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
-    destination: &str,
     operation_id: &PayoutOperationId,
 ) -> anyhow::Result<crate::wallet_drain::OutgoingOperation> {
-    let native_id = OperationId::from_str(operation_id.as_str())
-        .expect("PayoutOperationId validates Fedimint's native encoding");
-    drain_status::payout_status(client, native_id, Some(request_id), Some(destination)).await?;
+    drain_status::payout_status(client, operation_id.to_native()).await?;
     let status = payout_observer::await_terminal(client, operation_id).await?;
     log_payout_rail(client, &status);
     Ok(status)

@@ -6,37 +6,13 @@ use bitcoin::secp256k1::PublicKey;
 use fedimint_lnv2_client::SelectGatewayError;
 use lightning_invoice::RoutingFees;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{Layer, Registry};
-
-#[tokio::test]
-async fn completed_v1_invoice_is_rejected_before_payment_start() {
-    let starts = AtomicUsize::new(0);
-    let result = start_fresh_v1_payment(true, || async {
-        starts.fetch_add(1, Ordering::SeqCst);
-        Ok(OperationId([1; 32]))
-    })
-    .await;
-
-    assert!(result.is_err());
-    assert_eq!(starts.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn returned_v1_operation_must_match_exact_committed_payout() {
-    assert!(validate_committed_v1_payout_amount(Ok(1_000), 1_000).is_ok());
-    for result in [Err(anyhow::anyhow!("invalid operation binding")), Ok(999)] {
-        assert!(
-            validate_committed_v1_payout_amount(result, 1_000).is_err(),
-            "returned operation validation must fail closed"
-        );
-    }
-}
 
 #[test]
 fn v1_gateway_fee_validation_applies_send_schedule_limits() {

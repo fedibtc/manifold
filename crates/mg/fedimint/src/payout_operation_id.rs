@@ -3,6 +3,11 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin_hashes::{Hash as _, sha256};
+use fedimint_core::core::OperationId;
+
+use crate::payout_job::PayoutRequestId;
+
 /// An exact native Fedimint payout operation identifier.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize)]
 #[serde(transparent)]
@@ -24,6 +29,28 @@ impl PayoutOperationId {
     /// Return the canonical hexadecimal identifier.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The operation an ecash payout's spend is recorded under: a function of
+    /// its request id alone, so a retry finds the spend instead of making
+    /// another.
+    pub(crate) fn ecash(request_id: &PayoutRequestId) -> Self {
+        let mut engine = sha256::Hash::engine();
+        bitcoin_hashes::HashEngine::input(&mut engine, b"fman-payout-ecash\0");
+        bitcoin_hashes::HashEngine::input(&mut engine, request_id.as_str().as_bytes());
+        Self::from_native(OperationId(
+            sha256::Hash::from_engine(engine).to_byte_array(),
+        ))
+    }
+
+    pub(crate) fn from_native(id: OperationId) -> Self {
+        Self(id.fmt_full().to_string())
+    }
+
+    pub(crate) fn to_native(&self) -> OperationId {
+        self.0
+            .parse()
+            .expect("PayoutOperationId validates Fedimint's native encoding")
     }
 }
 

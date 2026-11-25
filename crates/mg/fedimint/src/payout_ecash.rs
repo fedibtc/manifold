@@ -1,5 +1,6 @@
-//! Native ecash payout: spend a whole wallet into one bearer token, read the
-//! token back from Fedimint's operation log, and reclaim it.
+//! Native ecash payout: spend a whole wallet into one bearer token under the
+//! operation id its request names, read the token back from that operation,
+//! and reclaim it.
 //!
 //! The semantics follow the Fedi app's no-timeout ecash send and cancel. The
 //! spend registers no auto-refund state machine; the token lives in the spend
@@ -137,28 +138,34 @@ impl MintGeneration {
     }
 }
 
-/// Spend the whole balance into one token carrying the federation invite, and
-/// return after the spend, its metadata and the token are committed.
+/// Spend the whole balance into one token carrying the federation invite,
+/// under the operation id the request names, and return after the spend, its
+/// metadata and the token are committed. A spend already recorded under that
+/// id is this payout, found instead of repeated.
 pub(crate) async fn start_ecash_payout(
     client: &ClientHandleArc,
     request_id: &PayoutRequestId,
 ) -> anyhow::Result<Payout> {
+    let operation_id = PayoutOperationId::ecash(request_id);
+    if let Some(payout) = find_ecash_payout(client, &operation_id).await? {
+        return Ok(payout);
+    }
     let generation = MintGeneration::of(client)?;
-    let (operation_id, amount) = match generation {
+    let amount = match generation {
         MintGeneration::V1 => {
             let mint = client.get_first_module::<MintClientModule>()?;
             let balance = client.get_balance_for_btc().await?;
             anyhow::ensure!(balance > Amount::ZERO, "no balance to pay out");
-            let (operation_id, notes) = mint
-                .spend_notes_with_selector(
-                    &AllNotes,
-                    balance,
-                    None,
-                    true,
-                    payout_metadata(request_id),
-                )
-                .await?;
-            (operation_id, notes.total_amount())
+            mint.spend_notes_with_selector_and_operation_id(
+                operation_id.to_native(),
+                &AllNotes,
+                balance,
+                None,
+                true,
+                payout_metadata(request_id),
+            )
+            .await?
+            .total_amount()
         }
         MintGeneration::V2 => {
             let mint = client.get_first_module::<MintV2ClientModule>()?;
@@ -175,9 +182,10 @@ pub(crate) async fn start_ecash_payout(
                 })
                 .context("mint-v2 balance overflows millisatoshis")?;
             anyhow::ensure!(balance > 0, "no balance to pay out");
-            let (operation_id, ecash) = tokio::time::timeout(
+            tokio::time::timeout(
                 MINT_V2_SEND_TIMEOUT,
-                mint.send(
+                mint.send_with_operation_id(
+                    operation_id.to_native(),
                     Amount::from_msats(balance),
                     payout_metadata(request_id),
                     true,
@@ -185,14 +193,13 @@ pub(crate) async fn start_ecash_payout(
             )
             .await
             .context("mint-v2 ecash send timed out")?
-            .map_err(|error| anyhow::anyhow!("mint-v2 ecash send failed: {error}"))?;
-            (operation_id, ecash.amount())
+            .map_err(|error| anyhow::anyhow!("mint-v2 ecash send failed: {error}"))?
+            .amount()
         }
     };
     let payout = Payout {
-        operation_id: payout_operation_id(operation_id),
+        operation_id,
         amount_msat: amount.msats,
-        capped: None,
     };
     info!(
         federation_id = %client.federation_id(),
@@ -204,16 +211,28 @@ pub(crate) async fn start_ecash_payout(
     Ok(payout)
 }
 
+/// The ecash payout recorded under `operation_id`, if its spend exists.
+pub(crate) async fn find_ecash_payout(
+    client: &ClientHandleArc,
+    operation_id: &PayoutOperationId,
+) -> anyhow::Result<Option<Payout>> {
+    Ok(spent_notes(client, operation_id)
+        .await?
+        .map(|notes| Payout {
+            operation_id: operation_id.clone(),
+            amount_msat: notes.amount().msats,
+        }))
+}
+
 /// Read where the notes of one committed ecash payout are. With `wait`, a
 /// submitted reclaim is awaited to its terminal answer; without it, a reclaim
 /// whose state machines are still running reads as `Reclaiming`.
 pub(crate) async fn ecash_payout_state(
     client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
     operation_id: &PayoutOperationId,
     wait: bool,
 ) -> anyhow::Result<EcashPayoutState> {
-    match spent_notes(client, request_id, operation_id).await? {
+    match committed_spend(client, operation_id).await? {
         SpentNotes::V1(notes) => {
             let reclaim_id = crate::reissue_operation_id(&notes);
             let Some(reclaim) = client.operation_log().get_operation(reclaim_id).await else {
@@ -312,7 +331,7 @@ pub(crate) async fn start_ecash_reclaim(
         "purpose": "fman-payout-reclaim",
         "request_id": request_id,
     });
-    let reclaim_id = match spent_notes(client, request_id, operation_id).await? {
+    let reclaim_id = match committed_spend(client, operation_id).await? {
         SpentNotes::V1(notes) => {
             let reclaim_id = crate::reissue_operation_id(&notes);
             if let Err(error) = client
@@ -351,40 +370,52 @@ pub(crate) async fn start_ecash_reclaim(
     Ok(())
 }
 
-/// The notes one request-bound ecash payout spent.
+/// The notes one ecash payout spent.
 enum SpentNotes {
     V1(OOBNotes),
     V2(MintV2Ecash),
 }
 
-/// Read the exact spend operation and require it to be this request's ecash
-/// payout, so a skewed ledger can never hand out or reclaim another spend.
-async fn spent_notes(
+impl SpentNotes {
+    fn amount(&self) -> Amount {
+        match self {
+            Self::V1(notes) => notes.total_amount(),
+            Self::V2(ecash) => ecash.amount(),
+        }
+    }
+}
+
+/// The notes of the committed spend under `operation_id`.
+async fn committed_spend(
     client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
     operation_id: &PayoutOperationId,
 ) -> anyhow::Result<SpentNotes> {
-    let native_id = operation_id
-        .as_str()
-        .parse::<OperationId>()
-        .expect("PayoutOperationId validates Fedimint's native encoding");
-    let entry = client
+    spent_notes(client, operation_id)
+        .await?
+        .context("native ecash payout operation does not exist")
+}
+
+/// Read the spend operation under `operation_id`, which must be an ecash
+/// spend: the ledger chose the id, so anything else there is corruption.
+async fn spent_notes(
+    client: &ClientHandleArc,
+    operation_id: &PayoutOperationId,
+) -> anyhow::Result<Option<SpentNotes>> {
+    let Some(entry) = client
         .operation_log()
-        .get_operation(native_id)
+        .get_operation(operation_id.to_native())
         .await
-        .context("native ecash payout operation does not exist")?;
-    anyhow::ensure!(
-        crate::drain_status::ecash_payout_request_amount(&entry, request_id)?.is_some(),
-        "native operation is not this request's ecash payout"
-    );
-    Ok(match entry.operation_module_kind() {
+    else {
+        return Ok(None);
+    };
+    Ok(Some(match entry.operation_module_kind() {
         "mint" => {
             let MintOperationMetaVariant::SpendOOB { oob_notes, .. } = entry
                 .try_meta::<MintOperationMeta>()
                 .context("decode mint operation metadata")?
                 .variant
             else {
-                unreachable!("ecash payout binding requires an out-of-band spend")
+                anyhow::bail!("ecash payout operation is not an out-of-band spend");
             };
             SpentNotes::V1(oob_notes)
         }
@@ -394,7 +425,7 @@ async fn spent_notes(
                     .try_meta::<MintV2OperationMeta>()
                     .context("decode mint-v2 operation metadata")?
             else {
-                unreachable!("ecash payout binding requires a mint-v2 send")
+                anyhow::bail!("ecash payout operation is not a mint-v2 send");
             };
             SpentNotes::V2(
                 fedimint_core::base32::decode_prefixed(
@@ -404,8 +435,8 @@ async fn spent_notes(
                 .context("decode mint-v2 ecash payout")?,
             )
         }
-        _ => unreachable!("ecash payout binding requires a mint operation"),
-    })
+        kind => anyhow::bail!("ecash payout operation belongs to module {kind}"),
+    }))
 }
 
 fn payout_metadata(request_id: &PayoutRequestId) -> serde_json::Value {
@@ -413,11 +444,6 @@ fn payout_metadata(request_id: &PayoutRequestId) -> serde_json::Value {
         "purpose": "fman-payout",
         "request_id": request_id,
     })
-}
-
-fn payout_operation_id(operation_id: OperationId) -> PayoutOperationId {
-    PayoutOperationId::parse(&operation_id.fmt_full().to_string())
-        .expect("Fedimint formats a canonical operation id")
 }
 
 /// A mint-v1 reissue rejected by the federation means the notes' inputs were
