@@ -33,12 +33,14 @@ describe('useSweepGuardianFees', () => {
       seat_id: 'seat-01',
       invite_code: 'invite'
     },
+    method: 'lightning' as const,
     destination: 'operator@example.com',
     operation: {
       operation_id: 'op-fees-1',
       amount_msat: 8_000_000,
       capped: null,
-      committed_at_ms: 2
+      committed_at_ms: 2,
+      confirmed_at_ms: null
     },
     created_at_ms: 1
   };
@@ -46,12 +48,12 @@ describe('useSweepGuardianFees', () => {
     const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
-    const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
+    const { result } = renderHook(() => useSweepGuardianFees('seat-01', 'lightning'), { wrapper });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(adminCall).toHaveBeenCalledWith({
-      SweepGuardianFees: { seat_id: 'seat-01', request_id: expect.any(String) }
+      SweepGuardianFees: { seat_id: 'seat-01', request_id: expect.any(String), method: 'lightning' }
     });
   });
 
@@ -59,7 +61,7 @@ describe('useSweepGuardianFees', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
-    const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
+    const { result } = renderHook(() => useSweepGuardianFees('seat-01', 'lightning'), { wrapper });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -72,7 +74,7 @@ describe('useSweepGuardianFees', () => {
       .mockRejectedValueOnce(new Error('lost response'))
       .mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
-    const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
+    const { result } = renderHook(() => useSweepGuardianFees('seat-01', 'lightning'), { wrapper });
 
     await expect(result.current.mutateAsync()).rejects.toThrow('lost response');
     await act(async () => {
@@ -102,7 +104,10 @@ describe('useSweepGuardianFees', () => {
       .mockResolvedValueOnce(job);
     const wrapper = wrapperFor(clientWithDestination('typo@exmple.com'));
     const { result } = renderHook(
-      () => ({ sweep: useSweepGuardianFees('seat-01'), save: useSetPayoutDestination() }),
+      () => ({
+        sweep: useSweepGuardianFees('seat-01', 'lightning'),
+        save: useSetPayoutDestination()
+      }),
       { wrapper }
     );
 
@@ -116,7 +121,7 @@ describe('useSweepGuardianFees', () => {
 
     const [[first], , [retry]] = adminCall.mock.calls;
     expect(retry).toEqual({
-      SweepGuardianFees: { seat_id: 'seat-01', request_id: expect.any(String) }
+      SweepGuardianFees: { seat_id: 'seat-01', request_id: expect.any(String), method: 'lightning' }
     });
     expect(retry).not.toEqual(first);
   });
@@ -129,7 +134,7 @@ describe('useSweepGuardianFees', () => {
       .mockRejectedValueOnce(new Error('lost response'))
       .mockResolvedValue(job);
     const client = new QueryClient();
-    const { result } = renderHook(() => useSweepGuardianFees('seat-01'), {
+    const { result } = renderHook(() => useSweepGuardianFees('seat-01', 'lightning'), {
       wrapper: wrapperFor(client)
     });
 

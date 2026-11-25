@@ -5,6 +5,7 @@ import type {
   MonthlyDataBudget,
   OnboardingResponse,
   PaymentFederation,
+  PayoutJobStatusResponse,
   ReadinessReport,
   Remittance,
   SeatGuardianFee,
@@ -75,6 +76,11 @@ export interface MockState {
   /** The one Lightning destination every revenue sweep leaves through. Null
    *  means the sweep verbs refuse rather than invent a payee. */
   payoutDestination: string | null;
+  /** Every payout the fleet has made, of both methods, as `PayoutStatus`
+   *  answers it. Kept in the world because an issued token is money the
+   *  operator has not redeemed yet: it has to outlive a reload, as it outlives a
+   *  daemon restart, and History lists the closed ones. */
+  payouts: PayoutJobStatusResponse[];
   onboarding: OnboardingResponse;
   /** The operator's seat-admission ceiling (`offer_state.max_seats`), null
    *  when automatic: written by `ConfigureInitialOffer` and `SetCapacity`,

@@ -59,6 +59,7 @@ describe('useGuardianFeeRows', () => {
           seatId: 'seat-live-01',
           collectableMsat: 16_000_000,
           collectedEcashMsat: 8_000_000,
+          sweepableMsat: 7_960_000,
           earning: true
         }
       ])
@@ -92,7 +93,13 @@ describe('useGuardianFeeRows', () => {
 
     await waitFor(() =>
       expect(result.current).toEqual([
-        { seatId: 'seat-live-01', collectableMsat: null, collectedEcashMsat: null, earning: null }
+        {
+          seatId: 'seat-live-01',
+          collectableMsat: null,
+          collectedEcashMsat: null,
+          sweepableMsat: null,
+          earning: null
+        }
       ])
     );
   });

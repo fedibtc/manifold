@@ -475,3 +475,127 @@ describe('guardian link', () => {
     expect(getState().guardianLink.offer).toBeNull();
   });
 });
+
+describe('payouts', () => {
+  const FEDERATION_A = 'fed1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const balance = () =>
+    getState().paymentFederations.find((federation) => federation.federation_id === FEDERATION_A)
+      ?.wallet.available_ecash_msat;
+  // An ecash sweep answers the job; the token comes from the payout's status.
+  const issue = (request_id: string) => {
+    const started = dispatch({
+      SweepPaymentFees: { federation_id: FEDERATION_A, request_id, method: 'ecash' }
+    });
+    return (
+      'Err' in (started as object) ? started : dispatch({ PayoutStatus: { request_id } })
+    ) as {
+      Ok: { job: { operation: { amount_msat: number } }; ecash: { state: string; token?: string } };
+    };
+  };
+  const list = () =>
+    (
+      dispatch('ListPayouts') as {
+        Ok: {
+          payouts: { job: { request_id: string }; ecash?: unknown; payout?: { state: string } }[];
+        };
+      }
+    ).Ok.payouts;
+
+  // The mock is what the dashboard's tests run against, so it keeps the
+  // daemon's idempotency: a retry under the same id is the same payout.
+  it('should answer a retried request id with the first payout and spend once', () => {
+    resetState('earnings');
+
+    const first = issue('r1');
+    const retry = issue('r1');
+
+    expect(retry).toEqual(first);
+    expect(first.Ok.job.operation.amount_msat).toBe(150_000_000);
+    expect(balance()).toBe(0);
+    expect(list()).toHaveLength(1);
+  });
+
+  // As the daemon does, a polled list never carries the bearer token; the
+  // payout's own status does.
+  it('should list an issued payout without its token', () => {
+    resetState('earnings');
+    const issued = issue('r1');
+
+    const token = issued.Ok.ecash.token;
+    expect(token).toEqual(expect.any(String));
+    expect(list()[0]?.ecash).toEqual({ state: 'issued', token: null });
+    expect(JSON.stringify(list())).not.toContain(token as string);
+    expect(dispatch({ PayoutStatus: { request_id: 'r1' } })).toEqual(issued);
+  });
+
+  it('should refuse a request id already used for a Lightning sweep', () => {
+    resetState('earnings');
+    dispatch({ SweepPaymentFees: { federation_id: FEDERATION_A, request_id: 'lightning-1' } });
+
+    const refused = issue('lightning-1') as unknown as { Err: { message: string } };
+
+    expect(refused.Err.message).toBe(
+      'payout request id is already bound to a different payout method'
+    );
+  });
+
+  it('should put a cancelled payout back into its balance and keep it listed as returned', () => {
+    resetState('earnings');
+    issue('cancel-1');
+
+    const cancelled = dispatch({ CancelEcashPayout: { request_id: 'cancel-1' } }) as {
+      Ok: { ecash: { state: string } };
+    };
+
+    expect(cancelled.Ok.ecash.state).toBe('reclaimed');
+    expect(balance()).toBe(150_000_000);
+    expect(list().map((payout) => payout.ecash)).toEqual([{ state: 'reclaimed' }]);
+  });
+
+  // Marking a token redeemed is no longer a one-way door: one that never
+  // arrived can still be taken back.
+  it('should take back a payout the operator marked redeemed', () => {
+    resetState('earnings');
+    issue('confirm-1');
+    dispatch({ ConfirmEcashPayout: { request_id: 'confirm-1' } });
+
+    const cancelled = dispatch({ CancelEcashPayout: { request_id: 'confirm-1' } }) as {
+      Ok: { ecash: { state: string } };
+    };
+
+    expect(cancelled.Ok.ecash.state).toBe('reclaimed');
+    expect(balance()).toBe(150_000_000);
+  });
+
+  it('should list newest first and keep an older open token past the limit', () => {
+    resetState('earnings');
+    getState().payouts = [];
+    // The open token, one closed payout, then twenty newer ones.
+    const ids = ['old-open', 'closed', ...Array.from({ length: 20 }, (_, n) => `newer-${n}`)];
+    ids.forEach((id, at) => {
+      getState().payouts.push({
+        job: {
+          request_id: id,
+          scope: { kind: 'payment_federation', federation_id: FEDERATION_A },
+          method: 'ecash',
+          operation: {
+            operation_id: `op-${id}`,
+            amount_msat: 1_000,
+            capped: null,
+            committed_at_ms: at,
+            confirmed_at_ms: null
+          },
+          created_at_ms: at
+        },
+        ecash: id === 'old-open' ? { state: 'issued', token: 'fedimint1x' } : { state: 'reclaimed' }
+      });
+    });
+
+    const listed = list().map((payout) => payout.job.request_id);
+
+    expect(listed).toHaveLength(21);
+    expect(listed.slice(0, 2)).toEqual(['newer-19', 'newer-18']);
+    expect(listed.at(-1)).toBe('old-open');
+    expect(listed).not.toContain('closed');
+  });
+});

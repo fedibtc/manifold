@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import type { GuardianFeeRow } from '@/features/payouts/hooks/use-guardian-fee-rows/useGuardianFeeRows';
 import { GuardianFeeTable } from '../GuardianFeeTable';
 
@@ -9,6 +9,7 @@ const rows: GuardianFeeRow[] = [
     seatId: 'seat-earning-01',
     collectableMsat: 16_000_000,
     collectedEcashMsat: 8_000_000,
+    sweepableMsat: 7_960_000,
     earning: true
   }
 ];
@@ -17,16 +18,19 @@ const emptyRow: GuardianFeeRow = {
   seatId: 'seat-earning-01',
   collectableMsat: 0,
   collectedEcashMsat: 0,
+  sweepableMsat: 0,
   earning: true
 };
 
-const renderTable = (guardianFeeRows: GuardianFeeRow[], hasDestination = true) => {
+const renderTable = (guardianFeeRows: GuardianFeeRow[]) => {
+  const onWithdraw = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <GuardianFeeTable rows={guardianFeeRows} hasDestination={hasDestination} />
+      <GuardianFeeTable rows={guardianFeeRows} onWithdraw={onWithdraw} />
     </QueryClientProvider>
   );
+  return onWithdraw;
 };
 
 describe('GuardianFeeTable', () => {
@@ -65,23 +69,25 @@ describe('GuardianFeeTable', () => {
     expect(screen.getAllByText('—')).toHaveLength(2);
   });
 
-  // The two steps are the point: a collection moves money out of the pool, and
-  // only a second action sends it. One button would hide that.
-  it('should offer both steps per seat', () => {
-    renderTable(rows);
+  // Collecting happens inside the withdraw dialog, so one button serves a seat.
+  it('should offer one Withdraw per seat, opening that seat', () => {
+    const onWithdraw = renderTable(rows);
 
-    expect(screen.getByRole('button', { name: 'Collect fees' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Collect/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Withdraw/ }));
+    expect(onWithdraw).toHaveBeenCalledWith('seat-earning-01');
   });
 
-  it('should say what this revenue is and that it arrives in batches', () => {
-    renderTable(rows);
+  // Fees still in the pool can be collected from the dialog, so the seat is
+  // not empty until the pool is empty too.
+  it('should offer Withdraw for fees only in the pool, and nothing for an empty seat', () => {
+    renderTable([
+      { ...emptyRow, collectableMsat: 5_000_000 },
+      { ...emptyRow, seatId: 'seat-empty-01' }
+    ]);
 
-    expect(
-      screen.getByText(
-        'Ongoing fees from payments in federations you guard. They arrive in batches, not one payment at a time.'
-      )
-    ).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Withdraw/ })).toHaveLength(1);
+    expect(screen.getByText('Nothing to withdraw')).toBeInTheDocument();
   });
 
   it('should explain an empty table instead of showing bare headers', () => {
@@ -92,7 +98,7 @@ describe('GuardianFeeTable', () => {
         'No guardian fees yet. They appear once a federation you guard is running and its members start sending payments.'
       )
     ).toBeInTheDocument();
-    expect(screen.queryByText('In the pool')).toBeNull();
+    expect(screen.queryByText('In the fee pool')).toBeNull();
   });
 
   it('should answer why the figures are zero when every pool is empty', () => {

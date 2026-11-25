@@ -28,8 +28,15 @@ describe('useSweepPaymentFees', () => {
   const job = {
     request_id: 'request-1',
     scope: { kind: 'payment_federation' as const, federation_id: 'fed1aaa' },
+    method: 'lightning' as const,
     destination: 'operator@example.com',
-    operation: { operation_id: 'op-1', amount_msat: 250_000_000, capped: null, committed_at_ms: 2 },
+    operation: {
+      operation_id: 'op-1',
+      amount_msat: 250_000_000,
+      capped: null,
+      committed_at_ms: 2,
+      confirmed_at_ms: null
+    },
     created_at_ms: 1
   };
   // The request carries the federation and a retry-stable request id: no amount, because a
@@ -39,12 +46,16 @@ describe('useSweepPaymentFees', () => {
     const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
-    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa'), { wrapper });
+    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa', 'lightning'), { wrapper });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(adminCall).toHaveBeenCalledWith({
-      SweepPaymentFees: { federation_id: 'fed1aaa', request_id: expect.any(String) }
+      SweepPaymentFees: {
+        federation_id: 'fed1aaa',
+        request_id: expect.any(String),
+        method: 'lightning'
+      }
     });
   });
 
@@ -52,7 +63,7 @@ describe('useSweepPaymentFees', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
-    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa'), { wrapper });
+    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa', 'lightning'), { wrapper });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -65,7 +76,7 @@ describe('useSweepPaymentFees', () => {
       .mockRejectedValueOnce(new Error('lost response'))
       .mockResolvedValue(job);
     const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
-    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa'), { wrapper });
+    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa', 'lightning'), { wrapper });
 
     await expect(result.current.mutateAsync()).rejects.toThrow('lost response');
     await act(async () => {
@@ -95,7 +106,10 @@ describe('useSweepPaymentFees', () => {
       .mockResolvedValueOnce(job);
     const wrapper = wrapperFor(clientWithDestination('typo@exmple.com'));
     const { result } = renderHook(
-      () => ({ sweep: useSweepPaymentFees('fed1aaa'), save: useSetPayoutDestination() }),
+      () => ({
+        sweep: useSweepPaymentFees('fed1aaa', 'lightning'),
+        save: useSetPayoutDestination()
+      }),
       { wrapper }
     );
 
@@ -109,7 +123,11 @@ describe('useSweepPaymentFees', () => {
 
     const [[first], , [retry]] = adminCall.mock.calls;
     expect(retry).toEqual({
-      SweepPaymentFees: { federation_id: 'fed1aaa', request_id: expect.any(String) }
+      SweepPaymentFees: {
+        federation_id: 'fed1aaa',
+        request_id: expect.any(String),
+        method: 'lightning'
+      }
     });
     expect(retry).not.toEqual(first);
   });
@@ -122,7 +140,7 @@ describe('useSweepPaymentFees', () => {
       .mockRejectedValueOnce(new Error('lost response'))
       .mockResolvedValue(job);
     const client = new QueryClient();
-    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa'), {
+    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa', 'lightning'), {
       wrapper: wrapperFor(client)
     });
 
@@ -134,5 +152,59 @@ describe('useSweepPaymentFees', () => {
 
     const [[first], [retry]] = adminCall.mock.calls;
     expect(retry).toEqual(first);
+  });
+
+  // An ecash payout needs no destination, and a lost response is retried under
+  // the same id: a new one would spend whatever came in since.
+  it('should ask for ecash without a destination and retry it under the same id', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockRejectedValueOnce(new Error('lost response'))
+      .mockResolvedValue({ ...job, method: 'ecash' });
+    const wrapper = wrapperFor(clientWithDestination(null));
+    const { result } = renderHook(() => useSweepPaymentFees('fed1aaa', 'ecash'), { wrapper });
+
+    await expect(result.current.mutateAsync()).rejects.toThrow('lost response');
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    const [[first], [retry]] = adminCall.mock.calls;
+    expect(first).toEqual({
+      SweepPaymentFees: {
+        federation_id: 'fed1aaa',
+        request_id: expect.any(String),
+        method: 'ecash'
+      }
+    });
+    expect(retry).toEqual(first);
+  });
+
+  // The daemon binds an id to its first method, so a retry after switching to
+  // the other method would be refused under the old id.
+  it('should use a new id once the operator switches method after a failure', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockRejectedValueOnce(new Error('no gateway'))
+      .mockResolvedValue({ ...job, method: 'ecash' });
+    const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
+    const { result, rerender } = renderHook(
+      ({ method }: { method: 'lightning' | 'ecash' }) => useSweepPaymentFees('fed1aaa', method),
+      { wrapper, initialProps: { method: 'lightning' as 'lightning' | 'ecash' } }
+    );
+
+    await expect(result.current.mutateAsync()).rejects.toThrow('no gateway');
+    rerender({ method: 'ecash' });
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    const ids = adminCall.mock.calls.map(([request]) => {
+      if (typeof request !== 'object' || !('SweepPaymentFees' in request)) {
+        throw new Error('expected SweepPaymentFees request');
+      }
+      return request.SweepPaymentFees.request_id;
+    });
+    expect(ids[1]).not.toBe(ids[0]);
   });
 });

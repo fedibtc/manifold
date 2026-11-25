@@ -1,7 +1,7 @@
 import type { PaymentFederation } from '@operator-ui/types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { walletStatus } from '@/mocks/wallet-status';
 import { PaymentSweepTable } from '../PaymentSweepTable';
 
@@ -14,23 +14,33 @@ const federations: PaymentFederation[] = [
   }
 ];
 
-const renderTable = (rows: PaymentFederation[], hasDestination = true) => {
+const renderTable = (rows: PaymentFederation[]) => {
+  const onWithdraw = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <PaymentSweepTable federations={rows} hasDestination={hasDestination} />
+      <PaymentSweepTable federations={rows} onWithdraw={onWithdraw} />
     </QueryClientProvider>
   );
+  return onWithdraw;
 };
 
 describe('PaymentSweepTable', () => {
-  it('should offer one sweep per payment federation', () => {
-    renderTable([
-      ...federations,
-      { ...federations[0], federation_id: 'fed1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }
-    ]);
+  it('should offer one Withdraw per payment federation, opening that federation', () => {
+    const second = 'fed1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const onWithdraw = renderTable([...federations, { ...federations[0], federation_id: second }]);
 
-    expect(screen.getAllByRole('button', { name: 'Withdraw' })).toHaveLength(2);
+    const buttons = screen.getAllByRole('button', { name: /^Withdraw/ });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1] as HTMLElement);
+    expect(onWithdraw).toHaveBeenCalledWith(second);
+  });
+
+  it('should say there is nothing to withdraw from an empty wallet, with no button', () => {
+    renderTable([{ ...federations[0], wallet: walletStatus(0) }]);
+
+    expect(screen.getByText('Nothing to withdraw')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Withdraw/ })).toBeNull();
   });
 
   it('should show the balance a sweep would move', () => {
@@ -45,12 +55,8 @@ describe('PaymentSweepTable', () => {
     renderTable([{ ...federations[0], wallet: walletStatus(null) }]);
 
     expect(screen.getByText('—')).toBeInTheDocument();
-  });
-
-  it('should gate every row when no payout destination is stored', () => {
-    renderTable(federations, false);
-
-    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeDisabled();
+    // The daemon decides whether an unread balance holds anything.
+    expect(screen.getByRole('button', { name: /^Withdraw/ })).toBeEnabled();
   });
 
   // Carried over from the Wallet screen this table replaced. A stranded balance
@@ -71,15 +77,5 @@ describe('PaymentSweepTable', () => {
     renderTable(federations);
 
     expect(screen.getByText('Accepting payments')).toBeInTheDocument();
-  });
-
-  it('should say that this revenue is the one-time seat payment', () => {
-    renderTable(federations);
-
-    expect(
-      screen.getByText(
-        'One-time payments for seats, listed by the federation the payment came through.'
-      )
-    ).toBeInTheDocument();
   });
 });

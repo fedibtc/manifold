@@ -2,7 +2,10 @@ import type { WalletDrainStatus } from '@operator-ui/types';
 
 export const walletStatus = (availableEcashMsat: number | null): WalletDrainStatus => ({
   available_ecash_msat: availableEcashMsat,
-  economically_sweepable_recipient_msat: availableEcashMsat,
+  // What reaches a Lightning destination after about 0.5% in routing and
+  // federation fees, in whole sats.
+  economically_sweepable_recipient_msat:
+    availableEcashMsat === null ? null : Math.floor((availableEcashMsat * 0.995) / 1000) * 1000,
   encumbered_outgoing_msat: availableEcashMsat === null ? null : 0,
   outgoing: availableEcashMsat === null ? null : [],
   active_operation_count: 0,
