@@ -65,8 +65,7 @@ dependencies = [
 [[package]]
 name = "aleph-bft-crypto"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e99189e0c434af4bb0f4238925df15091962ae843f509561def48ecf36c163d"
+source = "git+https://github.com/fedibtc/AlephBFT?rev=a485405938a4509118178f1a02b715f97e9b241e#a485405938a4509118178f1a02b715f97e9b241e"
 dependencies = [
  "async-trait",
  "bit-vec",
@@ -78,11 +77,10 @@ dependencies = [
 [[package]]
 name = "aleph-bft-rmc"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e9a4418a90817c8c4929d55019eeb2bdf1d4a6030d557f17b3f580723ab40f8"
+source = "git+https://github.com/fedibtc/AlephBFT?rev=a485405938a4509118178f1a02b715f97e9b241e#a485405938a4509118178f1a02b715f97e9b241e"
 dependencies = [
  "aleph-bft-crypto",
- "aleph-bft-types 0.12.0",
+ "aleph-bft-types",
  "async-trait",
  "futures",
  "futures-timer",
@@ -92,21 +90,8 @@ dependencies = [
 
 [[package]]
 name = "aleph-bft-types"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7afbf87383e06ccfe9386cda59e57ac9d899267cc765fee654d921e4ba779f92"
-dependencies = [
- "aleph-bft-crypto",
- "async-trait",
- "futures",
- "parity-scale-codec",
-]
-
-[[package]]
-name = "aleph-bft-types"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bca9d19f587215da2b6c50b5e71f9addbf2305153f850dad3f9496ed67e28bb"
+source = "git+https://github.com/fedibtc/AlephBFT?rev=a485405938a4509118178f1a02b715f97e9b241e#a485405938a4509118178f1a02b715f97e9b241e"
 dependencies = [
  "aleph-bft-crypto",
  "async-trait",
@@ -1987,7 +1972,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fedimint-aead"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "argon2",
  "hex",
@@ -1999,9 +1984,10 @@ dependencies = [
 [[package]]
 name = "fedimint-aleph-bft"
 version = "0.36.0"
+source = "git+https://github.com/fedibtc/AlephBFT?rev=a485405938a4509118178f1a02b715f97e9b241e#a485405938a4509118178f1a02b715f97e9b241e"
 dependencies = [
  "aleph-bft-rmc",
- "aleph-bft-types 0.13.0",
+ "aleph-bft-types",
  "anyhow",
  "async-trait",
  "derivative",
@@ -2018,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-api-client"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -2042,14 +2028,14 @@ dependencies = [
 
 [[package]]
 name = "fedimint-build"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "fedimint-connectors"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-trait",
  "aws-lc-sys 0.41.0",
@@ -2058,8 +2044,8 @@ dependencies = [
  "fedimint-logging",
  "fedimint-metrics",
  "futures",
- "iroh 0.35.0",
- "iroh 1.4.1",
+ "iroh",
+ "iroh-fedimint",
  "iroh-mainline-address-lookup",
  "jsonrpsee-core",
  "jsonrpsee-types",
@@ -2079,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-core"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-channel",
  "async-lock",
@@ -2108,8 +2094,8 @@ dependencies = [
  "hex",
  "hex-conservative 1.3.0",
  "imbl",
- "iroh 0.35.0",
  "iroh-base 0.35.0",
+ "iroh-fedimint",
  "iroh-relay 0.35.0",
  "itertools 0.14.0",
  "js-sys",
@@ -2143,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-db-locked"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-trait",
  "fedimint-core",
@@ -2155,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-derive"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "itertools 0.14.0",
  "proc-macro2",
@@ -2165,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-derive-secret"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin_hashes",
  "bls12_381",
@@ -2176,14 +2162,14 @@ dependencies = [
 
 [[package]]
 name = "fedimint-hkdf"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin_hashes",
 ]
 
 [[package]]
 name = "fedimint-ln-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -2191,7 +2177,7 @@ dependencies = [
  "fedimint-core",
  "fedimint-logging",
  "fedimint-threshold-crypto",
- "iroh 0.35.0",
+ "iroh-fedimint",
  "lightning",
  "lightning-invoice",
  "reqwest 0.12.28",
@@ -2206,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-ln-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2230,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-lnv2-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -2249,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-lnv2-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2273,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-logging"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "console-subscriber",
  "opentelemetry",
@@ -2286,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-meta-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "fedimint-core",
  "fedimint-logging",
@@ -2299,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-meta-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2318,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-metrics"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "axum 0.8.9",
  "fedimint-core",
@@ -2329,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mint-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin_hashes",
  "fedimint-core",
@@ -2341,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mint-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2364,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mintv2-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin_hashes",
  "fedimint-core",
@@ -2376,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mintv2-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2400,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-rocksdb"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "async-trait",
  "bon",
@@ -2416,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2442,8 +2428,8 @@ dependencies = [
  "group",
  "hex",
  "hyper",
- "iroh 0.35.0",
- "iroh 1.4.1",
+ "iroh",
+ "iroh-fedimint",
  "iroh-mainline-address-lookup",
  "iroh-relay 0.35.0",
  "itertools 0.14.0",
@@ -2475,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-bitcoin-rpc"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2492,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-core"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2510,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-ui"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2537,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-tbs"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bls12_381",
  "fedimint-core",
@@ -2573,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-tpe"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin_hashes",
  "bls12_381",
@@ -2587,7 +2573,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-ui-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "axum 0.8.9",
  "axum-extra",
@@ -2600,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-unknown-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "fedimint-core",
  "serde",
@@ -2609,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-unknown-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2623,11 +2609,11 @@ dependencies = [
 
 [[package]]
 name = "fedimint-util-error"
-version = "0.13.0"
+version = "0.13.1-alpha"
 
 [[package]]
 name = "fedimint-wallet-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin",
  "fedimint-core",
@@ -2641,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-wallet-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2668,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-walletv2-common"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "bitcoin",
  "fedimint-core",
@@ -2680,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-walletv2-server"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2698,12 +2684,13 @@ dependencies = [
  "serde",
  "strum 0.27.2",
  "strum_macros 0.28.0",
+ "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimintd"
-version = "0.13.0"
+version = "0.13.1-alpha"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -2740,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "fedimintd-envs"
-version = "0.13.0"
+version = "0.13.1-alpha"
 
 [[package]]
 name = "ff"
@@ -3804,8 +3791,117 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "iroh"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3689cab508af9bcef7816c1201b403595ec6aa20e7d15e1f9683bb4be4a5b17"
+dependencies = [
+ "backon",
+ "blake3",
+ "bytes",
+ "cfg_aliases",
+ "ctutils",
+ "data-encoding",
+ "derive_more 2.1.1",
+ "ed25519-dalek 3.0.0-rc.0",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http",
+ "ipnet",
+ "iroh-base 1.4.1",
+ "iroh-dns",
+ "iroh-metrics 1.0.2",
+ "iroh-relay 1.4.1",
+ "n0-error",
+ "n0-future 0.3.2",
+ "n0-watcher",
+ "netwatch 0.19.3",
+ "noq",
+ "noq-proto",
+ "noq-udp",
+ "papaya",
+ "pin-project",
+ "portable-atomic",
+ "portmapper 0.19.3",
+ "rand 0.10.4",
+ "reqwest 0.13.5",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "smallvec",
+ "strum 0.28.0",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "url",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "iroh-base"
 version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?rev=a5b069896b2f320a50b71cb0e77ba67457aa253f#a5b069896b2f320a50b71cb0e77ba67457aa253f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f91ac4aaab68153d726c4e6b39c30f9f9253743f0e25664e52f4caeb46f48d11"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "data-encoding",
+ "derive_more 1.0.0",
+ "ed25519-dalek 2.2.0",
+ "rand_core 0.6.4",
+ "serde",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
+name = "iroh-base"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43b72366b16001af3a51574233df88ca6d62da0215807549a769e7de887da803"
+dependencies = [
+ "curve25519-dalek 5.0.0",
+ "data-encoding",
+ "data-encoding-macro",
+ "derive_more 2.1.1",
+ "ed25519-dalek 3.0.0-rc.0",
+ "getrandom 0.4.3",
+ "n0-error",
+ "rand 0.10.4",
+ "serde",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "iroh-dns"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7481d0792dde1035a2b06ec06ed3cf6d01fcb1a494e6931b489e32073382048d"
+dependencies = [
+ "arc-swap",
+ "cfg_aliases",
+ "derive_more 2.1.1",
+ "iroh-base 1.4.1",
+ "n0-dns-resolver",
+ "n0-error",
+ "n0-future 0.3.2",
+ "portable-atomic",
+ "rand 0.10.4",
+ "rustls",
+ "simple-dns 0.12.0",
+ "strum 0.28.0",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "iroh-fedimint"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "543546406c4f7a2d9e6cd672820e9481eb3ab6789a3b35910ae93893a6e3d0b9"
 dependencies = [
  "aead",
  "anyhow",
@@ -3864,120 +3960,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3689cab508af9bcef7816c1201b403595ec6aa20e7d15e1f9683bb4be4a5b17"
-dependencies = [
- "backon",
- "blake3",
- "bytes",
- "cfg_aliases",
- "ctutils",
- "data-encoding",
- "derive_more 2.1.1",
- "ed25519-dalek 3.0.0-rc.0",
- "futures-util",
- "getrandom 0.4.3",
- "http",
- "ipnet",
- "iroh-base 1.4.1",
- "iroh-dns",
- "iroh-metrics 1.0.2",
- "iroh-relay 1.4.1",
- "n0-error",
- "n0-future 0.3.2",
- "n0-watcher",
- "netwatch 0.19.3",
- "noq",
- "noq-proto",
- "noq-udp",
- "papaya",
- "pin-project",
- "portable-atomic",
- "portmapper 0.19.3",
- "rand 0.10.4",
- "reqwest 0.13.5",
- "rustc-hash",
- "rustls",
- "rustls-pki-types",
- "serde",
- "smallvec",
- "strum 0.28.0",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "url",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "iroh-base"
-version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?rev=a5b069896b2f320a50b71cb0e77ba67457aa253f#a5b069896b2f320a50b71cb0e77ba67457aa253f"
-dependencies = [
- "curve25519-dalek 4.1.3",
- "data-encoding",
- "derive_more 1.0.0",
- "ed25519-dalek 2.2.0",
- "rand_core 0.6.4",
- "serde",
- "thiserror 2.0.21",
- "url",
-]
-
-[[package]]
-name = "iroh-base"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b72366b16001af3a51574233df88ca6d62da0215807549a769e7de887da803"
-dependencies = [
- "curve25519-dalek 5.0.0",
- "data-encoding",
- "data-encoding-macro",
- "derive_more 2.1.1",
- "ed25519-dalek 3.0.0-rc.0",
- "getrandom 0.4.3",
- "n0-error",
- "rand 0.10.4",
- "serde",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "iroh-dns"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7481d0792dde1035a2b06ec06ed3cf6d01fcb1a494e6931b489e32073382048d"
-dependencies = [
- "arc-swap",
- "cfg_aliases",
- "derive_more 2.1.1",
- "iroh-base 1.4.1",
- "n0-dns-resolver",
- "n0-error",
- "n0-future 0.3.2",
- "portable-atomic",
- "rand 0.10.4",
- "rustls",
- "simple-dns 0.12.0",
- "strum 0.28.0",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "iroh-mainline-address-lookup"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1fd07cb8b4af54ccf367fe79516484c544ea3e4b1984cdd2b9aaf3bacaa80f2"
 dependencies = [
  "derive_more 2.1.1",
- "iroh 1.4.1",
+ "iroh",
  "iroh-base 1.4.1",
  "iroh-dns",
  "n0-error",
@@ -4097,7 +4086,8 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?rev=a5b069896b2f320a50b71cb0e77ba67457aa253f#a5b069896b2f320a50b71cb0e77ba67457aa253f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c63f122cdfaa4b4e0e7d6d3921d2b878f42a0c6d3ee5a29456dc3f5ab5ec931f"
 dependencies = [
  "anyhow",
  "bytes",

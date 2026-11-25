@@ -26,7 +26,7 @@
     # *Subprocess model*): Fedi's 0.13 fork, built from source by the separate
     # `crates/mg/fedimintd-0.13` Cargo workspace.
     fedimint-0_13 = {
-      url = "github:fedibtc/fedimint/706486ca18ac20ccafd0b64adb2df7604f319a5d";
+      url = "github:fedibtc/fedimint/62b3da6b1e113e3167948e2b767b4a31fcb235ff";
       flake = false;
     };
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
@@ -1079,7 +1079,7 @@
         fedimintSourceRev = "5bdb75485c4aaaeead4ab655fff6c62852de80b0";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
         # The 0.13 line's `fedimint-0_13` input; it reports this in `app_start_ts`.
-        fedimint013SourceRev = "706486ca18ac20ccafd0b64adb2df7604f319a5d";
+        fedimint013SourceRev = "62b3da6b1e113e3167948e2b767b4a31fcb235ff";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI

@@ -174,7 +174,6 @@ fedimint-walletv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fe
 
 [patch.crates-io]
 fedimint-aead = { path = "../../../.nix-deps/fedimint-0.13/crypto/aead" }
-fedimint-aleph-bft = { path = "../../../.nix-deps/fedimint-aleph-bft" }
 fedimint-api-client = { path = "../../../.nix-deps/fedimint-0.13/fedimint-api-client" }
 fedimint-build = { path = "../../../.nix-deps/fedimint-0.13/fedimint-build" }
 fedimint-connectors = { path = "../../../.nix-deps/fedimint-0.13/fedimint-connectors" }
@@ -199,9 +198,8 @@ fedimint-util-error = { path = "../../../.nix-deps/fedimint-0.13/fedimint-util-e
 fedimint-wallet-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-wallet-common" }
 fedimint-walletv2-common = { path = "../../../.nix-deps/fedimint-0.13/modules/fedimint-walletv2-common" }
 librocksdb-sys = { path = "../../../.nix-deps/librocksdb-sys" }
-# The same iroh 0.35 send-livelock fix and macOS netwatch fix as the main
-# workspace: see its `[patch.crates-io]`.
-iroh = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
-iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
-iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+# The same macOS netwatch fix as the main workspace: see its
+# `[patch.crates-io]`. The iroh 0.35 send-livelock fix needs no patch here:
+# the 0.13 line uses upstream's `iroh-fedimint` 0.35 fork, which carries it,
+# and the forker safe event ships in the fedibtc/AlephBFT revision it uses.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
