@@ -14,6 +14,7 @@ use std::time::SystemTime;
 use fedimint_core::{BitcoinHash as _, TransactionId};
 use stability_pool_client::common::{
     AccountHistoryItem, AccountHistoryItemKind, BtcBalanceDepositMetadata, CycleInfo, FiatAmount,
+    LegacyTime,
 };
 
 use super::*;
@@ -47,7 +48,7 @@ fn item(msats: u64, kind: AccountHistoryItemKind) -> AccountHistoryItem {
         cycle: CycleInfo {
             idx: 0,
             start_price: FiatAmount(1),
-            start_time: SystemTime::UNIX_EPOCH,
+            start_time: LegacyTime(SystemTime::UNIX_EPOCH),
         },
         txid: TransactionId::from_slice(&[msats as u8; 32]).expect("32 bytes is a transaction id"),
         deposit_sequence: 0,

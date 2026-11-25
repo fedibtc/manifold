@@ -24,9 +24,14 @@
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
     # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
     fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
-    # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
-    # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
-    # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
+    # Stability Pool v2 module crates. MG bundles the server module; FLIP and
+    # fa-client use the client.
+    stability-pool = {
+      url = "github:fedibtc/stability-pool/212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
+      flake = false;
+    };
+    # SP-enabled fedimintd for the live stability-pool E2E. The fedixyz/fedi
+    # monorepo's `fedi-fedimintd` package bundles the stability-pool server module (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
     # `fedimint-pkgs` follows our `fedimint` input for Fedi's Nix dependencies.
     # `fedi-fedimintd` still builds its Rust graph from this Fedi revision's
     # Cargo.lock, so that graph is not necessarily identical to FLIP's pin.
@@ -46,6 +51,7 @@
       selfci,
       peerbadge-sdk-src,
       fedimint,
+      stability-pool,
       fedi,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -206,10 +212,10 @@
         # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
         # agree on the DKG consensus checksum. Votes still activate 2.2.
-        fediPatched = pkgs.applyPatches {
-          name = "fedi-stability-pool-config-version";
-          src = fedi;
-          patches = [ ./patches/fedi-stability-pool-config-version.patch ];
+        stabilityPoolPatched = pkgs.applyPatches {
+          name = "stability-pool-config-version";
+          src = stability-pool;
+          patches = [ ./patches/stability-pool-config-version.patch ];
         };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
@@ -241,7 +247,7 @@
 
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
-          link_dependency fedi ${fediPatched}
+          link_dependency stability-pool ${stabilityPoolPatched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
         '';
 
@@ -1008,7 +1014,7 @@
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
         fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
-        stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
+        stabilityPoolSourceRev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI
@@ -1222,7 +1228,7 @@
               manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
-              stability_pool_source=${fediPatched}
+              stability_pool_source=${stabilityPoolPatched}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
@@ -1242,17 +1248,17 @@
               grep -q -- "\"rev\": \"${fedimintSourceRev}\"" ${./flake.lock}
               grep -q -- "\"rev\": \"${stabilityPoolSourceRev}\"" ${./flake.lock}
               grep -q -- "fedibtc/fedimint/v${fedimintdRelease}" ${./flake.nix}
-              grep -q -- "fedixyz/fedi/${stabilityPoolSourceRev}" ${./flake.nix}
+              grep -q -- "fedibtc/stability-pool/${stabilityPoolSourceRev}" ${./flake.nix}
               grep -q -- $'producer\tfedimint\tfedibtc/fedimint\tv${fedimintdRelease}\t${fedimintSourceRev}' "$manifest"
-              grep -q -- $'producer\tstability_pool\tfedixyz/fedi\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"
-              grep -Fq -- "stability-pool-client = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              grep -Fq -- "stability-pool-server = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              grep -Fq -- "stability-pool-common = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              if ${pkgs.ripgrep}/bin/rg -n 'github\.com/fedixyz/fedi' ${./crates} --glob Cargo.toml; then
-                echo "crate manifests must inherit Fedi dependencies from the workspace" >&2
+              grep -q -- $'producer\tstability_pool\tfedibtc/stability-pool\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"
+              grep -Fq -- "stability-pool-client = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              grep -Fq -- "stability-pool-server = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              grep -Fq -- "stability-pool-common = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              if ${pkgs.ripgrep}/bin/rg -n 'github\.com/fedibtc/stability-pool' ${./crates} --glob Cargo.toml; then
+                echo "crate manifests must inherit stability-pool dependencies from the workspace" >&2
                 exit 1
               fi
-              test -d "$stability_pool_source/crates/modules/stability-pool/server"
+              test -d "$stability_pool_source/crates/server"
               source_metric_version=$(
                 ${pkgs.gawk}/bin/awk '
                   /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
@@ -1286,7 +1292,7 @@
               revision = sys.argv[3]
               expected_source = None  # Nix-patched, pinned path packages
               expected_dependency_source = (
-                  f"git+https://github.com/fedixyz/fedi?rev={revision}"
+                  f"git+https://github.com/fedibtc/stability-pool?rev={revision}"
               )
               with open(source_root / "Cargo.toml", "rb") as manifest_file:
                   workspace_manifest = tomllib.load(manifest_file)
@@ -1317,7 +1323,7 @@
               workspace_alias_fixture = tomllib.loads(
                   """
                   [workspace.dependencies]
-                  pool-common-alias = { package = "stability-pool-common", version = "0.3" }
+                  pool-common-alias = { package = "fedi-stability-pool-common", version = "0.1" }
                   """
               )["workspace"]["dependencies"]
               assert (
@@ -1326,7 +1332,7 @@
                       {"workspace": True},
                       workspace_alias_fixture,
                   )
-                  == "stability-pool-common"
+                  == "fedi-stability-pool-common"
               )
 
               packages = {}
@@ -1341,7 +1347,7 @@
                   packages[name] = (path, manifest)
 
               closure = set()
-              pending = ["stability-pool-server"]
+              pending = ["fedi-stability-pool-server"]
               while pending:
                   name = pending.pop()
                   if name in closure:

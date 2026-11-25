@@ -24,8 +24,10 @@ use mg_core::guardian_fee::{
     FederationFeeStatus, GuardianFeeAccountKey, GuardianFeeVault, Remittance,
 };
 use stability_pool_client::api::StabilityPoolApiExt as _;
-use stability_pool_client::common::{Account, AccountHistoryItem, AccountType, FiatOrAll};
-use stability_pool_client::{StabilityPoolClientModule, StabilityPoolWithdrawalOperationState};
+use stability_pool_client::common::{Account, AccountHistoryItem, FiatOrAll};
+use stability_pool_client::{
+    OwnAccount, StabilityPoolClientModule, StabilityPoolWithdrawalOperationState,
+};
 
 use crate::{OpenWait, Wallet};
 
@@ -249,7 +251,7 @@ impl CollectionOperations for FedimintCollectionOperations<'_> {
     async fn submit_idle(&self, amount: Amount) -> anyhow::Result<Self::Operation> {
         let (operation_id, _txid) = self
             .module
-            .withdraw_idle_balance(AccountType::BtcDepositor, amount, ())
+            .withdraw_idle_balance(OwnAccount::FeeRemittance, amount, ())
             .await
             .context("submit guardian-fee idle-balance claim")?;
         Ok(operation_id)
@@ -268,7 +270,7 @@ impl CollectionOperations for FedimintCollectionOperations<'_> {
     async fn submit_unlock(&self) -> anyhow::Result<Self::Operation> {
         let (operation_id, _txid) = self
             .module
-            .withdraw(AccountType::BtcDepositor, FiatOrAll::All, ())
+            .withdraw(OwnAccount::FeeRemittance, FiatOrAll::All, ())
             .await
             .context("submit guardian-fee unlock")?;
         Ok(operation_id)
@@ -474,7 +476,7 @@ fn signing_account(
     key: &GuardianFeeAccountKey,
 ) -> anyhow::Result<Account> {
     let ours = key.account();
-    let carried = module.our_account(AccountType::BtcDepositor);
+    let carried = module.own_account(OwnAccount::FeeRemittance);
     anyhow::ensure!(
         carried == ours,
         "stability-pool client is carrying account {carried_id}, but this seat's committed \
