@@ -3060,27 +3060,49 @@ where
 
         let mut pending_starts = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
-            let timestamp = Timestamp(now_secs()?);
             let completion_callback = recovery.dkg_completion_callback.clone();
             let guardian_codes = guardian_codes.clone();
-            let seat_id = session.seat_id.clone();
+            let formation_id = &formation_id;
             pending_starts.push(async move {
-                let request = StartDkgRequest {
-                    ts: timestamp,
-                    fa_id,
-                    seat_id,
-                    guardian_codes,
-                    completion_callback,
-                };
-                let request = run
-                    .construct("signing StartDkg request", || self.sign(&request))
-                    .await?;
-                match session.client.call(run, MgOperation::StartDkg, |client| client.start_dkg(request)).await {
-                    Ok(_) | Err(FaError::Mg(MgFailure {
-                        cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
-                        ..
-                    })) => Ok::<_, FaError>((position, false)),
-                    Err(error) => Err(error),
+                // A seat whose guardian restarts, as after a failed ceremony,
+                // answers `SeatUnavailable` until its new process is ready.
+                loop {
+                    let request = StartDkgRequest {
+                        ts: Timestamp(now_secs()?),
+                        fa_id,
+                        seat_id: session.seat_id.clone(),
+                        guardian_codes: guardian_codes.clone(),
+                        completion_callback: completion_callback.clone(),
+                    };
+                    let request = run
+                        .construct("signing StartDkg request", || self.sign(&request))
+                        .await?;
+                    match session
+                        .client
+                        .call(run, MgOperation::StartDkg, |client| {
+                            client.start_dkg(request)
+                        })
+                        .await
+                    {
+                        Ok(_)
+                        | Err(FaError::Mg(MgFailure {
+                            cause:
+                                MgCause::WrongState(
+                                    ServiceStatus::DkgInProcess | ServiceStatus::Running,
+                                ),
+                            ..
+                        })) => return Ok::<_, FaError>((position, false)),
+                        Err(
+                            error @ FaError::Mg(MgFailure {
+                                cause: MgCause::SeatUnavailable,
+                                ..
+                            }),
+                        ) => {
+                            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                            log_mg_failure(formation_id, &error, "retried");
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
             });
         }
