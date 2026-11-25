@@ -78,6 +78,64 @@ Every publish architecture consumes the system-qualified
 builds and pushes those release-profile images. Supply deployment configuration
 at runtime instead.
 
+## GitHub Actions event allowlist
+
+Use a
+[GitHub Actions execution policy](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)
+to enforce a repository-wide event allowlist. New or edited workflow YAML
+cannot enable events outside the list, including `pull_request_target` and
+`issue_comment`. The allowlist controls event names only.
+Keep the publishing and fork-PR safeguards in the workflow files, including
+branch filters, job conditions, token permissions, and which code the workflows
+trust. This rollout leaves actor restrictions unchanged.
+
+1. Inspect the top-level `on:` in every file under
+   [`.github/workflows/`](.github/workflows/) on `master`, including changes
+   about to merge. Check recent runs for other branches and infrequent automation.
+   Use the checked-in workflows as your baseline:
+
+   | Workflow | Allowed events it uses |
+   | --- | --- |
+   | [`operator-ui.yml`](.github/workflows/operator-ui.yml) | `pull_request`, `push` to `master` |
+   | [`selfci.yml`](.github/workflows/selfci.yml) | `pull_request`, `workflow_dispatch` |
+   | [`publish.yml`](.github/workflows/publish.yml) | `push` to `master`, `workflow_dispatch` |
+
+2. As a repository admin, open **Settings → Actions → Policies**. Record
+   existing repository and inherited policies and their enforcement status.
+   An applicable event policy replaces
+   [GitHub's default `pull_request_target` policy](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target#default-policy-for-pull_request_target),
+   and **Evaluate** does not block runs. If evaluating here would displace
+   active protection, keep it in place and evaluate in a test repository first.
+   In either repository, target all workflows, including new files. Under
+   **Restrict events**, allow only `pull_request`, `push`, and
+   `workflow_dispatch`. Leave **Restrict actors** unset. Start in **Evaluate**
+   where it preserves existing protection.
+3. Check **Settings → Actions → Policy insights** for would-block entries.
+   Compare failures with the baseline. Verify required checks on a same-repository
+   PR and confirm that fork PRs still follow the usual approval and job-skipping
+   rules. On a normal `master` push, verify **Publish images** and the result in
+   GHCR. Publishing does not require `release`. Dispatch **SelfCI** on a trusted
+   ref. Verify manual **Publish images** at the next planned publish because it
+   can move image tags.
+
+   In **Actions**, compare recent **Dependabot Updates** logs with the baseline.
+   GitHub exempts its [dynamic updater jobs](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-on-actions)
+   from Actions policy checks. Check CI on new or updated Dependabot PRs
+   separately: Manifold's PR workflows use `pull_request`.
+4. After verifying the normal paths, set the Manifold policy to **Active** and
+   repeat the checks as those events occur. If it blocks a legitimate run, use
+   **Policy insights** to identify the event, workflow path, and blocking policy.
+   If the new policy caused the regression, restore and verify the prior
+   effective policy. Only return to **Evaluate** if doing so preserves prior
+   active protections; otherwise keep enforcement on and fix the workflow or
+   rule. Ask the policy owner to investigate inherited restrictions. After
+   recovery, retrigger the check through its normal path. For publishing, use
+   the next normal `master` push or dispatch the intended revision. Rerunning
+   an old publish uses its original commit and can move an image tag backward.
+
+   Review changes to workflow events against the allowlist in each workflow PR.
+   Prefer an existing event to expanding the allowlist.
+
 ## Local development services
 
 `defe`, `defe-cli`, and the push gateway resource are local test/development
