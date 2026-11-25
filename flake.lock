@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795180262,
-        "narHash": "sha256-0XXd5dmqgTtVQLcmJZ4o3YeFZc6haipBU5WZFaw2mHo=",
+        "lastModified": 1795613883,
+        "narHash": "sha256-pFtICvyprbsre8Ibg7bKQdkM0YckjgDywHoKbGblN50=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "15671ec113a28273ccfca84c549a9dcfd03eb67d",
+        "rev": "00d85f5ad2cf9277d4514afc9a5cbbf5b776f5e6",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi30",
+        "ref": "agent/rocksdb-disk-tuning",
         "repo": "fedimint",
         "type": "github"
       }

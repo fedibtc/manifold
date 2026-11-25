@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`15671ec113a28273ccfca84c549a9dcfd03eb67d` (tag `v0.12.0-fedi30`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi30.tsv`](./fedimint-metrics-v0.12.0-fedi30.tsv)
+`00d85f5ad2cf9277d4514afc9a5cbbf5b776f5e6` (branch `agent/rocksdb-disk-tuning`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi30-rocksdb-tuning.tsv`](./fedimint-metrics-v0.12.0-fedi30-rocksdb-tuning.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -35,7 +35,8 @@ the duration of each peer send, completed sessions by how the signed outcome
 was obtained, and the database commit time of each consensus item. fedi29 adds
 per-guardian settled-volume counters to LNv2 and Walletv2, kept in the module
 database and read through an admin API endpoint; it registers no metrics. fedi30 stores
-AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metrics either. The existing
+AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metrics either.
+fedi30-rocksdb-tuning sets LZ4/Zstd RocksDB compression, bounds RocksDB info `LOG` files and stats dumps, and lowers `recycle_log_file_num` from 4 to 2; it registers no metrics. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
@@ -48,7 +49,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi30`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi30-rocksdb-tuning`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
