@@ -5,17 +5,16 @@ import {
   DataTable,
   isTruncated,
   SectionCard,
-  SectionDescription,
   truncateMiddle
 } from '@operator-ui/common-ui';
 import type { PaymentFederation } from '@operator-ui/types';
-import { PaymentSweepAction } from '@/features/payouts/components/payment-sweep-action/PaymentSweepAction';
+import { WithdrawCell } from '@/features/payouts/components/withdraw-cell/WithdrawCell';
 import { formatSats } from '@/shared/utils/format';
 import styles from './PaymentSweepTable.module.css';
 
 interface PaymentSweepTableProps {
   federations: PaymentFederation[];
-  hasDestination: boolean;
+  onWithdraw: (federationId: string) => void;
 }
 
 const federationRowKey = (federation: PaymentFederation) => federation.federation_id;
@@ -31,7 +30,7 @@ const federationRowKey = (federation: PaymentFederation) => federation.federatio
  * withdraw button instead: "former member" and "not accepting payments" are the
  * two answers to the question a stranded balance raises.
  */
-export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepTableProps) => {
+export const PaymentSweepTable = ({ federations, onWithdraw }: PaymentSweepTableProps) => {
   const columns: Column<PaymentFederation>[] = [
     {
       key: 'federation',
@@ -60,17 +59,17 @@ export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepT
     },
     {
       key: 'balance',
-      header: 'Balance',
+      header: 'Available',
       render: (federation) => formatSats(federation.wallet.available_ecash_msat)
     },
     {
-      key: 'sweep',
-      header: 'Withdraw',
+      key: 'withdraw',
+      header: '',
       render: (federation) => (
-        <PaymentSweepAction
-          federationId={federation.federation_id}
-          balanceMsat={federation.wallet.available_ecash_msat}
-          hasDestination={hasDestination}
+        <WithdrawCell
+          isEmpty={federation.wallet.available_ecash_msat === 0}
+          balanceName={`seat sales from ${truncateMiddle(federation.federation_id, 8, 8)}`}
+          onWithdraw={() => onWithdraw(federation.federation_id)}
         />
       )
     }
@@ -78,12 +77,6 @@ export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepT
 
   return (
     <SectionCard title="Seat sales" frame="table">
-      <div className={styles.intro}>
-        <SectionDescription>
-          One-time payments for seats, listed by the federation the payment came through.
-        </SectionDescription>
-      </div>
-
       {federations.length === 0 ? (
         <p className={styles.empty}>No payment federations accepted yet.</p>
       ) : (

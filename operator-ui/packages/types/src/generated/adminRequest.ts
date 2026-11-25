@@ -16,11 +16,19 @@ export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | n
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ReenrollTelemetry" | "SupportChat" | { "SendSupportMessage": { body: string, } } | { "MarkSupportRead": { ids: Array<string>, } } | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
+request_id: string,
+/**
+ * Absent means Lightning.
+ */
+method?: "lightning" | "ecash", } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListPayouts" | { "ConfirmEcashPayout": { request_id: string, } } | { "CancelEcashPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ReenrollTelemetry" | "SupportChat" | { "SendSupportMessage": { body: string, } } | { "MarkSupportRead": { ids: Array<string>, } } | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | "GuardianLink" | "CreateGuardianLinkOffer" | "RevokeGuardianLink" | "TestGuardianLinkNotification" | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number | null, price_msats: number | null, monthly_data_budget: "not_set" | "unlimited" | `${number}`, } } | "ShowMnemonic" | { "OnboardAsNew": {
+request_id: string,
+/**
+ * Absent means Lightning.
+ */
+method?: "lightning" | "ecash", } } | "GuardianLink" | "CreateGuardianLinkOffer" | "RevokeGuardianLink" | "TestGuardianLinkNotification" | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number | null, price_msats: number | null, monthly_data_budget: "not_set" | "unlimited" | `${number}`, } } | "ShowMnemonic" | { "OnboardAsNew": {
 /**
  * Whether "this host is already onboarded" is success rather than a
  * refusal. Set by orchestrators whose want is *ensure onboarded* —

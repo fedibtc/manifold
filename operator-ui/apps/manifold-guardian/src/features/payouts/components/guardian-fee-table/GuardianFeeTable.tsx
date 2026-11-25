@@ -5,18 +5,17 @@ import {
   DataTable,
   isTruncated,
   SectionCard,
-  SectionDescription,
   truncateMiddle
 } from '@operator-ui/common-ui';
-import { GuardianFeeActions } from '@/features/payouts/components/guardian-fee-actions/GuardianFeeActions';
 import { GuardianFeeZeroNote } from '@/features/payouts/components/guardian-fee-zero-note/GuardianFeeZeroNote';
+import { WithdrawCell } from '@/features/payouts/components/withdraw-cell/WithdrawCell';
 import type { GuardianFeeRow } from '@/features/payouts/hooks/use-guardian-fee-rows/useGuardianFeeRows';
 import { formatSats } from '@/shared/utils/format';
 import styles from './GuardianFeeTable.module.css';
 
 interface GuardianFeeTableProps {
   rows: GuardianFeeRow[];
-  hasDestination: boolean;
+  onWithdraw: (seatId: string) => void;
 }
 
 const seatRowKey = (row: GuardianFeeRow) => row.seatId;
@@ -25,11 +24,11 @@ const isEmptyWhileEarning = (row: GuardianFeeRow) =>
   row.collectableMsat === 0 && row.collectedEcashMsat === 0 && row.earning === true;
 
 /**
- * Guardian-fee revenue, which is per seat and leaves in two steps. The two
- * amount columns are the two places the money can sit: still in the pool, and
- * collected into ecash. A sweep can only send the second.
+ * Guardian-fee revenue, which is per seat. The two amount columns are the two
+ * places the money can sit: still in the pool, and collected into ecash. A
+ * withdrawal takes the second; its dialog collects the first into it.
  */
-export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps) => {
+export const GuardianFeeTable = ({ rows, onWithdraw }: GuardianFeeTableProps) => {
   const everySeatEmptyWhileEarning = rows.length > 0 && rows.every(isEmptyWhileEarning);
   const columns: Column<GuardianFeeRow>[] = [
     {
@@ -47,23 +46,22 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
     },
     {
       key: 'pool',
-      header: 'In the pool',
+      header: 'In the fee pool',
       render: (row) => formatSats(row.collectableMsat)
     },
     {
       key: 'ecash',
-      header: 'Collected, ready to send',
+      header: 'Ready to withdraw',
       render: (row) => formatSats(row.collectedEcashMsat)
     },
     {
-      key: 'actions',
-      header: 'Move out',
+      key: 'withdraw',
+      header: '',
       render: (row) => (
-        <GuardianFeeActions
-          seatId={row.seatId}
-          collectableMsat={row.collectableMsat}
-          collectedEcashMsat={row.collectedEcashMsat}
-          hasDestination={hasDestination}
+        <WithdrawCell
+          isEmpty={row.collectableMsat === 0 && row.collectedEcashMsat === 0}
+          balanceName={`guardian fees of seat ${truncateMiddle(row.seatId, 8, 8)}`}
+          onWithdraw={() => onWithdraw(row.seatId)}
         />
       )
     }
@@ -71,13 +69,6 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
 
   return (
     <SectionCard title="Guardian fees" frame="table">
-      <div className={styles.intro}>
-        <SectionDescription>
-          Ongoing fees from payments in federations you guard. They arrive in batches, not one
-          payment at a time.
-        </SectionDescription>
-      </div>
-
       {rows.length === 0 ? (
         <p className={styles.empty}>
           No guardian fees yet. They appear once a federation you guard is running and its members
