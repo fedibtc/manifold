@@ -81,17 +81,6 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// `RunDkg` is a local control handshake, not a ceremony patience limit.
 pub(crate) const DKG_START_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long fedimintd lets a consensus session run before it exits for MG to
-/// restart it, which has resolved stuck sessions.
-///
-/// With `aleph_quiescence` ([`crate::fedimintd_features`]) an idle session
-/// parks until half of this timeout and then creates units at full speed until
-/// the session ends, so every idle session costs one such drain. Twice
-/// fedimintd's default of one hour halves the drains per day, at the cost of a
-/// stuck session waiting two hours for its restart. The child reads it once at
-/// start, so it does not follow the runtime switch.
-const SESSION_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-
 /// Respawn timing. The defaults are the production policy; tests shrink them.
 #[derive(Clone, Copy, Debug)]
 pub struct RespawnPolicy {
@@ -560,8 +549,6 @@ async fn spawn_child(
         .arg("--bind-metrics")
         .arg(format!("127.0.0.1:{}", ports.metrics()))
         .arg("--enable-iroh=true")
-        .arg("--session-timeout-secs")
-        .arg(SESSION_TIMEOUT.as_secs().to_string())
         .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
         .env(
             FM_IROH_DNS_ENV,
