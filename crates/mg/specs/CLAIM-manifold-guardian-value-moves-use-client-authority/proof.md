@@ -50,7 +50,7 @@ a child/admin mutation, or direct child database access.
 
 3. **Durable payout entries preserve the client scope (`enum`, `schema`, `code`,
    `test`).** `SweepPaymentFees` and `SweepGuardianFees` create/replay one durable
-   job; `PayoutStatus` and `AwaitPayout` reconcile and observe it. The job fixes a
+   job; `PayoutStatus` and `AwaitPayout` look up and observe its operation. The job fixes a
    payment federation or guardian federation/seat/public-invite scope before any
    wallet call. `WalletPayoutNative` maps those variants only to
    `ClientScope::Payment` or `ClientScope::Guardian`, the latter with the derived
@@ -58,16 +58,17 @@ a child/admin mutation, or direct child database access.
    they do not reacquire a child capability after decommission.
 
 4. **Native Lightning v2/v1 starts use only client modules (`enum`, `code`,
-   `test`).** Under per-scope fences, replay first enumerates the selected ordinary
-   client's operation log. Only no matching request permits `start_payout`.
-   Lightning v2 calls the client's `LightningClientModule::send`; v1 calls the
-   client's `pay_bolt11_invoice`. Their reachable authority is the client handle,
+   `test`).** Under the per-scope fence, replay first looks up the operation the
+   job's recorded attempt names in the selected ordinary client. Only its
+   absence permits `prepare_payout` and `pay_payout`. Lightning v2 calls the
+   client's `LightningClientModule::send`; v1 calls the client's
+   `pay_bolt11_invoice`. Their reachable authority is the client handle,
    module database, client/module keys and notes, chosen public gateway, invoice,
    and request metadata. Neither start signature or module contains a seat,
    `SeatApiAuth`, child RPC client, or child database handle.
 
 5. **Replay and observation cannot start or elevate (`type`, `code`, `test`).**
-   `payout_for_request` and `payout_status` read the ordinary client operation log.
+   `attempted_payout` and `payout_status` read the ordinary client operation log.
    The `PayoutObservation` trait type-confines generic orchestration to `status`
    and `await_terminal` for one exact operation id. Its production implementation
    holds a full ordinary-client handle, but its code calls only operation-log
