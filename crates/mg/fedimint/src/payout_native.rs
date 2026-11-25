@@ -320,13 +320,14 @@ fn emit_v2_fallback(federation_id: &str, fallback: V2Fallback) {
     }
 }
 
-/// Find one request-marked native payout without creating an invoice or payment.
+/// Find one request-marked native payout, Lightning or ecash, without creating
+/// an invoice, payment, or spend.
 pub(crate) async fn payout_for_request(
     client: &ClientHandleArc,
     request_id: &PayoutRequestId,
-    destination: &str,
+    method: &crate::payout_job::PayoutMethod,
 ) -> anyhow::Result<Option<Payout>> {
-    drain_status::payout_for_request(client, request_id, destination).await
+    drain_status::payout_for_request(client, request_id, method).await
 }
 
 /// Read the cached rail state and independent active-state-machine fact for one

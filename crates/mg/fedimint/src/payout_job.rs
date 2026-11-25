@@ -3,7 +3,7 @@
 use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 
 use crate::payout_operation_id::PayoutOperationId;
-pub use mg_core::wallet::PayoutRequestId;
+pub use mg_core::wallet::{PayoutRail, PayoutRequestId};
 
 /// A native Fedimint Lightning payout committed to the wallet database.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -141,7 +141,7 @@ impl PayoutJob {
         mg_core::payout_wire::PayoutJobWire {
             request_id: self.request_id.clone(),
             scope: self.scope.to_wire(),
-            destination: self.destination.clone(),
+            method: self.method.to_wire(),
             operation: self.operation.as_ref().map(|operation| {
                 mg_core::payout_wire::PayoutJobOperationWire {
                     operation_id: operation.operation_id.to_string(),
@@ -153,6 +153,7 @@ impl PayoutJob {
                             remaining_msat: cap.remaining_msat,
                         }),
                     committed_at_ms: operation.committed_at_ms,
+                    confirmed_at_ms: operation.confirmed_at_ms,
                 }
             }),
             created_at_ms: self.created_at_ms,

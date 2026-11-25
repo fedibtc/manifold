@@ -1,10 +1,11 @@
 //! Operator projection of a durable payout job and its native state.
 
+use crate::payout_ecash::EcashPayoutState;
 use crate::payout_job::PayoutJob;
 use crate::wallet_drain::OutgoingOperation;
 
 /// Durable job information with the current native operation projection.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug)]
 pub struct PayoutJobStatus {
     /// Durable request and native-operation identity.
     pub job: PayoutJob,
@@ -21,13 +22,20 @@ pub enum PayoutNativeStatus {
 }
 
 impl PayoutJobStatus {
-    pub(crate) fn to_wire(&self) -> mg_core::payout_wire::PayoutJobStatusWire {
+    /// The operator answer. Only a single-payout answer is `with_token`; a
+    /// list, which the dashboard polls, never carries it.
+    pub(crate) fn to_wire(&self, with_token: bool) -> mg_core::payout_wire::PayoutJobStatusWire {
+        use mg_core::payout_wire::PayoutNativeStatusWire;
         mg_core::payout_wire::PayoutJobStatusWire {
             job: self.job.to_wire(),
-            payout: self
-                .payout
-                .as_ref()
-                .map(crate::wallet_drain::OutgoingOperation::to_wire),
+            native: match &self.native {
+                PayoutNativeStatus::Lightning(payout) => PayoutNativeStatusWire::Lightning {
+                    payout: payout.as_ref().map(OutgoingOperation::to_wire),
+                },
+                PayoutNativeStatus::Ecash(state) => PayoutNativeStatusWire::Ecash {
+                    ecash: state.as_ref().map(|state| state.to_wire(with_token)),
+                },
+            },
         }
     }
 }

@@ -24,7 +24,8 @@ pub enum AdminVerb {
         #[command(subcommand)]
         verb: PaymentFederationsVerb,
     },
-    /// Configure the one Lightning destination used by revenue sweeps.
+    /// Configure the one Lightning destination used by revenue sweeps, and
+    /// read, confirm, or cancel payout requests.
     Payout {
         #[command(subcommand)]
         verb: PayoutVerb,
@@ -173,12 +174,17 @@ pub enum PaymentFederationsVerb {
     /// List payment federations with wallet health and balance: the
     /// accepted common set plus wallet-only leftovers of removed members.
     List,
-    /// Sweep the wallet to the configured destination.
+    /// Sweep the wallet to the configured destination, or with `--method
+    /// ecash` pay its whole balance out as one ecash token that `payout
+    /// status` prints. The token is a bearer secret.
     Sweep {
         federation_id: String,
         /// Caller-generated idempotency identity for this payout.
         #[arg(long)]
         request_id: mg_core::wallet::PayoutRequestId,
+        /// `lightning` or `ecash`.
+        #[arg(long, default_value = "lightning")]
+        method: mg_core::wallet::PayoutRail,
     },
 }
 
@@ -195,6 +201,18 @@ pub enum PayoutVerb {
     },
     /// Await the exact native operation committed for a durable payout job.
     Await {
+        request_id: mg_core::wallet::PayoutRequestId,
+    },
+    /// List the 20 newest payouts of both methods, newest first, plus every
+    /// older ecash payout still in progress. Tokens are left out; `status`
+    /// prints one.
+    List,
+    /// Mark an issued ecash payout redeemed.
+    EcashConfirm {
+        request_id: mg_core::wallet::PayoutRequestId,
+    },
+    /// Take an issued ecash payout back into the wallet it left.
+    EcashCancel {
         request_id: mg_core::wallet::PayoutRequestId,
     },
 }
@@ -242,13 +260,18 @@ pub enum GuardianFeesVerb {
         #[command(flatten)]
         seat_id: GuardianFeeSeatIdArgs,
     },
-    /// Sweep collected ecash to the configured destination.
+    /// Sweep collected ecash to the configured destination, or with
+    /// `--method ecash` pay it all out as one ecash token that `payout
+    /// status` prints. The token is a bearer secret.
     Sweep {
         #[command(flatten)]
         seat_id: GuardianFeeSeatIdArgs,
         /// Caller-generated idempotency identity for this payout.
         #[arg(long)]
         request_id: mg_core::wallet::PayoutRequestId,
+        /// `lightning` or `ecash`.
+        #[arg(long, default_value = "lightning")]
+        method: mg_core::wallet::PayoutRail,
     },
 }
 
@@ -315,10 +338,12 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
                 PaymentFederationsVerb::Sweep {
                     federation_id,
                     request_id,
+                    method,
                 },
         } => AdminRequest::SweepPaymentFees {
             federation_id: FederationId(federation_id),
             request_id,
+            method,
         },
         AdminVerb::Payout {
             verb: PayoutVerb::Show,
@@ -332,6 +357,15 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
         AdminVerb::Payout {
             verb: PayoutVerb::Await { request_id },
         } => AdminRequest::AwaitPayout { request_id },
+        AdminVerb::Payout {
+            verb: PayoutVerb::List,
+        } => AdminRequest::ListPayouts,
+        AdminVerb::Payout {
+            verb: PayoutVerb::EcashConfirm { request_id },
+        } => AdminRequest::ConfirmEcashPayout { request_id },
+        AdminVerb::Payout {
+            verb: PayoutVerb::EcashCancel { request_id },
+        } => AdminRequest::CancelEcashPayout { request_id },
         AdminVerb::Seats {
             verb: SeatsVerb::List,
         } => AdminRequest::ListSeats,
@@ -357,10 +391,12 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
                 GuardianFeesVerb::Sweep {
                     seat_id,
                     request_id,
+                    method,
                 },
         } => AdminRequest::SweepGuardianFees {
             seat_id: seat_id.into_seat_id(),
             request_id,
+            method,
         },
         AdminVerb::GuardianLink {
             verb: GuardianLinkVerb::Show,

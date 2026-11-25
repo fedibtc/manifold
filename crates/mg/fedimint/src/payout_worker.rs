@@ -4,18 +4,22 @@ use anyhow::Context as _;
 use fedi_decentralized_service_manifold_guardian::{
     FederationId, InviteCode as WireInviteCode, SeatId,
 };
+use fedimint_client::ClientHandleArc;
 use fedimint_core::invite_code::InviteCode;
 use mg_core::db::Db;
 use mg_core::guardian_fee::GuardianFeeAccountKey;
-use mg_core::payout_wire::{PayoutJobStatusWire, PayoutJobWire, WalletDrainStatusWire};
-use mg_core::wallet::{EcashPayoutWorker, PayoutRequestId};
+use mg_core::payout_wire::{
+    PayoutJobStatusWire, PayoutJobWire, PayoutsWire, WalletDrainStatusWire,
+};
+use mg_core::wallet::{EcashPayoutWorker, PayoutRail, PayoutRequestId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::payout_job::{Payout, PayoutJob, PayoutScope};
-use crate::payout_job_status::PayoutJobStatus;
-use crate::wallet_drain::{OutgoingOperation, WalletDrainStatus};
+use crate::payout_job::{Payout, PayoutJob, PayoutMethod, PayoutScope};
+use crate::payout_job_status::{PayoutJobStatus, PayoutNativeStatus};
+use crate::payout_operation_id::PayoutOperationId;
+use crate::wallet_drain::WalletDrainStatus;
 use crate::{ClientScope, OpenWait, Wallet};
 
 /// How many of the newest payouts a list holds. Every listed job opens its
@@ -56,17 +60,19 @@ impl PayoutWorker {
 /// without treating a test double as the core boundary.
 #[async_trait::async_trait]
 trait PayoutNative: Send + Sync {
-    /// Start a native payout or recover its prior native commit by request id.
+    /// Start a native payout by the job's method, or recover its prior native
+    /// commit by request id.
     async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout>;
 
     /// Find a native payout by its request id without starting one.
     async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>>;
 
-    /// Read or await one already committed native payout.
+    /// Read or await one already committed native payout. For an ecash payout,
+    /// awaiting means awaiting a submitted reclaim.
     async fn observe(
         &self,
         job: &PayoutJob,
-        id: crate::payout_operation_id::PayoutOperationId,
+        id: PayoutOperationId,
         wait: bool,
     ) -> anyhow::Result<PayoutNativeStatus>;
 
@@ -89,40 +95,31 @@ impl EcashPayoutWorker for PayoutWorker {
         &self,
         federation_id: &FederationId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire> {
-        let scope = PayoutScope::PaymentFederation {
-            federation_id: federation_id.clone(),
-        };
-        let job = self.start_job(request_id, scope).await?;
-        Ok(job.to_wire())
+        let scope = payment_scope(federation_id);
+        Ok(self.start_job(request_id, scope, rail).await?.to_wire())
     }
     async fn sweep_guardian_fees(
         &self,
         invite: &WireInviteCode,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire> {
-        let invite: InviteCode = invite
-            .0
-            .parse()
-            .context("invalid guardian federation invite")?;
-        let scope = PayoutScope::GuardianFee {
-            federation_id: FederationId(invite.federation_id().to_string()),
-            seat_id: seat_id.clone(),
-            invite_code: invite.clone(),
-        };
-        let job = self.start_job(request_id, scope).await?;
-        Ok(job.to_wire())
+        let scope = guardian_scope(invite, seat_id)?;
+        Ok(self.start_job(request_id, scope, rail).await?.to_wire())
     }
     async fn resume_guardian_sweep(
         &self,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<Option<PayoutJobWire>> {
         let Some(job) = stored_guardian_job(&self.db, seat_id, request_id).await? else {
             return Ok(None);
         };
-        let job = self.start_job(request_id, job.scope.clone()).await?;
+        let job = self.start_job(request_id, job.scope.clone(), rail).await?;
         Ok(Some(job.to_wire()))
     }
     async fn confirm_ecash_payout(
@@ -153,13 +150,13 @@ impl EcashPayoutWorker for PayoutWorker {
         &self,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobStatusWire> {
-        Ok(self.status(request_id, false).await?.to_wire())
+        Ok(self.status(request_id, false).await?.to_wire(true))
     }
     async fn await_payout(
         &self,
         request_id: &PayoutRequestId,
     ) -> anyhow::Result<PayoutJobStatusWire> {
-        Ok(self.status(request_id, true).await?.to_wire())
+        Ok(self.status(request_id, true).await?.to_wire(true))
     }
     async fn payment_drain_status(&self, federation_id: &FederationId) -> WalletDrainStatusWire {
         let status = match (self.wallet.as_ref(), federation_id.0.parse()) {
@@ -179,22 +176,17 @@ impl EcashPayoutWorker for PayoutWorker {
         invite: &WireInviteCode,
         seat_id: &SeatId,
     ) -> anyhow::Result<WalletDrainStatusWire> {
-        let invite: InviteCode = invite
-            .0
-            .parse()
-            .context("invalid guardian federation invite")?;
         let Some(wallet) = &self.wallet else {
             return Ok(WalletDrainStatus::unavailable().to_wire());
         };
-        let scope = PayoutScope::GuardianFee {
-            federation_id: FederationId(invite.federation_id().to_string()),
-            seat_id: seat_id.clone(),
-            invite_code: invite.clone(),
-        };
+        let scope = guardian_scope(invite, seat_id)?;
         validate_scope(&scope)?;
+        let PayoutScope::GuardianFee { invite_code, .. } = &scope else {
+            unreachable!("guardian_scope builds a guardian scope")
+        };
         let key = (self.guardian_key)(seat_id);
         match wallet
-            .guardian_fee_client(&invite, seat_id, &key, OpenWait::Refuse)
+            .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Refuse)
             .await
         {
             Ok(c) => Ok(crate::drain_status::wallet_drain_status(&c).await.to_wire()),
@@ -212,6 +204,24 @@ impl EcashPayoutWorker for PayoutWorker {
             Err(_) => Ok(WalletDrainStatus::unavailable().to_wire()),
         }
     }
+}
+
+fn payment_scope(federation_id: &FederationId) -> PayoutScope {
+    PayoutScope::PaymentFederation {
+        federation_id: federation_id.clone(),
+    }
+}
+
+fn guardian_scope(invite: &WireInviteCode, seat_id: &SeatId) -> anyhow::Result<PayoutScope> {
+    let invite: InviteCode = invite
+        .0
+        .parse()
+        .context("invalid guardian federation invite")?;
+    Ok(PayoutScope::GuardianFee {
+        federation_id: FederationId(invite.federation_id().to_string()),
+        seat_id: seat_id.clone(),
+        invite_code: invite,
+    })
 }
 
 async fn stored_guardian_job(
@@ -536,7 +546,8 @@ impl PayoutWorker {
         crate::payout_store::commit(&self.db, request_id, &payout).await
     }
 
-    /// Serialize start-or-recover attempts for one immutable wallet scope.
+    /// Serialize start-or-recover attempts, and ecash reclaims, for one
+    /// immutable wallet scope.
     ///
     /// The native wallet repeats this exclusion around its durable operation
     /// lookup and start. Keeping the worker fence at the ownership boundary
@@ -604,9 +615,9 @@ impl PayoutWorker {
     async fn observe(
         &self,
         job: &PayoutJob,
-        id: crate::payout_operation_id::PayoutOperationId,
+        id: PayoutOperationId,
         wait: bool,
-    ) -> anyhow::Result<OutgoingOperation> {
+    ) -> anyhow::Result<PayoutNativeStatus> {
         validate_scope(&job.scope)?;
         self.native.observe(job, id, wait).await
     }

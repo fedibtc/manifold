@@ -3,7 +3,8 @@ use mg_core::db::Db;
 use sqlx::FromRow;
 
 use crate::payout_job::{
-    DestinationCap, Payout, PayoutJob, PayoutJobOperation, PayoutRequestId, PayoutScope,
+    DestinationCap, Payout, PayoutJob, PayoutJobOperation, PayoutMethod, PayoutRequestId,
+    PayoutScope,
 };
 use crate::payout_operation_id::PayoutOperationId;
 
@@ -56,7 +57,7 @@ pub(crate) async fn get(
     db: &Db,
     request_id: &PayoutRequestId,
 ) -> anyhow::Result<Option<PayoutJob>> {
-    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
+    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs WHERE request_id = ?")
         .bind(request_id.as_str()).fetch_optional(db.pool()).await?;
     row.map(parse).transpose()
 }
