@@ -13,7 +13,7 @@ import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { WhatsNew } from '@/shared/components/whats-new/WhatsNew';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
-import { isBadgeless } from '@/shared/utils/authorization';
+import { guardianCodesAvailable, isAuthorized, isBadgeless } from '@/shared/utils/authorization';
 import { formatSats } from '@/shared/utils/format';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
 import styles from './OverviewPage.module.css';
@@ -88,7 +88,8 @@ export const OverviewPage = () => {
 
         <SeatAvailability
           priceMsat={readOfferPriceMsat(plans)}
-          badgeless={badgeless}
+          guardianCodes={guardianCodesAvailable(onboarding.data)}
+          authorized={isAuthorized(onboarding.data)}
         />
 
         <AttentionList items={model.attention} />

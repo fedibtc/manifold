@@ -54,3 +54,19 @@ test('should report a failed relay read as a failure, not as a missing authoriza
   await expect(page.getByText('Approval could not be checked').first()).toBeVisible();
   await expect(page.getByText('This host is not approved yet')).not.toBeVisible();
 });
+
+// Guardian codes are a network feature: production has a badge path and nothing
+// else, so a badged host there must not be told codes work.
+test('should not mention guardian codes to a badged host in production', async ({ page }) => {
+  await resetScenario(page, 'authorization-observed-production');
+
+  await page.goto('/authorization');
+  await signIn(page);
+
+  await expect(page.getByText('Approved', { exact: true })).toBeVisible();
+  await expect(page.getByText(/guardian code/i)).toHaveCount(0);
+
+  await page.goto('/');
+  await expect(page.getByText('Fedi-verified selection')).toBeVisible();
+  await expect(page.getByText(/guardian code/i)).toHaveCount(0);
+});

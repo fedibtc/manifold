@@ -5,7 +5,7 @@ import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
-import { isBadgeless } from '@/shared/utils/authorization';
+import { guardianCodesAvailable, isBadgeless } from '@/shared/utils/authorization';
 import { toNpub } from '@/shared/utils/npub';
 import styles from './AuthorizationPage.module.css';
 
@@ -41,8 +41,10 @@ export const AuthorizationPage = () => {
   // something the rest of the screen contradicts. A host without a badge is
   // not waiting either: guardian codes already work, and a badge only adds
   // Fedi-verified selection.
+  // Guardian codes are mentioned only where the network offers them.
+  const alsoCodes = guardianCodesAvailable(onboarding.data) ? ' Guardian codes work as well.' : '';
   const intro = authorized
-    ? 'This host has a Trusted badge, so Federation Ambassadors can find and select it for Fedi-verified federations. Guardian codes work as well. The code below is your Manifold Fedimint Guardian ID.'
+    ? `This host has a Trusted badge, so Federation Ambassadors can find and select it for Fedi-verified federations.${alsoCodes} The code below is your Manifold Fedimint Guardian ID.`
     : badgeless
       ? 'This host runs without a badge and takes seats through guardian codes. Add a Trusted badge from a Fedi signer to also let Federation Ambassadors find and select it for Fedi-verified federations, and to set a seat price.'
       : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the PeerBadge app to approve it.';

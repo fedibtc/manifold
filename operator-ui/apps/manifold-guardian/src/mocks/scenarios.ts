@@ -372,6 +372,15 @@ const builders = {
     price: null,
     onboarding: authorized
   }),
+  // Production with a badge: the host is approved, and the network offers no
+  // guardian codes.
+  'authorization-observed-production': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: { ...authorized, badgeless_mg: false }
+  }),
   'authorization-read-error': () => ({
     ...base(),
     seats: [],
@@ -872,6 +881,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'authorization-observed': {
     desc: 'A holder authorization is on the relay. The Authorization page lists the holder and the full service Nostr public key.',
     affects: ['setup', 'authorization', 'backup', 'overview']
+  },
+  'authorization-observed-production': {
+    desc: 'Production network, host approved. Nothing mentions guardian codes, which production does not offer.',
+    affects: ['authorization', 'overview']
   },
   'authorization-read-error': {
     desc: 'The Onboarding read fails. The authorization state is unknown, and the app shell stays available.',

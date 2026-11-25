@@ -5,14 +5,22 @@ import styles from './SeatAvailability.module.css';
 
 interface SeatAvailabilityProps {
   priceMsat: number | null;
-  badgeless: boolean;
+  /** Whether the network offers guardian codes at all (`badgeless_mg`). */
+  guardianCodes: boolean;
+  authorized: boolean;
 }
 
-// The two ways a seat reaches this host. A badge adds Fedi-verified selection
+// The ways a seat reaches this host. A badge adds Fedi-verified selection
 // beside guardian codes; without one, guardian codes are the whole offer and
-// there is no price to set (REQ-bring-your-own-guardians).
-export const SeatAvailability = ({ priceMsat, badgeless }: SeatAvailabilityProps) => {
-  const codes = (
+// there is no price to set (REQ-bring-your-own-guardians). Where the network
+// offers no guardian codes, Fedi-verified selection is the only way, badge or not.
+export const SeatAvailability = ({
+  priceMsat,
+  guardianCodes,
+  authorized
+}: SeatAvailabilityProps) => {
+  const badgeless = guardianCodes && !authorized;
+  const codes = guardianCodes ? (
     <div className={styles.row}>
       <div className={styles.text}>
         <span className={styles.name}>Guardian codes</span>
@@ -23,7 +31,7 @@ export const SeatAvailability = ({ priceMsat, badgeless }: SeatAvailabilityProps
 
       <span className={styles.value}>Free setup</span>
     </div>
-  );
+  ) : null;
 
   const verified = badgeless ? (
     <div className={styles.row}>

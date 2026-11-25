@@ -183,6 +183,39 @@ it('should signpost an unapproved fleet to the Authorization screen', async () =
   expect(screen.getByRole('link', { name: 'Review' }).getAttribute('href')).toBe('/authorization');
 });
 
+const mockBadgedFleet = (badgelessMg: boolean) =>
+  vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) => {
+    if (request === 'ListSeats') return Promise.resolve({ seats: [] });
+    if (request === 'ListPaymentFederations') return Promise.resolve({ federations: [] });
+    if (request === 'ShowPlans') return Promise.resolve({ plans: [] });
+    return Promise.resolve({
+      fman_name: 'blissful-chiffchaff',
+      service_pubkey: 'abc',
+      service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+      nostr: AUTHORIZED_NOSTR,
+      badgeless_mg: badgelessMg
+    });
+  });
+
+// Guardian codes are a network feature, not a consequence of having a badge: a
+// badged host in production must not be told it takes seats through them.
+it('should not list guardian codes for a badged host where they are unavailable', async () => {
+  mockBadgedFleet(false);
+  renderPage();
+
+  await screen.findByText('Fedi-verified selection');
+  expect(screen.queryByText('Guardian codes')).toBeNull();
+  expect(screen.queryByText('Free setup')).toBeNull();
+});
+
+it('should list guardian codes beside selection for a badged host where they are offered', async () => {
+  mockBadgedFleet(true);
+  renderPage();
+
+  await screen.findByText('Fedi-verified selection');
+  expect(await screen.findByText('Guardian codes')).toBeTruthy();
+});
+
 it('should show a loading state instead of zero totals while queries are in flight', () => {
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation(() => new Promise(() => {}));
   renderPage();

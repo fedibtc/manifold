@@ -94,7 +94,7 @@ describe('AuthorizationPage', () => {
   // The intro used to ask for a scan in both states, contradicting the
   // "Approved" banner rendered directly below it.
   it('should stop asking for a scan once the fleet is approved', async () => {
-    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ ...observed, badgeless_mg: true });
     renderPage();
 
     await screen.findByText('Approved');
@@ -102,6 +102,18 @@ describe('AuthorizationPage', () => {
       screen.queryByText(/Scan the code below with the PeerBadge app to approve it/i)
     ).toBeNull();
     expect(screen.getByText(/This host has a Trusted badge/i)).toBeTruthy();
+    expect(screen.getByText(/Guardian codes work as well/)).toBeTruthy();
+  });
+
+  // Production, badge connected: guardian codes do not exist there, so the
+  // page must not promise them.
+  it('should not mention guardian codes to a badged host where they are unavailable', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ ...observed, badgeless_mg: false });
+    renderPage();
+
+    await screen.findByText('Approved');
+    expect(screen.getByText(/This host has a Trusted badge/i)).toBeTruthy();
+    expect(screen.queryByText(/guardian code/i)).toBeNull();
   });
 
   it('should refresh authorization after approval without fetching relays on mount', async () => {
