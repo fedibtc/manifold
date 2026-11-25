@@ -549,6 +549,11 @@ async fn spawn_child(
         .arg("--bind-metrics")
         .arg(format!("127.0.0.1:{}", ports.metrics()))
         .arg("--enable-iroh=true")
+        // MG never reads `db_checkpoints/` (backup, restore, and transfer only
+        // use the guardian JSON config files). Disabling per-session checkpoints
+        // avoids forcing a RocksDB memtable flush, SST hardlinks, and manifest
+        // fsyncs at the end of every consensus session.
+        .arg("--db-checkpoint-retention=0")
         .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
         .env(
             FM_IROH_DNS_ENV,

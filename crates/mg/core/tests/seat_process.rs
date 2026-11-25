@@ -247,3 +247,36 @@ async fn iroh_carrying_ports_bind_all_interfaces_others_loopback() {
     assert_eq!(bind("--bind-ui"), "127.0.0.1:31002");
     assert_eq!(bind("--bind-metrics"), "127.0.0.1:31003");
 }
+
+#[tokio::test]
+async fn child_disables_db_checkpoints() {
+    let temp = tempfile::tempdir().unwrap();
+    let args_path = temp.path().join("args");
+    let fedimintd = fake::write_fake_fedimintd(
+        temp.path(),
+        &format!("printf '%s\\n' \"$@\" > '{}'", args_path.display()),
+    )
+    .await;
+    let config = SeatProcessConfig {
+        data_root: temp.path().to_owned(),
+        fedimintd,
+        bitcoin_network: bitcoin::Network::Regtest,
+        bitcoin_backend: BitcoinBackend::Esplora("http://127.0.0.1:3000".parse().unwrap()),
+        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
+    };
+
+    let mut child = SeatProcess::start(
+        &config,
+        SeatId::new("00".repeat(32)).unwrap(),
+        SeatNo(0),
+        SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+        "test-seat-password",
+        &Features::default(),
+    )
+    .await
+    .unwrap();
+    child.wait().await.unwrap();
+
+    let args = tokio::fs::read_to_string(args_path).await.unwrap();
+    assert!(args.lines().any(|arg| arg == "--db-checkpoint-retention=0"));
+}
