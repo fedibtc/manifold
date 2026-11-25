@@ -11,8 +11,9 @@ import type { ScenarioStore, StorageAdapter, WorldSource } from './types';
  *  `lifetime_remitted_msat` to the fleet-manager fee ledger, which a v5 blob
  *  cannot supply and whose absence is the omission this typing closed; v7 added
  *  the fleet-manager support chat, which a v6 blob cannot supply; v8 added the fleet-manager guardian link,
- *  which a v7 blob cannot supply. */
-export const STORE_VERSION = 8;
+ *  which a v7 blob cannot supply; v9 added the fleet-manager payouts of both methods,
+ *  which a v8 blob cannot supply. */
+export const STORE_VERSION = 9;
 
 interface Persisted<W> {
   v: number;

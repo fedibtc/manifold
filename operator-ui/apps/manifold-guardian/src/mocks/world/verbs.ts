@@ -5,10 +5,17 @@ import type {
   AdminRequestPayload,
   AdminResponseByName,
   AdminResult,
+  EcashPayoutJob,
+  EcashPayoutStatus,
+  LightningPayoutJob,
+  LightningPayoutStatus,
   MonthlyDataBudget,
   PayoutJob,
+  PayoutJobStatusResponse,
+  PayoutScope,
   Plan
 } from '@operator-ui/types';
+import { mockEcashToken } from '@/mocks/ecash-token';
 import { mockGuardianLinkOffer } from '@/mocks/scenarios';
 import { getState, type MockSeat, RESTORE_COUNTS } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
@@ -155,105 +162,245 @@ const setPayoutDestination: Verb<'SetPayoutDestination'> = ({ destination }) => 
   return { destination };
 };
 
-const requirePayoutDestination = () => {
-  if (!getState().payoutDestination) throw new Error('no payout destination configured');
+const requirePayoutDestination = (): string => {
+  const { payoutDestination } = getState();
+  if (!payoutDestination) throw new Error('no payout destination configured');
+  return payoutDestination;
 };
 
-const payoutJobs = new Map<string, PayoutJob>();
+const findPayout = (request_id: string): PayoutJobStatusResponse | undefined =>
+  getState().payouts.find((payout) => payout.job.request_id === request_id);
 
-const sweepPaymentFees: Verb<'SweepPaymentFees'> = ({ federation_id, request_id }) => {
-  const existing = payoutJobs.get(request_id);
+const ecashPayout = (request_id: string): EcashPayoutStatus | undefined => {
+  const payout = findPayout(request_id);
+  return payout && 'ecash' in payout ? payout : undefined;
+};
+
+const lightningPayout = (request_id: string): LightningPayoutStatus | undefined => {
+  const payout = findPayout(request_id);
+  return payout && 'payout' in payout ? payout : undefined;
+};
+
+// A request id names one payout for good: the daemon refuses to reuse it for
+// another scope or another method rather than start a second payout.
+const sameScope = (left: PayoutScope, right: PayoutScope) =>
+  left.kind === right.kind &&
+  left.federation_id === right.federation_id &&
+  (left.kind !== 'guardian_fee' || right.kind !== 'guardian_fee' || left.seat_id === right.seat_id);
+
+const refuseOtherMethod = (request_id: string, method: 'lightning' | 'ecash') => {
+  const taken = findPayout(request_id);
+  if (taken && taken.job.method !== method) {
+    throw new Error('payout request id is already bound to a different payout method');
+  }
+};
+
+/** The fee a mock Lightning payment pays: what `walletStatus` keeps back from
+ *  the economically sweepable amount. */
+const sentOverLightning = (balanceMsat: number) =>
+  walletStatus(balanceMsat).economically_sweepable_recipient_msat as number;
+
+const startLightningPayout = (
+  request_id: string,
+  scope: PayoutScope,
+  takeBalance: () => number
+): LightningPayoutJob => {
+  refuseOtherMethod(request_id, 'lightning');
+  const existing = lightningPayout(request_id);
   if (existing) {
-    if (
-      existing.scope.kind !== 'payment_federation' ||
-      existing.scope.federation_id !== federation_id
-    ) {
+    if (!sameScope(existing.job.scope, scope)) {
       throw new Error('payout request id is already bound to a different scope');
     }
-    return existing;
+    return existing.job;
   }
-  requirePayoutDestination();
+  const destination = requirePayoutDestination();
+  const balance = takeBalance();
+  const sent = sentOverLightning(balance);
+  const now = Date.now();
+  const operationId = `op_lnpay_${request_id.slice(0, 8)}_${sent}`;
+  const job: LightningPayoutJob = {
+    request_id,
+    scope,
+    method: 'lightning',
+    destination,
+    operation: {
+      operation_id: operationId,
+      amount_msat: sent,
+      capped: null,
+      committed_at_ms: now,
+      confirmed_at_ms: null
+    },
+    created_at_ms: now
+  };
+  getState().payouts.push({
+    job,
+    payout: {
+      operation_id: operationId,
+      rail: 'lnv2',
+      state: 'succeeded',
+      recipient_amount_msat: sent,
+      contract_amount_msat: balance,
+      encumbered_msat: 0,
+      has_active_state_machines: false
+    }
+  });
+  return job;
+};
+
+// A sweep without a method is a Lightning sweep, as the daemon reads it.
+const startPayout = (
+  method: PayoutJob['method'] = 'lightning',
+  request_id: string,
+  scope: PayoutScope,
+  takeBalance: () => number
+): PayoutJob =>
+  method === 'ecash'
+    ? issueEcashPayout(request_id, scope, takeBalance)
+    : startLightningPayout(request_id, scope, takeBalance);
+
+const sweepPaymentFees: Verb<'SweepPaymentFees'> = ({ federation_id, request_id, method }) =>
+  startPayout(method, request_id, { kind: 'payment_federation', federation_id }, () => {
+    const federation = paymentFederation(federation_id);
+    const swept = federation.wallet.available_ecash_msat ?? 0;
+    if (swept === 0) throw new Error('nothing to sweep');
+    federation.wallet = walletStatus(0);
+    return swept;
+  });
+
+const sweepGuardianFees: Verb<'SweepGuardianFees'> = ({ seat_id, request_id, method }) => {
+  const ledger = feeLedger(seatById(seat_id));
+  return startPayout(method, request_id, guardianScope(seat_id, ledger.federation_id), () => {
+    const swept = ledger.collected_ecash_msat;
+    if (swept === 0) throw new Error('nothing to sweep');
+    ledger.collected_ecash_msat = 0;
+    return swept;
+  });
+};
+
+const guardianScope = (seat_id: string, federation_id: string): PayoutScope => ({
+  kind: 'guardian_fee',
+  federation_id,
+  seat_id,
+  invite_code: `mock-invite-${federation_id}`
+});
+
+const payoutStatus: Verb<'PayoutStatus'> = ({ request_id }) => {
+  const payout = findPayout(request_id);
+  if (!payout) throw new Error('unknown payout request id');
+  return payout;
+};
+
+const awaitPayout: Verb<'AwaitPayout'> = payoutStatus;
+
+// The whole balance leaves as one bearer token, which `PayoutStatus` hands to
+// the operator. No destination is involved, so none is required.
+const issueEcashPayout = (
+  request_id: string,
+  scope: PayoutScope,
+  takeBalance: () => number
+): EcashPayoutJob => {
+  refuseOtherMethod(request_id, 'ecash');
+  const existing = ecashPayout(request_id);
+  if (existing) {
+    if (!sameScope(existing.job.scope, scope)) {
+      throw new Error('payout request id is already bound to a different scope');
+    }
+    return existing.job;
+  }
+  const amount = takeBalance();
+  const now = Date.now();
+  const payout: EcashPayoutStatus = {
+    job: {
+      request_id,
+      scope,
+      method: 'ecash',
+      operation: {
+        operation_id: `op_ecash_${request_id.slice(0, 8)}_${amount}`,
+        amount_msat: amount,
+        capped: null,
+        committed_at_ms: now,
+        confirmed_at_ms: null
+      },
+      created_at_ms: now
+    },
+    ecash: { state: 'issued', token: mockEcashToken(request_id) }
+  };
+  getState().payouts.push(payout);
+  return payout.job;
+};
+
+const paymentFederation = (federation_id: string) => {
   const federation = getState().paymentFederations.find(
     (candidate) => candidate.federation_id === federation_id
   );
   if (!federation) throw new Error('unknown federation');
-  const swept = federation.wallet.available_ecash_msat ?? 0;
-  if (swept === 0) throw new Error('nothing to sweep');
-  federation.wallet = walletStatus(0);
-  const now = Date.now();
-  const job: PayoutJob = {
-    request_id,
-    scope: { kind: 'payment_federation', federation_id },
-    destination: getState().payoutDestination!,
-    operation: {
-      operation_id: `op_${federation_id.slice(4, 12)}_${swept}`,
-      amount_msat: swept,
-      capped: null,
-      committed_at_ms: now
-    },
-    created_at_ms: now
-  };
-  payoutJobs.set(request_id, job);
-  return job;
+  return federation;
 };
 
-const sweepGuardianFees: Verb<'SweepGuardianFees'> = ({ seat_id, request_id }) => {
-  const existing = payoutJobs.get(request_id);
-  if (existing) {
-    if (existing.scope.kind !== 'guardian_fee' || existing.scope.seat_id !== seat_id) {
-      throw new Error('payout request id is already bound to a different scope');
-    }
-    return existing;
+/** The list item the daemon answers: a polled list never carries a token. */
+const listed = (payout: PayoutJobStatusResponse): PayoutJobStatusResponse =>
+  'ecash' in payout && payout.ecash?.state === 'issued'
+    ? { job: payout.job, ecash: { state: 'issued', token: null } }
+    : payout;
+
+/** How many of the newest payouts the daemon lists. */
+const RECENT_PAYOUTS = 20;
+
+// The daemon keeps an older ecash payout listed while its notes are not
+// settled and the operator has not marked it redeemed.
+const isOpenEcash = (payout: PayoutJobStatusResponse) =>
+  'ecash' in payout &&
+  payout.job.operation?.confirmed_at_ms === null &&
+  (payout.ecash?.state === 'issued' || payout.ecash?.state === 'reclaiming');
+
+const newestFirst = (left: PayoutJobStatusResponse, right: PayoutJobStatusResponse) =>
+  right.job.created_at_ms - left.job.created_at_ms ||
+  right.job.request_id.localeCompare(left.job.request_id);
+
+// The newest payouts, plus every older ecash payout still open, as the daemon
+// answers: newer payouts never push an issued token out of the list.
+const listPayouts: Verb<'ListPayouts'> = () => {
+  const all = [...getState().payouts].sort(newestFirst);
+  const recent = all.slice(0, RECENT_PAYOUTS);
+  const olderOpen = all.slice(RECENT_PAYOUTS).filter(isOpenEcash);
+  return { payouts: [...recent, ...olderOpen].sort(newestFirst).map(listed) };
+};
+
+const requireEcashPayout = (request_id: string) => {
+  const payout = ecashPayout(request_id);
+  if (payout) return payout;
+  if (findPayout(request_id)) {
+    throw new Error('payout request id is bound to a different payout method');
   }
-  requirePayoutDestination();
-  const ledger = feeLedger(seatById(seat_id));
-  const swept = ledger.collected_ecash_msat;
-  if (swept === 0) throw new Error('nothing to sweep');
-  ledger.collected_ecash_msat = 0;
-  const now = Date.now();
-  const job: PayoutJob = {
-    request_id,
-    scope: {
-      kind: 'guardian_fee',
-      federation_id: ledger.federation_id,
-      seat_id,
-      invite_code: `mock-invite-${ledger.federation_id}`
-    },
-    destination: getState().payoutDestination!,
-    operation: {
-      operation_id: `op_fees_${seat_id.slice(0, 8)}_${swept}`,
-      amount_msat: swept,
-      capped: null,
-      committed_at_ms: now
-    },
-    created_at_ms: now
-  };
-  payoutJobs.set(request_id, job);
+  throw new Error('unknown payout request id');
+};
+
+// The operator's word, set once and nothing else: the notes' state is the
+// wallet's, and a cancel is still accepted afterwards.
+const confirmEcashPayout: Verb<'ConfirmEcashPayout'> = ({ request_id }) => {
+  const { job } = requireEcashPayout(request_id);
+  if (!job.operation) throw new Error('ecash payout has no issued token to confirm');
+  job.operation.confirmed_at_ms ??= Date.now();
   return job;
 };
 
-const payoutStatus: Verb<'PayoutStatus'> = ({ request_id }) => {
-  const job = payoutJobs.get(request_id);
-  if (!job) throw new Error('unknown payout request id');
-  const operation = job.operation;
-  return {
-    job,
-    payout:
-      operation === null
-        ? null
-        : {
-            operation_id: operation.operation_id,
-            rail: 'lnv2',
-            state: 'succeeded',
-            recipient_amount_msat: operation.amount_msat,
-            contract_amount_msat: operation.amount_msat,
-            encumbered_msat: 0,
-            has_active_state_machines: false
-          }
-  };
+// The mock has no redeeming wallet, so a cancel always wins and the amount
+// goes back to the balance it left, whether or not the operator marked it
+// redeemed first.
+const cancelEcashPayout: Verb<'CancelEcashPayout'> = ({ request_id }) => {
+  const payout = requireEcashPayout(request_id);
+  if (payout.ecash?.state !== 'issued') return payout;
+  const amount = payout.job.operation?.amount_msat ?? 0;
+  const { scope } = payout.job;
+  if (scope.kind === 'payment_federation') {
+    const federation = paymentFederation(scope.federation_id);
+    federation.wallet = walletStatus((federation.wallet.available_ecash_msat ?? 0) + amount);
+  } else {
+    feeLedger(seatById(scope.seat_id)).collected_ecash_msat += amount;
+  }
+  payout.ecash = { state: 'reclaimed' };
+  return payout;
 };
-
-const awaitPayout: Verb<'AwaitPayout'> = payoutStatus;
 
 /** Seats the capacity ceiling must stay above. The daemon counts its seats
  *  table, which a restore repopulates; the mock world does not materialize
@@ -642,6 +789,9 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SweepPaymentFees: sweepPaymentFees,
   PayoutStatus: payoutStatus,
   AwaitPayout: awaitPayout,
+  ListPayouts: listPayouts,
+  ConfirmEcashPayout: confirmEcashPayout,
+  CancelEcashPayout: cancelEcashPayout,
   GuardianFees: guardianFees,
   CollectGuardianFees: collectGuardianFees,
   SweepGuardianFees: sweepGuardianFees,
@@ -663,6 +813,8 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'SweepPaymentFees',
   'CollectGuardianFees',
   'SweepGuardianFees',
+  'ConfirmEcashPayout',
+  'CancelEcashPayout',
   'OnboardAsNew',
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',

@@ -1,5 +1,13 @@
 import type { ScenarioNote } from '@operator-ui/mock-devtools';
-import type { HostPressure, MgVersionReport } from '@operator-ui/types';
+import type {
+  EcashPayoutState,
+  EcashPayoutStatus,
+  HostPressure,
+  LightningPayoutStatus,
+  MgVersionReport,
+  PayoutScope
+} from '@operator-ui/types';
+import { mockEcashToken } from '@/mocks/ecash-token';
 import type { MockGuardianFees, MockSeat, MockState } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -183,6 +191,7 @@ const base = (): Pick<
   | 'restoreSession'
   | 'onboardingTransport'
   | 'payoutDestination'
+  | 'payouts'
   | 'relayAuthorization'
   | 'maxSeats'
   | 'cpuMaxSeats'
@@ -216,6 +225,7 @@ const base = (): Pick<
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
+  payouts: [],
   authMode: 'password',
   sessionActive: false,
   password: 'test-password',
@@ -253,7 +263,158 @@ export const mockGuardianLinkOffer = () => ({
   expires_at: Math.floor(Date.now() / 1000) + 600
 });
 
+const HOUR_MS = 3_600_000;
+const FEDERATION_C = 'fed1cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
+const paymentScope = (federation_id: string): PayoutScope => ({
+  kind: 'payment_federation',
+  federation_id
+});
+
+const EARNING_SEAT_SCOPE: PayoutScope = {
+  kind: 'guardian_fee',
+  federation_id: FEDERATION_A,
+  seat_id: 'seat-earning-01',
+  invite_code: 'fed1earning0000000000000000000000000000000000000000000000000000'
+};
+
+/** A Lightning payout of `balanceMsat`, started `agoMs` before now. */
+const lightningPayout = (
+  request_id: string,
+  scope: PayoutScope,
+  balanceMsat: number,
+  state: 'succeeded' | 'failed_or_refunded',
+  agoMs: number
+): LightningPayoutStatus => {
+  const sent = walletStatus(balanceMsat).economically_sweepable_recipient_msat ?? 0;
+  const operation_id = `op_lnpay_${request_id}`;
+  return {
+    job: {
+      request_id,
+      scope,
+      method: 'lightning',
+      destination: 'operator@example.com',
+      operation: {
+        operation_id,
+        amount_msat: sent,
+        capped: null,
+        committed_at_ms: NOW_MS - agoMs,
+        confirmed_at_ms: null
+      },
+      created_at_ms: NOW_MS - agoMs
+    },
+    payout: {
+      operation_id,
+      rail: 'lnv2',
+      state,
+      recipient_amount_msat: sent,
+      contract_amount_msat: balanceMsat,
+      encumbered_msat: 0,
+      has_active_state_machines: false
+    }
+  };
+};
+
+/** An ecash payout of `amountMsat` in `ecash`, issued `agoMs` before now and
+ *  marked redeemed at `confirmedAtMs`. */
+const ecashPayout = (
+  request_id: string,
+  scope: PayoutScope,
+  amountMsat: number,
+  ecash: EcashPayoutState,
+  agoMs: number,
+  confirmedAtMs: number | null = null
+): EcashPayoutStatus => ({
+  job: {
+    request_id,
+    scope,
+    method: 'ecash',
+    operation: {
+      operation_id: `op_ecash_${request_id}`,
+      amount_msat: amountMsat,
+      capped: null,
+      committed_at_ms: NOW_MS - agoMs,
+      confirmed_at_ms: confirmedAtMs
+    },
+    created_at_ms: NOW_MS - agoMs
+  },
+  ecash
+});
+
 // `satisfies` keeps the keys literal, so notes must cover exactly this set.
+const earningsWorld = (): MockState => ({
+  ...base(),
+  seats: [
+    seat({
+      seat_id: 'seat-earning-01',
+      created_at_ms: NOW_MS - 5 * DAY_MS,
+      payment_claim: { state: 'success', at_ms: NOW_MS - 5 * DAY_MS },
+      report: {
+        state: 'active',
+        health: 'healthy',
+        phase: 'running',
+        invite_code: 'fed1earning0000000000000000000000000000000000000000000000000000'
+      },
+      fees: fees({
+        staged_msat: 12_000_000,
+        locked_msat: 3_000_000,
+        idle_msat: 1_000_000,
+        collected_ecash_msat: 8_000_000,
+        // More than the three remittances below add up to, and more than the
+        // pool holds: earlier money has already been swept out. A total read
+        // off the window would be short by the difference.
+        lifetime_remitted_msat: 41_500_000,
+        remittances: [
+          remittance(6_000_000, 0, 'txid-earning-today'),
+          remittance(4_000_000, 1, 'txid-earning-yesterday'),
+          remittance(6_000_000, 4, 'txid-earning-older')
+        ]
+      })
+    }),
+    seat({
+      seat_id: 'seat-earning-02',
+      created_at_ms: NOW_MS - DAY_MS,
+      payment_claim: { state: 'success', at_ms: NOW_MS - DAY_MS },
+      report: {
+        state: 'active',
+        health: 'healthy',
+        phase: 'running',
+        invite_code: 'fed1earning1111111111111111111111111111111111111111111111111111'
+      },
+      fees: fees({
+        federation_id: FEDERATION_B,
+        staged_msat: 2_000_000,
+        idle_msat: 500_000,
+        collected_ecash_msat: 0,
+        lifetime_remitted_msat: 2_500_000,
+        remittances: [remittance(2_500_000, 0, 'txid-earning-second')]
+      })
+    }),
+    seat({
+      seat_id: 'seat-unpaid-01',
+      created_at_ms: NOW_MS - 2 * DAY_MS,
+      payment_claim: { state: 'already_spent', at_ms: NOW_MS - 2 * DAY_MS },
+      report: { state: 'active', health: 'healthy', phase: 'dkg_in_progress' }
+    })
+  ],
+  paymentFederations: [
+    {
+      federation_id: FEDERATION_A,
+      accepted: true,
+      receivable: true,
+      wallet: walletStatus(150_000_000)
+    },
+    {
+      federation_id: FEDERATION_B,
+      accepted: false,
+      receivable: false,
+      wallet: walletStatus(12_000_000)
+    }
+  ],
+  price: SEAT_PRICE_MSAT,
+  onboarding: authorized
+});
+
 const builders = {
   'fedi-app-disabled': () => fediAppWorld({ availability: 'disabled', link: null, offer: null }),
   'fedi-app-unavailable': () =>
@@ -758,78 +919,57 @@ const builders = {
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
   }),
-  earnings: () => ({
-    ...base(),
-    seats: [
-      seat({
-        seat_id: 'seat-earning-01',
-        created_at_ms: NOW_MS - 5 * DAY_MS,
-        payment_claim: { state: 'success', at_ms: NOW_MS - 5 * DAY_MS },
-        report: {
-          state: 'active',
-          health: 'healthy',
-          phase: 'running',
-          invite_code: 'fed1earning0000000000000000000000000000000000000000000000000000'
-        },
-        fees: fees({
-          staged_msat: 12_000_000,
-          locked_msat: 3_000_000,
-          idle_msat: 1_000_000,
-          collected_ecash_msat: 8_000_000,
-          // More than the three remittances below add up to, and more than the
-          // pool holds: earlier money has already been swept out. A total read
-          // off the window would be short by the difference.
-          lifetime_remitted_msat: 41_500_000,
-          remittances: [
-            remittance(6_000_000, 0, 'txid-earning-today'),
-            remittance(4_000_000, 1, 'txid-earning-yesterday'),
-            remittance(6_000_000, 4, 'txid-earning-older')
-          ]
-        })
-      }),
-      seat({
-        seat_id: 'seat-earning-02',
-        created_at_ms: NOW_MS - DAY_MS,
-        payment_claim: { state: 'success', at_ms: NOW_MS - DAY_MS },
-        report: {
-          state: 'active',
-          health: 'healthy',
-          phase: 'running',
-          invite_code: 'fed1earning1111111111111111111111111111111111111111111111111111'
-        },
-        fees: fees({
-          federation_id: FEDERATION_B,
-          staged_msat: 2_000_000,
-          idle_msat: 500_000,
-          collected_ecash_msat: 0,
-          lifetime_remitted_msat: 2_500_000,
-          remittances: [remittance(2_500_000, 0, 'txid-earning-second')]
-        })
-      }),
-      seat({
-        seat_id: 'seat-unpaid-01',
-        created_at_ms: NOW_MS - 2 * DAY_MS,
-        payment_claim: { state: 'already_spent', at_ms: NOW_MS - 2 * DAY_MS },
-        report: { state: 'active', health: 'healthy', phase: 'dkg_in_progress' }
-      })
-    ],
-    paymentFederations: [
-      {
-        federation_id: FEDERATION_A,
-        accepted: true,
-        receivable: true,
-        wallet: walletStatus(150_000_000)
-      },
-      {
-        federation_id: FEDERATION_B,
-        accepted: false,
-        receivable: false,
-        wallet: walletStatus(12_000_000)
-      }
-    ],
-    price: SEAT_PRICE_MSAT,
-    onboarding: authorized
-  })
+  earnings: earningsWorld,
+  // One token waiting to be redeemed on top of the earnings world, and a
+  // History of every closed outcome: sent, redeemed, returned, and failed.
+  'ecash-payout-open': () => {
+    const world = earningsWorld();
+    return {
+      ...world,
+      paymentFederations: [
+        ...world.paymentFederations,
+        { federation_id: FEDERATION_C, accepted: true, receivable: true, wallet: walletStatus(0) }
+      ],
+      payouts: [
+        lightningPayout(
+          'mock-payout-failed',
+          paymentScope(FEDERATION_A),
+          60_000_000,
+          'failed_or_refunded',
+          13 * DAY_MS
+        ),
+        ecashPayout(
+          'mock-payout-returned',
+          paymentScope(FEDERATION_B),
+          8_000_000,
+          { state: 'reclaimed' },
+          11 * DAY_MS
+        ),
+        ecashPayout(
+          'mock-payout-redeemed',
+          EARNING_SEAT_SCOPE,
+          25_000_000,
+          { state: 'issued', token: mockEcashToken('mock-payout-redeemed') },
+          DAY_MS,
+          NOW_MS - DAY_MS + 60_000
+        ),
+        lightningPayout(
+          'mock-payout-sent',
+          paymentScope(FEDERATION_A),
+          150_000_000,
+          'succeeded',
+          3 * HOUR_MS
+        ),
+        ecashPayout(
+          'mock-ecash-payout-open',
+          paymentScope(FEDERATION_C),
+          40_000_000,
+          { state: 'issued', token: mockEcashToken('mock-ecash-payout-open') },
+          2 * HOUR_MS
+        )
+      ]
+    };
+  }
 } satisfies Record<string, () => MockState>;
 
 export type ScenarioName = keyof typeof builders;
@@ -1012,7 +1152,11 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     affects: ['payouts']
   },
   'fees-dust': {
-    desc: 'One seat holding 93 sats in the pool. Below the threshold where the mint fee is a visible slice of a collection, so collecting asks for confirmation first.',
+    desc: 'One seat holding 93 sats in the pool. Below the threshold where the mint fee is a visible slice of a collection, so the withdraw dialog warns about it beside its Collect button.',
+    affects: ['payouts']
+  },
+  'ecash-payout-open': {
+    desc: 'The earnings world plus one ecash token waiting to be redeemed, and a History of closed payouts: one sent and one failed over Lightning, one ecash redeemed and one returned to its balance.',
     affects: ['payouts']
   },
   earnings: {

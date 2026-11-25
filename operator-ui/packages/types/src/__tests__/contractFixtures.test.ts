@@ -37,6 +37,10 @@ import mgCollectGuardianFeesIncompleteJson from '../../fixtures/mg_collect_guard
 import mgCollectGuardianFeesIncompleteIdleJson from '../../fixtures/mg_collect_guardian_fees_incomplete_idle.json';
 import mgCollectGuardianFeesIncompleteRefreshJson from '../../fixtures/mg_collect_guardian_fees_incomplete_refresh.json';
 import mgDecommissionSeatJson from '../../fixtures/mg_decommission_seat.json';
+import mgEcashPayoutAlreadySpentJson from '../../fixtures/mg_ecash_payout_already_spent.json';
+import mgEcashPayoutIssuedJson from '../../fixtures/mg_ecash_payout_issued.json';
+import mgEcashPayoutJobConfirmedJson from '../../fixtures/mg_ecash_payout_job_confirmed.json';
+import mgEcashPayoutReclaimedJson from '../../fixtures/mg_ecash_payout_reclaimed.json';
 import mgGuardianFeesJson from '../../fixtures/mg_guardian_fees.json';
 import mgGuardianFeesPolicyErrorJson from '../../fixtures/mg_guardian_fees_policy_error.json';
 import mgGuardianLinkJson from '../../fixtures/mg_guardian_link.json';
@@ -54,6 +58,7 @@ import mgPayoutDestinationJson from '../../fixtures/mg_payout_destination.json';
 import mgPayoutJobJson from '../../fixtures/mg_payout_job.json';
 import mgPayoutJobCappedJson from '../../fixtures/mg_payout_job_capped.json';
 import mgPayoutJobStatusJson from '../../fixtures/mg_payout_job_status.json';
+import mgPayoutsJson from '../../fixtures/mg_payouts.json';
 import mgPlansJson from '../../fixtures/mg_plans.json';
 import mgReenrollTelemetryJson from '../../fixtures/mg_reenroll_telemetry.json';
 import mgSeatGuardianFeesJson from '../../fixtures/mg_seat_guardian_fees.json';
@@ -72,7 +77,9 @@ import type {
   AttestationListResponse,
   BackupManifest,
   CollectGuardianFeesResponse,
+  ConfirmEcashPayoutResponse,
   DecommissionSeatResponse,
+  EcashPayoutStatus,
   GetAdvertisementStateResponse,
   GetFundsResponse,
   GetHealthResponse,
@@ -80,6 +87,7 @@ import type {
   GuardianLinkResponse,
   GuardianLinkTestResponse,
   ListPaymentFederationsResponse,
+  ListPayoutsResponse,
   ListSeatsResponse,
   ListWalletOperationsResponse,
   MarkSupportReadResponse,
@@ -296,11 +304,15 @@ const adminRequestsMirror = {
   SweepPaymentFees: {
     SweepPaymentFees: {
       federation_id: 'fed1fixturepaymentfederation',
-      request_id: 'fixture-payment-payout'
+      request_id: 'fixture-payment-payout',
+      method: 'ecash'
     }
   },
   PayoutStatus: { PayoutStatus: { request_id: 'fixture-payment-payout' } },
   AwaitPayout: { AwaitPayout: { request_id: 'fixture-payment-payout' } },
+  ListPayouts: 'ListPayouts',
+  ConfirmEcashPayout: { ConfirmEcashPayout: { request_id: 'fixture-ecash-payout' } },
+  CancelEcashPayout: { CancelEcashPayout: { request_id: 'fixture-ecash-payout' } },
   ListSeats: 'ListSeats',
   SeatStatus: { SeatStatus: { seat_id: SEAT_ID } },
   DecommissionSeat: { DecommissionSeat: { seat_id: SEAT_ID } },
@@ -315,7 +327,11 @@ const adminRequestsMirror = {
   GuardianFees: { GuardianFees: { seat_id: SEAT_ID, limit: 20 } },
   CollectGuardianFees: { CollectGuardianFees: { seat_id: SEAT_ID } },
   SweepGuardianFees: {
-    SweepGuardianFees: { seat_id: SEAT_ID, request_id: 'fixture-guardian-payout' }
+    SweepGuardianFees: {
+      seat_id: SEAT_ID,
+      request_id: 'fixture-guardian-payout',
+      method: 'lightning'
+    }
   },
   Onboarding: 'Onboarding',
   RefreshHolderAuthorizations: 'RefreshHolderAuthorizations',
@@ -466,10 +482,12 @@ const mgPayoutDestinationMirror = {
 const mgPayoutJobMirror = {
   created_at_ms: 1_753_600_001_000,
   destination: 'operator@example.com',
+  method: 'lightning',
   operation: {
     amount_msat: 250_000,
     capped: null,
     committed_at_ms: 1_753_600_002_000,
+    confirmed_at_ms: null,
     operation_id: '0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f'
   },
   request_id: 'fixture-payout-request',
@@ -496,6 +514,66 @@ const mgPayoutJobStatusMirror = {
     state: 'succeeded'
   }
 } satisfies PayoutJobStatusResponse;
+
+const mgEcashPayoutJobMirror = {
+  created_at_ms: 1_753_600_061_000,
+  method: 'ecash',
+  operation: {
+    amount_msat: 1_234_000,
+    capped: null,
+    committed_at_ms: 1_753_600_062_000,
+    confirmed_at_ms: null,
+    operation_id: '5e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f0f7c1b9a3e5d4c2b8a6f'
+  },
+  request_id: 'fixture-ecash-payout',
+  scope: { federation_id: 'fed1fixturepayment', kind: 'payment_federation' }
+} satisfies EcashPayoutStatus['job'];
+
+// The ConfirmEcashPayout answer: the job with the operator's mark.
+const mgEcashPayoutJobConfirmedMirror = {
+  ...mgEcashPayoutJobMirror,
+  operation: { ...mgEcashPayoutJobMirror.operation, confirmed_at_ms: 1_753_600_090_000 }
+} satisfies ConfirmEcashPayoutResponse;
+
+// A list never carries a token: an issued item is `{ state: 'issued', token: null }`.
+const mgPayoutsMirror = {
+  payouts: [
+    {
+      ecash: { state: 'issued', token: null },
+      job: {
+        ...mgEcashPayoutJobMirror,
+        request_id: 'fixture-guardian-ecash-payout',
+        scope: {
+          federation_id: '0b0dc4f1bf47d72e3fc7f62c2e6a5a1b0f3dcd8b2a0e2f9a47d4a3c0f18a2d01',
+          invite_code: 'fed11fixtureguardianinvite',
+          kind: 'guardian_fee',
+          seat_id: '0707070707070707070707070707070707070707070707070707070707070707'
+        }
+      }
+    },
+    { ecash: { state: 'reclaiming' }, job: mgEcashPayoutJobMirror },
+    {
+      ecash: { state: 'issued', token: null },
+      job: { ...mgEcashPayoutJobConfirmedMirror, request_id: 'fixture-confirmed-ecash-payout' }
+    },
+    mgPayoutJobStatusMirror
+  ]
+} satisfies ListPayoutsResponse;
+
+const mgEcashPayoutIssuedMirror = {
+  ecash: { state: 'issued', token: 'fedimint1fixtureecashtokenplaceholder' },
+  job: mgEcashPayoutJobMirror
+} satisfies EcashPayoutStatus;
+
+const mgEcashPayoutReclaimedMirror = {
+  ecash: { state: 'reclaimed' },
+  job: mgEcashPayoutJobMirror
+} satisfies EcashPayoutStatus;
+
+const mgEcashPayoutAlreadySpentMirror = {
+  ecash: { state: 'already_spent' },
+  job: mgEcashPayoutJobMirror
+} satisfies EcashPayoutStatus;
 
 const mgSeatsMirror = {
   seats: [
@@ -871,6 +949,15 @@ describe('committed MG fixtures match their type-checked mirrors', () => {
     expect(mgPayoutJobJson).toEqual(mgPayoutJobMirror);
     expect(mgPayoutJobCappedJson).toEqual(mgPayoutJobCappedMirror);
     expect(mgPayoutJobStatusJson).toEqual(mgPayoutJobStatusMirror);
+  });
+
+  it('should keep mg ecash payout fixtures equal to the typed mirrors', () => {
+    expect(mgPayoutsJson).toEqual(mgPayoutsMirror);
+    expect(mgEcashPayoutIssuedJson).toEqual(mgEcashPayoutIssuedMirror);
+    expect(JSON.stringify(mgPayoutsJson)).not.toContain('fedimint1');
+    expect(mgEcashPayoutJobConfirmedJson).toEqual(mgEcashPayoutJobConfirmedMirror);
+    expect(mgEcashPayoutReclaimedJson).toEqual(mgEcashPayoutReclaimedMirror);
+    expect(mgEcashPayoutAlreadySpentJson).toEqual(mgEcashPayoutAlreadySpentMirror);
   });
 
   it('should keep mg_seats.json equal to the typed mirror', () => {
