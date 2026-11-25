@@ -183,7 +183,7 @@ impl GuardianFeeVault for Wallet {
         let client = self
             .guardian_fee_client(invite_code, seat_id, key, OpenWait::Refuse)
             .await?;
-        client.get_balance_for_btc().await
+        Ok(client.get_balance_for_btc().await?)
     }
 }
 

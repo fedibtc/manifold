@@ -4084,11 +4084,8 @@ impl FaStore {
 pub(crate) fn map_lease_commit_error(error: DatabaseError) -> FaError {
     match error {
         DatabaseError::WriteConflict | DatabaseError::SnapshotTooOld(_) => FaError::Busy,
-        DatabaseError::TransactionConsumed
-        | DatabaseError::DatabaseBackend(_)
-        | DatabaseError::Other(_) => {
-            FaError::Storage("FA driver lease database commit failed".to_owned())
-        }
+        // Every other failure, whichever variants the linked Fedimint has.
+        _ => FaError::Storage("FA driver lease database commit failed".to_owned()),
     }
 }
 

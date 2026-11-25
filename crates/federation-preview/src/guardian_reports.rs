@@ -39,9 +39,9 @@ pub async fn read_guardian_reports(
     .await
 }
 
-async fn reports_after_setup(
+async fn reports_after_setup<E: std::fmt::Display>(
     federation_id: FederationId,
-    setup: impl Future<Output = anyhow::Result<DynGlobalApi>>,
+    setup: impl Future<Output = Result<DynGlobalApi, E>>,
 ) -> Result<GuardianReports, FederationPreviewError> {
     let api = timeout(Duration::from_secs(30), setup)
         .await
@@ -243,7 +243,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let reports = reports_after_setup(FederationId("test".into()), async {
             tokio::time::sleep(Duration::from_secs(25)).await;
-            Ok(api())
+            anyhow::Ok(api())
         })
         .await
         .unwrap();
@@ -254,7 +254,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn guardian_reports_stop_when_config_never_arrives() {
         let start = tokio::time::Instant::now();
-        let result = reports_after_setup(FederationId("test".into()), std::future::pending()).await;
+        let result = reports_after_setup(
+            FederationId("test".into()),
+            std::future::pending::<anyhow::Result<DynGlobalApi>>(),
+        )
+        .await;
         assert!(matches!(
             result,
             Err(FederationPreviewError::Unavailable(_))

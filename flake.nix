@@ -21,10 +21,10 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    # fedi30-quiescence is fedi30 (batched AlephBFT backup write with
-    # fedibtc/AlephBFT v0.36.0-fedi1, RocksDB WAL tuning) plus Aleph
-    # quiescence, off at start and switched over the driven control channel.
-    fedimint.url = "github:fedibtc/fedimint/roboman/fedi30-aleph-quiescence";
+    # Fedi's 0.13 fork: v0.12.0-fedi32 merged into upstream releases/v0.13,
+    # with Aleph quiescence and the 0.13 kill switches on `Features`. It takes
+    # part in DKG as 0.12.0+fedi, so it forms federations with 0.12 MGs.
+    fedimint.url = "github:fedibtc/fedimint/roboman/v0.13-fedi";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -210,7 +210,11 @@
         fediPatched = pkgs.applyPatches {
           name = "fedi-stability-pool-config-version";
           src = fedi;
-          patches = [ ./patches/fedi-stability-pool-config-version.patch ];
+          patches = [
+            ./patches/fedi-stability-pool-config-version.patch
+            # Adapts the stability-pool module to the Fedimint 0.13 decoding API.
+            ./patches/fedi-stability-pool-fedimint-0.13.patch
+          ];
         };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
@@ -296,7 +300,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi30-quiescence.tsv"
+          "docs/telemetry/fedimint-metrics-v0.13.1-fedi32-quiescence.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1002,16 +1006,17 @@
         # Single source of truth for the bundled fedimintd's fork release.
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
-        # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi30-quiescence";
+        # major/minor/vendor identity, independent of the fork tag revision: this
+        # 0.13 line advertises the 0.12 one, so it forms federations with 0.12 MGs.
+        fedimintdRelease = "0.13.1-fedi32-quiescence";
         # The fork ref the `fedimint` input pins: the release tag
         # `v''${fedimintdRelease}`, or a branch while the release is under test.
-        fedimintSourceRef = "roboman/fedi30-aleph-quiescence";
+        fedimintSourceRef = "roboman/v0.13-fedi";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
-        fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "dbec12ff3173b3f5ce64d2ada607c33efa6134fb";
+        fedimintdMetricVersion = "0.13.1";
+        fedimintSourceRev = "5da694d953e5431c9dab9c346f1e3f9ebb174db3";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1223,7 +1228,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30-quiescence.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.13.1-fedi32-quiescence.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fediPatched}

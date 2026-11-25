@@ -202,9 +202,7 @@ pub(crate) async fn probe_gateway_identity(
     admin_url: &str,
     admin_credential: String,
 ) -> anyhow::Result<GatewayIdentityProbe> {
-    let connectors = ConnectorRegistry::build_from_client_defaults()
-        .bind()
-        .await?;
+    let connectors = ConnectorRegistry::build_from_client_defaults().bind().await;
     let base_url = SafeUrl::parse(admin_url)?.join(V1_API_ENDPOINT)?;
     let api = GatewayApi::new(Some(admin_credential), connectors);
     let info: GatewayInfo = fedimint_gateway_client::get_info(&api, &base_url).await?;
@@ -237,9 +235,7 @@ impl ConfiguredGatewayClient {
         config: SetupConfigView,
         admin_credential: String,
     ) -> anyhow::Result<Self> {
-        let connectors = ConnectorRegistry::build_from_client_defaults()
-            .bind()
-            .await?;
+        let connectors = ConnectorRegistry::build_from_client_defaults().bind().await;
         let base_url = SafeUrl::parse(&config.gateway.admin_url)?.join(V1_API_ENDPOINT)?;
         Ok(Self {
             api: GatewayApi::new(Some(admin_credential), connectors),

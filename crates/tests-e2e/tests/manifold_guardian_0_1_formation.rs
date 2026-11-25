@@ -43,6 +43,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "manifold_guardian_0_1_formation/fedimintd_mixed_release.rs"]
+mod fedimintd_mixed_release;
 #[path = "manifold_guardian_0_1_formation/guardian_transfer.rs"]
 mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
@@ -58,6 +60,15 @@ const FEDIMINT_CLI_BIN_ENV: &str = "MG_E2E_FEDIMINT_CLI_BIN";
 const BITCOIN_CLI_BIN_ENV: &str = "MG_E2E_BITCOIN_CLI_BIN";
 const REPLAY_INVITE_ENV: &str = "MG_E2E_REPLAY_INVITE";
 const REPLAY_TOKEN_FILE_ENV: &str = "MG_E2E_REPLAY_TOKEN_FILE";
+/// Blocks to mine before a WalletV2 peg-in is claimable: the containing block
+/// plus the 0.13 line's `BLOCK_COUNT_VOTE_DELAY`, the finality delay of six
+/// and one block of slack. 0.12 voted without the slack, so seven sufficed.
+const WALLETV2_PEGIN_BLOCKS: &str = "8";
+/// The release the bundled fedimintd reports in its metrics and the source it
+/// is built from: `fedimintdMetricVersion` and `fedimintSourceRev` in
+/// `flake.nix`.
+const FEDIMINTD_VERSION: &str = "0.13.1";
+const FEDIMINTD_SOURCE_REV: &str = "5da694d953e5431c9dab9c346f1e3f9ebb174db3";
 const REPLAY_WALLET_DIR_ENV: &str = "MG_E2E_REPLAY_WALLET_DIR";
 const GATEWAY_CLI_BIN_ENV: &str = "FLIP_E2E_GATEWAY_CLI_BIN";
 /// fa-cli's local-E2E routes from advertised MG endpoint ids to loopback
@@ -1453,7 +1464,10 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         )
         .await?;
     bitcoin_cli
-        .run(None, &["generatetoaddress", "7", miner_address])
+        .run(
+            None,
+            &["generatetoaddress", WALLETV2_PEGIN_BLOCKS, miner_address],
+        )
         .await?;
     run_fa_payment_wallet(
         fa_cli_bin,
@@ -1968,10 +1982,10 @@ async fn exercise_guardian_telemetry(
     anyhow::ensure!(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
-                && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"dbec12ff3173b3f5ce64d2ada607c33efa6134fb\"")
+                && line.contains(&format!("version=\"{FEDIMINTD_VERSION}\""))
+                && line.contains(&format!("version_hash=\"{FEDIMINTD_SOURCE_REV}\""))
         }),
-        "the exact bundled 0.12 guardian must expose its release marker"
+        "the exact bundled guardian must expose its release marker"
     );
     for family in [
         "lnv2_funded_contract_sats",
@@ -2650,7 +2664,10 @@ async fn fund_gateway_federation_wallet(
         .run(Some(MINER_WALLET), &["sendtoaddress", address, "0.001"])
         .await?;
     bitcoin_cli
-        .run(None, &["generatetoaddress", "7", miner_address])
+        .run(
+            None,
+            &["generatetoaddress", WALLETV2_PEGIN_BLOCKS, miner_address],
+        )
         .await?;
 
     tokio::time::timeout(Duration::from_secs(120), async {
@@ -3823,10 +3840,11 @@ async fn run_paid_formation() -> anyhow::Result<()> {
             &["sendtoaddress", &deposit_address, "0.001"],
         )
         .await?;
-    // Match upstream's WalletV2 peg-in window: the containing block plus its
-    // six-block confirmation finality delay.
     bitcoin_cli
-        .run(None, &["generatetoaddress", "7", &miner_address])
+        .run(
+            None,
+            &["generatetoaddress", WALLETV2_PEGIN_BLOCKS, &miner_address],
+        )
         .await?;
     eprintln!("waiting for the peg-in to confirm");
     // Keep one client process alive while WalletV2 finds the next valid
@@ -4751,8 +4769,34 @@ async fn start_daemons(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> (Vec<Child>, Vec<String>) {
+    start_daemons_from(
+        &vec![manifold_guardian_bin; guardian_count],
+        temp,
+        bitcoind,
+        max_seats,
+        first_port_base,
+        iroh_overrides,
+        nostr,
+        push_gateway_origin,
+    )
+    .await
+}
+
+/// [`start_daemons`], daemon `index` running `manifold_guardian_bins[index]`.
+#[expect(clippy::too_many_arguments)]
+async fn start_daemons_from(
+    manifold_guardian_bins: &[&Path],
+    temp: &Path,
+    bitcoind: &defe_api::BitcoindInfo,
+    max_seats: u32,
+    first_port_base: u16,
+    iroh_overrides: Option<&str>,
+    nostr: Option<NostrEnv<'_>>,
+    push_gateway_origin: Option<&str>,
+) -> (Vec<Child>, Vec<String>) {
+    let guardian_count = manifold_guardian_bins.len();
     let mut starting = Vec::with_capacity(guardian_count);
-    for index in 0..guardian_count {
+    for (index, manifold_guardian_bin) in manifold_guardian_bins.iter().copied().enumerate() {
         let data_dir = temp.join(format!("mg-{index}"));
         // The seat port grid is per-host; give each daemon a disjoint block.
         let port_base = first_port_base + u16::try_from(index).unwrap() * MG_PORT_STRIDE;
@@ -4773,6 +4817,7 @@ async fn start_daemons(
 
     let ready = join_all(starting.into_iter().map(|(index, mut daemon)| {
         let data_dir = temp.join(format!("mg-{index}"));
+        let manifold_guardian_bin = manifold_guardian_bins[index];
         async move {
             // A Manifold Guardian has no identity until it is onboarded, so it waits
             // on its admin socket instead of serving RPC. This is the operator's

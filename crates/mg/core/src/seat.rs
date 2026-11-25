@@ -293,9 +293,9 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
-    /// The runtime switches the child should run with; `None` once the
-    /// fleet's watch is gone.
-    fedimintd_features: Option<watch::Receiver<Features>>,
+    /// The switches the child should run with. After the fleet's watch is
+    /// gone it keeps the last set.
+    fedimintd_features: watch::Receiver<Features>,
 }
 
 enum ProcessSlot {
@@ -654,7 +654,7 @@ impl Seat {
                 watchdog_at: None,
                 unresponsive_since: None,
                 backoff: policy.initial_backoff,
-                fedimintd_features: Some(fedimintd_features),
+                fedimintd_features,
             };
             tokio::spawn(async move {
                 // Sampling is independent of lifecycle commands, but ends with this seat.
@@ -1148,9 +1148,6 @@ impl SeatLoop {
     /// write means the child is exiting; its replacement gets them when its
     /// consensus starts.
     async fn send_fedimintd_features(&mut self) {
-        let Some(switches) = &mut self.fedimintd_features else {
-            return;
-        };
         let ProcessSlot::Configured {
             control: ConfiguredControl::Running(channel),
             ..
@@ -1158,12 +1155,13 @@ impl SeatLoop {
         else {
             return;
         };
-        let features = switches.borrow_and_update().clone();
+        let features = self.fedimintd_features.borrow_and_update().clone();
         match channel.set(&features).await {
             Ok(()) => tracing::info!(
                 safe_to_share = true,
                 seat_id = %self.facts.seat_id,
                 aleph_quiescence = features.aleph_quiescence,
+                walletv2_legacy_vote_delay = features.walletv2_legacy_vote_delay,
                 "seat fedimintd features set"
             ),
             Err(error) => tracing::warn!(
@@ -1302,10 +1300,8 @@ impl SeatLoop {
                     self.watchdog_tick().await;
                     continue;
                 }
-                changed = async { self.fedimintd_features.as_mut().expect("watch is present").changed().await }, if self.fedimintd_features.is_some() => {
-                    if changed.is_err() {
-                        self.fedimintd_features = None;
-                    } else {
+                changed = self.fedimintd_features.changed(), if self.fedimintd_features.has_changed().is_ok() => {
+                    if changed.is_ok() {
                         self.send_fedimintd_features().await;
                     }
                     continue;
@@ -1630,6 +1626,7 @@ impl SeatLoop {
                 "child replacement requires a proved empty process slot"
             )));
         }
+        let features = self.fedimintd_features.borrow().clone();
         let mut child = self
             .process_spawner
             .start(
@@ -1638,6 +1635,7 @@ impl SeatLoop {
                 self.facts.seat_no,
                 self.ports,
                 &self.keys.api_auth,
+                &features,
             )
             .await
             .map_err(SeatVerbError::internal)?;
@@ -2633,8 +2631,10 @@ impl SeatLoop {
             enabled_modules,
             federation_size,
             network: self.process.bitcoin_network,
-            fedimint_version: fedi_decentralized_service_manifold_guardian::FEDIMINTD_VERSION_0_1
-                .to_owned(),
+            fedimint_version: fedimint_core::version::DkgVersion::parse(
+                fedi_decentralized_service_manifold_guardian::FEDIMINTD_VERSION_0_1,
+            )
+            .expect("FEDIMINTD_VERSION_0_1 is valid SemVer"),
         };
         Ok(GuardianCode(base32::encode_prefixed(
             FEDIMINT_PREFIX,

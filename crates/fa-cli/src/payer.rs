@@ -1158,9 +1158,9 @@ impl Wallet {
                 mint_module,
                 updates,
                 |outpoints| async move {
-                    client
+                    Ok(client
                         .await_primary_bitcoin_module_outputs(operation_id, outpoints)
-                        .await
+                        .await?)
                 },
             ),
         )
@@ -1712,10 +1712,12 @@ impl Wallet {
                 .request_with_strategy_retry(
                     FilterMapThreshold::new(
                         move |peer, outcome| {
-                            verify_blind_share(
-                                peer, &outcome, amount, message, &decoder, &peer_keys,
+                            std::future::ready(
+                                verify_blind_share(
+                                    peer, &outcome, amount, message, &decoder, &peer_keys,
+                                )
+                                .map_err(|err| ServerError::InvalidResponse(err.to_string())),
                             )
-                            .map_err(ServerError::InvalidResponse)
                         },
                         api.all_peers().to_num_peers(),
                     ),
@@ -2278,8 +2280,12 @@ async fn collect_locked_v1_signatures(
             .request_with_strategy_retry(
                 FilterMapThreshold::new(
                     move |peer, outcome| {
-                        verify_blind_share(peer, &outcome, amount, message, &decoder, &peer_keys)
-                            .map_err(ServerError::InvalidResponse)
+                        std::future::ready(
+                            verify_blind_share(
+                                peer, &outcome, amount, message, &decoder, &peer_keys,
+                            )
+                            .map_err(|err| ServerError::InvalidResponse(err.to_string())),
+                        )
                     },
                     api.all_peers().to_num_peers(),
                 ),

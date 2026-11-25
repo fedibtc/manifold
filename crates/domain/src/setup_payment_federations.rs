@@ -454,6 +454,22 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aleph_quiescence: Option<bool>,
 
+    /// Kill switch: MGs start their seats' fedimintd with 0.12's iroh QUIC
+    /// timeouts, 60s idle and 30s keep-alive, instead of 0.13's 5s and 1s
+    /// ([`mg_core::fedimintd_features`](../../mg/core/src/fedimintd_features.rs)).
+    /// Optional on the wire: absent means off. A change reaches a seat when
+    /// its fedimintd next starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh_legacy_timeouts: Option<bool>,
+
+    /// Kill switch: seats' fedimintd vote the walletv2 block count as 0.12
+    /// does, one block further behind the chain tip than 0.13
+    /// ([`mg_core::fedimintd_features`](../../mg/core/src/fedimintd_features.rs)).
+    /// Optional on the wire: absent means off. A change reaches every running
+    /// seat without a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walletv2_legacy_vote_delay: Option<bool>,
+
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
     /// running its seats but stops selling new ones until it is updated.
@@ -498,6 +514,8 @@ pub struct AdmittedFeaturePolicy {
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
     aleph_quiescence: bool,
+    iroh_legacy_timeouts: bool,
+    walletv2_legacy_vote_delay: bool,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
 }
@@ -720,6 +738,8 @@ impl FeaturePolicy {
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
             aleph_quiescence: content.aleph_quiescence.unwrap_or(false),
+            iroh_legacy_timeouts: content.iroh_legacy_timeouts.unwrap_or(false),
+            walletv2_legacy_vote_delay: content.walletv2_legacy_vote_delay.unwrap_or(false),
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
         })
@@ -825,6 +845,20 @@ impl AdmittedFeaturePolicy {
     #[must_use]
     pub fn aleph_quiescence(&self) -> bool {
         self.aleph_quiescence
+    }
+
+    /// Return whether seats start with 0.12's iroh timeouts; off when the
+    /// event omits the flag.
+    #[must_use]
+    pub fn iroh_legacy_timeouts(&self) -> bool {
+        self.iroh_legacy_timeouts
+    }
+
+    /// Return whether seats vote the walletv2 block count as 0.12 does; off
+    /// when the event omits the flag.
+    #[must_use]
+    pub fn walletv2_legacy_vote_delay(&self) -> bool {
+        self.walletv2_legacy_vote_delay
     }
 
     /// Return the oldest MG release that may advertise new seats, or `None`

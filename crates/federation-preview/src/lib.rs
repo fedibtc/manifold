@@ -28,9 +28,8 @@ use fedi_decentralized_domain::{
     BitcoinNetwork, FederationId, FederationSeat, FederationSeats, GatewayApiUrl, GuardianIdentity,
     HashBytes, InviteCode, MG_SEAT_BINDINGS_META_FIELD_KEY, PeerId, federation_seats,
 };
-use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _};
+use fedimint_api_client::api::{DynGlobalApi, DynModuleApi, FederationApiExt as _};
 use fedimint_api_client::download_from_invite_code;
-use fedimint_api_client::query::FilterMapThreshold;
 pub use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::NumPeersExt as _;
 use fedimint_core::config::ClientConfig;
@@ -44,6 +43,7 @@ use fedimint_meta_client::api::MetaFederationApi as _;
 use fedimint_meta_client::common::DEFAULT_META_KEY;
 use fedimint_wallet_client::config::WalletClientConfig;
 use fedimint_walletv2_common::config::WalletClientConfig as WalletV2ClientConfig;
+use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use serde::{Deserialize, Serialize};
 
 /// Fedimint module kind holding the federation's Bitcoin wallet config.
@@ -172,7 +172,29 @@ impl FederationPreview {
 ///
 /// Returns an error if the connector registry cannot be bound.
 pub async fn bind_client_connectors() -> anyhow::Result<ConnectorRegistry> {
-    ConnectorRegistry::build_from_client_defaults().bind().await
+    ConnectorRegistry::build_from_client_defaults()
+        .bind()
+        .await
+        .into_bind_result()
+}
+
+/// What `ConnectorRegistry::bind` returns, as a result. Fedimint 0.12's bind
+/// can fail and 0.13's cannot; the Fedi app links this crate against its
+/// own Fedimint, so this crate builds against both.
+trait BindOutcome {
+    fn into_bind_result(self) -> anyhow::Result<ConnectorRegistry>;
+}
+
+impl BindOutcome for ConnectorRegistry {
+    fn into_bind_result(self) -> anyhow::Result<ConnectorRegistry> {
+        Ok(self)
+    }
+}
+
+impl BindOutcome for anyhow::Result<ConnectorRegistry> {
+    fn into_bind_result(self) -> anyhow::Result<ConnectorRegistry> {
+        self
+    }
 }
 
 /// Download the final config and the raw `meta` consensus value.
@@ -244,15 +266,56 @@ pub async fn read_lnv2_gateways(
             FederationPreviewError::InvalidInviteCode("federation has no lnv2 module".to_owned())
         })?;
     let api = api.with_module(lnv2_id);
-    let gateways: BTreeMap<fedimint_core::PeerId, Vec<fedimint_core::util::SafeUrl>> = api
-        .request_with_strategy(
-            FilterMapThreshold::new(|_, gateways| Ok(gateways), api.all_peers().to_num_peers()),
-            fedimint_lnv2_common::endpoint_constants::GATEWAYS_ENDPOINT.to_owned(),
-            ApiRequestErased::default(),
-        )
-        .await
-        .map_err(|error| FederationPreviewError::Unavailable(error.to_string()))?;
+    let gateways = threshold_gateway_lists(&api).await?;
     Ok(admitted_lnv2_gateway_view(&gateways))
+}
+
+/// Each guardian's LNv2 gateway list, from a threshold of guardians; fails
+/// once enough guardians failed that no threshold can answer.
+///
+/// Queries the guardians one by one rather than through a Fedimint query
+/// strategy, whose verifier signature differs between Fedimint 0.12 and 0.13;
+/// the Fedi app links this crate against its own Fedimint.
+async fn threshold_gateway_lists(
+    api: &DynModuleApi,
+) -> Result<BTreeMap<fedimint_core::PeerId, Vec<SafeUrl>>, FederationPreviewError> {
+    let num_peers = api.all_peers().to_num_peers();
+    let mut requests = api
+        .all_peers()
+        .iter()
+        .map(|&peer| async move {
+            let gateways = api
+                .request_single_peer::<Vec<SafeUrl>>(
+                    fedimint_lnv2_common::endpoint_constants::GATEWAYS_ENDPOINT.to_owned(),
+                    ApiRequestErased::default(),
+                    peer,
+                )
+                .await;
+            (peer, gateways)
+        })
+        .collect::<FuturesUnordered<_>>();
+    let mut gateways = BTreeMap::new();
+    let mut failures = Vec::new();
+    while let Some((peer, result)) = requests.next().await {
+        match result {
+            Ok(urls) => {
+                gateways.insert(peer, urls);
+                if gateways.len() == num_peers.threshold() {
+                    return Ok(gateways);
+                }
+            }
+            Err(error) => {
+                failures.push(format!("{peer}: {error}"));
+                if failures.len() == num_peers.one_honest() {
+                    break;
+                }
+            }
+        }
+    }
+    Err(FederationPreviewError::Unavailable(format!(
+        "no threshold of guardians listed their gateways: {}",
+        failures.join("; ")
+    )))
 }
 
 /// How long one guardian may take to report its `fedimintd` version.

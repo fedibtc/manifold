@@ -59,8 +59,7 @@ impl FedimintApi {
     pub fn new(connectors: ConnectorRegistry, api_port: u16, api_auth: &str) -> Self {
         let url = SafeUrl::parse(&format!("ws://127.0.0.1:{api_port}"))
             .expect("a loopback URL with a u16 port is valid");
-        let api = DynGlobalApi::new_admin_setup(connectors, url)
-            .expect("the local setup API endpoint is valid");
+        let api = DynGlobalApi::new_admin_setup(connectors, url);
         Self {
             api,
             auth: ApiAuth::new(api_auth.to_owned()),
@@ -233,19 +232,12 @@ impl FedimintApi {
 
 fn map_federation_error(error: FederationError) -> FedimintApiError {
     let method = error.method.clone();
-    if let Some((
-        _,
-        ServerError::ResponseDeserialization(detail) | ServerError::InvalidResponse(detail),
-    )) = error.get_peer_errors().find(|(_, error)| {
-        matches!(
-            error,
-            ServerError::ResponseDeserialization(_) | ServerError::InvalidResponse(_)
-        )
+    if let Some(detail) = error.get_peer_errors().find_map(|(_, error)| match error {
+        ServerError::ResponseDeserialization(detail) => Some(detail.to_string()),
+        ServerError::InvalidResponse(detail) => Some(detail.clone()),
+        _ => None,
     }) {
-        return FedimintApiError::InvalidResponse {
-            method,
-            detail: detail.to_string(),
-        };
+        return FedimintApiError::InvalidResponse { method, detail };
     }
 
     let peer_errors = error.get_peer_errors().collect::<Vec<_>>();

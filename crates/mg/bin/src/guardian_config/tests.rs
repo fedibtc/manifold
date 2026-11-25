@@ -32,7 +32,7 @@ fn fixture() -> ServerConfig {
                 enabled_modules: Some(enabled_modules),
                 federation_size: Some(1),
                 network: bitcoin::Network::Regtest,
-                fedimint_version: "0.12.0".into(),
+                fedimint_version: fedimint_core::version::DkgVersion::parse("0.12.0").unwrap(),
             },
         )]),
         meta: BTreeMap::new(),

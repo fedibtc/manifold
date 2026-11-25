@@ -63,10 +63,11 @@ fn decrypt_private_config(
     api_auth: &str,
 ) -> Result<String, LegacyArchiveError> {
     let key = fedimint_aead::get_encryption_key(api_auth.trim(), private_salt)
-        .map_err(LegacyArchiveError)?;
+        .map_err(|err| LegacyArchiveError(err.into()))?;
     let mut bytes =
         hex::decode(private_encrypt.trim()).map_err(|err| LegacyArchiveError(err.into()))?;
-    let plaintext = fedimint_aead::decrypt(&mut bytes, &key).map_err(LegacyArchiveError)?;
+    let plaintext =
+        fedimint_aead::decrypt(&mut bytes, &key).map_err(|err| LegacyArchiveError(err.into()))?;
     String::from_utf8(plaintext.to_vec()).map_err(|err| LegacyArchiveError(err.into()))
 }
 

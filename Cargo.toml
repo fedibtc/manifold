@@ -181,48 +181,50 @@ peerbadge-schemas = { path = ".nix-deps/peerbadge-sdk/crates/schemas" }
 # declared once via the `fedimint` flake input, and `[patch.crates-io]` routes
 # every crate to the Nix-provided `.nix-deps/fedimint` source. Members reference
 # these via `{ workspace = true }` so the version is not duplicated per crate.
-# The FA embedding surface (fa-client, federation-preview, and their shared
-# protocol crates) also supports Fedi's 0.11.2-fedi5 libraries. Its dependencies
-# accept both 0.11 and 0.12 so consumers can supply one shared Fedimint graph
-# through their own root patches, without rewriting this manifest. This does
-# not select the guardian version formed by FA or downgrade Manifold's pinned
-# 0.12 guardian/runtime; server-only dependencies remain on 0.12.
+# The FA embedding surface (fa-client, federation-preview, locked-payments, and
+# their shared protocol crates) also supports the Fedi app's older Fedimint
+# libraries. Its dependencies accept every line it builds against, from 0.11.2
+# or 0.12 through 0.13, so consumers can supply one shared Fedimint graph
+# through their own root patches, without rewriting this manifest; the Fedi
+# fork versions its 0.13 crates 0.13.1, not a prerelease, so one range matches
+# them all. This does not select the guardian version formed by FA. Every other
+# dependency is on the 0.13 line.
 # `default-features = false` is carried here (members cannot lower it): FLIP
 # depends on `fedimint-gateway-client` without its default `tor` feature, and
 # every other Fedimint crate has an empty/absent default set, so disabling
 # defaults uniformly matches the pre-centralization behavior of all consumers.
-fedimint-api-client = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-bip39 = { version = "0.12.0", default-features = false }
-fedimint-bitcoind = { version = "0.12.0", default-features = false }
-fedimint-build = { version = "0.12.0", default-features = false }
-fedimint-client = { version = "0.12.0", default-features = false }
-fedimint-client-module = { version = "0.12.0", default-features = false }
-fedimint-connectors = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-core = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-db-locked = { version = "0.12.0", default-features = false }
-fedimint-derive-secret = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-eventlog = { version = "0.12.0", default-features = false }
-fedimint-gateway-client = { version = "0.12.0", default-features = false }
-fedimint-gateway-common = { version = "0.12.0", default-features = false }
-fedimint-ln-client = { version = "0.12.0", default-features = false }
-fedimint-ln-common = { version = "0.12.0", default-features = false }
-fedimint-lnv2-client = { version = "0.12.0", default-features = false }
-fedimint-lnv2-common = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-meta-client = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-meta-common = { version = "0.12.0", default-features = false }
-fedimint-mint-client = { version = "0.12.0", default-features = false }
-fedimint-mint-common = { version = "0.12.0", default-features = false }
-fedimint-mintv2-client = { version = "0.12.0", default-features = false }
-fedimint-mintv2-common = { version = "0.12.0", default-features = false }
-fedimint-rocksdb = { version = "0.12.0", default-features = false }
-fedimint-server = { version = "0.12.0", default-features = false }
-fedimint-server-bitcoin-rpc = { version = "0.12.0", default-features = false }
-fedimint-server-core = { version = "0.12.0", default-features = false }
-fedimint-tbs = { version = "0.12.0", default-features = false }
-fedimint-wallet-client = { version = ">=0.11.2, <0.13", default-features = false }
-fedimint-wallet-common = { version = "0.12.0", default-features = false }
-fedimint-walletv2-client = { version = "0.12.0", default-features = false }
-fedimint-walletv2-common = { version = ">=0.11.2, <0.13", default-features = false }
+fedimint-api-client = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-bip39 = { version = "0.13.1", default-features = false }
+fedimint-bitcoind = { version = "0.13.1", default-features = false }
+fedimint-build = { version = "0.13.1", default-features = false }
+fedimint-client = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-client-module = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-connectors = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-core = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-db-locked = { version = "0.13.1", default-features = false }
+fedimint-derive-secret = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-eventlog = { version = "0.13.1", default-features = false }
+fedimint-gateway-client = { version = "0.13.1", default-features = false }
+fedimint-gateway-common = { version = "0.13.1", default-features = false }
+fedimint-ln-client = { version = "0.13.1", default-features = false }
+fedimint-ln-common = { version = "0.13.1", default-features = false }
+fedimint-lnv2-client = { version = "0.13.1", default-features = false }
+fedimint-lnv2-common = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-meta-client = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-meta-common = { version = "0.13.1", default-features = false }
+fedimint-mint-client = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-mint-common = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-mintv2-client = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-mintv2-common = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-rocksdb = { version = "0.13.1", default-features = false }
+fedimint-server = { version = "0.13.1", default-features = false }
+fedimint-server-bitcoin-rpc = { version = "0.13.1", default-features = false }
+fedimint-server-core = { version = "0.13.1", default-features = false }
+fedimint-tbs = { version = ">=0.12.0, <0.14", default-features = false }
+fedimint-wallet-client = { version = ">=0.11.2, <0.14", default-features = false }
+fedimint-wallet-common = { version = "0.13.1", default-features = false }
+fedimint-walletv2-client = { version = "0.13.1", default-features = false }
+fedimint-walletv2-common = { version = ">=0.11.2, <0.14", default-features = false }
 # Bundled into the MG binary. Not on crates.io, so it is a path into the same
 # Nix-provided source the patches above point at.
 fedimintd = { path = ".nix-deps/fedimint/fedimintd", default-features = false }
@@ -289,15 +291,16 @@ fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv
 librocksdb-sys = { path = ".nix-deps/librocksdb-sys" }
 # netwatch 0.5 uses socket2 APIs gated behind its "all" feature on macOS.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
-# iroh 0.35 (Fedimint p2p and API clients) with fixes for a send livelock that
-# pins every tokio worker, and for a magicsock actor that deadlocks on its own
+# iroh 0.35, which Fedimint 0.13 takes as `iroh-fedimint` (fedimint/iroh's
+# compatibility release, which already fixes a send livelock that pins every
+# tokio worker), with the fix for a magicsock actor that deadlocks on its own
 # full inbox when relays are disabled, as in Fedimint API clients; it then leaks
-# every unanswered disco ping (fedibtc/iroh `v0.35.0-fedi1`).
-# `iroh-base` and `iroh-relay` come from the same checkout because git `iroh`
-# uses them by path.
-iroh = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
-iroh-base = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
-iroh-relay = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
+# every unanswered disco ping (fedibtc/iroh `roboman/iroh-fedimint-0.35-fedi1`).
+# `iroh-base` and `iroh-relay` come from the same checkout because git
+# `iroh-fedimint` uses them by path.
+iroh-base = { git = "https://github.com/fedibtc/iroh", branch = "roboman/iroh-fedimint-0.35-fedi1" }
+iroh-fedimint = { git = "https://github.com/fedibtc/iroh", branch = "roboman/iroh-fedimint-0.35-fedi1" }
+iroh-relay = { git = "https://github.com/fedibtc/iroh", branch = "roboman/iroh-fedimint-0.35-fedi1" }
 # iroh 1.4.1 (MG endpoint, Fedimint) with bounded waits in the relay actor
 # (fedibtc/iroh `roboman/relay-actor-bounded-waits-1.4.1`). Without it, a relay
 # that goes silent while an idle relay connection closes wedges the relay

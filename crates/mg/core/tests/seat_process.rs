@@ -91,6 +91,7 @@ async fn child_receives_configured_relay_and_auth_environment() {
         SeatNo(0),
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
+        &Features::default(),
     )
     .await
     .unwrap();
@@ -145,6 +146,7 @@ async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
         SeatNo(0),
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
+        &Features::default(),
     )
     .await
     .unwrap();
@@ -153,6 +155,54 @@ async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
     assert_eq!(
         tokio::fs::read_to_string(env_path).await.unwrap(),
         "http://127.0.0.1:38332\noperator\nsecret\nhttps://signet.example.test/api\n"
+    );
+}
+
+#[tokio::test]
+async fn child_starts_with_the_given_features_in_its_environment() {
+    let temp = tempfile::tempdir().unwrap();
+    let env_path = temp.path().join("features");
+    let fedimintd = fake::write_fake_fedimintd(
+        temp.path(),
+        &format!("printf '%s' \"$FM_FEATURES\" > '{}'", env_path.display()),
+    )
+    .await;
+    let config = SeatProcessConfig {
+        data_root: temp.path().to_owned(),
+        fedimintd,
+        bitcoin_network: bitcoin::Network::Regtest,
+        bitcoin_backend: BitcoinBackend::Esplora("http://127.0.0.1:3000".parse().unwrap()),
+        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
+    };
+    let features = Features {
+        aleph_quiescence: false,
+        iroh_legacy_timeouts: true,
+        walletv2_legacy_vote_delay: false,
+    };
+
+    let mut child = SeatProcess::start(
+        &config,
+        SeatId::new("00".repeat(32)).unwrap(),
+        SeatNo(0),
+        SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+        "test-seat-password",
+        &features,
+    )
+    .await
+    .unwrap();
+    child.wait().await.unwrap();
+
+    // fedimintd parses this as JSON at start (fedibtc/fedimint
+    // `Features::apply_from_env`); check the JSON, not our own encoder.
+    let json: serde_json::Value =
+        serde_json::from_str(&tokio::fs::read_to_string(env_path).await.unwrap()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "aleph_quiescence": false,
+            "iroh_legacy_timeouts": true,
+            "walletv2_legacy_vote_delay": false,
+        })
     );
 }
 
@@ -186,6 +236,7 @@ async fn iroh_carrying_ports_bind_all_interfaces_others_loopback() {
         SeatNo(0),
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
         "test-seat-password",
+        &Features::default(),
     )
     .await
     .unwrap();

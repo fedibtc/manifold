@@ -99,6 +99,7 @@ async fn opened_fleet(temp: &TempDir, db: crate::db::Db) -> Arc<crate::fleet::Fl
         crate::fleet::Fleet::open(
             db,
             FleetConfig {
+                fedimintd_features_policy: tokio::sync::watch::channel(None).1,
                 transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
                 replacement_guardian_verifier: Arc::new(
                     crate::replacement_guardian::UnverifiedReplacementGuardian,

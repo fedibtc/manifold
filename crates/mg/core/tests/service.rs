@@ -61,6 +61,7 @@ async fn rpc_with_network(
     let fleet = Fleet::open(
         db,
         FleetConfig {
+            fedimintd_features_policy: tokio::sync::watch::channel(None).1,
             transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
             replacement_guardian_verifier: Arc::new(
                 crate::replacement_guardian::UnverifiedReplacementGuardian,
@@ -214,7 +215,7 @@ fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
         disable_base_fees: None,
         enabled_modules: None,
         federation_size: None,
-        fedimint_version: "0.12.0".to_owned(),
+        fedimint_version: fedimint_core::version::DkgVersion::parse("0.12.0").unwrap(),
         network: bitcoin::Network::Regtest,
     }
 }
