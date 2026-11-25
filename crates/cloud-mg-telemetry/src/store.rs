@@ -25,6 +25,8 @@ use crate::{
 const MAX_METRIC_STATE_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_METRIC_STATE_SAMPLES: i64 = 200_000;
 const MAX_METRIC_SNAPSHOT_ROWS: i64 = MAX_TARGETS * 64;
+const AUTO_VACUUM_INCREMENTAL: i64 = 2;
+const INCREMENTAL_VACUUM_PAGES: i64 = 256;
 
 /// One federation whose invite an authenticated MG asserted for a current seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -220,6 +222,7 @@ impl Store {
         lease_seconds: i64,
         max_journals_per_target: u16,
     ) -> Result<Self, StoreError> {
+        prepare_fresh_db_auto_vacuum(path).await?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -289,6 +292,9 @@ impl Store {
             .bind(ciphertext)
             .execute(&pool)
             .await?;
+        }
+        if ensure_incremental_auto_vacuum(&pool).await? {
+            tracing::info!("upgraded collector sqlite database to incremental auto-vacuum");
         }
         let data_dir = path.parent().ok_or(StoreError::UnsafeDataRoot)?.to_owned();
         crate::data_root_lock::secure_sqlite_files(&data_dir)?;
@@ -593,7 +599,8 @@ impl Store {
             sqlx::query_scalar("SELECT fingerprint FROM metric_policy WHERE singleton = 1")
                 .fetch_optional(&mut *transaction)
                 .await?;
-        if current.as_deref() != Some(fingerprint) {
+        let policy_changed = current.as_deref() != Some(fingerprint);
+        if policy_changed {
             sqlx::query("DELETE FROM metric_snapshots")
                 .execute(&mut *transaction)
                 .await?;
@@ -614,6 +621,9 @@ impl Store {
             .await?;
         }
         transaction.commit().await?;
+        if policy_changed {
+            self.reclaim_free_pages_best_effort().await;
+        }
         Ok(())
     }
 
@@ -651,6 +661,7 @@ impl Store {
         .fetch_all(&mut *transaction)
         .await?;
         transaction.commit().await?;
+        self.reclaim_free_pages_best_effort().await;
         rows.into_iter()
             .map(|row| {
                 Ok(CollectionTarget {
@@ -897,13 +908,14 @@ impl Store {
         now: i64,
     ) -> Result<MetricsCommitOutcome, StoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query(
+        let mut removed_snapshots = sqlx::query(
             "DELETE FROM metric_snapshots WHERE target_id IN
              (SELECT target_id FROM targets WHERE status!='active' OR lease_until <= ?)",
         )
         .bind(now)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
         if !target_is_current(&mut transaction, target, now).await? {
             return Ok(MetricsCommitOutcome::Stale);
         }
@@ -929,14 +941,17 @@ impl Store {
             .await?;
             for seat in existing {
                 if !listed_seats.contains(&seat) {
-                    sqlx::query(
-                        "DELETE FROM metric_snapshots
-                         WHERE target_id = ? AND guardian_seat_id = ?",
-                    )
-                    .bind(target.target_id())
-                    .bind(seat)
-                    .execute(&mut *transaction)
-                    .await?;
+                    removed_snapshots = removed_snapshots.saturating_add(
+                        sqlx::query(
+                            "DELETE FROM metric_snapshots
+                             WHERE target_id = ? AND guardian_seat_id = ?",
+                        )
+                        .bind(target.target_id())
+                        .bind(seat)
+                        .execute(&mut *transaction)
+                        .await?
+                        .rows_affected(),
+                    );
                 }
             }
         }
@@ -1032,6 +1047,9 @@ impl Store {
         #[cfg(test)]
         wait_test_hook(&self.metric_commit_hook);
         transaction.commit().await?;
+        if removed_snapshots > 0 {
+            self.reclaim_free_pages_best_effort().await;
+        }
         Ok(if saturated {
             MetricsCommitOutcome::Saturated
         } else {
@@ -1924,8 +1942,82 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
+        self.reclaim_free_pages_best_effort().await;
         Ok(())
     }
+
+    /// Reclaim up to a bounded batch of SQLite freelist pages outside any transaction.
+    pub(crate) async fn reclaim_free_pages(&self) -> Result<(), StoreError> {
+        let mut connection = self.pool.acquire().await?;
+        let freelist_count: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .persistent(false)
+            .fetch_one(&mut *connection)
+            .await?;
+        if freelist_count > 0 {
+            sqlx::query(&format!(
+                "PRAGMA incremental_vacuum({INCREMENTAL_VACUUM_PAGES})"
+            ))
+            .persistent(false)
+            .execute(&mut *connection)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn reclaim_free_pages_best_effort(&self) {
+        if let Err(error) = self.reclaim_free_pages().await {
+            tracing::warn!(error = %error, "sqlite incremental vacuum deferred");
+        }
+    }
+}
+
+/// Initialize a brand-new or zero-byte SQLite file with `INCREMENTAL`
+/// auto-vacuum before `journal_mode = WAL` writes page 1, so fresh databases
+/// never need a one-time `VACUUM`.
+async fn prepare_fresh_db_auto_vacuum(path: &Path) -> Result<(), StoreError> {
+    let is_fresh = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.is_file() && metadata.len() == 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error.into()),
+    };
+    if !is_fresh {
+        return Ok(());
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete)
+        .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
+        .busy_timeout(std::time::Duration::from_secs(5));
+    let mut connection =
+        <sqlx::SqliteConnection as sqlx::Connection>::connect_with(&options).await?;
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .persistent(false)
+        .execute(&mut connection)
+        .await?;
+    sqlx::Connection::close(connection).await?;
+    Ok(())
+}
+
+/// Upgrade an existing database from `NONE`/`FULL` auto-vacuum to `INCREMENTAL` once.
+async fn ensure_incremental_auto_vacuum(pool: &SqlitePool) -> Result<bool, StoreError> {
+    let mut connection = pool.acquire().await?;
+    let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+        .persistent(false)
+        .fetch_one(&mut *connection)
+        .await?;
+    if mode != AUTO_VACUUM_INCREMENTAL {
+        sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+            .persistent(false)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("VACUUM")
+            .persistent(false)
+            .execute(&mut *connection)
+            .await?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Replace the target's report of kind `T` with `stated`, unless the stored
@@ -3813,5 +3905,419 @@ mod tests {
         assert_eq!(restarted.next_metric_due_at(101).await.unwrap(), Some(1900));
         assert!(restarted.due_metric_targets(1899).await.unwrap().is_empty());
         assert_eq!(restarted.due_metric_targets(1900).await.unwrap().len(), 1);
+    }
+
+    async fn raw_sqlite_pragma_i64(path: &Path, pragma: &str) -> i64 {
+        let mut connection = <sqlx::SqliteConnection as sqlx::Connection>::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+        let value: i64 = sqlx::query_scalar(pragma)
+            .persistent(false)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        sqlx::Connection::close(connection).await.unwrap();
+        value
+    }
+
+    #[tokio::test]
+    async fn fresh_database_enables_incremental_auto_vacuum_without_vacuum() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = data_dir(&directory);
+        let _lock = crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap();
+        let db_path = data_dir.join("state.sqlite");
+
+        // Verify the open sequence enables incremental auto-vacuum on an empty DB
+        // before migrations so a full VACUUM is never needed.
+        let direct_path = data_dir.join("fresh-check.sqlite");
+        prepare_fresh_db_auto_vacuum(&direct_path).await.unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(&direct_path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Full)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        assert!(
+            !ensure_incremental_auto_vacuum(&pool).await.unwrap(),
+            "fresh database should already be in INCREMENTAL auto_vacuum mode without VACUUM"
+        );
+        pool.close().await;
+        assert_eq!(
+            raw_sqlite_pragma_i64(&direct_path, "PRAGMA auto_vacuum").await,
+            AUTO_VACUUM_INCREMENTAL
+        );
+
+        let opened = Store::open(
+            &db_path,
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            120,
+            32,
+        )
+        .await
+        .unwrap();
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .persistent(false)
+            .fetch_one(&opened.pool)
+            .await
+            .unwrap();
+        assert_eq!(mode, AUTO_VACUUM_INCREMENTAL);
+        assert!(opened.ready().await);
+        opened.pool.close().await;
+
+        assert_eq!(
+            raw_sqlite_pragma_i64(&db_path, "PRAGMA auto_vacuum").await,
+            AUTO_VACUUM_INCREMENTAL
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_database_upgrades_to_incremental_auto_vacuum_and_preserves_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = data_dir(&directory);
+        let _lock = crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap();
+        let db_path = data_dir.join("state.sqlite");
+
+        // Populate a realistic database, then convert it to legacy `auto_vacuum = NONE` (0).
+        let initial = Store::open(
+            &db_path,
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            3600,
+            32,
+        )
+        .await
+        .unwrap();
+        initial
+            .reserve_auth(&auth("legacy-upgrade", 100), 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            initial
+                .admit(&auth("legacy-upgrade", 100), target(1), 100)
+                .await
+                .unwrap(),
+            AdmissionOutcome::Updated
+        );
+        let scheduled = initial
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = initial
+            .begin_collection_work(&scheduled, 100)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            initial
+                .commit_metrics(
+                    &work,
+                    MetricsCommit {
+                        listed_seats: Some(["seat-1".to_owned()].into()),
+                        snapshots: vec![SeatObservation {
+                            guardian_seat_id: "seat-1".into(),
+                            federation_id:
+                                "0000000000000000000000000000000000000000000000000000000000000000"
+                                    .to_owned(),
+                            invite_code: Some("legacy-invite".to_owned()),
+                            observed_at_ms: 100_000,
+                            samples: stored_samples("seat-1", 42),
+                        }],
+                        complete: true,
+                    },
+                    100,
+                )
+                .await
+                .unwrap(),
+            MetricsCommitOutcome::Committed
+        );
+        let incarnation: SafeEventJournalIncarnation =
+            "018f22d0-4e5f-7abc-8def-0123456789ab".parse().unwrap();
+        let stream = initial
+            .open_journal_stream(&work, &SafeEventJournal::Mg, &incarnation, 100)
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_frames(
+                stream_id,reception_day,start_offset,end_offset,frame_hash,
+                observed_generation,continuity_gap
+             ) VALUES(?,?,?,?,?,?,?)",
+        )
+        .bind(stream.stream_id.as_str())
+        .bind("2025-05-01")
+        .bind(0_i64)
+        .bind(64_i64)
+        .bind([0xAB_u8; 32].as_slice())
+        .bind(0_i64)
+        .bind(0_i64)
+        .execute(&initial.pool)
+        .await
+        .unwrap();
+        initial.pool.close().await;
+
+        let mut legacy = <sqlx::SqliteConnection as sqlx::Connection>::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA auto_vacuum = NONE")
+            .persistent(false)
+            .execute(&mut legacy)
+            .await
+            .unwrap();
+        sqlx::query("VACUUM")
+            .persistent(false)
+            .execute(&mut legacy)
+            .await
+            .unwrap();
+        sqlx::Connection::close(legacy).await.unwrap();
+        assert_eq!(
+            raw_sqlite_pragma_i64(&db_path, "PRAGMA auto_vacuum").await,
+            0
+        );
+
+        // Wrong key must fail before mutating auto_vacuum via VACUUM.
+        assert!(matches!(
+            Store::open(
+                &db_path,
+                "development",
+                SecretCipher::new(&[8; 32]),
+                "wrong".into(),
+                3600,
+                32,
+            )
+            .await,
+            Err(StoreError::KeyMismatch)
+        ));
+        assert_eq!(
+            raw_sqlite_pragma_i64(&db_path, "PRAGMA auto_vacuum").await,
+            0
+        );
+
+        // Opening with the right key upgrades the legacy DB in place and preserves all state.
+        let upgraded = Store::open(
+            &db_path,
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            3600,
+            32,
+        )
+        .await
+        .unwrap();
+        assert!(upgraded.ready().await);
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .persistent(false)
+            .fetch_one(&upgraded.pool)
+            .await
+            .unwrap();
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert_eq!(
+            upgraded.target_status("11", 200).await.unwrap(),
+            Some(TargetStatus::Active)
+        );
+        let loaded = upgraded
+            .metric_snapshots(&metrics_policy(), 200, 200_000)
+            .await
+            .unwrap();
+        assert_eq!(loaded.snapshots.len(), 1);
+        assert_eq!(loaded.snapshots[0].guardian_seat_id, "seat-1");
+        let federations = upgraded.exported_federations(200).await.unwrap();
+        assert_eq!(federations.len(), 1);
+        assert_eq!(federations[0].invite_code, "legacy-invite");
+        let frames = upgraded.final_frame_boundaries().await.unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].day.as_str(), "2025-05-01");
+        assert!(
+            !ensure_incremental_auto_vacuum(&upgraded.pool)
+                .await
+                .unwrap(),
+            "already upgraded database must not run VACUUM again"
+        );
+        upgraded.pool.close().await;
+
+        assert_eq!(
+            raw_sqlite_pragma_i64(&db_path, "PRAGMA auto_vacuum").await,
+            AUTO_VACUUM_INCREMENTAL
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_and_incremental_vacuum_reclaim_freed_pages_and_shrink_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = data_dir(&directory);
+        let _lock = crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap();
+        let db_path = data_dir.join("state.sqlite");
+        let store = Store::open(
+            &db_path,
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            120,
+            32,
+        )
+        .await
+        .unwrap();
+
+        store
+            .reserve_auth(&auth("vacuum-shrink", 100), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("vacuum-shrink", 100), target(1), 100)
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_collection_work(&scheduled, 100)
+            .await
+            .unwrap()
+            .unwrap();
+        let incarnation: SafeEventJournalIncarnation =
+            "018f22d0-4e5f-7abc-8def-0123456789ac".parse().unwrap();
+        let stream = store
+            .open_journal_stream(&work, &SafeEventJournal::Mg, &incarnation, 100)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Populate enough archive frames to allocate well over 100 SQLite pages.
+        let mut transaction = store.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        for index in 0_i64..4_000 {
+            sqlx::query(
+                "INSERT INTO archive_frames(
+                    stream_id,reception_day,start_offset,end_offset,frame_hash,
+                    observed_generation,continuity_gap
+                 ) VALUES(?,?,?,?,?,?,?)",
+            )
+            .bind(stream.stream_id.as_str())
+            .bind("2025-01-01")
+            .bind(index * 100)
+            .bind((index + 1) * 100)
+            .bind([0x55_u8; 32].as_slice())
+            .bind(index)
+            .bind(0_i64)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        }
+        transaction.commit().await.unwrap();
+
+        let pages_before_prune: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert!(pages_before_prune > 100);
+
+        store
+            .prune_archive_ledger(&ReceptionDay::parse("2025-01-02".into()).unwrap())
+            .await
+            .unwrap();
+
+        let pages_after_prune: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            pages_after_prune < pages_before_prune,
+            "prune_archive_ledger should reclaim freed pages ({pages_after_prune} < {pages_before_prune})"
+        );
+
+        // Now allocate > 400 pages of metric snapshots so one bounded vacuum call
+        // leaves remaining freelist pages and subsequent calls finish reclaiming them.
+        let large_samples = stored_counter_samples("seat-0", 1_500);
+        for index in 0..8 {
+            insert_snapshot(&store, &format!("seat-{index}"), 100_000, &large_samples).await;
+        }
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .persistent(false)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let peak_pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let peak_file_bytes = std::fs::metadata(&db_path).unwrap().len();
+        assert!(
+            peak_pages > INCREMENTAL_VACUUM_PAGES + 100,
+            "expected > {} pages to test bounded reclamation, got {peak_pages}",
+            INCREMENTAL_VACUUM_PAGES + 100
+        );
+
+        // Expire the target (lease_until = 220) and let due_metric_targets delete its snapshots
+        // and run one bounded incremental vacuum step.
+        assert!(store.due_metric_targets(500).await.unwrap().is_empty());
+        let pages_after_one_step: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let reclaimed_first_step = peak_pages - pages_after_one_step;
+        assert!(
+            reclaimed_first_step > 0 && reclaimed_first_step <= INCREMENTAL_VACUUM_PAGES + 4,
+            "single incremental vacuum step should be bounded (~{INCREMENTAL_VACUUM_PAGES} pages), reclaimed {reclaimed_first_step}"
+        );
+
+        let freelist_remaining: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            freelist_remaining > 0,
+            "expected additional freelist pages after first bounded step"
+        );
+
+        for _ in 0..16 {
+            store.reclaim_free_pages().await.unwrap();
+        }
+        let final_freelist: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let final_pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .persistent(false)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(final_freelist, 0);
+        assert!(final_pages < pages_after_one_step);
+
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .persistent(false)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let final_file_bytes = std::fs::metadata(&db_path).unwrap().len();
+        assert!(
+            final_file_bytes < peak_file_bytes,
+            "database file on disk should shrink after incremental vacuum and checkpoint ({final_file_bytes} < {peak_file_bytes})"
+        );
     }
 }
