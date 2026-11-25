@@ -1219,6 +1219,20 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         upgrade_to,
     )
     .await?;
+    // The binary an upgrade starts from predates ecash payouts.
+    #[cfg(target_os = "linux")]
+    if upgrade_to.is_none() {
+        exercise_guardian_fee_ecash_payout(
+            manifold_guardian_bin,
+            bitcoind,
+            &temp,
+            port_base,
+            &iroh_overrides,
+            &invite,
+            &mut daemons,
+        )
+        .await?;
+    }
 
     shutdown_daemons(daemons).await?;
     defe.release(nostr_relay_lease.handle_id).await?;
@@ -1851,6 +1865,317 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     // fixture URL is itself the consensus LNv2 gateway setting.
     register_gateway_with_every_guardian(state_dir, &restarted_locators).await?;
     defe.release(gateway_lease.handle_id).await?;
+    Ok(())
+}
+
+/// Start the first MG again in its data directory and put it back at the
+/// front of `daemons`.
+#[cfg(target_os = "linux")]
+async fn respawn_first_manifold_guardian(
+    manifold_guardian_bin: &Path,
+    bitcoind: &defe_api::BitcoindInfo,
+    mg0_dir: &Path,
+    port_base: u16,
+    iroh_overrides: &str,
+    daemons: &mut Vec<Child>,
+) -> anyhow::Result<()> {
+    let mut restarted = spawn_manifold_guardian(
+        manifold_guardian_bin,
+        mg0_dir,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        port_base,
+        Some(iroh_overrides),
+        None,
+        None,
+    )?;
+    read_locator(&mut restarted, 0).await?;
+    daemons.insert(0, restarted);
+    Ok(())
+}
+
+/// Pay the guardian-fee ecash left after the Lightning payout out as a bearer
+/// token through real mint-v2 modules: a crash between the native spend and
+/// its ledger link, retries under the same request id, a cancel before
+/// redemption, and a cancel that loses to the operator's own redemption.
+#[cfg(target_os = "linux")]
+async fn exercise_guardian_fee_ecash_payout(
+    manifold_guardian_bin: &Path,
+    bitcoind: &defe_api::BitcoindInfo,
+    temp: &Path,
+    port_base: u16,
+    iroh_overrides: &str,
+    invite: &str,
+    daemons: &mut Vec<Child>,
+) -> anyhow::Result<()> {
+    let mg0_dir = temp.join("mg-0");
+    let seats =
+        manifold_guardian_admin(manifold_guardian_bin, &mg0_dir, &["seats", "list"]).await?;
+    let seat_id = seats["seats"][0]["seat_id"]
+        .as_str()
+        .context("formed seat listing carries its id")?
+        .to_owned();
+    let available = |status: &serde_json::Value| status["wallet"]["available_ecash_msat"].as_u64();
+    let fees = |bin: &Path| {
+        let (bin, dir, seat) = (bin.to_owned(), mg0_dir.clone(), seat_id.clone());
+        async move {
+            manifold_guardian_admin(
+                &bin,
+                &dir,
+                &["guardian-fees", "show", &seat, "--limit", "1"],
+            )
+            .await
+        }
+    };
+    let before = available(&fees(manifold_guardian_bin).await?)
+        .filter(|amount| *amount > 0)
+        .context("the capped Lightning payout leaves collected ecash behind")?;
+
+    // Crash after the spend committed in the wallet and before the ledger
+    // links it: the start must not answer, and the retry must find that spend.
+    let crashed_request = "guardian-fee-ecash-crash-e2e";
+    shutdown_daemons(vec![daemons.remove(0)]).await?;
+    std::fs::write(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE), b"enabled\n")?;
+    respawn_first_manifold_guardian(
+        manifold_guardian_bin,
+        bitcoind,
+        &mg0_dir,
+        port_base,
+        iroh_overrides,
+        daemons,
+    )
+    .await?;
+    let start = {
+        let (bin, dir, seat) = (
+            manifold_guardian_bin.to_owned(),
+            mg0_dir.clone(),
+            seat_id.clone(),
+        );
+        tokio::spawn(async move {
+            manifold_guardian_admin(
+                &bin,
+                &dir,
+                &[
+                    "guardian-fees",
+                    "sweep",
+                    &seat,
+                    "--request-id",
+                    crashed_request,
+                    "--method",
+                    "ecash",
+                ],
+            )
+            .await
+        })
+    };
+    let crash_seam = mg0_dir.join(PAYOUT_CRASH_SEAM_REACHED);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !crash_seam.is_file() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("ecash payout did not reach the native-commit crash seam"))?;
+    let mut crashed = daemons.remove(0);
+    crashed
+        .start_kill()
+        .context("SIGKILL MG during ecash payout")?;
+    let status = crashed
+        .wait()
+        .await
+        .context("reap ecash-payout-crashed MG")?;
+    anyhow::ensure!(
+        status.signal() == Some(libc::SIGKILL),
+        "ecash payout fault injection exited unexpectedly with {status}"
+    );
+    anyhow::ensure!(
+        start
+            .await
+            .context("join interrupted ecash payout call")?
+            .is_err(),
+        "the crash-hidden ecash spend must not return a token"
+    );
+    std::fs::remove_file(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE))?;
+    std::fs::remove_file(&crash_seam)?;
+    respawn_first_manifold_guardian(
+        manifold_guardian_bin,
+        bitcoind,
+        &mg0_dir,
+        port_base,
+        iroh_overrides,
+        daemons,
+    )
+    .await?;
+
+    // An ecash sweep answers the job, as a Lightning sweep does; the token
+    // comes from `payout status`.
+    let ecash_payout = |request_id: &'static str| {
+        let (bin, dir, seat) = (
+            manifold_guardian_bin.to_owned(),
+            mg0_dir.clone(),
+            seat_id.clone(),
+        );
+        async move {
+            manifold_guardian_admin_with_timeout(
+                &bin,
+                &dir,
+                &[
+                    "guardian-fees",
+                    "sweep",
+                    &seat,
+                    "--request-id",
+                    request_id,
+                    "--method",
+                    "ecash",
+                ],
+                Duration::from_secs(90),
+            )
+            .await?;
+            manifold_guardian_admin(&bin, &dir, &["payout", "status", request_id]).await
+        }
+    };
+    let recovered = ecash_payout(crashed_request).await?;
+    let token = recovered["ecash"]["token"]
+        .as_str()
+        .context("the retry recovers the crash-hidden spend as an issued token")?
+        .to_owned();
+    anyhow::ensure!(
+        recovered["ecash"]["state"] == "issued"
+            && recovered["job"]["method"] == "ecash"
+            && recovered["job"]["operation"]["amount_msat"].as_u64() == Some(before),
+        "the recovered ecash payout must be the whole collected balance: {recovered}"
+    );
+    let replay = ecash_payout(crashed_request).await?;
+    anyhow::ensure!(
+        replay["job"]["operation"]["operation_id"] == recovered["job"]["operation"]["operation_id"]
+            && replay["ecash"]["token"] == recovered["ecash"]["token"],
+        "replaying the ecash request must return the original spend"
+    );
+    anyhow::ensure!(
+        available(&fees(manifold_guardian_bin).await?) == Some(0),
+        "one ecash payout must spend the balance once"
+    );
+    let listed =
+        manifold_guardian_admin(manifold_guardian_bin, &mg0_dir, &["payout", "list"]).await?;
+    let listed_ecash: Vec<_> = listed["payouts"]
+        .as_array()
+        .context("ListPayouts returns a list")?
+        .iter()
+        .filter(|payout| payout["job"]["method"] == "ecash")
+        .collect();
+    anyhow::ensure!(
+        listed_ecash.len() == 1
+            && listed_ecash[0]["ecash"] == serde_json::json!({ "state": "issued", "token": null }),
+        "the issued payout must be listed without its token: {listed}"
+    );
+    let status = manifold_guardian_admin(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &["payout", "status", crashed_request],
+    )
+    .await?;
+    anyhow::ensure!(
+        status["ecash"]["token"] == token.as_str(),
+        "PayoutStatus must hand the issued token to the operator"
+    );
+
+    // Cancel before redemption takes the notes back.
+    let cancelled = manifold_guardian_admin_with_timeout(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &["payout", "ecash-cancel", crashed_request],
+        Duration::from_secs(90),
+    )
+    .await?;
+    anyhow::ensure!(
+        cancelled["ecash"]["state"] == "reclaimed",
+        "an unredeemed token must be reclaimed: {cancelled}"
+    );
+    // `reclaimed` means the notes are back: the balance shows them at once,
+    // so a dashboard that rereads it on the answer is not left at zero.
+    let reclaimed = available(&fees(manifold_guardian_bin).await?).unwrap_or_default();
+    anyhow::ensure!(
+        0 < reclaimed && reclaimed <= before,
+        "the reclaim must return the notes, less reissue fees: {reclaimed} of {before}"
+    );
+    // Cancel after the operator redeemed the token loses the race.
+    let redeemed_request = "guardian-fee-ecash-redeemed-e2e";
+    let issued = ecash_payout(redeemed_request).await?;
+    let token = issued["ecash"]["token"]
+        .as_str()
+        .context("a second ecash payout issues a token")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let redeemer = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("ecash-payout-redeemer"),
+        iroh_overrides,
+    };
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let _ = std::fs::remove_dir_all(&redeemer.data_dir);
+            match redeemer
+                .run(&["join-federation", invite], FEDIMINT_CLI_JOIN_TIMEOUT)
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => eprintln!("fedimint-cli join failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("the redeeming wallet did not join the federation")?;
+    let received = redeemer
+        .run_json(
+            &["module", "mintv2", "receive", token],
+            Duration::from_secs(60),
+        )
+        .await?;
+    anyhow::ensure!(
+        received == "Success",
+        "the operator's own wallet must redeem the token: {received}"
+    );
+    // The operator marks it redeemed, then cancels anyway: the reclaim finds
+    // the notes spent, and nothing returns.
+    let confirmed = manifold_guardian_admin(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &["payout", "ecash-confirm", redeemed_request],
+    )
+    .await?;
+    anyhow::ensure!(
+        confirmed["operation"]["confirmed_at_ms"].is_u64(),
+        "the operator's mark must be on the job: {confirmed}"
+    );
+    let lost = manifold_guardian_admin_with_timeout(
+        manifold_guardian_bin,
+        &mg0_dir,
+        &["payout", "ecash-cancel", redeemed_request],
+        Duration::from_secs(90),
+    )
+    .await?;
+    anyhow::ensure!(
+        lost["ecash"]["state"] == "already_spent",
+        "a cancel after redemption must report the token spent: {lost}"
+    );
+    let listed =
+        manifold_guardian_admin(manifold_guardian_bin, &mg0_dir, &["payout", "list"]).await?;
+    let states: Vec<_> = listed["payouts"]
+        .as_array()
+        .context("ListPayouts returns a list")?
+        .iter()
+        .filter(|payout| payout["job"]["method"] == "ecash")
+        .map(|payout| payout["ecash"]["state"].clone())
+        .collect();
+    anyhow::ensure!(
+        states
+            == [
+                serde_json::json!("already_spent"),
+                serde_json::json!("reclaimed")
+            ],
+        "closed ecash payouts stay listed, newest first, with their outcomes: {listed}"
+    );
     Ok(())
 }
 

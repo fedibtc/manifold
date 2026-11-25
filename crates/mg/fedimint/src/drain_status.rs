@@ -614,6 +614,12 @@ mod tests {
         OperationId([7; 32])
     }
 
+    fn ln(destination: &str) -> PayoutMethod {
+        PayoutMethod::Lightning {
+            destination: destination.to_owned(),
+        }
+    }
+
     fn entry_with_outcome(outcome: impl serde::Serialize) -> OperationLogEntry {
         let mut entry = OperationLogEntry::new(
             "test".to_owned(),
@@ -767,7 +773,7 @@ mod tests {
             payout_request_amount(
                 &entry,
                 &PayoutRequestId::parse("caller-request").unwrap(),
-                "operator@example.com",
+                &ln("operator@example.com"),
             )
             .unwrap(),
             Some(900)
@@ -776,7 +782,7 @@ mod tests {
             payout_request_amount(
                 &entry,
                 &PayoutRequestId::parse("other").unwrap(),
-                "operator@example.com",
+                &ln("operator@example.com"),
             )
             .unwrap(),
             None
@@ -785,11 +791,21 @@ mod tests {
             payout_request_amount(
                 &entry,
                 &PayoutRequestId::parse("caller-request").unwrap(),
-                "retargeted@example.com",
+                &ln("retargeted@example.com"),
             )
             .unwrap_err()
             .to_string()
             .contains("another destination")
+        );
+        assert!(
+            payout_request_amount(
+                &entry,
+                &PayoutRequestId::parse("caller-request").unwrap(),
+                &PayoutMethod::Ecash,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("another payout method")
         );
         assert!(matches!(
             decoded.variant,
@@ -844,7 +860,7 @@ mod tests {
             payout_request_amount(
                 &entry,
                 &PayoutRequestId::parse("caller-request").unwrap(),
-                "operator@example.com",
+                &ln("operator@example.com"),
             )
             .unwrap(),
             Some(900)
@@ -853,11 +869,183 @@ mod tests {
             payout_request_amount(
                 &entry,
                 &PayoutRequestId::parse("caller-request").unwrap(),
-                "retargeted@example.com",
+                &ln("retargeted@example.com"),
             )
             .unwrap_err()
             .to_string()
             .contains("another destination")
+        );
+    }
+
+    fn keypair(byte: u8) -> bitcoin::secp256k1::Keypair {
+        bitcoin::secp256k1::Keypair::from_secret_key(
+            bitcoin::secp256k1::SECP256K1,
+            &bitcoin::secp256k1::SecretKey::from_slice(&[byte; 32]).unwrap(),
+        )
+    }
+
+    fn signature(byte: u8) -> tbs::Signature {
+        tbs::Signature(tbs::Message::from_bytes(&[byte]).0)
+    }
+
+    fn mint_entry(kind: &str, metadata: impl serde::Serialize) -> OperationLogEntry {
+        OperationLogEntry::new(
+            kind.to_owned(),
+            JsonStringed(serde_json::to_value(metadata).unwrap()),
+            None,
+        )
+    }
+
+    fn payout_meta(request_id: &str) -> serde_json::Value {
+        serde_json::json!({"purpose": "fman-payout", "request_id": request_id})
+    }
+
+    /// The ecash spend is found by its request id under either mint, with the
+    /// amount of the notes it carries; everything else that a mint writes with
+    /// similar metadata is not a payout.
+    #[tokio::test]
+    async fn ecash_spends_bind_their_request_and_ignore_change_and_reclaims() {
+        use bitcoin_hashes::Hash as _;
+        use fedimint_mint_client::{OOBNotes, SpendableNote};
+        let request = PayoutRequestId::parse("caller-request").unwrap();
+        let federation: fedimint_core::config::FederationId = "02".repeat(32).parse().unwrap();
+
+        let notes = OOBNotes::new(
+            federation.to_prefix(),
+            [
+                (
+                    Amount::from_msats(1_024),
+                    SpendableNote {
+                        signature: signature(1),
+                        spend_key: keypair(1),
+                    },
+                ),
+                (
+                    Amount::from_msats(4_096),
+                    SpendableNote {
+                        signature: signature(2),
+                        spend_key: keypair(2),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let v1_spend = mint_entry(
+            "mint",
+            MintV1OperationMeta {
+                variant: MintOperationMetaVariant::SpendOOB {
+                    requested_amount: Amount::from_msats(1),
+                    oob_notes: notes,
+                    no_timeout: true,
+                },
+                amount: Amount::from_msats(5_120),
+                extra_meta: payout_meta("caller-request"),
+            },
+        );
+        // The amount is the notes', not the requested amount the selector ignores.
+        assert_eq!(
+            payout_request_amount(&v1_spend, &request, &PayoutMethod::Ecash).unwrap(),
+            Some(5_120)
+        );
+        assert_eq!(
+            payout_request_amount(
+                &v1_spend,
+                &PayoutRequestId::parse("other").unwrap(),
+                &PayoutMethod::Ecash
+            )
+            .unwrap(),
+            None
+        );
+        assert!(
+            payout_request_amount(&v1_spend, &request, &ln("operator@example.com"))
+                .unwrap_err()
+                .to_string()
+                .contains("another payout method")
+        );
+        let v1_reissue = mint_entry(
+            "mint",
+            MintV1OperationMeta {
+                variant: MintOperationMetaVariant::Reissuance {
+                    legacy_out_point: None,
+                    txid: Some(TransactionId::from_byte_array([3; 32])),
+                    out_point_indices: vec![0],
+                },
+                amount: Amount::from_msats(5_120),
+                extra_meta: payout_meta("caller-request"),
+            },
+        );
+        assert_eq!(
+            payout_request_amount(&v1_reissue, &request, &PayoutMethod::Ecash).unwrap(),
+            None
+        );
+
+        let ecash = fedimint_mintv2_client::ECash::new(
+            federation,
+            vec![fedimint_mintv2_client::SpendableNote {
+                denomination: fedimint_mintv2_common::Denomination(11),
+                keypair: keypair(3),
+                signature: signature(3),
+            }],
+        );
+        let v2_send = || {
+            mint_entry(
+                "mintv2",
+                MintV2OperationMeta::Send {
+                    ecash: fedimint_core::base32::encode_prefixed(
+                        fedimint_core::base32::FEDIMINT_PREFIX,
+                        &ecash,
+                    ),
+                    custom_meta: payout_meta("caller-request"),
+                },
+            )
+        };
+        // mint-v2 `send` repeats the send's metadata on the reissue that makes
+        // change for it; only the send is the payout.
+        let v2_change = mint_entry(
+            "mintv2",
+            MintV2OperationMeta::Reissue {
+                change_outpoint_range: fedimint_core::OutPointRange::new_single(
+                    TransactionId::from_byte_array([4; 32]),
+                    0,
+                )
+                .unwrap(),
+                amount: Amount::from_msats(2_048),
+                custom_meta: payout_meta("caller-request"),
+            },
+        );
+        let key = |byte| ChronologicalOperationLogKey {
+            creation_time: SystemTime::UNIX_EPOCH,
+            operation_id: OperationId([byte; 32]),
+        };
+        let found = payout_for_request_from(
+            &Operations(std::sync::Mutex::new(Some(vec![
+                (key(1), v2_change),
+                (key(2), v2_send()),
+            ]))),
+            &request,
+            &PayoutMethod::Ecash,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            found.operation_id.as_str(),
+            OperationId([2; 32]).fmt_full().to_string()
+        );
+        assert_eq!(found.amount_msat, 2_048);
+        // Two spends for one request means the wallet and ledger disagree.
+        assert!(
+            payout_for_request_from(
+                &Operations(std::sync::Mutex::new(Some(vec![
+                    (key(1), v1_spend),
+                    (key(2), v2_send()),
+                ]))),
+                &request,
+                &PayoutMethod::Ecash,
+            )
+            .await
+            .is_err()
         );
     }
 

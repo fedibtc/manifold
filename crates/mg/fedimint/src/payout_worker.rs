@@ -253,13 +253,36 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    use crate::payout_ecash::{EcashPayoutState, EcashToken};
+    use crate::wallet_drain::OutgoingOperation;
+
+    /// Where the notes of one fake ecash spend are.
+    #[derive(Default)]
+    struct FakeNotes {
+        /// The recipient spent them.
+        redeemed: bool,
+        /// This wallet submitted their reissue.
+        reclaimed: bool,
+        /// That reissue has not reached a terminal state.
+        reclaim_running: bool,
+    }
+
     #[derive(Default)]
     struct FakeNative {
         payouts: Mutex<HashMap<PayoutRequestId, Payout>>,
+        notes: Mutex<HashMap<PayoutOperationId, FakeNotes>>,
         lose_next_response: AtomicBool,
+        refuse_next_start: AtomicBool,
         starts: AtomicUsize,
         statuses: AtomicUsize,
         awaits: AtomicUsize,
+        reclaims: AtomicUsize,
+    }
+
+    fn lightning(destination: &str) -> PayoutMethod {
+        PayoutMethod::Lightning {
+            destination: destination.to_owned(),
+        }
     }
 
     #[async_trait::async_trait]
@@ -268,18 +291,26 @@ mod tests {
             if let Some(payout) = self.payouts.lock().await.get(&job.request_id).cloned() {
                 return Ok(payout);
             }
+            if self.refuse_next_start.swap(false, Ordering::SeqCst) {
+                anyhow::bail!("simulated start refusal: no gateway");
+            }
             self.starts.fetch_add(1, Ordering::SeqCst);
             // A second caller reaches this yield before the first writes if
             // PayoutWorker stops holding its scope exclusion across the
             // native lookup/start boundary.
             tokio::task::yield_now().await;
+            let started = self.starts.load(Ordering::SeqCst);
             let payout = Payout {
-                operation_id: crate::payout_operation_id::PayoutOperationId::parse(
-                    &"ab".repeat(32),
-                )?,
+                operation_id: PayoutOperationId::parse(&format!("{started:064x}"))?,
                 amount_msat: 42,
                 capped: None,
             };
+            if job.method == PayoutMethod::Ecash {
+                self.notes
+                    .lock()
+                    .await
+                    .insert(payout.operation_id.clone(), FakeNotes::default());
+            }
             self.payouts
                 .lock()
                 .await
@@ -296,23 +327,47 @@ mod tests {
 
         async fn observe(
             &self,
-            _job: &PayoutJob,
-            id: crate::payout_operation_id::PayoutOperationId,
+            job: &PayoutJob,
+            id: PayoutOperationId,
             wait: bool,
-        ) -> anyhow::Result<OutgoingOperation> {
+        ) -> anyhow::Result<PayoutNativeStatus> {
             if wait {
                 self.awaits.fetch_add(1, Ordering::SeqCst);
             } else {
                 self.statuses.fetch_add(1, Ordering::SeqCst);
             }
-            Ok(OutgoingOperation::new(
+            if job.method == PayoutMethod::Ecash {
+                let notes = self.notes.lock().await;
+                let notes = notes.get(&id).context("observed an uncommitted spend")?;
+                let state = match (notes.reclaimed, notes.redeemed) {
+                    (false, _) => EcashPayoutState::Issued {
+                        token: EcashToken::test(&format!("token-for-{id}")),
+                    },
+                    (true, _) if !wait && notes.reclaim_running => EcashPayoutState::Reclaiming,
+                    (true, false) => EcashPayoutState::Reclaimed,
+                    (true, true) => EcashPayoutState::AlreadySpent,
+                };
+                return Ok(PayoutNativeStatus::Ecash(Some(state)));
+            }
+            Ok(PayoutNativeStatus::Lightning(Some(OutgoingOperation::new(
                 id,
                 crate::wallet_drain::OutgoingRail::Lnv2,
                 crate::wallet_drain::OutgoingState::Succeeded,
                 42,
                 42,
                 false,
-            ))
+            ))))
+        }
+
+        async fn reclaim(&self, job: &PayoutJob, id: PayoutOperationId) -> anyhow::Result<()> {
+            assert_eq!(job.method, PayoutMethod::Ecash);
+            self.reclaims.fetch_add(1, Ordering::SeqCst);
+            let mut notes = self.notes.lock().await;
+            let notes = notes
+                .get_mut(&id)
+                .context("reclaimed an uncommitted spend")?;
+            notes.reclaimed = true;
+            Ok(())
         }
     }
 
@@ -359,7 +414,7 @@ mod tests {
         let seat_id = SeatId::new("01".repeat(32)).unwrap();
         let request_id = PayoutRequestId::parse("guardian-stored-scope").unwrap();
         let scope = guardian_scope(&seat_id, &"02".repeat(32));
-        crate::payout_store::create(&db, &request_id, &scope, "operator@example.com")
+        crate::payout_store::create(&db, &request_id, &scope, &lightning("operator@example.com"))
             .await
             .unwrap();
         assert_eq!(
@@ -385,9 +440,14 @@ mod tests {
             seat_id,
             invite_code,
         };
-        crate::payout_store::create(&db, &mismatch, &malformed, "operator@example.com")
-            .await
-            .unwrap();
+        crate::payout_store::create(
+            &db,
+            &mismatch,
+            &malformed,
+            &lightning("operator@example.com"),
+        )
+        .await
+        .unwrap();
         assert!(
             stored_guardian_job(&db, &SeatId::new("01".repeat(32)).unwrap(), &mismatch)
                 .await
@@ -412,7 +472,7 @@ mod tests {
         };
         assert!(
             worker(db.clone(), native.clone())
-                .start_job(&request_id, scope.clone())
+                .start_job(&request_id, scope.clone(), PayoutRail::Lightning)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -423,11 +483,11 @@ mod tests {
         let reopened = Db::open(temp.path()).await.unwrap();
         set_destination(&reopened, "changed@example.com").await;
         let job = worker(reopened, native.clone())
-            .start_job(&request_id, scope)
+            .start_job(&request_id, scope, PayoutRail::Lightning)
             .await
             .unwrap();
         assert_eq!(native.starts.load(Ordering::SeqCst), 1);
-        assert_eq!(job.destination, "first@example.com");
+        assert_eq!(job.method, lightning("first@example.com"));
         assert!(job.operation.is_some());
     }
 
@@ -443,8 +503,8 @@ mod tests {
             federation_id: FederationId("payment-federation".into()),
         };
         let (left, right) = tokio::join!(
-            worker.start_job(&request_id, scope.clone()),
-            worker.start_job(&request_id, scope),
+            worker.start_job(&request_id, scope.clone(), PayoutRail::Lightning),
+            worker.start_job(&request_id, scope, PayoutRail::Lightning),
         );
         assert_eq!(left.unwrap(), right.unwrap());
         assert_eq!(native.starts.load(Ordering::SeqCst), 1);
@@ -458,7 +518,7 @@ mod tests {
         let scope = PayoutScope::PaymentFederation {
             federation_id: FederationId("payment-federation".into()),
         };
-        crate::payout_store::create(&db, &request_id, &scope, "operator@example.com")
+        crate::payout_store::create(&db, &request_id, &scope, &lightning("operator@example.com"))
             .await
             .unwrap();
         let native = Arc::new(FakeNative::default());
@@ -467,7 +527,7 @@ mod tests {
             .await
             .unwrap();
         assert!(status.job.operation.is_none());
-        assert!(status.payout.is_none());
+        assert!(matches!(status.native, PayoutNativeStatus::Lightning(None)));
         assert_eq!(native.starts.load(Ordering::SeqCst), 0);
     }
 
@@ -478,7 +538,7 @@ mod tests {
         let seat_id = SeatId::new("71".repeat(32)).unwrap();
         let request_id = PayoutRequestId::parse("guardian-lost-response").unwrap();
         let scope = guardian_scope(&seat_id, &"02".repeat(32));
-        crate::payout_store::create(&db, &request_id, &scope, "operator@example.com")
+        crate::payout_store::create(&db, &request_id, &scope, &lightning("operator@example.com"))
             .await
             .unwrap();
         let native = Arc::new(FakeNative {
@@ -488,7 +548,7 @@ mod tests {
         let current = worker(db.clone(), native.clone());
         assert!(
             current
-                .start_job(&request_id, scope)
+                .start_job(&request_id, scope, PayoutRail::Lightning)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -499,14 +559,477 @@ mod tests {
 
         let reopened = worker(Db::open(temp.path()).await.unwrap(), native.clone());
         let status = reopened.status(&request_id, false).await.unwrap();
-        assert!(status.payout.is_some());
+        assert!(matches!(
+            status.native,
+            PayoutNativeStatus::Lightning(Some(_))
+        ));
         let awaited = reopened.status(&request_id, true).await.unwrap();
-        assert!(awaited.payout.is_some());
+        assert!(matches!(
+            awaited.native,
+            PayoutNativeStatus::Lightning(Some(_))
+        ));
         assert_eq!(native.starts.load(Ordering::SeqCst), 1);
         assert_eq!(native.statuses.load(Ordering::SeqCst), 1);
         assert_eq!(native.awaits.load(Ordering::SeqCst), 1);
     }
+
+    fn ecash_request(name: &str) -> (PayoutRequestId, PayoutScope) {
+        (
+            PayoutRequestId::parse(name).unwrap(),
+            PayoutScope::PaymentFederation {
+                federation_id: FederationId("payment-federation".into()),
+            },
+        )
+    }
+
+    /// The listed ecash payouts still waiting on the operator: issued and
+    /// not marked redeemed, or reclaiming.
+    async fn open_payouts(worker: &PayoutWorker) -> Vec<PayoutJobStatus> {
+        worker
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|s| {
+                matches!(&s.native, PayoutNativeStatus::Ecash(Some(state)) if state.is_open())
+                    && s.job
+                        .operation
+                        .as_ref()
+                        .is_some_and(|op| op.confirmed_at_ms.is_none())
+            })
+            .collect()
+    }
+
+    fn confirmed_at(job: &PayoutJob) -> Option<u64> {
+        job.operation.as_ref().and_then(|op| op.confirmed_at_ms)
+    }
+
+    fn ecash_state(status: &PayoutJobStatus) -> &EcashPayoutState {
+        match &status.native {
+            PayoutNativeStatus::Ecash(Some(state)) => state,
+            other => panic!("expected a committed ecash payout, got {other:?}"),
+        }
+    }
+
+    /// Process death after the ledger row and before any wallet work leaves a
+    /// row and no spend. Nothing is listed, and a retry under the same id
+    /// spends once.
+    #[tokio::test]
+    async fn ecash_crash_before_spend_is_retried_under_the_same_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        let (request_id, scope) = ecash_request("ecash-crash-before-spend");
+        crate::payout_store::create(&db, &request_id, &scope, &PayoutMethod::Ecash)
+            .await
+            .unwrap();
+        drop(db);
+
+        let native = Arc::new(FakeNative::default());
+        let reopened = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        assert!(open_payouts(&reopened).await.is_empty());
+        let pending = reopened.status(&request_id, false).await.unwrap();
+        assert!(matches!(pending.native, PayoutNativeStatus::Ecash(None)));
+        assert_eq!(native.starts.load(Ordering::SeqCst), 0);
+
+        reopened
+            .start_job(&request_id, scope.clone(), PayoutRail::Ecash)
+            .await
+            .unwrap();
+        reopened
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        assert_eq!(native.starts.load(Ordering::SeqCst), 1);
+        let open = open_payouts(&reopened).await;
+        assert_eq!(open.len(), 1);
+        assert!(matches!(
+            ecash_state(&open[0]),
+            EcashPayoutState::Issued { .. }
+        ));
+    }
+
+    /// Process death after the spend committed and before the ledger linked
+    /// it: the token is listed after restart, and a retry returns that spend
+    /// rather than spending again.
+    #[tokio::test]
+    async fn ecash_crash_after_spend_lists_the_token_and_never_spends_twice() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        let native = Arc::new(FakeNative {
+            lose_next_response: AtomicBool::new(true),
+            ..Default::default()
+        });
+        let (request_id, scope) = ecash_request("ecash-crash-after-spend");
+        assert!(
+            worker(db.clone(), native.clone())
+                .start_job(&request_id, scope.clone(), PayoutRail::Ecash)
+                .await
+                .is_err()
+        );
+        assert!(
+            crate::payout_store::get(&db, &request_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .operation
+                .is_none()
+        );
+        drop(db);
+
+        let reopened = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let open = open_payouts(&reopened).await;
+        assert_eq!(open.len(), 1);
+        let committed = open[0].job.operation.clone().unwrap();
+        assert!(matches!(
+            ecash_state(&open[0]),
+            EcashPayoutState::Issued { .. }
+        ));
+        let retried = reopened
+            .start_job(&request_id, scope.clone(), PayoutRail::Ecash)
+            .await
+            .unwrap();
+        assert_eq!(retried.operation.unwrap(), committed);
+        assert_eq!(native.starts.load(Ordering::SeqCst), 1);
+        // The id stays an ecash request: it cannot become a Lightning sweep.
+        assert!(
+            reopened
+                .start_job(&request_id, scope, PayoutRail::Lightning)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("different payout method")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_ecash_retries_spend_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = Arc::new(worker(Db::open(temp.path()).await.unwrap(), native.clone()));
+        let (request_id, scope) = ecash_request("ecash-concurrent");
+        let (left, right) = tokio::join!(
+            worker.start_job(&request_id, scope.clone(), PayoutRail::Ecash),
+            worker.start_job(&request_id, scope, PayoutRail::Ecash),
+        );
+        assert_eq!(left.unwrap(), right.unwrap());
+        assert_eq!(native.starts.load(Ordering::SeqCst), 1);
+    }
+
+    /// A cancel before the recipient redeems takes the notes back; repeating
+    /// it resumes the same reclaim, and the payout leaves the open list.
+    #[tokio::test]
+    async fn ecash_cancel_before_redemption_reclaims_and_closes_the_payout() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-cancel-before");
+        worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+
+        let cancelled = worker.cancel(&request_id).await.unwrap();
+        assert_eq!(ecash_state(&cancelled), &EcashPayoutState::Reclaimed);
+        assert_eq!(
+            ecash_state(&worker.cancel(&request_id).await.unwrap()),
+            &EcashPayoutState::Reclaimed
+        );
+        assert!(open_payouts(&worker).await.is_empty());
+        // A confirmation afterwards only records the operator's word; the
+        // wallet still reads reclaimed.
+        worker.confirm_ecash_payout(&request_id).await.unwrap();
+        assert_eq!(
+            ecash_state(&worker.status(&request_id, false).await.unwrap()),
+            &EcashPayoutState::Reclaimed
+        );
+    }
+
+    /// A cancel after the recipient redeemed reports the notes already spent.
+    #[tokio::test]
+    async fn ecash_cancel_after_redemption_reports_already_spent() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-cancel-after");
+        let job = worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        native
+            .notes
+            .lock()
+            .await
+            .get_mut(&job.operation.unwrap().operation_id)
+            .unwrap()
+            .redeemed = true;
+
+        assert_eq!(
+            ecash_state(&worker.cancel(&request_id).await.unwrap()),
+            &EcashPayoutState::AlreadySpent
+        );
+        assert!(open_payouts(&worker).await.is_empty());
+    }
+
+    /// While the federation has not answered a reclaim, the payout stays open
+    /// as reclaiming; a status read does not wait for it.
+    #[tokio::test]
+    async fn running_reclaim_stays_listed_until_terminal() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-reclaiming");
+        let job = worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        let id = job.operation.unwrap().operation_id;
+        {
+            let mut notes = native.notes.lock().await;
+            let notes = notes.get_mut(&id).unwrap();
+            notes.reclaimed = true;
+            notes.reclaim_running = true;
+        }
+        let open = open_payouts(&worker).await;
+        assert_eq!(open.len(), 1);
+        assert_eq!(ecash_state(&open[0]), &EcashPayoutState::Reclaiming);
+        assert_eq!(
+            ecash_state(&worker.status(&request_id, true).await.unwrap()),
+            &EcashPayoutState::Reclaimed
+        );
+    }
+
+    /// Confirmation is the operator's word: one ledger write, set once. It
+    /// reads no wallet and starts no reclaim, and the notes stay issued.
+    #[tokio::test]
+    async fn ecash_confirmation_is_a_flag_set_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-confirm");
+        worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        let observed = native.statuses.load(Ordering::SeqCst);
+
+        let confirmed = worker.confirm_ecash_payout(&request_id).await.unwrap();
+        let at = confirmed
+            .operation
+            .as_ref()
+            .and_then(|op| op.confirmed_at_ms)
+            .expect("the confirmation is on the job");
+        assert_eq!(
+            worker.confirm_ecash_payout(&request_id).await.unwrap(),
+            confirmed,
+            "repeating keeps the first confirmation"
+        );
+        assert_eq!(native.statuses.load(Ordering::SeqCst), observed);
+        assert_eq!(native.reclaims.load(Ordering::SeqCst), 0);
+
+        let status = worker.status(&request_id, false).await.unwrap();
+        assert!(matches!(
+            ecash_state(&status),
+            EcashPayoutState::Issued { .. }
+        ));
+        assert_eq!(confirmed_at(&status.job), Some(at));
+        assert!(open_payouts(&worker).await.is_empty());
+    }
+
+    /// A token marked redeemed that never arrived can still be taken back:
+    /// the reclaim's outcome replaces the confirmation.
+    #[tokio::test]
+    async fn cancel_after_confirmation_returns_unredeemed_notes() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-confirm-then-cancel");
+        worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        worker.confirm_ecash_payout(&request_id).await.unwrap();
+
+        let cancelled = worker.cancel(&request_id).await.unwrap();
+        assert_eq!(ecash_state(&cancelled), &EcashPayoutState::Reclaimed);
+        assert_eq!(native.reclaims.load(Ordering::SeqCst), 1);
+        // The mark stays in the ledger beside the wallet's answer.
+        assert!(confirmed_at(&cancelled.job).is_some());
+    }
+
+    /// When the operator did redeem a token they marked, a later cancel loses
+    /// the race and says so; nothing returns.
+    #[tokio::test]
+    async fn cancel_after_confirmation_of_a_redeemed_token_reports_already_spent() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(Db::open(temp.path()).await.unwrap(), native.clone());
+        let (request_id, scope) = ecash_request("ecash-confirm-redeemed-cancel");
+        let job = worker
+            .start_job(&request_id, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+        worker.confirm_ecash_payout(&request_id).await.unwrap();
+        native
+            .notes
+            .lock()
+            .await
+            .get_mut(&job.operation.unwrap().operation_id)
+            .unwrap()
+            .redeemed = true;
+
+        assert_eq!(
+            ecash_state(&worker.cancel(&request_id).await.unwrap()),
+            &EcashPayoutState::AlreadySpent
+        );
+        assert_eq!(
+            ecash_state(&worker.status(&request_id, false).await.unwrap()),
+            &EcashPayoutState::AlreadySpent
+        );
+    }
+
+    /// The list holds both methods and closed jobs, newest first, keeps an
+    /// older open token past the limit, and never carries a token.
+    #[tokio::test]
+    async fn list_holds_closed_jobs_of_both_methods_and_keeps_old_open_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        set_destination(&db, "operator@example.com").await;
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(db.clone(), native.clone());
+        let start = |name: &'static str, rail| {
+            let worker = &worker;
+            async move {
+                let (request_id, scope) = ecash_request(name);
+                worker.start_job(&request_id, scope, rail).await.unwrap();
+                // Distinct creation times order the list.
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                request_id
+            }
+        };
+        let old_open = start("a-old-open", PayoutRail::Ecash).await;
+        let reclaimed = start("b-reclaimed", PayoutRail::Ecash).await;
+        let confirmed = start("c-confirmed", PayoutRail::Ecash).await;
+        let lightning = start("d-lightning", PayoutRail::Lightning).await;
+        worker.cancel(&reclaimed).await.unwrap();
+        worker.confirm_ecash_payout(&confirmed).await.unwrap();
+
+        let ids = |listed: &[PayoutJobStatus]| {
+            listed
+                .iter()
+                .map(|s| s.job.request_id.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let all = worker.list().await.unwrap();
+        assert_eq!(
+            ids(&all),
+            ["d-lightning", "c-confirmed", "b-reclaimed", "a-old-open"]
+        );
+        assert!(matches!(
+            all[0].native,
+            PayoutNativeStatus::Lightning(Some(_))
+        ));
+        assert!(matches!(
+            ecash_state(&all[1]),
+            EcashPayoutState::Issued { .. }
+        ));
+        assert!(confirmed_at(&all[1].job).is_some());
+        assert_eq!(ecash_state(&all[2]), &EcashPayoutState::Reclaimed);
+
+        let wire = serde_json::to_value(worker.list_payouts().await.unwrap()).unwrap();
+        assert_eq!(
+            wire["payouts"][3]["ecash"],
+            serde_json::json!({ "state": "issued", "token": null })
+        );
+        assert!(!wire.to_string().contains("token-for-"), "{wire}");
+
+        // Twenty newer payouts push the closed ones out; the older issued
+        // token still comes along, and the marked one does not.
+        let mut newer = Vec::new();
+        for n in 0..20 {
+            let name = format!("e-newer-{n:02}");
+            let (request_id, scope) = ecash_request(&name);
+            worker
+                .start_job(&request_id, scope, PayoutRail::Lightning)
+                .await
+                .unwrap();
+            newer.insert(0, name);
+        }
+        newer.push("a-old-open".to_owned());
+        assert_eq!(ids(&worker.list().await.unwrap()), newer);
+        // The single-job answer still hands the token over.
+        let status =
+            serde_json::to_value(worker.status(&old_open, false).await.unwrap().to_wire(true))
+                .unwrap();
+        assert_eq!(status["ecash"]["state"], "issued");
+        assert!(status["ecash"]["token"].is_string());
+        drop(lightning);
+    }
+
+    /// A start the wallet refused (no gateway, an LNURL error) leaves a ledger
+    /// row with no operation. It is not a payout: the list leaves it out, so
+    /// nothing shows it as in progress forever.
+    #[tokio::test]
+    async fn a_start_that_never_happened_is_not_listed() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        set_destination(&db, "operator@example.com").await;
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(db.clone(), native.clone());
+        for (name, rail) in [
+            ("refused-lightning", PayoutRail::Lightning),
+            ("refused-ecash", PayoutRail::Ecash),
+        ] {
+            let (request_id, scope) = ecash_request(name);
+            native.refuse_next_start.store(true, Ordering::SeqCst);
+            assert!(worker.start_job(&request_id, scope, rail).await.is_err());
+            assert!(
+                crate::payout_store::get(&db, &request_id)
+                    .await
+                    .unwrap()
+                    .is_some_and(|job| job.operation.is_none())
+            );
+        }
+        let (started, scope) = ecash_request("started-ecash");
+        worker
+            .start_job(&started, scope, PayoutRail::Ecash)
+            .await
+            .unwrap();
+
+        let listed = worker.list().await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|s| s.job.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["started-ecash"]
+        );
+    }
+
+    /// The ecash verbs refuse a Lightning job instead of treating it as one.
+    #[tokio::test]
+    async fn ecash_verbs_refuse_a_lightning_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        set_destination(&db, "operator@example.com").await;
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(db, native.clone());
+        let (request_id, scope) = ecash_request("lightning-job");
+        worker
+            .start_job(&request_id, scope, PayoutRail::Lightning)
+            .await
+            .unwrap();
+        let error = worker.confirm_ecash_payout(&request_id).await.unwrap_err();
+        assert!(
+            error.to_string().contains("only an ecash payout"),
+            "{error}"
+        );
+        let error = worker.cancel(&request_id).await.unwrap_err();
+        assert!(error.to_string().contains("not an ecash payout"), "{error}");
+        assert!(open_payouts(&worker).await.is_empty());
+        assert_eq!(native.reclaims.load(Ordering::SeqCst), 0);
+    }
 }
+
 impl PayoutWorker {
     async fn start_job(
         &self,

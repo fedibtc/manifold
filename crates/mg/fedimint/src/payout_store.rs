@@ -210,6 +210,97 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lightning(destination: &str) -> PayoutMethod {
+        PayoutMethod::Lightning {
+            destination: destination.to_owned(),
+        }
+    }
+
+    fn native(byte: &str, amount_msat: u64) -> Payout {
+        Payout {
+            operation_id: PayoutOperationId::parse(&byte.repeat(32)).unwrap(),
+            amount_msat,
+            capped: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ecash_jobs_bind_their_method_and_confirm_once_after_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        let request = PayoutRequestId::parse("ecash-request").unwrap();
+        let scope = PayoutScope::PaymentFederation {
+            federation_id: FederationId("fixture-federation".into()),
+        };
+        let pending = create(&db, &request, &scope, &PayoutMethod::Ecash)
+            .await
+            .unwrap();
+        assert_eq!(pending.method, PayoutMethod::Ecash);
+        // The same id cannot become a Lightning payout, or the reverse.
+        assert!(
+            create(&db, &request, &scope, &lightning("operator@example.com"))
+                .await
+                .is_err()
+        );
+        let lightning_request = PayoutRequestId::parse("lightning-request").unwrap();
+        create(
+            &db,
+            &lightning_request,
+            &scope,
+            &lightning("operator@example.com"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            create(&db, &lightning_request, &scope, &PayoutMethod::Ecash)
+                .await
+                .is_err()
+        );
+
+        // Nothing was issued yet, so there is nothing to confirm.
+        assert!(confirm(&db, &request).await.is_err());
+        assert_eq!(unconfirmed_ecash(&db).await.unwrap(), vec![pending.clone()]);
+
+        let committed = commit(&db, &request, &native("ab", 5_000)).await.unwrap();
+        let confirmed = confirm(&db, &request).await.unwrap();
+        let at = confirmed.operation.as_ref().unwrap().confirmed_at_ms;
+        assert!(at.is_some());
+        assert_eq!(
+            confirmed.operation.as_ref().unwrap().operation_id,
+            committed.operation.unwrap().operation_id
+        );
+        // Repeating keeps the first confirmation.
+        assert_eq!(confirm(&db, &request).await.unwrap(), confirmed);
+        assert!(unconfirmed_ecash(&db).await.unwrap().is_empty());
+        sqlx::query("UPDATE payout_jobs SET confirmed_at_ms = NULL WHERE request_id = ?")
+            .bind(request.as_str())
+            .execute(db.pool())
+            .await
+            .expect_err("the schema rejects undoing a confirmation");
+        sqlx::query("UPDATE payout_jobs SET method = 'lightning' WHERE request_id = ?")
+            .bind(request.as_str())
+            .execute(db.pool())
+            .await
+            .expect_err("the schema rejects changing a job's method");
+
+        // A Lightning job is never confirmed, even once it has an operation.
+        commit(&db, &lightning_request, &native("cd", 7_000))
+            .await
+            .unwrap();
+        assert!(confirm(&db, &lightning_request).await.is_err());
+        sqlx::query("UPDATE payout_jobs SET confirmed_at_ms = 1 WHERE request_id = ?")
+            .bind(lightning_request.as_str())
+            .execute(db.pool())
+            .await
+            .expect_err("the schema refuses a confirmation on a Lightning job");
+        sqlx::query(
+            "INSERT INTO payout_jobs (request_id, scope_kind, federation_id, method, destination, created_at_ms) VALUES ('bad', 'payment_federation', 'f', 'ecash', 'operator@example.com', 0)",
+        )
+        .execute(db.pool())
+        .await
+        .expect_err("the schema refuses an ecash job with a destination");
+    }
     #[tokio::test]
     async fn payout_jobs_pin_inputs_and_committed_operations_across_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -219,18 +310,18 @@ mod tests {
         let scope = PayoutScope::PaymentFederation {
             federation_id: FederationId("payment-fed".into()),
         };
-        let pending = create(&db, &request, &scope, "operator@example.com")
+        let pending = create(&db, &request, &scope, &lightning("operator@example.com"))
             .await
             .unwrap();
         assert!(pending.operation.is_none());
         assert_eq!(
-            create(&db, &request, &scope, "operator@example.com")
+            create(&db, &request, &scope, &lightning("operator@example.com"))
                 .await
                 .unwrap(),
             pending
         );
         assert!(
-            create(&db, &request, &scope, "other@example.com")
+            create(&db, &request, &scope, &lightning("other@example.com"))
                 .await
                 .is_err()
         );
@@ -292,7 +383,7 @@ mod tests {
         let scope = PayoutScope::PaymentFederation {
             federation_id: FederationId("fixture-federation".into()),
         };
-        create(&db, &request, &scope, "first@example.com")
+        create(&db, &request, &scope, &lightning("first@example.com"))
             .await
             .unwrap();
         let native = Payout {
@@ -306,7 +397,7 @@ mod tests {
             native.operation_id
         );
         assert!(
-            create(&db, &request, &scope, "changed@example.com")
+            create(&db, &request, &scope, &lightning("changed@example.com"))
                 .await
                 .is_err()
         );
@@ -323,7 +414,7 @@ mod tests {
             &PayoutScope::PaymentFederation {
                 federation_id: FederationId("fixture-federation".into()),
             },
-            "operator@example.com",
+            &lightning("operator@example.com"),
         )
         .await
         .unwrap();
@@ -350,7 +441,7 @@ mod tests {
             &PayoutScope::PaymentFederation {
                 federation_id: FederationId("fixture-federation".into()),
             },
-            "operator@example.com",
+            &lightning("operator@example.com"),
         )
         .await
         .unwrap();

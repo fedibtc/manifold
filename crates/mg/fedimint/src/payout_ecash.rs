@@ -39,6 +39,13 @@ const MINT_V2_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 #[derive(Clone, Eq, PartialEq)]
 pub struct EcashToken(String);
 
+#[cfg(test)]
+impl EcashToken {
+    pub(crate) fn test(token: &str) -> Self {
+        Self(token.to_owned())
+    }
+}
+
 impl std::fmt::Debug for EcashToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EcashToken(<redacted>)")
@@ -430,3 +437,5 @@ fn v2_reclaim_state(state: MintV2ReceiveState) -> EcashPayoutState {
     }
 }
 
+#[cfg(test)]
+mod tests;

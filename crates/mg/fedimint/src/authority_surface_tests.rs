@@ -8,6 +8,7 @@ const VALUE_MOVING_SOURCES: &[(&str, &str)] = &[
     ("payout_store.rs", include_str!("payout_store.rs")),
     ("payout_worker.rs", include_str!("payout_worker.rs")),
     ("payout_native.rs", include_str!("payout_native.rs")),
+    ("payout_ecash.rs", include_str!("payout_ecash.rs")),
     ("payout_observer.rs", include_str!("payout_observer.rs")),
     ("drain_status.rs", include_str!("drain_status.rs")),
     ("core/wallet.rs", include_str!("../../core/src/wallet.rs")),
@@ -51,6 +52,10 @@ fn known_value_moving_client_calls_stay_explicit() {
         ("guardian_fee.rs", ".withdraw(OwnAccount::FeeRemittance", 1),
         ("payout_native.rs", ".send(\n", 1),
         ("payout_native.rs", ".pay_bolt11_invoice(", 1),
+        ("payout_ecash.rs", ".spend_notes_with_selector(", 1),
+        ("payout_ecash.rs", "mint.send(", 1),
+        ("payout_ecash.rs", ".reissue_external_notes(", 1),
+        ("payout_ecash.rs", ".receive(", 1),
         ("payout_observer.rs", ".await_outgoing_payment(", 1),
         (
             "payout_observer.rs",
