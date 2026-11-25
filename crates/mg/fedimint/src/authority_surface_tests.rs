@@ -48,7 +48,7 @@ fn known_value_moving_client_calls_stay_explicit() {
         ("payee.rs", ".reissue_external_notes(", 1),
         ("payee.rs", "mint.receive(", 1),
         ("guardian_fee.rs", ".withdraw_idle_balance(", 1),
-        ("guardian_fee.rs", ".withdraw(AccountType::BtcDepositor", 1),
+        ("guardian_fee.rs", ".withdraw(OwnAccount::FeeRemittance", 1),
         ("payout_native.rs", ".send(\n", 1),
         ("payout_native.rs", ".pay_bolt11_invoice(", 1),
         ("payout_observer.rs", ".await_outgoing_payment(", 1),
