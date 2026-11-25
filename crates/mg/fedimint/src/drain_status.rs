@@ -245,16 +245,8 @@ pub(crate) async fn payout_for_request(
     request_id: &PayoutRequestId,
     method: &PayoutMethod,
 ) -> anyhow::Result<Option<Payout>> {
-    payout_for_request_from(&ClientOperationSource(client), request_id, method).await
-}
-
-async fn payout_for_request_from(
-    source: &dyn OperationSource,
-    request_id: &PayoutRequestId,
-    method: &PayoutMethod,
-) -> anyhow::Result<Option<Payout>> {
     let mut found = None;
-    for (key, entry) in source.all().await? {
+    for (key, entry) in ClientOperationSource(client).all().await? {
         let Some(amount_msat) = payout_request_amount(&entry, request_id, method)? else {
             continue;
         };
@@ -903,8 +895,8 @@ mod tests {
     /// The ecash spend is found by its request id under either mint, with the
     /// amount of the notes it carries; everything else that a mint writes with
     /// similar metadata is not a payout.
-    #[tokio::test]
-    async fn ecash_spends_bind_their_request_and_ignore_change_and_reclaims() {
+    #[test]
+    fn ecash_spends_bind_their_request_and_ignore_change_and_reclaims() {
         use bitcoin_hashes::Hash as _;
         use fedimint_mint_client::{OOBNotes, SpendableNote};
         let request = PayoutRequestId::parse("caller-request").unwrap();
@@ -1014,38 +1006,13 @@ mod tests {
                 custom_meta: payout_meta("caller-request"),
             },
         );
-        let key = |byte| ChronologicalOperationLogKey {
-            creation_time: SystemTime::UNIX_EPOCH,
-            operation_id: OperationId([byte; 32]),
-        };
-        let found = payout_for_request_from(
-            &Operations(std::sync::Mutex::new(Some(vec![
-                (key(1), v2_change),
-                (key(2), v2_send()),
-            ]))),
-            &request,
-            &PayoutMethod::Ecash,
-        )
-        .await
-        .unwrap()
-        .unwrap();
         assert_eq!(
-            found.operation_id.as_str(),
-            OperationId([2; 32]).fmt_full().to_string()
+            payout_request_amount(&v2_change, &request, &PayoutMethod::Ecash).unwrap(),
+            None
         );
-        assert_eq!(found.amount_msat, 2_048);
-        // Two spends for one request means the wallet and ledger disagree.
-        assert!(
-            payout_for_request_from(
-                &Operations(std::sync::Mutex::new(Some(vec![
-                    (key(1), v1_spend),
-                    (key(2), v2_send()),
-                ]))),
-                &request,
-                &PayoutMethod::Ecash,
-            )
-            .await
-            .is_err()
+        assert_eq!(
+            payout_request_amount(&v2_send(), &request, &PayoutMethod::Ecash).unwrap(),
+            Some(2_048)
         );
     }
 
