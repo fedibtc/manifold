@@ -9,7 +9,7 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`4930991f2672ca01b31193ef7a4a656a5823556f` (branch `roboman/v0.13-fedi`). The machine-checked
+`0c14de213a3f95ae9dbd4d629c62a0ee003fc034` (branch `roboman/v0.13-fedi`). The machine-checked
 [`fedimint-metrics-v0.13.1-fedi32-quiescence.tsv`](./fedimint-metrics-v0.13.1-fedi32-quiescence.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or

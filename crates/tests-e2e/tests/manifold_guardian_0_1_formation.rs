@@ -68,7 +68,7 @@ const WALLETV2_PEGIN_BLOCKS: &str = "8";
 /// is built from: `fedimintdMetricVersion` and `fedimintSourceRev` in
 /// `flake.nix`.
 const FEDIMINTD_VERSION: &str = "0.13.1";
-const FEDIMINTD_SOURCE_REV: &str = "4930991f2672ca01b31193ef7a4a656a5823556f";
+const FEDIMINTD_SOURCE_REV: &str = "0c14de213a3f95ae9dbd4d629c62a0ee003fc034";
 const REPLAY_WALLET_DIR_ENV: &str = "MG_E2E_REPLAY_WALLET_DIR";
 const GATEWAY_CLI_BIN_ENV: &str = "FLIP_E2E_GATEWAY_CLI_BIN";
 /// fa-cli's local-E2E routes from advertised MG endpoint ids to loopback
