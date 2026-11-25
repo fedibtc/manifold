@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795180262,
-        "narHash": "sha256-0XXd5dmqgTtVQLcmJZ4o3YeFZc6haipBU5WZFaw2mHo=",
+        "lastModified": 1795614567,
+        "narHash": "sha256-5JPAT/pLahoeM0LesA3q0mfUgWLSwtC79c5vTkDCKXY=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "15671ec113a28273ccfca84c549a9dcfd03eb67d",
+        "rev": "028ed2351a4f154fc413a7a46aca89bcf776019d",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi30",
+        "ref": "agent/rocksdb-btrfs-nocow",
         "repo": "fedimint",
         "type": "github"
       }

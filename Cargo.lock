@@ -3623,6 +3623,7 @@ dependencies = [
  "fedimint-db-locked",
  "fedimint-logging",
  "futures",
+ "libc",
  "rocksdb",
  "tokio",
  "tracing",

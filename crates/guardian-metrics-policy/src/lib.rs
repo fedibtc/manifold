@@ -297,16 +297,17 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv")
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            if fields.next()? != "metric" {
-                return None;
-            }
-            Some((fields.next()?, fields.next()?))
-        })
-        .collect::<BTreeSet<_>>();
+    let manifest =
+        include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi30-btrfs-nocow.tsv")
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                if fields.next()? != "metric" {
+                    return None;
+                }
+                Some((fields.next()?, fields.next()?))
+            })
+            .collect::<BTreeSet<_>>();
     let policy_admitted = DEFAULT_ADMITTED_SOURCE_FAMILIES
         .iter()
         .map(|family| ("admit", *family))
