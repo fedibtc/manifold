@@ -17,9 +17,10 @@ use fedi_decentralized_nostr::mg::{AdvertisedUptime, Permille, PermilleOutOfRang
 use fedi_decentralized_service_manifold_guardian::{SEAT_READINESS_EVENT, SeatId};
 use tokio::sync::watch;
 
+use crate::db::ReadinessPassDbInput;
 use crate::fleet::Fleet;
 use crate::host_pressure::{HostPressure, PressureSample, PressureState, PressureTotals};
-use crate::ordering_latency::{self, MAX_ORDERING_LATENCY_MS, OrderingTotals, SeatBaselines};
+use crate::ordering_latency::{OrderingTotals, SeatBaselines};
 
 /// One uptime slot: the daemon records one per readiness run, and runs at
 /// least once per slot while it is up.
@@ -425,25 +426,15 @@ pub async fn run(
     let mut warned_pressure = false;
     let mut seat_baselines = SeatBaselines::default();
     loop {
-        let mut report = probe.probe().await;
+        let report = probe.probe().await;
         // Recording this slot also accounts for every slot since the last
         // record, such as a restart's downtime.
         let recorded_at = clock();
-        let recorded = match fleet
-            .record_uptime_slot(recorded_at, report.prerequisites_passed())
-            .await
-        {
-            Ok(scores) => Some(scores),
-            Err(error) => {
-                tracing::warn!(%error, "failed to record an uptime slot");
-                None
-            }
-        };
-        let scores = recorded.unwrap_or(UptimeScores {
-            day: 0.0,
-            week: 0.0,
-            month: 0.0,
-        });
+        let slot = recorded_at
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_secs()
+            / UPTIME_SLOT_SECS;
         let reading = read_pressure.as_ref().map(|read| match read() {
             Ok(totals) => {
                 warned_pressure = false;
@@ -460,6 +451,13 @@ pub async fn run(
                 None
             }
         });
+        let ordering_latency_sample = if let Some(source) = ordering_latency.as_mut() {
+            let readings = source.read().await;
+            let median = seat_baselines.interval_median(&readings);
+            (!readings.is_empty()).then_some(median)
+        } else {
+            None
+        };
         let (min, version, max_pressure) = {
             let policy = feature_policy.borrow_and_update();
             let policy = policy.as_ref();
@@ -476,53 +474,19 @@ pub async fn run(
                 })),
             )
         };
-        report.version = version;
-        if let Some(reading) = reading {
-            let recorded = fleet
-                .record_host_pressure(reading)
-                .await
-                .inspect_err(|error| {
-                    tracing::warn!(%error, "failed to record the pressure reading");
-                });
-            let (pressure, host_pressure) =
-                pressure_outcome(recorded, reading.is_some(), max_pressure);
-            report.pressure = pressure;
-            report.host_pressure = host_pressure;
-            report.max_host_pressure = Some(max_pressure);
-        } else {
-            report.pressure = ReadinessOutcome::NotApplicable;
-        }
-        if let Some(source) = ordering_latency.as_mut() {
-            let readings = source.read().await;
-            let median = seat_baselines.interval_median(&readings);
-            let recorded = if readings.is_empty() {
-                None
-            } else {
-                Some(
-                    fleet
-                        .record_ordering_latency(recorded_at, median)
-                        .await
-                        .inspect_err(|error| {
-                            tracing::warn!(%error, "failed to record the ordering latency");
-                        }),
-                )
-            };
-            let applies = recorded.is_some();
-            let (outcome, average) = ordering_latency::outcome(recorded);
-            report.ordering_latency = outcome;
-            report.ordering_latency_6h_ms = average;
-            report.max_ordering_latency_6h_ms = applies.then_some(MAX_ORDERING_LATENCY_MS);
-        } else {
-            report.ordering_latency = ReadinessOutcome::NotApplicable;
-        }
-        report.uptime = scores.outcome(min);
-        // The operator sees no figures rather than zeros it cannot trust.
-        report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
+        let (report, scores) = fleet
+            .record_readiness_pass(ReadinessPassDbInput {
+                report,
+                recorded_at,
+                slot,
+                min_uptime: min,
+                version,
+                pressure: reading.map(|reading| (reading, max_pressure)),
+                ordering_latency: ordering_latency_sample,
+            })
+            .await;
         let ready = report.ready();
         journal_readiness(&report, scores, min);
-        if let Err(error) = fleet.set_seat_readiness(report).await {
-            tracing::warn!(%error, "failed to apply the seat readiness verdict");
-        }
         let wait = if ready {
             until_slot_after(recorded_at, clock())
         } else {

@@ -3343,6 +3343,118 @@ async fn decommission_retains_the_final_guardian_data_directory() {
     fleet.shutdown().await;
 }
 
+/// Coalesced readiness pass updates uptime, host pressure, ordering latency,
+/// and the `ready_for_new_seats` verdict in one transaction, rotating the
+/// offer epoch only when the verdict changes and surviving restarts.
+#[tokio::test]
+async fn coalesced_readiness_pass_commits_all_metrics_and_verdict_atomically() {
+    use crate::db::ReadinessPassDbInput;
+    use crate::host_pressure::{HostPressure, PressureSample};
+    use fedi_decentralized_domain::{MaxPressurePercent, MinUptimePercent};
+
+    let temp = TempDir::new().unwrap();
+    let cfg = config(&temp, 2, 31_265).await;
+    let fleet = Arc::new(open_fleet(cfg.clone(), Arc::new(NoWallet)).await.unwrap());
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+
+    let slot_base = 3_000_000u64;
+    let at_slot = |offset: u64| {
+        std::time::UNIX_EPOCH + Duration::from_secs((slot_base + offset) * UPTIME_SLOT_SECS)
+    };
+    let origin = at_slot(0) - Duration::from_secs(25 * 60 * 60);
+    // Seed one prior pressure reading and one prior ordering latency reading so
+    // the next coalesced pass produces real averages for both checks.
+    seed_pressure(&fleet, 5, origin, at_slot(1)).await;
+    fleet
+        .record_ordering_latency(at_slot(0), None)
+        .await
+        .unwrap();
+
+    let max_pressure = HostPressure::from(MaxPressurePercent::default());
+    let epoch_before_ready = fleet.db.offer_epoch().await.unwrap();
+
+    // Pass 1: transitions ready_for_new_seats false -> true, rotating offer_epoch
+    // and waking advertisement publication.
+    let (report, scores) = fleet
+        .record_readiness_pass(ReadinessPassDbInput {
+            report: readiness(true),
+            recorded_at: at_slot(1),
+            slot: slot_base + 1,
+            min_uptime: MinUptimePercent::default(),
+            version: ReadinessOutcome::Pass,
+            pressure: Some((
+                Some(PressureSample {
+                    at: at_slot(1),
+                    totals: pressure_totals(5, origin, at_slot(1)),
+                }),
+                max_pressure,
+            )),
+            ordering_latency: Some(Some(1.5)),
+        })
+        .await;
+    assert!(report.ready(), "{report:?}");
+    assert_eq!(report.pressure, ReadinessOutcome::Pass);
+    assert_eq!(report.ordering_latency, ReadinessOutcome::Pass);
+    assert_eq!(report.ordering_latency_6h_ms, Some(1_500));
+    assert_eq!(report.uptime, ReadinessOutcome::Pass);
+    assert_eq!(fleet.seat_readiness(), Some(report));
+    assert!(fleet.ready_for_new_seats().await);
+    assert_eq!(fleet.uptime().await.unwrap(), scores);
+    let epoch_after_ready = fleet.db.offer_epoch().await.unwrap();
+    assert_ne!(
+        epoch_after_ready, epoch_before_ready,
+        "transitioning readiness must rotate offer_epoch"
+    );
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("readiness transition wakes advertisement publication");
+
+    // Pass 2: updates uptime, pressure, and ordering latency while keeping
+    // ready_for_new_seats == true. Offer epoch must stay unchanged.
+    let (report2, scores2) = fleet
+        .record_readiness_pass(ReadinessPassDbInput {
+            report: readiness(true),
+            recorded_at: at_slot(2),
+            slot: slot_base + 2,
+            min_uptime: MinUptimePercent::default(),
+            version: ReadinessOutcome::Pass,
+            pressure: Some((
+                Some(PressureSample {
+                    at: at_slot(2),
+                    totals: pressure_totals(5, origin, at_slot(2)),
+                }),
+                max_pressure,
+            )),
+            ordering_latency: Some(Some(2.0)),
+        })
+        .await;
+    assert!(report2.ready());
+    assert!(scores2.day > scores.day);
+    assert!(report2.ordering_latency_6h_ms.unwrap() > 1_500);
+    assert_eq!(
+        fleet.db.offer_epoch().await.unwrap(),
+        epoch_after_ready,
+        "updating metrics without changing readiness verdict must not rotate offer_epoch"
+    );
+
+    // Restart and verify all coalesced state persisted durably.
+    fleet.shutdown().await;
+    drop(host);
+    drop(fleet);
+    let reopened = open_fleet(cfg, Arc::new(NoWallet)).await.unwrap();
+    assert!(reopened.ready_for_new_seats().await);
+    assert_eq!(reopened.uptime().await.unwrap(), scores2);
+    assert_eq!(reopened.db.offer_epoch().await.unwrap(), epoch_after_ready);
+    reopened.shutdown().await;
+}
+
 #[tokio::test]
 async fn formed_watchdog_tracks_health_without_refetching_the_durable_invite() {
     let temp = TempDir::new().unwrap();

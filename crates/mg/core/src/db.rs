@@ -27,12 +27,17 @@ use thiserror::Error;
 
 use crate::cpu_capacity::CpuCapacity;
 use crate::host_pressure::{
-    AverageWeights, PressureAverages, PressureSample, PressureState, PressureTotals,
+    AverageWeights, HostPressure, PressureAverages, PressureSample, PressureState, PressureTotals,
     ResourceAverages,
 };
 use crate::identity::RootMnemonic;
-use crate::ordering_latency::{OrderingLatencyAverage, OrderingLatencyState};
-use crate::seat_readiness::{Uptime, UptimeScores};
+use crate::ordering_latency::{
+    MAX_ORDERING_LATENCY_MS, OrderingLatencyAverage, OrderingLatencyState,
+};
+use crate::seat_readiness::{
+    ReadinessOutcome, ReadinessReport, Uptime, UptimeScores, pressure_outcome,
+};
+use fedi_decentralized_domain::MinUptimePercent;
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
 pub(crate) const IDENTITY_ID: i64 = 1;
@@ -539,80 +544,9 @@ impl Db {
         first_port_base: crate::facts::PortBase,
     ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
-        let ready: bool =
-            sqlx::query_scalar("SELECT ready_for_new_seats FROM offer_state WHERE id = 1")
-                .fetch_one(&mut *tx)
-                .await?;
-        let before = SeatsConfig {
-            limits: SeatLimits::read(&mut tx).await?,
-            ready_for_new_seats: ready,
-        };
-        let after = before.with(update);
-        let (active, next_no): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
-             COALESCE(MAX(s.seat_no) + 1, 0) \
-             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
-             LEFT JOIN seat_transfer_out t USING (quote_id)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if let Some(Some(requested)) = update.max_seats {
-            let active = u32::try_from(active).unwrap_or(u32::MAX);
-            if requested < active {
-                return Err(DbError::SeatLimitBelowActive { requested, active });
-            }
-        }
-        if after == before {
-            tx.commit().await?;
-            return Ok(false);
-        }
-        let slots = |config: &SeatsConfig| {
-            available_slots(
-                config.limits.max_seats_total(),
-                first_port_base,
-                active,
-                next_no,
-            )
-        };
-        // The operator's limits at the figure in force before the write, so a
-        // published-figure change falls under the runtime rule below.
-        let per_seat = before.limits.policy_seat_monthly_data_gb;
-        let operator_changed = after.limits.operator(per_seat) != before.limits.operator(per_seat);
-        let rotate = operator_changed
-            || after.ready_for_new_seats != before.ready_for_new_seats
-            || (slots(&before) > 0 && slots(&after) == 0);
-        let limits = after.limits;
-        sqlx::query(
-            "UPDATE offer_state SET max_seats = ?, memory_max_seats = ?, policy_max_seats = ?, \
-             cpu_max_seats = ?, disk_max_seats = ?, monthly_data_budget = ?, \
-             policy_seat_monthly_data_gb = ?, ready_for_new_seats = ? WHERE id = 1",
-        )
-        .bind(limits.max_seats.map(i64::from))
-        .bind(i64::from(limits.memory_max_seats))
-        .bind(i64::from(limits.policy_max_seats))
-        .bind(limits.cpu_max_seats.map(i64::from))
-        .bind(limits.disk_max_seats.map(i64::from))
-        .bind(limits.monthly_data_budget.to_string())
-        .bind(i64::from(limits.policy_seat_monthly_data_gb.get()))
-        .bind(after.ready_for_new_seats)
-        .execute(&mut *tx)
-        .await?;
-        if operator_changed {
-            sqlx::query("UPDATE offer_state SET updated_at_ms = ? WHERE id = 1")
-                .bind(now_ms())
-                .execute(&mut *tx)
-                .await?;
-        }
-        if rotate {
-            // A CSPRNG draw prevents a refused epoch from recurring after a
-            // restore; do not replace it with a derived or sequential value.
-            sqlx::query("UPDATE offer_state SET offer_epoch = ? WHERE id = 1")
-                .bind(fresh_offer_epoch().as_bytes().as_slice())
-                .execute(&mut *tx)
-                .await?;
-        }
+        let changed = update_seats_config_tx(&mut tx, update, first_port_base).await?;
         tx.commit().await?;
-        Ok(true)
+        Ok(changed)
     }
 
     #[cfg(test)]
@@ -789,23 +723,7 @@ impl Db {
         up: bool,
     ) -> Result<Option<Uptime>, DbError> {
         let mut tx = self.begin_write().await?;
-        let previous = uptime_row(&mut tx).await?;
-        let next = Uptime::record(previous, slot, up);
-        if let Some(next) = next
-            && Some(next) != previous
-        {
-            sqlx::query(
-                "INSERT INTO uptime (id, day, week, month, slot) VALUES (1, ?, ?, ?, ?) \
-                 ON CONFLICT (id) DO UPDATE SET day = excluded.day, week = excluded.week, \
-                 month = excluded.month, slot = excluded.slot",
-            )
-            .bind(next.scores.day)
-            .bind(next.scores.week)
-            .bind(next.scores.month)
-            .bind(i64::try_from(next.slot).unwrap_or(i64::MAX))
-            .execute(&mut *tx)
-            .await?;
-        }
+        let next = record_uptime_slot_tx(&mut tx, slot, up).await?;
         tx.commit().await?;
         Ok(next)
     }
@@ -855,49 +773,9 @@ impl Db {
         reading: Option<PressureSample>,
     ) -> Result<Option<PressureState>, DbError> {
         let mut tx = self.begin_write().await?;
-        let previous = host_pressure_row(&mut tx).await?;
-        let Some(reading) = reading else {
-            return Ok(previous);
-        };
-        let next = PressureState::record(previous, reading);
-        let millis = i64::try_from(
-            next.last
-                .at
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_millis(),
-        )
-        .unwrap_or(i64::MAX);
-        let averages = next.averages;
-        sqlx::query(
-            "INSERT INTO host_pressure \
-             (id, sampled_at_ms, cpu_some_us, io_some_us, memory_some_us, cpu_6h, cpu_3_5d, \
-             io_6h, io_3_5d, memory_6h, memory_3_5d, weight_6h, weight_3_5d) \
-             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
-             cpu_some_us = excluded.cpu_some_us, io_some_us = excluded.io_some_us, \
-             memory_some_us = excluded.memory_some_us, \
-             cpu_6h = excluded.cpu_6h, cpu_3_5d = excluded.cpu_3_5d, \
-             io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d, \
-             memory_6h = excluded.memory_6h, memory_3_5d = excluded.memory_3_5d, \
-             weight_6h = excluded.weight_6h, weight_3_5d = excluded.weight_3_5d",
-        )
-        .bind(millis)
-        .bind(i64::try_from(next.last.totals.cpu_us).unwrap_or(i64::MAX))
-        .bind(i64::try_from(next.last.totals.io_us).unwrap_or(i64::MAX))
-        .bind(i64::try_from(next.last.totals.memory_us).unwrap_or(i64::MAX))
-        .bind(averages.map(|averages| averages.cpu.six_hours))
-        .bind(averages.map(|averages| averages.cpu.three_and_a_half_days))
-        .bind(averages.map(|averages| averages.io.six_hours))
-        .bind(averages.map(|averages| averages.io.three_and_a_half_days))
-        .bind(averages.map(|averages| averages.memory.six_hours))
-        .bind(averages.map(|averages| averages.memory.three_and_a_half_days))
-        .bind(averages.map(|averages| averages.weights.six_hours))
-        .bind(averages.map(|averages| averages.weights.three_and_a_half_days))
-        .execute(&mut *tx)
-        .await?;
+        let next = record_host_pressure_tx(&mut tx, reading).await?;
         tx.commit().await?;
-        Ok(Some(next))
+        Ok(next)
     }
 
     /// Account for a run that read its running seats at `at`, with the median
@@ -909,43 +787,62 @@ impl Db {
         median_secs: Option<f64>,
     ) -> Result<OrderingLatencyState, DbError> {
         let mut tx = self.begin_write().await?;
-        let row: Option<(i64, Option<f64>, Option<f64>)> = sqlx::query_as(
-            "SELECT sampled_at_ms, average_6h_secs, weight_6h FROM ordering_latency WHERE id = 1",
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let previous = row.map(|(at, average, weight)| OrderingLatencyState {
-            sampled_at: from_millis(at),
-            average: match (average, weight) {
-                (Some(six_hours_secs), Some(weight)) => Some(OrderingLatencyAverage {
-                    six_hours_secs,
-                    weight,
-                }),
-                (None, None) => None,
-                _ => unreachable!("average and weight or neither by schema CHECK"),
-            },
-        });
-        let next = OrderingLatencyState::record(previous, at, median_secs);
-        let millis = i64::try_from(
-            next.sampled_at
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_millis(),
-        )
-        .unwrap_or(i64::MAX);
-        sqlx::query(
-            "INSERT INTO ordering_latency (id, sampled_at_ms, average_6h_secs, weight_6h) \
-             VALUES (1, ?, ?, ?) \
-             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
-             average_6h_secs = excluded.average_6h_secs, weight_6h = excluded.weight_6h",
-        )
-        .bind(millis)
-        .bind(next.average.map(|average| average.six_hours_secs))
-        .bind(next.average.map(|average| average.weight))
-        .execute(&mut *tx)
-        .await?;
+        let next = record_ordering_latency_tx(&mut tx, at, median_secs).await?;
         tx.commit().await?;
         Ok(next)
+    }
+
+    /// Coalesce every durable update of one periodic readiness pass — uptime
+    /// slot, optional host pressure sample, optional ordering latency sample,
+    /// and the `ready_for_new_seats` verdict (with offer-epoch rotation on
+    /// change) — into a single `BEGIN IMMEDIATE` write transaction.
+    pub(crate) async fn record_readiness_pass(
+        &self,
+        input: ReadinessPassDbInput,
+        first_port_base: crate::facts::PortBase,
+    ) -> Result<ReadinessPassDbOutcome, DbError> {
+        let mut tx = self.begin_write().await?;
+        let mut report = input.report;
+        let uptime =
+            record_uptime_slot_tx(&mut tx, input.slot, report.prerequisites_passed()).await?;
+        let scores = uptime.map_or(UptimeScores::START, |uptime| uptime.scores);
+        report.version = input.version;
+        if let Some((reading, max_pressure)) = input.pressure {
+            let state = record_host_pressure_tx(&mut tx, reading).await?;
+            let (pressure, host_pressure) =
+                pressure_outcome(Ok(state), reading.is_some(), max_pressure);
+            report.pressure = pressure;
+            report.host_pressure = host_pressure;
+            report.max_host_pressure = Some(max_pressure);
+        } else {
+            report.pressure = ReadinessOutcome::NotApplicable;
+        }
+        if let Some(median_secs) = input.ordering_latency {
+            let state = record_ordering_latency_tx(&mut tx, input.recorded_at, median_secs).await?;
+            let (outcome, average) = crate::ordering_latency::outcome(Some(Ok(state)));
+            report.ordering_latency = outcome;
+            report.ordering_latency_6h_ms = average;
+            report.max_ordering_latency_6h_ms = Some(MAX_ORDERING_LATENCY_MS);
+        } else {
+            report.ordering_latency = ReadinessOutcome::NotApplicable;
+        }
+        report.uptime = scores.outcome(input.min_uptime);
+        report.uptime_comparison = Some(scores.comparison(input.min_uptime));
+        let verdict_changed = update_seats_config_tx(
+            &mut tx,
+            SeatsConfigUpdate {
+                ready_for_new_seats: Some(report.ready()),
+                ..SeatsConfigUpdate::default()
+            },
+            first_port_base,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(ReadinessPassDbOutcome {
+            report,
+            scores,
+            verdict_changed,
+        })
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
@@ -955,6 +852,225 @@ impl Db {
                 .await?;
         parse_offer_epoch(epoch)
     }
+}
+
+/// Inputs for one coalesced periodic readiness database transaction.
+#[derive(Clone, Copy)]
+pub(crate) struct ReadinessPassDbInput {
+    pub(crate) report: ReadinessReport,
+    pub(crate) recorded_at: SystemTime,
+    pub(crate) slot: u64,
+    pub(crate) min_uptime: MinUptimePercent,
+    pub(crate) version: ReadinessOutcome,
+    /// `None` when the pressure check does not apply; `Some((reading, max))`
+    /// when it does (`reading == None` means the cgroup counters could not be
+    /// read).
+    pub(crate) pressure: Option<(Option<PressureSample>, HostPressure)>,
+    /// `None` when ordering latency does not apply or no seat is running;
+    /// `Some(median_secs)` when running seats were read.
+    pub(crate) ordering_latency: Option<Option<f64>>,
+}
+
+/// Committed result of [`Db::record_readiness_pass`].
+pub(crate) struct ReadinessPassDbOutcome {
+    pub(crate) report: ReadinessReport,
+    pub(crate) scores: UptimeScores,
+    pub(crate) verdict_changed: bool,
+}
+
+async fn update_seats_config_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    update: SeatsConfigUpdate,
+    first_port_base: crate::facts::PortBase,
+) -> Result<bool, DbError> {
+    let ready: bool =
+        sqlx::query_scalar("SELECT ready_for_new_seats FROM offer_state WHERE id = 1")
+            .fetch_one(&mut **tx)
+            .await?;
+    let before = SeatsConfig {
+        limits: SeatLimits::read(tx).await?,
+        ready_for_new_seats: ready,
+    };
+    let after = before.with(update);
+    let (active, next_no): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
+         COALESCE(MAX(s.seat_no) + 1, 0) \
+         FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+         LEFT JOIN seat_transfer_out t USING (quote_id)",
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if let Some(Some(requested)) = update.max_seats {
+        let active = u32::try_from(active).unwrap_or(u32::MAX);
+        if requested < active {
+            return Err(DbError::SeatLimitBelowActive { requested, active });
+        }
+    }
+    if after == before {
+        return Ok(false);
+    }
+    let slots = |config: &SeatsConfig| {
+        available_slots(
+            config.limits.max_seats_total(),
+            first_port_base,
+            active,
+            next_no,
+        )
+    };
+    // The operator's limits at the figure in force before the write, so a
+    // published-figure change falls under the runtime rule below.
+    let per_seat = before.limits.policy_seat_monthly_data_gb;
+    let operator_changed = after.limits.operator(per_seat) != before.limits.operator(per_seat);
+    let rotate = operator_changed
+        || after.ready_for_new_seats != before.ready_for_new_seats
+        || (slots(&before) > 0 && slots(&after) == 0);
+    let limits = after.limits;
+    sqlx::query(
+        "UPDATE offer_state SET max_seats = ?, memory_max_seats = ?, policy_max_seats = ?, \
+         cpu_max_seats = ?, disk_max_seats = ?, monthly_data_budget = ?, \
+         policy_seat_monthly_data_gb = ?, ready_for_new_seats = ? WHERE id = 1",
+    )
+    .bind(limits.max_seats.map(i64::from))
+    .bind(i64::from(limits.memory_max_seats))
+    .bind(i64::from(limits.policy_max_seats))
+    .bind(limits.cpu_max_seats.map(i64::from))
+    .bind(limits.disk_max_seats.map(i64::from))
+    .bind(limits.monthly_data_budget.to_string())
+    .bind(i64::from(limits.policy_seat_monthly_data_gb.get()))
+    .bind(after.ready_for_new_seats)
+    .execute(&mut **tx)
+    .await?;
+    if operator_changed {
+        sqlx::query("UPDATE offer_state SET updated_at_ms = ? WHERE id = 1")
+            .bind(now_ms())
+            .execute(&mut **tx)
+            .await?;
+    }
+    if rotate {
+        // A CSPRNG draw prevents a refused epoch from recurring after a
+        // restore; do not replace it with a derived or sequential value.
+        sqlx::query("UPDATE offer_state SET offer_epoch = ? WHERE id = 1")
+            .bind(fresh_offer_epoch().as_bytes().as_slice())
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(true)
+}
+
+async fn record_uptime_slot_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    slot: u64,
+    up: bool,
+) -> Result<Option<Uptime>, DbError> {
+    let previous = uptime_row(tx).await?;
+    let next = Uptime::record(previous, slot, up);
+    if let Some(next) = next
+        && Some(next) != previous
+    {
+        sqlx::query(
+            "INSERT INTO uptime (id, day, week, month, slot) VALUES (1, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET day = excluded.day, week = excluded.week, \
+             month = excluded.month, slot = excluded.slot",
+        )
+        .bind(next.scores.day)
+        .bind(next.scores.week)
+        .bind(next.scores.month)
+        .bind(i64::try_from(next.slot).unwrap_or(i64::MAX))
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(next)
+}
+
+async fn record_host_pressure_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    reading: Option<PressureSample>,
+) -> Result<Option<PressureState>, DbError> {
+    let previous = host_pressure_row(tx).await?;
+    let Some(reading) = reading else {
+        return Ok(previous);
+    };
+    let next = PressureState::record(previous, reading);
+    let millis = i64::try_from(
+        next.last
+            .at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+    let averages = next.averages;
+    sqlx::query(
+        "INSERT INTO host_pressure \
+         (id, sampled_at_ms, cpu_some_us, io_some_us, memory_some_us, cpu_6h, cpu_3_5d, \
+         io_6h, io_3_5d, memory_6h, memory_3_5d, weight_6h, weight_3_5d) \
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+         cpu_some_us = excluded.cpu_some_us, io_some_us = excluded.io_some_us, \
+         memory_some_us = excluded.memory_some_us, \
+         cpu_6h = excluded.cpu_6h, cpu_3_5d = excluded.cpu_3_5d, \
+         io_6h = excluded.io_6h, io_3_5d = excluded.io_3_5d, \
+         memory_6h = excluded.memory_6h, memory_3_5d = excluded.memory_3_5d, \
+         weight_6h = excluded.weight_6h, weight_3_5d = excluded.weight_3_5d",
+    )
+    .bind(millis)
+    .bind(i64::try_from(next.last.totals.cpu_us).unwrap_or(i64::MAX))
+    .bind(i64::try_from(next.last.totals.io_us).unwrap_or(i64::MAX))
+    .bind(i64::try_from(next.last.totals.memory_us).unwrap_or(i64::MAX))
+    .bind(averages.map(|averages| averages.cpu.six_hours))
+    .bind(averages.map(|averages| averages.cpu.three_and_a_half_days))
+    .bind(averages.map(|averages| averages.io.six_hours))
+    .bind(averages.map(|averages| averages.io.three_and_a_half_days))
+    .bind(averages.map(|averages| averages.memory.six_hours))
+    .bind(averages.map(|averages| averages.memory.three_and_a_half_days))
+    .bind(averages.map(|averages| averages.weights.six_hours))
+    .bind(averages.map(|averages| averages.weights.three_and_a_half_days))
+    .execute(&mut **tx)
+    .await?;
+    Ok(Some(next))
+}
+
+async fn record_ordering_latency_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    at: SystemTime,
+    median_secs: Option<f64>,
+) -> Result<OrderingLatencyState, DbError> {
+    let row: Option<(i64, Option<f64>, Option<f64>)> = sqlx::query_as(
+        "SELECT sampled_at_ms, average_6h_secs, weight_6h FROM ordering_latency WHERE id = 1",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    let previous = row.map(|(at, average, weight)| OrderingLatencyState {
+        sampled_at: from_millis(at),
+        average: match (average, weight) {
+            (Some(six_hours_secs), Some(weight)) => Some(OrderingLatencyAverage {
+                six_hours_secs,
+                weight,
+            }),
+            (None, None) => None,
+            _ => unreachable!("average and weight or neither by schema CHECK"),
+        },
+    });
+    let next = OrderingLatencyState::record(previous, at, median_secs);
+    let millis = i64::try_from(
+        next.sampled_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+    sqlx::query(
+        "INSERT INTO ordering_latency (id, sampled_at_ms, average_6h_secs, weight_6h) \
+         VALUES (1, ?, ?, ?) \
+         ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+         average_6h_secs = excluded.average_6h_secs, weight_6h = excluded.weight_6h",
+    )
+    .bind(millis)
+    .bind(next.average.map(|average| average.six_hours_secs))
+    .bind(next.average.map(|average| average.weight))
+    .execute(&mut **tx)
+    .await?;
+    Ok(next)
 }
 
 fn from_millis(millis: i64) -> SystemTime {

@@ -38,13 +38,13 @@ use crate::wallet::{ClaimOutcome, EcashClaimWorker, EcashWallet, Msats, Verified
 use crate::backup::BackupSink;
 use crate::backup_worker::BackupWorker;
 use crate::db::{
-    Db, NewPayment, NewSeat, Offer, QuoteSettings, SeatAdmissionResult, SeatRecord,
-    SeatsConfigUpdate,
+    Db, NewPayment, NewSeat, Offer, QuoteSettings, ReadinessPassDbInput, SeatAdmissionResult,
+    SeatRecord, SeatsConfigUpdate,
 };
 use crate::facts::{PortBase, SeatPorts};
 use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
-use crate::ordering_latency::OrderingLatencyState;
+use crate::ordering_latency::{MAX_ORDERING_LATENCY_MS, OrderingLatencyState};
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
 use crate::seat::{
@@ -52,7 +52,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
+use crate::seat_readiness::{ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -897,18 +897,70 @@ impl Fleet {
         if !self.update_seats_config(update).await? {
             return Ok(());
         }
-        if ready {
-            tracing::info!(
-                safe_to_share = true,
-                "readiness checks passed; accepting new seats"
-            );
-        } else {
-            tracing::warn!(
-                safe_to_share = true,
-                "readiness checks failed; not accepting new seats"
-            );
-        }
+        log_readiness_verdict_change(ready);
         Ok(())
+    }
+
+    /// Record one periodic readiness pass (uptime slot, optional host pressure,
+    /// optional ordering latency, and the `ready_for_new_seats` verdict) in a
+    /// single SQLite write transaction, then publish the latest report and wake
+    /// notifications.
+    pub(crate) async fn record_readiness_pass(
+        &self,
+        input: ReadinessPassDbInput,
+    ) -> (ReadinessReport, UptimeScores) {
+        match self
+            .db
+            .record_readiness_pass(input, self.config.first_port_base)
+            .await
+        {
+            Ok(outcome) => {
+                *self
+                    .seat_readiness
+                    .lock()
+                    .expect("readiness lock is never poisoned") = Some(outcome.report);
+                // A failing check is something to tell the linked phone.
+                self.guardian_link.changed.notify_one();
+                if outcome.verdict_changed {
+                    self.advertisement_changed.notify_one();
+                    log_readiness_verdict_change(outcome.report.ready());
+                }
+                (outcome.report, outcome.scores)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to record readiness pass");
+                let scores = UptimeScores {
+                    day: 0.0,
+                    week: 0.0,
+                    month: 0.0,
+                };
+                let mut report = input.report;
+                report.version = input.version;
+                if let Some((_, max_pressure)) = input.pressure {
+                    report.pressure = ReadinessOutcome::HostPressureUnavailable;
+                    report.host_pressure = None;
+                    report.max_host_pressure = Some(max_pressure);
+                } else {
+                    report.pressure = ReadinessOutcome::NotApplicable;
+                }
+                if input.ordering_latency.is_some() {
+                    report.ordering_latency = ReadinessOutcome::NotApplicable;
+                    report.ordering_latency_6h_ms = None;
+                    report.max_ordering_latency_6h_ms = Some(MAX_ORDERING_LATENCY_MS);
+                } else {
+                    report.ordering_latency = ReadinessOutcome::NotApplicable;
+                }
+                report.uptime = scores.outcome(input.min_uptime);
+                // The operator sees no figures rather than zeros it cannot trust.
+                report.uptime_comparison = None;
+                *self
+                    .seat_readiness
+                    .lock()
+                    .expect("readiness lock is never poisoned") = Some(report);
+                self.guardian_link.changed.notify_one();
+                (report, scores)
+            }
+        }
     }
 
     /// Record the current slot of uptime, up or not, and return the uptime
@@ -1493,6 +1545,20 @@ async fn running_metrics_port(seat: &Seat) -> Option<u16> {
         }
     )
     .then(|| seat.metrics_port())
+}
+
+fn log_readiness_verdict_change(ready: bool) {
+    if ready {
+        tracing::info!(
+            safe_to_share = true,
+            "readiness checks passed; accepting new seats"
+        );
+    } else {
+        tracing::warn!(
+            safe_to_share = true,
+            "readiness checks failed; not accepting new seats"
+        );
+    }
 }
 
 fn attestation_pubkey(identity: &RootMnemonic) -> Pubkey {
