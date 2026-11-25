@@ -1977,10 +1977,13 @@ impl SeatLoop {
     /// dispute material). Only an active loop can execute this command;
     /// repeated calls are answered by the terminal handle without a loop.
     ///
-    /// The seat's on-disk guardian data is retained. Decommission is an
-    /// operator's own decision about capacity, and it must not be the act
-    /// that destroys key shares a federation may still need; removing that
-    /// data stays a separate, deliberate step.
+    /// The seat's final data directory and irreplaceable guardian files
+    /// (`private.json`, `local.json`, `consensus.json`) as well as
+    /// `safe-events/` are retained: decommission is a capacity decision, not
+    /// the act that destroys key shares a federation may still need. Once the
+    /// child has exited, only the rebuildable consensus state subdirectories
+    /// (`database` and `db_checkpoints`) inside the data directory are pruned
+    /// on a best-effort basis to reclaim disk space.
     ///
     /// The durable mark lands before the child stops, so a crash between the
     /// two cannot leave a seat that is running but no longer recorded as
@@ -1991,7 +1994,46 @@ impl SeatLoop {
             .send_modify(|state| state.decommissioned_at_ms = Some(at_ms));
         self.completion_hooks.mark();
         self.stop_child().await?;
+        self.prune_rebuildable_data().await;
         Ok(true)
+    }
+
+    /// Best-effort removal of purely rebuildable `fedimintd` RocksDB
+    /// subdirectories (`database/` and `db_checkpoints/`) after child exit.
+    ///
+    /// Never removes `self.data_dir` itself, irreplaceable guardian config
+    /// files (`private.json`, `local.json`, `consensus.json`), or
+    /// `safe-events/`, and never follows symlinks.
+    async fn prune_rebuildable_data(&self) {
+        for subdir_name in ["database", "db_checkpoints"] {
+            let subdir = self.data_dir.join(subdir_name);
+            let meta = match tokio::fs::symlink_metadata(&subdir).await {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        seat_id = %self.facts.seat_id,
+                        subdir = subdir_name,
+                        %error,
+                        "failed to inspect rebuildable seat directory after decommission"
+                    );
+                    continue;
+                }
+            };
+            if !meta.file_type().is_dir() {
+                continue;
+            }
+            if let Err(error) = tokio::fs::remove_dir_all(&subdir).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(
+                    seat_id = %self.facts.seat_id,
+                    subdir = subdir_name,
+                    %error,
+                    "failed to prune rebuildable seat directory after decommission"
+                );
+            }
+        }
     }
 
     /// `GetInviteCode`: available once the seat's federation is running.

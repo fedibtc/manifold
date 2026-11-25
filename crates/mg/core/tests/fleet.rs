@@ -3343,6 +3343,97 @@ async fn decommission_retains_the_final_guardian_data_directory() {
     fleet.shutdown().await;
 }
 
+/// After child exit is proved, decommission prunes only the rebuildable
+/// consensus state subdirectories (`database/` and `db_checkpoints/`),
+/// leaving the final data directory, irreplaceable guardian config files, and
+/// the seat's `safe-events/` journal intact.
+#[tokio::test]
+async fn decommission_prunes_rebuildable_db_dirs_and_preserves_guardian_files() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 31_255).await;
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 134).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let seat_no = seat.facts().seat_no;
+    let data_dir = seat_data_dir(&config.process, seat_no);
+    let safe_events_dir = crate::seat_process::safe_event_dir(&config.process, seat_no);
+    fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+
+    // Populate irreplaceable config files, safe-events, and rebuildable DB dirs.
+    tokio::fs::write(data_dir.join("private.json"), b"{\"secret\":true}")
+        .await
+        .unwrap();
+    tokio::fs::write(data_dir.join("local.json"), b"{\"local\":true}")
+        .await
+        .unwrap();
+    tokio::fs::write(data_dir.join("consensus.json"), b"{\"consensus\":true}")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(&safe_events_dir).await.unwrap();
+    tokio::fs::write(safe_events_dir.join("events-0.jsonl"), b"{}\n")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(data_dir.join("database"))
+        .await
+        .unwrap();
+    tokio::fs::write(data_dir.join("database").join("000001.sst"), b"rocksdb")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(data_dir.join("db_checkpoints").join("session-1"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        data_dir
+            .join("db_checkpoints")
+            .join("session-1")
+            .join("MANIFEST"),
+        b"checkpoint",
+    )
+    .await
+    .unwrap();
+
+    fleet.decommission_seat(&seat_id).await.unwrap();
+
+    assert!(fleet.seat_by_id(&seat_id).unwrap().is_decommissioned());
+    assert!(data_dir.exists(), "final data directory must stay");
+    assert!(
+        !data_dir.join("database").exists(),
+        "rebuildable database/ must be pruned after decommission"
+    );
+    assert!(
+        !data_dir.join("db_checkpoints").exists(),
+        "rebuildable db_checkpoints/ must be pruned after decommission"
+    );
+    assert_eq!(
+        tokio::fs::read(data_dir.join("private.json"))
+            .await
+            .unwrap(),
+        b"{\"secret\":true}"
+    );
+    assert_eq!(
+        tokio::fs::read(data_dir.join("local.json")).await.unwrap(),
+        b"{\"local\":true}"
+    );
+    assert_eq!(
+        tokio::fs::read(data_dir.join("consensus.json"))
+            .await
+            .unwrap(),
+        b"{\"consensus\":true}"
+    );
+    assert_eq!(
+        tokio::fs::read(safe_events_dir.join("events-0.jsonl"))
+            .await
+            .unwrap(),
+        b"{}\n"
+    );
+
+    fleet.shutdown().await;
+}
+
 /// Coalesced readiness pass updates uptime, host pressure, ordering latency,
 /// and the `ready_for_new_seats` verdict in one transaction, rotating the
 /// offer epoch only when the verdict changes and surviving restarts.

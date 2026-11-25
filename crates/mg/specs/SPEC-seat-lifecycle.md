@@ -170,8 +170,13 @@ terminalizes any resumable callback, then stops the child, releases the
 capacity slot, and closes the seat loop. Recording the mark before stopping
 the child means a crash between the two cannot leave a seat still running
 that is no longer recorded as live. Immutable identity, payment, formed, and
-backup evidence remain for recovery and dispute handling, as does the seat's
-on-disk guardian data; the lifetime port allocation is never reused.
+backup evidence remain for recovery and dispute handling, as do the final
+`seats/{seat_no}/data` directory, its irreplaceable guardian configuration
+(`private.json`, `local.json`, `consensus.json`), and `safe-events/`; the
+lifetime port allocation is never reused. Once child exit is proved,
+decommission prunes only the rebuildable consensus state subdirectories
+(`database/` and `db_checkpoints/`) inside `seats/{seat_no}/data` on a
+best-effort basis to reclaim disk space.
 
 ## Ceremony and health state
 
