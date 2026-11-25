@@ -368,22 +368,60 @@ export interface PayoutJobOperation {
   amount_msat: number;
   capped: DestinationCap | null;
   committed_at_ms: number;
+  // When the operator marked an ecash payout's token redeemed: their word, not
+  // the federation's. Always null for Lightning.
+  confirmed_at_ms: number | null;
 }
-export interface PayoutJob {
+interface PayoutJobBase {
   request_id: string;
   scope: PayoutScope;
-  destination: string;
   operation: PayoutJobOperation | null;
   created_at_ms: number;
 }
-export interface PayoutJobStatusResponse {
-  job: PayoutJob;
+// How a payout leaves: through the Lightning destination it was requested
+// with, or as one bearer ecash token handed to the operator.
+export interface LightningPayoutJob extends PayoutJobBase {
+  method: 'lightning';
+  destination: string;
+}
+export interface EcashPayoutJob extends PayoutJobBase {
+  method: 'ecash';
+}
+export type PayoutJob = LightningPayoutJob | EcashPayoutJob;
+// Where an ecash payout's notes are, as the wallet reads them. `issued`
+// carries the bearer token in a single-payout answer, and `token: null` in a
+// list, so a polled list never holds it. `reclaiming` is a cancel the
+// federation has not settled yet; `already_spent` is a cancel that lost to a
+// redemption. The operator's "redeemed" mark is not a state: it is
+// `confirmed_at_ms` on the job's operation.
+export type EcashPayoutState =
+  | { state: 'issued'; token: string | null }
+  | { state: 'reclaiming' }
+  | { state: 'reclaimed' }
+  | { state: 'already_spent' };
+export interface LightningPayoutStatus {
+  job: LightningPayoutJob;
   payout: WalletOutgoingOperation | null;
 }
+// `ecash` is null while the job has no committed spend.
+export interface EcashPayoutStatus {
+  job: EcashPayoutJob;
+  ecash: EcashPayoutState | null;
+}
+export type PayoutJobStatusResponse = LightningPayoutStatus | EcashPayoutStatus;
+// A sweep answers the job of either method; an ecash token comes from
+// `PayoutStatus`.
 export type SweepPaymentFeesResponse = PayoutJob;
 export type SweepGuardianFeesResponse = PayoutJob;
 export type PayoutStatusResponse = PayoutJobStatusResponse;
 export type AwaitPayoutResponse = PayoutJobStatusResponse;
+// Payouts of both methods, newest first: the 20 newest, plus every older ecash
+// payout still in progress. No item carries a token.
+export interface ListPayoutsResponse {
+  payouts: PayoutJobStatusResponse[];
+}
+export type ConfirmEcashPayoutResponse = EcashPayoutJob;
+export type CancelEcashPayoutResponse = EcashPayoutStatus;
 export interface ListSeatsResponse {
   seats: SeatSummary[];
   // The backup worker's last completed reconciliation pass; null before the
@@ -550,6 +588,9 @@ export interface AdminResponseByName {
   SweepPaymentFees: SweepPaymentFeesResponse;
   PayoutStatus: PayoutStatusResponse;
   AwaitPayout: AwaitPayoutResponse;
+  ListPayouts: ListPayoutsResponse;
+  ConfirmEcashPayout: ConfirmEcashPayoutResponse;
+  CancelEcashPayout: CancelEcashPayoutResponse;
   ListSeats: ListSeatsResponse;
   SeatStatus: SeatStatusResponse;
   DecommissionSeat: DecommissionSeatResponse;
