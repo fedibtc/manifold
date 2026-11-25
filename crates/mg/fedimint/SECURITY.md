@@ -114,6 +114,16 @@ Re-audit this recovery boundary whenever Fedimint changes receive operation-ID
 derivation, metadata shape or persistence, ecash encoding, or `AlreadyReceived`
 semantics.
 
+An ecash payout is the second dependency-owned retention: the pinned clients'
+out-of-band spend writes the spent notes into the spend's operation metadata
+(mint-v1 `SpendOOB.oob_notes`, mint-v2 `Send.ecash`) in the same commit that
+removes them from the wallet. MG keeps no other copy. It reads that metadata
+only for an operation whose request marking binds it to the payout job, to
+return the token to the operator over the admin interface while the payout is
+issued, and to reissue the same notes when the operator cancels. The token type
+redacts itself in `Debug`, has no `Display` or serialization outside the admin
+wire, and never enters tracing, errors, or SQLite.
+
 Outside that dependency-owned metadata, raw OOB tokens exist only while being
 constructed and received or returned directly to the authorized caller. Do not
 log or retain them. Accepted-claim evidence may retain only the public inputs

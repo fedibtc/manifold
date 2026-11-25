@@ -407,11 +407,16 @@ Six kinds of state, six owners:
 - **Wallet-implementation-owned payout jobs**: the `mg-fedimint` payout
   worker operates the shared SQLite ledger containing the caller request ID, immutable
   wallet scope (including the public guardian invite needed after seat
-  decommission), destination snapshot, and the set-once link to a native
-  operation. The schema remains in core's single migration set; no lifecycle
-  transition deletes or retargets a job.
+  decommission), payout method (Lightning with its destination snapshot, or
+  ecash), the set-once link to a native operation, and an ecash job's set-once
+  operator confirmation. The schema remains in core's single migration set; no
+  lifecycle transition deletes or retargets a job.
 - **Fedimint-wallet-owned payout operations**: each wallet database owns the
-  native v1/v2 operation, its state machines, and MG request metadata. MG
+  native v1/v2 operation, its state machines, and MG request metadata. For an
+  ecash payout that operation's metadata is the only copy of the bearer token,
+  and the reclaim a cancel starts is a further operation found by its
+  note-derived id; MG derives every ecash state from these rather than storing
+  it. MG
   reconciles a missing SQLite link by enumerating the immutable stored wallet
   scope. The two databases are separate commits and must be backed up and
   restored as one consistent data root. A mismatched restore is unsupported;

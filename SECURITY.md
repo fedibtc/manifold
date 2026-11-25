@@ -968,7 +968,7 @@ accounts from the environment profile. Never accept a caller-provided fallback
 for the Guardian Verification Fee account.
 
 Each remittance carries an accounting breakdown sealed to the recipient account
-key. Decrypted breakdowns and `WithdrawGuardianFees` tokens are operator-only
+key. Decrypted breakdowns and ecash payout tokens are operator-only
 output: bearer notes and their plaintext must never be logged, put in `Debug`
 output, or persisted outside the client database. A remittance whose breakdown
 fails to decrypt is reported with its amount and an error, never dropped —
