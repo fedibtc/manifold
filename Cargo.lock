@@ -1867,6 +1867,7 @@ dependencies = [
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-liquidity-manager",
+ "fedi-stability-pool-common",
  "hex",
  "iroh-base 0.35.0",
  "libc",
@@ -1878,7 +1879,6 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
- "stability-pool-common",
  "tempfile",
  "tokio",
 ]
@@ -2395,6 +2395,8 @@ dependencies = [
  "fedi-decentralized-service-liquidity-manager",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-client",
+ "fedi-stability-pool-common",
  "fedimint-api-client",
  "fedimint-client",
  "fedimint-client-module",
@@ -2423,8 +2425,6 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
- "stability-pool-client",
- "stability-pool-common",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2452,6 +2452,7 @@ dependencies = [
  "fedi-decentralized-service-liquidity-manager",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-common",
  "fedimint-core",
  "fedimint-derive-secret",
  "futures",
@@ -2464,7 +2465,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "stability-pool-common",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2539,6 +2539,7 @@ name = "fedi-decentralized-domain"
 version = "0.1.20"
 dependencies = [
  "bitcoin",
+ "fedi-stability-pool-common",
  "fedimint-core",
  "hex",
  "nostr",
@@ -2549,7 +2550,6 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
- "stability-pool-common",
  "strum 0.26.3",
  "thiserror 2.0.18",
  "url",
@@ -2604,6 +2604,7 @@ dependencies = [
  "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-liquidity-manager",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-client",
  "fedimint-bip39",
  "fedimint-bitcoind",
  "fedimint-client",
@@ -2638,7 +2639,6 @@ dependencies = [
  "sha2 0.10.9",
  "socket2 0.5.10",
  "sqlx",
- "stability-pool-client",
  "strum 0.26.3",
  "tar",
  "thiserror 2.0.18",
@@ -2656,11 +2656,11 @@ name = "fedi-decentralized-manifold-environment"
 version = "0.1.20"
 dependencies = [
  "bitcoin",
+ "fedi-stability-pool-common",
  "nostr",
  "peerbadge-protocol",
  "peerbadge-schemas",
  "serde_json",
- "stability-pool-common",
  "url",
 ]
 
@@ -2817,6 +2817,7 @@ dependencies = [
  "ciborium",
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-common",
  "hex",
  "iroh 1.4.1",
  "nostr",
@@ -2829,7 +2830,6 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
- "stability-pool-common",
  "strum 0.26.3",
  "thiserror 2.0.18",
  "tokio",
@@ -2868,6 +2868,62 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "fedi-stability-pool-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "clap",
+ "erased-serde",
+ "fedi-stability-pool-common",
+ "fedimint-api-client",
+ "fedimint-client",
+ "fedimint-core",
+ "fedimint-derive-secret",
+ "futures",
+ "rand 0.8.6",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "fedi-stability-pool-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "fedimint-core",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fedi-stability-pool-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "erased-serde",
+ "fedi-stability-pool-common",
+ "fedimint-api-client",
+ "fedimint-core",
+ "fedimint-server-core",
+ "futures",
+ "itertools 0.14.0",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6284,6 +6340,7 @@ dependencies = [
  "fedi-decentralized-push-gateway-types",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-server",
  "fedimint-build",
  "fedimint-core",
  "fedimint-ln-common",
@@ -6311,7 +6368,6 @@ dependencies = [
  "rust-embed",
  "safe-tracing",
  "serde_json",
- "stability-pool-server",
  "tempfile",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
@@ -6354,6 +6410,7 @@ dependencies = [
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-client",
  "fedimint-aead",
  "fedimint-api-client",
  "fedimint-build",
@@ -6388,7 +6445,6 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "sqlx",
- "stability-pool-client",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6409,6 +6465,8 @@ dependencies = [
  "bitcoin_hashes",
  "fedi-decentralized-domain",
  "fedi-decentralized-service-manifold-guardian",
+ "fedi-stability-pool-client",
+ "fedi-stability-pool-common",
  "fedimint-aead",
  "fedimint-api-client",
  "fedimint-client",
@@ -6439,8 +6497,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "stability-pool-client",
- "stability-pool-common",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6456,8 +6512,8 @@ dependencies = [
  "bitcoin",
  "fedi-decentralized-domain",
  "fedi-decentralized-service-manifold-guardian",
+ "fedi-stability-pool-common",
  "nostr-sdk",
- "stability-pool-common",
 ]
 
 [[package]]
@@ -9887,62 +9943,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stability-pool-client"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "clap",
- "erased-serde",
- "fedimint-api-client",
- "fedimint-client",
- "fedimint-core",
- "fedimint-derive-secret",
- "futures",
- "rand 0.8.6",
- "secp256k1 0.29.1",
- "serde",
- "serde_json",
- "stability-pool-common",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
-name = "stability-pool-common"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "bitcoin",
- "fedimint-core",
- "secp256k1 0.29.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "stability-pool-server"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "erased-serde",
- "fedimint-api-client",
- "fedimint-core",
- "fedimint-server-core",
- "futures",
- "itertools 0.14.0",
- "reqwest 0.12.28",
- "serde_json",
- "stability-pool-common",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10224,6 +10224,7 @@ dependencies = [
  "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-stability-pool-common",
  "fedimint-core",
  "fedimint-derive-secret",
  "fedimint-mintv2-client",
@@ -10243,7 +10244,6 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "sqlx",
- "stability-pool-common",
  "tempfile",
  "tokio",
  "tokio-tungstenite",

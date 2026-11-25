@@ -27,7 +27,7 @@ attributing a sibling's deposit to an ambiguous item.
 **L4 (`code` + A2–A3) — success is operation-specific target
 fulfillment.** The production backend passes the saved id to
 `subscribe_deposit_operation`. In the pinned client, `deposit_to_provide`
-submits `DepositToProvide` for `our_account(Provider)` with the passed amount;
+submits `DepositToProvide` for `own_account(OwnAccount::Provider)` with the passed amount;
 its stream emits `Success` only after that transaction is accepted and any
 primary change outputs resolve. Therefore the `Success` prerequisite in L1 is
 independent evidence that this item caused its exact provider deposit.
