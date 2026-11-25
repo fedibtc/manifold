@@ -12,11 +12,11 @@
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi30-quiescence
-producer	fedimint	fedibtc/fedimint	roboman/fedi30-aleph-quiescence	dbec12ff3173b3f5ce64d2ada607c33efa6134fb
+producer	fedimint	fedibtc/fedimint	roboman/fedi30-aleph-quiescence	4d9a21ce9f94bf79c5e2e9647c2668753fd92247
 producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	dbec12ff3173b3f5ce64d2ada607c33efa6134fb
+revision	4d9a21ce9f94bf79c5e2e9647c2668753fd92247
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
@@ -35,6 +35,7 @@ metric	admit	consensus_ordering_latency_seconds	fedimint
 metric	admit	consensus_peer_contribution_session_idx	fedimint
 metric	admit	consensus_session_count	fedimint
 metric	admit	consensus_sessions_completed_total	fedimint
+metric	admit	consensus_transaction_ordering_latency_seconds	fedimint
 metric	admit	consensus_tx_processed_inputs	fedimint
 metric	admit	consensus_tx_processed_outputs	fedimint
 metric	deny	gateway_htlc_handling_duration_seconds	fedimint

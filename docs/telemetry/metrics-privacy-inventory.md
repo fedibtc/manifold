@@ -9,7 +9,7 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`dbec12ff3173b3f5ce64d2ada607c33efa6134fb` (branch `roboman/fedi30-aleph-quiescence`). The machine-checked
+`4d9a21ce9f94bf79c5e2e9647c2668753fd92247` (branch `roboman/fedi30-aleph-quiescence`). The machine-checked
 [`fedimint-metrics-v0.12.0-fedi30-quiescence.tsv`](./fedimint-metrics-v0.12.0-fedi30-quiescence.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
@@ -68,7 +68,7 @@ All names below receive the registry's `fm_` prefix.
 | backups / active-wallet proxy | `backup_counts` | gauge | `timeframe`, restricted to `1d`, `1w`, `1m`, `3m`, `all_time` |
 | backups | `backup_write_size_bytes` | histogram | none; aggregate size distribution |
 | consensus | `consensus_session_count` | gauge | none |
-| consensus | `consensus_tx_processed_inputs`, `consensus_tx_processed_outputs`, `consensus_ordering_latency_seconds` | histogram | none; transaction shape and timing |
+| consensus | `consensus_tx_processed_inputs`, `consensus_tx_processed_outputs`, `consensus_ordering_latency_seconds`, `consensus_transaction_ordering_latency_seconds` | histogram | none; transaction shape and timing |
 | consensus | `consensus_items_processed_total` | counter | `peer_id`, an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimension, not collector-verified config membership |
 | consensus | `consensus_item_processing_duration_seconds` | histogram | `peer_id`, an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimension, not collector-verified config membership |
 | consensus | `consensus_item_processing_module_audit_duration_seconds` | histogram | `module_id` is exactly `65535`; `module_kind` is exactly one of `lnv2`, `meta`, `mintv2`, `walletv2`, `multi_sig_stability_pool` |
