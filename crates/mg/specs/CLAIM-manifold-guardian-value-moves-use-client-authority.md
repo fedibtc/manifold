@@ -3,18 +3,24 @@
 Every value-moving Fedimint request causally started by a production accepted-FA-
 setup-payment claim, guardian-fee collection, or payment- or
 guardian-fee payout is authorized only as an ordinary federation client. This
-includes native Lightning v1/v2 starts, replay, exact-operation observation,
-dependency refund/reclaim state machines, and operations resumed during lazy
-client recovery. None uses the guarded seat's mnemonic-derived `SeatApiAuth`,
+includes native Lightning v1/v2 starts, mint v1/v2 out-of-band ecash spends
+and their reissue reclaims, replay, exact-operation observation, dependency
+refund/reclaim state machines, and operations resumed during lazy client
+recovery. None uses the guarded seat's mnemonic-derived `SeatApiAuth`,
 invokes an authenticated guardian or admin mutation, or directly accesses the
 child database to create, redirect, claim, refund, reclaim, or withdraw value.
 
 The domain includes every production caller of accepted setup-payment claim
 work, `GuardianFeeVault::collect`, and `EcashPayoutWorker` payment and
-guardian sweep/status/await operations, plus every value-moving request reachable
+guardian sweep/status/await operations of either method and ecash payout
+list/confirm/cancel operations, plus every value-moving request reachable
 from them. Read-only local-child discovery and ordinary public client operations
 do not violate the property unless they authorize a later value move with local
 guardian authority.
+
+## Status
+
+Unverified.
 
 ## Assumptions
 

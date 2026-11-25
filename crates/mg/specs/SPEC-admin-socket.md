@@ -204,8 +204,8 @@ the fleet.
 - `PayoutDestination` returns the one LNURL-pay or Lightning Address used for
   all payment and guardian-fee sweeps, or null when none is configured.
   `SetPayoutDestination` replaces or clears it.
-- `SweepPaymentFees` requires a caller-generated `request_id` and a configured
-  payout destination. It uses the
+- `SweepPaymentFees` requires a caller-generated `request_id`, and a Lightning
+  sweep also a configured payout destination. A Lightning sweep uses the
   Fedimint client's native, persisted Lightning
   operation to send as much of that federation's balance as can economically
   fund the recipient amount, gateway fee, federation Lightning output fee,
@@ -223,8 +223,9 @@ the fleet.
   Payouts and drain estimates use the same selection rules. When no eligible route
   exists, selection returns an unavailable result, not a drained wallet.
   The response is a durable job carrying the request, its immutable
-  payment-federation scope and destination snapshot, and the committed native
-  operation id and recipient amount, not bearer ecash.
+  payment-federation scope, `method: "lightning"` with the destination
+  snapshot, and the committed native operation id and recipient amount, not
+  bearer ecash.
 
   Before native start, MG inserts the job keyed by `request_id`. Reusing that
   id with another scope fails. Reusing it in the same scope returns the same job
@@ -333,7 +334,8 @@ the fleet.
   failed phase, whether that phase itself produced a durable operation ID, and an
   operator-safe error. A failure remains an Admin error only when no durable
   operation exists and no earlier progress was confirmed.
-- `SweepGuardianFees` requires a caller-generated `request_id` and sends as much
+- `SweepGuardianFees` requires a caller-generated `request_id` and takes the
+  same `method`. A Lightning sweep sends as much
   already-collected ecash as is economically
   sweepable to the same global payout destination, using the same automatic
   gateway selection as `SweepPaymentFees`. Collection remains a separate explicit
@@ -344,6 +346,49 @@ the fleet.
   `GuardianFees.wallet` exposes the same drain projection for that seat's
   separate guardian-client scope; stability-pool staged, locked, and idle
   balances remain separate fields and are not ordinary ecash.
+- Both sweeps take an optional `method`: `lightning`, the default and what a
+  request without the field means, or `ecash`. An ecash sweep needs no payout
+  destination and spends every note the scope's wallet holds into one bearer
+  ecash token with the federation invite, through the pinned client's own
+  out-of-band spend (mint v1 or mint v2, whichever is the wallet's primary
+  module). It shares the Lightning sweep's `payout_jobs` ledger, request-id
+  identity, wallet-scope fence, and crash reconciliation: a `request_id` stays
+  bound to its first scope and its first method, and reusing it with the
+  other method fails rather than starting a second payout. Its response is
+  the job, as for a Lightning sweep, carrying `method: "ecash"` and no
+  destination; the token is read with `PayoutStatus`. The token is never in
+  SQLite: the spend's request-marked operation metadata in the protected
+  Fedimint database holds it, and every ecash answer rereads it from there.
+  The answers to `PayoutStatus` and `AwaitPayout` for an ecash job are
+  `{job, ecash}`: `ecash` is null before the
+  spend commits, then the wallet's state of the notes: `issued` with the
+  token, `reclaiming`, `reclaimed`, or `already_spent`. Only `issued` carries
+  the token, and the admin socket is the only place it leaves the wallet.
+  `ListPayouts` takes no arguments and returns jobs of both methods, newest
+  first, in the `PayoutStatus` shape: the 20 newest jobs (a daemon constant,
+  because every listed job opens its wallet to read its state) plus every
+  older unmarked ecash job whose state is `issued` or `reclaiming`, so newer
+  payouts never push an issued token out of the list. A job is listed only
+  once it has a native operation, after the same reconciliation
+  `PayoutStatus` does: a start the wallet refused (no gateway, an LNURL error)
+  leaves a ledger row but never a payout. List items never carry the token:
+  an `issued` item is `{"state": "issued", "token": null}`, and
+  `PayoutStatus` returns the token when the operator opens the payout.
+  `ConfirmEcashPayout` records the operator's word
+  that the token was redeemed as `confirmed_at_ms` on the job's operation and
+  answers the job. It is one ledger write, set once, that reads no wallet and
+  is not a state: the payout stays `issued` until a cancel, and an issued
+  payout without the mark is the one still waiting for the operator.
+  Confirming a payout a cancel already settled changes nothing the wallet
+  reports. `CancelEcashPayout` reissues the token's notes back into the same
+  wallet under a reclaim operation id the dependency derives from the notes,
+  so a repeated cancel continues the same reclaim; it waits for the outcome
+  and answers `reclaimed` once the reissued notes are spendable in the
+  balance, or `already_spent` when the operator's redemption won. Until then
+  the payout reads `reclaiming`. It is accepted after `ConfirmEcashPayout` too, because the operator's
+  word that a token arrived can be wrong and the reclaim itself finds out
+  whether the notes were spent. A cancel is serialized with starts by the
+  wallet-scope fence.
 - `Onboarding` returns `service_pubkey`, the commitment-signing public key,
   `fman_name`, the deterministic two-word presentation name derived from the
   public MG identity
