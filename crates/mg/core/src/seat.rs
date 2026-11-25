@@ -1161,6 +1161,7 @@ impl SeatLoop {
                 safe_to_share = true,
                 seat_id = %self.facts.seat_id,
                 aleph_quiescence = features.aleph_quiescence,
+                aleph_quiescence_park_secs = features.aleph_quiescence_park_secs,
                 walletv2_legacy_vote_delay = features.walletv2_legacy_vote_delay,
                 "seat fedimintd features set"
             ),

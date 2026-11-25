@@ -42,6 +42,7 @@ fn content(invites: &[&str]) -> String {
             guardian_transfer_v2: None,
             guardian_link: None,
             aleph_quiescence: None,
+            aleph_quiescence_park_secs: None,
             iroh_legacy_timeouts: None,
             walletv2_legacy_vote_delay: None,
             min_mg_version: None,

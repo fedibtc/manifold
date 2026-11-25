@@ -897,16 +897,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795610467,
-        "narHash": "sha256-njh1RG1u0PmBq36ILOuoagvOmtmfd+drZcDVnvFx39E=",
+        "lastModified": 1795634255,
+        "narHash": "sha256-dwtBQtVznNKqJIfq4Q3Wajdol5kO9VpxfsQq/jtrNLc=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "0c14de213a3f95ae9dbd4d629c62a0ee003fc034",
+        "rev": "f964ac0634269639cdc529b03477e6a52c62c7e9",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "roboman/v0.13-fedi",
+        "ref": "agent/v0.13-quiescent-park-watchdog",
         "repo": "fedimint",
         "type": "github"
       }

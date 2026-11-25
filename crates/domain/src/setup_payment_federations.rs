@@ -289,6 +289,12 @@ impl<'de> serde::Deserialize<'de> for MgVersion {
     }
 }
 
+/// Smallest and largest quiescent park duration override a publication may set,
+/// in seconds (1 minute to 24 hours). Omitted, seats fall back to
+/// `session_timeout / 2` (30 minutes on the 1-hour default).
+pub const SETUP_PAYMENT_ALEPH_QUIESCENCE_PARK_SECS_RANGE: std::ops::RangeInclusive<u64> =
+    60..=86_400;
+
 /// Default absence limit for guardian replacement when an older policy omits it.
 pub const DEFAULT_MAX_GUARDIAN_OFFLINE_SECS: u64 = 24 * 60 * 60;
 
@@ -454,6 +460,14 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aleph_quiescence: Option<bool>,
 
+    /// Optional override for how long a quiescent session may park before
+    /// draining its remaining rounds, in seconds. Optional on the wire: absent
+    /// means `session_timeout / 2` (30 min on the 1h default). Raising this
+    /// once every guardian runs a compatible release cuts idle end-of-session
+    /// drains proportionally without weakening the stuck-session watchdog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aleph_quiescence_park_secs: Option<u64>,
+
     /// Kill switch: MGs start their seats' fedimintd with 0.12's iroh QUIC
     /// timeouts, 60s idle and 30s keep-alive, instead of 0.13's 5s and 1s
     /// ([`mg_core::fedimintd_features`](../../mg/core/src/fedimintd_features.rs)).
@@ -514,6 +528,7 @@ pub struct AdmittedFeaturePolicy {
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
     aleph_quiescence: bool,
+    aleph_quiescence_park_secs: Option<u64>,
     iroh_legacy_timeouts: bool,
     walletv2_legacy_vote_delay: bool,
     min_mg_version: Option<MgVersion>,
@@ -719,6 +734,11 @@ impl FeaturePolicy {
         {
             return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
         }
+        if let Some(park_secs) = content.aleph_quiescence_park_secs
+            && !SETUP_PAYMENT_ALEPH_QUIESCENCE_PARK_SECS_RANGE.contains(&park_secs)
+        {
+            return Err(SetupPaymentFederationsContentError::AlephQuiescenceParkSecsOutOfRange);
+        }
         Ok(AdmittedFeaturePolicy {
             mg_version,
             min_uptime_percent,
@@ -738,6 +758,7 @@ impl FeaturePolicy {
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
             aleph_quiescence: content.aleph_quiescence.unwrap_or(false),
+            aleph_quiescence_park_secs: content.aleph_quiescence_park_secs,
             iroh_legacy_timeouts: content.iroh_legacy_timeouts.unwrap_or(false),
             walletv2_legacy_vote_delay: content.walletv2_legacy_vote_delay.unwrap_or(false),
             min_mg_version: content.min_mg_version,
@@ -847,6 +868,13 @@ impl AdmittedFeaturePolicy {
         self.aleph_quiescence
     }
 
+    /// Return the optional quiescent park duration override, in seconds; `None`
+    /// keeps `session_timeout / 2`.
+    #[must_use]
+    pub fn aleph_quiescence_park_secs(&self) -> Option<u64> {
+        self.aleph_quiescence_park_secs
+    }
+
     /// Return whether seats start with 0.12's iroh timeouts; off when the
     /// event omits the flag.
     #[must_use]
@@ -938,6 +966,8 @@ pub enum PolicyContentError {
     RecommendedMinMgVersionAboveLatest,
     /// An absence limit must allow a positive amount of time.
     ZeroOfflineDuration,
+    /// The published quiescent park duration is outside the admitted range.
+    AlephQuiescenceParkSecsOutOfRange,
 }
 
 /// Backward-compatible name for payment-content callers.
@@ -988,6 +1018,9 @@ impl core::fmt::Display for PolicyContentError {
             }
             Self::RecommendedMinMgVersionAboveLatest => {
                 "setup-payment federation set sets a recommended MG release above the latest one"
+            }
+            Self::AlephQuiescenceParkSecsOutOfRange => {
+                "setup-payment federation set sets an Aleph quiescence park duration outside the admitted range"
             }
         };
         formatter.write_str(message)

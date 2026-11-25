@@ -65,6 +65,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             guardian_transfer_v2: None,
             guardian_link: None,
             aleph_quiescence: None,
+            aleph_quiescence_park_secs: None,
             iroh_legacy_timeouts: None,
             walletv2_legacy_vote_delay: None,
             min_mg_version: None,
@@ -265,6 +266,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
                 guardian_transfer_v2: None,
                 guardian_link: None,
                 aleph_quiescence: None,
+                aleph_quiescence_park_secs: None,
                 iroh_legacy_timeouts: None,
                 walletv2_legacy_vote_delay: None,
                 min_mg_version: None,
@@ -909,6 +911,38 @@ fn aleph_quiescence_is_off_unless_the_policy_turns_it_on() {
     assert_eq!(
         admitted(r#","aleph_quiescence":"yes""#),
         Err(SetupPaymentFederationsContentError::MalformedContent)
+    );
+}
+
+#[test]
+fn aleph_quiescence_park_secs_is_optional_and_bounded() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    assert_eq!(
+        admitted("")
+            .unwrap()
+            .features()
+            .aleph_quiescence_park_secs(),
+        None
+    );
+    assert_eq!(
+        admitted(r#","aleph_quiescence_park_secs":14400"#)
+            .unwrap()
+            .features()
+            .aleph_quiescence_park_secs(),
+        Some(14_400)
+    );
+    assert_eq!(
+        admitted(r#","aleph_quiescence_park_secs":59"#),
+        Err(SetupPaymentFederationsContentError::AlephQuiescenceParkSecsOutOfRange)
+    );
+    assert_eq!(
+        admitted(r#","aleph_quiescence_park_secs":86401"#),
+        Err(SetupPaymentFederationsContentError::AlephQuiescenceParkSecsOutOfRange)
     );
 }
 

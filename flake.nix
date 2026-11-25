@@ -24,7 +24,7 @@
     # Fedi's 0.13 fork: v0.12.0-fedi32 merged into upstream releases/v0.13,
     # with Aleph quiescence and the 0.13 kill switches on `Features`. It takes
     # part in DKG as 0.12.0+fedi, so it forms federations with 0.12 MGs.
-    fedimint.url = "github:fedibtc/fedimint/roboman/v0.13-fedi";
+    fedimint.url = "github:fedibtc/fedimint/agent/v0.13-quiescent-park-watchdog";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).

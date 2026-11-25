@@ -170,6 +170,7 @@ async fn child_starts_with_the_given_features_in_its_environment() {
     };
     let features = Features {
         aleph_quiescence: false,
+        aleph_quiescence_park_secs: None,
         iroh_legacy_timeouts: true,
         walletv2_legacy_vote_delay: false,
     };

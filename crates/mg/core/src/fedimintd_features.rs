@@ -37,6 +37,8 @@ use tokio::sync::watch;
 fn features(policy: Option<&AdmittedFeaturePolicy>) -> Features {
     Features {
         aleph_quiescence: policy.is_some_and(AdmittedFeaturePolicy::aleph_quiescence),
+        aleph_quiescence_park_secs: policy
+            .and_then(AdmittedFeaturePolicy::aleph_quiescence_park_secs),
         iroh_legacy_timeouts: policy.is_some_and(AdmittedFeaturePolicy::iroh_legacy_timeouts),
         walletv2_legacy_vote_delay: policy
             .is_some_and(AdmittedFeaturePolicy::walletv2_legacy_vote_delay),
