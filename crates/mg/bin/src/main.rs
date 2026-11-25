@@ -338,6 +338,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .ok();
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon {
+        data_dir: args.data_dir.clone(),
         data_filesystem: data_filesystem_kind,
         data_filesystem_bytes,
     });

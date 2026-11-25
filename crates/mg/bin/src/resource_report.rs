@@ -13,7 +13,8 @@
 //! two samples. A counter whose source the kernel does not provide is omitted
 //! from the event.
 
-use std::path::Path;
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mg_core::host_pressure::{Pressure, cgroup_v2_dir};
@@ -25,13 +26,14 @@ const FIRST_SAMPLE_DELAY: Duration = Duration::from_secs(60);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 /// The process that takes the samples.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum Role {
     /// The MG daemon. It also samples the cgroup and network namespace it
-    /// shares with its seats, the host's pressure, and names the filesystem
-    /// that holds the data directory and its size, `None` where it cannot be
-    /// read.
+    /// shares with its seats, the host's pressure, the backing block device's
+    /// IO counters, and names the filesystem that holds the data directory
+    /// and its size, `None` where it cannot be read.
     Daemon {
+        data_dir: PathBuf,
         data_filesystem: FilesystemKind,
         data_filesystem_bytes: Option<u64>,
     },
@@ -40,7 +42,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Daemon { .. } => "mg",
             Self::Fedimintd => "fedimintd",
@@ -48,9 +50,13 @@ impl Role {
     }
 }
 
-/// Sample this process, and for the daemon also its cgroup and network
-/// namespace, until the runtime shuts down.
+/// Sample this process, and for the daemon also its cgroup, backing block
+/// device, and network namespace, until the runtime shuts down.
 pub(crate) fn spawn(role: Role) {
+    let data_device_source = match &role {
+        Role::Daemon { data_dir, .. } => DataDeviceIoSource::resolve(data_dir),
+        Role::Fedimintd => None,
+    };
     tokio::spawn(async move {
         tokio::time::sleep(FIRST_SAMPLE_DELAY).await;
         loop {
@@ -79,9 +85,14 @@ pub(crate) fn spawn(role: Role) {
             if let Role::Daemon {
                 data_filesystem,
                 data_filesystem_bytes,
-            } = role
+                ..
+            } = &role
             {
-                report_cgroup(data_filesystem, data_filesystem_bytes);
+                report_cgroup(
+                    *data_filesystem,
+                    *data_filesystem_bytes,
+                    data_device_source.as_ref(),
+                );
             }
             tokio::time::sleep(SAMPLE_INTERVAL).await;
         }
@@ -89,9 +100,14 @@ pub(crate) fn spawn(role: Role) {
 }
 
 /// Report the cgroup and the network namespace that the daemon shares with
-/// its seats, and the host's pressure. The cgroup path, device numbers and
-/// interface names stay local.
-fn report_cgroup(data_filesystem: FilesystemKind, data_filesystem_bytes: Option<u64>) {
+/// its seats, the backing block device's cumulative IO counters, and the
+/// host's pressure. The cgroup path, device numbers, mount points, pool
+/// names, and interface names stay local.
+fn report_cgroup(
+    data_filesystem: FilesystemKind,
+    data_filesystem_bytes: Option<u64>,
+    data_device_source: Option<&DataDeviceIoSource>,
+) {
     let cgroup = read("/proc/self/cgroup", cgroup_v2_dir);
     let cgroup_file = |name: &str| cgroup.as_ref().map(|dir| dir.join(name));
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
@@ -100,6 +116,7 @@ fn report_cgroup(data_filesystem: FilesystemKind, data_filesystem_bytes: Option<
     let memory_pressure =
         cgroup_file("memory.pressure").and_then(|path| read(&path, Pressure::parse));
     let block_io = cgroup_file("io.stat").and_then(|path| read(&path, CgroupBlockIo::parse));
+    let data_device_io = data_device_source.and_then(DataDeviceIoSource::sample);
     let host_pressure = |resource: &str| {
         read(format!("/proc/pressure/{resource}"), Pressure::parse).map(|pressure| pressure.some_us)
     };
@@ -122,6 +139,9 @@ fn report_cgroup(data_filesystem: FilesystemKind, data_filesystem_bytes: Option<
         cgroup_block_read_bytes = block_io.as_ref().map(|io| io.read_bytes),
         cgroup_block_write_bytes = block_io.as_ref().map(|io| io.write_bytes),
         cgroup_block_write_ios = block_io.as_ref().map(|io| io.write_ios),
+        data_device_read_bytes = data_device_io.as_ref().map(|io| io.read_bytes),
+        data_device_write_bytes = data_device_io.as_ref().map(|io| io.write_bytes),
+        data_device_write_ios = data_device_io.as_ref().map(|io| io.write_ios),
         host_cpu_pressure_us = host_pressure("cpu"),
         host_io_pressure_us = host_pressure("io"),
         host_memory_pressure_us = host_pressure("memory"),
@@ -334,9 +354,212 @@ impl NetnsTraffic {
     }
 }
 
+/// Block-layer IO counters of the device (or ZFS pool) backing the MG's data
+/// directory, read directly from sysfs (`/sys/dev/block/<maj>:<min>/stat`) or
+/// OpenZFS kstats (`/proc/spl/kstat/zfs/<pool>/io`).
+///
+/// Unlike cgroup `io.stat`, these counters include kernel-thread writeback that
+/// is not charged to the MG's cgroup — specifically btrfs transaction/metadata
+/// worker threads (`btrfs-transacti`, which add ~1.8–2.2x on top of cgroup
+/// writes) and ZFS `txg` sync threads (where cgroup `io.stat` reads ~0).
+/// On a shared volume these counters reflect all writers to that device/pool.
+#[derive(Debug, PartialEq, Eq)]
+struct DataDeviceIo {
+    read_bytes: u64,
+    write_bytes: u64,
+    write_ios: u64,
+}
+
+impl DataDeviceIo {
+    /// Parse Linux `/sys/dev/block/<maj>:<min>/stat` (sectors are always 512 B
+    /// per kernel `Documentation/block/stat.rst`).
+    fn parse_sysfs_stat(stat: &str) -> Option<Self> {
+        let mut fields = stat.split_ascii_whitespace();
+        let _read_ios = fields.next()?;
+        let _read_merges = fields.next()?;
+        let read_sectors: u64 = fields.next()?.parse().ok()?;
+        let _read_ticks = fields.next()?;
+        let write_ios: u64 = fields.next()?.parse().ok()?;
+        let _write_merges = fields.next()?;
+        let write_sectors: u64 = fields.next()?.parse().ok()?;
+        Some(Self {
+            read_bytes: read_sectors.checked_mul(512)?,
+            write_bytes: write_sectors.checked_mul(512)?,
+            write_ios,
+        })
+    }
+
+    /// Parse OpenZFS `/proc/spl/kstat/zfs/<pool>/io`.
+    /// Line 1 is the kstat header, line 2 lists column names (`nread nwritten
+    /// reads writes ...`), and line 3 holds the cumulative values.
+    fn parse_zfs_kstat_io(kstat: &str) -> Option<Self> {
+        let mut lines = kstat.lines();
+        let _header = lines.next()?;
+        let cols: Vec<&str> = lines.next()?.split_ascii_whitespace().collect();
+        let vals: Vec<&str> = lines.next()?.split_ascii_whitespace().collect();
+        let col = |name: &str| -> Option<u64> {
+            let idx = cols.iter().position(|c| *c == name)?;
+            vals.get(idx)?.parse().ok()
+        };
+        Some(Self {
+            read_bytes: col("nread")?,
+            write_bytes: col("nwritten")?,
+            write_ios: col("writes")?,
+        })
+    }
+}
+
+/// Kernel counter source backing the MG data directory, resolved once at start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DataDeviceIoSource {
+    SysfsBlockStat(PathBuf),
+    ZfsPoolKstatIo(PathBuf),
+}
+
+impl DataDeviceIoSource {
+    fn resolve(data_dir: &Path) -> Option<Self> {
+        let canonical = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+        if let Ok(meta) = std::fs::metadata(&canonical) {
+            let dev = meta.dev();
+            let major = libc::major(dev);
+            let minor = libc::minor(dev);
+            if major != 0 {
+                let path = PathBuf::from(format!("/sys/dev/block/{major}:{minor}/stat"));
+                if path.is_file() {
+                    return Some(Self::SysfsBlockStat(path));
+                }
+            }
+        }
+        // Anonymous/virtual filesystems (e.g. btrfs reports st_dev major 0 for
+        // subvolumes; ZFS reports anonymous st_dev) resolve via mountinfo.
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+        let entry = MountInfoEntry::find_for_path(&mountinfo, &canonical)?;
+        if entry.fs_type == "zfs" {
+            let pool = entry.source.split('/').next()?;
+            if !pool.is_empty() && !pool.contains("..") && !pool.contains('\0') {
+                let path = PathBuf::from(format!("/proc/spl/kstat/zfs/{pool}/io"));
+                if path.is_file() {
+                    return Some(Self::ZfsPoolKstatIo(path));
+                }
+            }
+            return None;
+        }
+        if entry.major != 0 {
+            let path = PathBuf::from(format!(
+                "/sys/dev/block/{}:{}/stat",
+                entry.major, entry.minor
+            ));
+            if path.is_file() {
+                return Some(Self::SysfsBlockStat(path));
+            }
+        }
+        if entry.source.starts_with('/') {
+            let meta = std::fs::metadata(&entry.source).ok()?;
+            if meta.file_type().is_block_device() {
+                let rdev = meta.rdev();
+                let major = libc::major(rdev);
+                let minor = libc::minor(rdev);
+                let path = PathBuf::from(format!("/sys/dev/block/{major}:{minor}/stat"));
+                if path.is_file() {
+                    return Some(Self::SysfsBlockStat(path));
+                }
+            }
+        }
+        None
+    }
+
+    fn sample(&self) -> Option<DataDeviceIo> {
+        match self {
+            Self::SysfsBlockStat(path) => read(path, DataDeviceIo::parse_sysfs_stat),
+            Self::ZfsPoolKstatIo(path) => read(path, DataDeviceIo::parse_zfs_kstat_io),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MountInfoEntry {
+    major: u32,
+    minor: u32,
+    mount_point: PathBuf,
+    fs_type: String,
+    source: String,
+}
+
+impl MountInfoEntry {
+    fn parse_line(line: &str) -> Option<Self> {
+        let (left, right) = line.split_once(" - ")?;
+        let mut left_fields = left.split(' ');
+        let _mount_id = left_fields.next()?;
+        let _parent_id = left_fields.next()?;
+        let (maj, min) = left_fields.next()?.split_once(':')?;
+        let major: u32 = maj.parse().ok()?;
+        let minor: u32 = min.parse().ok()?;
+        let _root = left_fields.next()?;
+        let mount_point = PathBuf::from(unescape_mountinfo(left_fields.next()?));
+        let mut right_fields = right.split(' ');
+        let fs_type = right_fields.next()?.to_owned();
+        let source = unescape_mountinfo(right_fields.next()?);
+        Some(Self {
+            major,
+            minor,
+            mount_point,
+            fs_type,
+            source,
+        })
+    }
+
+    /// Find the deepest mount point that is a path-component prefix of `target`.
+    /// Ties go to the later entry so stacked mounts resolve to the top mount.
+    fn find_for_path(mountinfo: &str, target: &Path) -> Option<Self> {
+        let mut best: Option<(usize, Self)> = None;
+        for line in mountinfo.lines() {
+            let Some(entry) = Self::parse_line(line) else {
+                continue;
+            };
+            if target.starts_with(&entry.mount_point) {
+                let depth = entry.mount_point.components().count();
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_depth, _)| depth >= *best_depth)
+                {
+                    best = Some((depth, entry));
+                }
+            }
+        }
+        best.map(|(_, entry)| entry)
+    }
+}
+
+/// Decode kernel `\ooo` octal escapes used in `/proc/self/mountinfo`.
+fn unescape_mountinfo(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            if let Some(oct) = std::str::from_utf8(&bytes[i + 1..i + 4])
+                .ok()
+                .and_then(|s| u8::from_str_radix(s, 8).ok())
+            {
+                out.push(oct);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CgroupBlockIo, CgroupCpu, NetnsTraffic, ProcessCpu, ProcessIo, ProcessMemory};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        CgroupBlockIo, CgroupCpu, DataDeviceIo, DataDeviceIoSource, MountInfoEntry, NetnsTraffic,
+        ProcessCpu, ProcessIo, ProcessMemory,
+    };
 
     #[test]
     fn sums_cgroup_block_io_over_devices() {
@@ -527,5 +750,86 @@ mod tests {
                 tx_bytes: 0,
             })
         );
+    }
+
+    #[test]
+    fn parses_sysfs_block_stat_sectors_to_bytes() {
+        let stat = "     668        3     7642       39   439985   160912  4885024   745506        0   571889  1306775        0        0        0        0   193712   561229\n";
+        assert_eq!(
+            DataDeviceIo::parse_sysfs_stat(stat),
+            Some(DataDeviceIo {
+                read_bytes: 7642 * 512,
+                write_bytes: 4_885_024 * 512,
+                write_ios: 439_985,
+            })
+        );
+        assert_eq!(DataDeviceIo::parse_sysfs_stat("1 2 3 4 5"), None);
+        assert_eq!(DataDeviceIo::parse_sysfs_stat(""), None);
+    }
+
+    #[test]
+    fn parses_zfs_kstat_pool_io() {
+        let kstat = "31 1 0x01 1 144 5032123456 9988776655\n\
+            nread    nwritten reads    writes   wtime    wlentime wupdate  rtime    rlentime rupdate  wcnt     rcnt\n\
+            1048576  9876543210 42     123456   0        0        0        0        0        0        0        0\n";
+        assert_eq!(
+            DataDeviceIo::parse_zfs_kstat_io(kstat),
+            Some(DataDeviceIo {
+                read_bytes: 1_048_576,
+                write_bytes: 9_876_543_210,
+                write_ios: 123_456,
+            })
+        );
+        assert_eq!(DataDeviceIo::parse_zfs_kstat_io("header only\n"), None);
+    }
+
+    #[test]
+    fn resolves_deepest_mountinfo_entry_including_btrfs_and_zfs() {
+        let mountinfo = "\
+            22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n\
+            12078 22 0:184 / /var/lib/fedi\\040data rw,relatime shared:2 - btrfs /dev/loop32 rw,ssd,subvol=/\n\
+            12090 22 0:99 / /tank/mg rw,noatime shared:3 - zfs tank/mg rw,xattr\n";
+        assert_eq!(
+            MountInfoEntry::find_for_path(mountinfo, Path::new("/var/lib/fedi data/seats/0")),
+            Some(MountInfoEntry {
+                major: 0,
+                minor: 184,
+                mount_point: PathBuf::from("/var/lib/fedi data"),
+                fs_type: "btrfs".to_owned(),
+                source: "/dev/loop32".to_owned(),
+            })
+        );
+        assert_eq!(
+            MountInfoEntry::find_for_path(mountinfo, Path::new("/tank/mg/seats")),
+            Some(MountInfoEntry {
+                major: 0,
+                minor: 99,
+                mount_point: PathBuf::from("/tank/mg"),
+                fs_type: "zfs".to_owned(),
+                source: "tank/mg".to_owned(),
+            })
+        );
+        // Must not match sibling directory sharing only a string prefix.
+        assert_eq!(
+            MountInfoEntry::find_for_path(mountinfo, Path::new("/tank/mg2/data")),
+            Some(MountInfoEntry {
+                major: 8,
+                minor: 1,
+                mount_point: PathBuf::from("/"),
+                fs_type: "ext4".to_owned(),
+                source: "/dev/sda1".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolves_live_data_dir_block_device_when_backed_by_block_storage() {
+        let dir = std::env::current_dir().expect("cwd");
+        if let Some(source) = DataDeviceIoSource::resolve(&dir) {
+            assert!(
+                source.sample().is_some(),
+                "resolved source {source:?} should parse cleanly"
+            );
+        }
     }
 }
