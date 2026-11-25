@@ -1,6 +1,7 @@
 //! Read-only, fail-closed wallet drain projection.
 
 use crate::payout_job::Payout;
+use crate::payout_job::PayoutMethod;
 use crate::payout_job::PayoutRequestId;
 use crate::payout_operation_id::PayoutOperationId;
 use crate::wallet_drain::{
@@ -23,6 +24,8 @@ use fedimint_lnv2_client::{
     LightningClientModule as LightningV2ClientModule,
     LightningOperationMeta as LightningV2OperationMeta, SendOperationState,
 };
+use fedimint_mint_client::{MintOperationMeta as MintV1OperationMeta, MintOperationMetaVariant};
+use fedimint_mintv2_client::MintOperationMeta as MintV2OperationMeta;
 use futures::StreamExt as _;
 use mg_core::wallet::Msats;
 
@@ -201,8 +204,11 @@ pub(crate) async fn payout_status(
     let outgoing = outgoing_operation(operation_id, &entry, active)?
         .context("native operation is not an MG payout")?;
     if let (Some(request_id), Some(destination)) = (request_id, destination) {
+        let method = PayoutMethod::Lightning {
+            destination: destination.to_owned(),
+        };
         anyhow::ensure!(
-            payout_request_amount(&entry, request_id, destination)?.is_some(),
+            payout_request_amount(&entry, request_id, &method)?.is_some(),
             "native payout operation belongs to another request or destination"
         );
     }
@@ -226,7 +232,10 @@ pub(crate) async fn v1_payout_request_amount(
         entry.operation_module_kind() == "ln",
         "returned Lightning v1 payout operation belongs to another rail"
     );
-    payout_request_amount(&entry, request_id, destination)?
+    let method = PayoutMethod::Lightning {
+        destination: destination.to_owned(),
+    };
+    payout_request_amount(&entry, request_id, &method)?
         .context("returned Lightning v1 payout operation belongs to another request")
 }
 

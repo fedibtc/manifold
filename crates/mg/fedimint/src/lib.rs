@@ -25,7 +25,9 @@
 //!
 //! Bearer-token hygiene: raw OOB
 //! tokens are never logged and never persisted by this crate; a received
-//! token exists in memory only for the duration of [`Wallet::receive`].
+//! token exists in memory only for the duration of [`Wallet::receive`]. An
+//! ecash payout's token lives only in the spend's operation metadata, which
+//! the pinned client writes, and is read back from there for the operator.
 
 #[cfg(test)]
 mod authority_surface_tests;
@@ -35,6 +37,7 @@ mod guardian_fee;
 mod payee;
 #[cfg(test)]
 mod payout_contract_tests;
+mod payout_ecash;
 mod payout_job;
 mod payout_job_status;
 mod payout_native;

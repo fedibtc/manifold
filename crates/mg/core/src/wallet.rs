@@ -24,7 +24,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::guardian_fee::GuardianFeeAccountKey;
-use crate::payout_wire::{PayoutJobStatusWire, PayoutJobWire, WalletDrainStatusWire};
+use crate::payout_wire::{PayoutJobStatusWire, PayoutJobWire, PayoutsWire, WalletDrainStatusWire};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
 /// Handle to the implementation-owned reconciler for accepted ecash claims.
@@ -75,20 +75,46 @@ impl<'de> serde::Deserialize<'de> for PayoutRequestId {
     }
 }
 
+/// How a payout leaves its wallet: a Lightning payment to the configured
+/// destination, or one bearer ecash token of the whole balance handed to the
+/// operator. A request without one is a Lightning payout, as every payout was
+/// before ecash payouts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayoutRail {
+    #[default]
+    Lightning,
+    Ecash,
+}
+impl FromStr for PayoutRail {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "lightning" => Ok(Self::Lightning),
+            "ecash" => Ok(Self::Ecash),
+            _ => anyhow::bail!("expected `lightning` or `ecash`"),
+        }
+    }
+}
+
 /// Intent-level operator payout boundary. The implementation owns its durable
 /// ledger and native-wallet projection and returns stable operator DTOs.
 #[async_trait::async_trait]
 pub trait EcashPayoutWorker: Send + Sync + 'static {
+    /// Pay one setup-payment wallet out by `rail`. A request id stays bound
+    /// to its first scope and rail.
     async fn sweep_payment_fees(
         &self,
         federation_id: &FederationId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire>;
     async fn sweep_guardian_fees(
         &self,
         invite_code: &InviteCode,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire>;
     /// Resume a durably scoped guardian sweep without consulting the live seat.
     /// `None` means this request has no job yet and needs a fresh invite.
@@ -96,7 +122,25 @@ pub trait EcashPayoutWorker: Send + Sync + 'static {
         &self,
         seat_id: &SeatId,
         request_id: &PayoutRequestId,
+        rail: PayoutRail,
     ) -> anyhow::Result<Option<PayoutJobWire>>;
+    /// Record the operator's word that a committed ecash payout's token was
+    /// redeemed, once. It reads no wallet and changes no state: a cancel is
+    /// still accepted afterwards.
+    async fn confirm_ecash_payout(
+        &self,
+        request_id: &PayoutRequestId,
+    ) -> anyhow::Result<PayoutJobWire>;
+    /// Reissue an issued token's notes back into the wallet it left, and await
+    /// the federation's answer, also after a confirmation; repeating it
+    /// resumes the same reclaim.
+    async fn cancel_ecash_payout(
+        &self,
+        request_id: &PayoutRequestId,
+    ) -> anyhow::Result<PayoutJobStatusWire>;
+    /// The newest payouts plus every older ecash payout still in progress,
+    /// newest first and without tokens.
+    async fn list_payouts(&self) -> anyhow::Result<PayoutsWire>;
     async fn payout_status(
         &self,
         request_id: &PayoutRequestId,
@@ -120,6 +164,7 @@ impl EcashPayoutWorker for NoEcashPayoutWorker {
         &self,
         _: &FederationId,
         _: &PayoutRequestId,
+        _: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire> {
         anyhow::bail!("no wallet is configured")
     }
@@ -128,6 +173,7 @@ impl EcashPayoutWorker for NoEcashPayoutWorker {
         _: &InviteCode,
         _: &SeatId,
         _: &PayoutRequestId,
+        _: PayoutRail,
     ) -> anyhow::Result<PayoutJobWire> {
         anyhow::bail!("no wallet is configured")
     }
@@ -135,8 +181,23 @@ impl EcashPayoutWorker for NoEcashPayoutWorker {
         &self,
         _: &SeatId,
         _: &PayoutRequestId,
+        _: PayoutRail,
     ) -> anyhow::Result<Option<PayoutJobWire>> {
         Ok(None)
+    }
+    async fn confirm_ecash_payout(&self, _: &PayoutRequestId) -> anyhow::Result<PayoutJobWire> {
+        anyhow::bail!("no wallet is configured")
+    }
+    async fn cancel_ecash_payout(
+        &self,
+        _: &PayoutRequestId,
+    ) -> anyhow::Result<PayoutJobStatusWire> {
+        anyhow::bail!("no wallet is configured")
+    }
+    async fn list_payouts(&self) -> anyhow::Result<PayoutsWire> {
+        Ok(PayoutsWire {
+            payouts: Vec::new(),
+        })
     }
     async fn payout_status(&self, _: &PayoutRequestId) -> anyhow::Result<PayoutJobStatusWire> {
         anyhow::bail!("no wallet is configured")

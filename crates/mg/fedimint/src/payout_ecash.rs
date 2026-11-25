@@ -9,6 +9,26 @@
 //! federation refusing that reissue is how the wallet learns the recipient
 //! spent the notes first. Mint v1 and mint v2 differ only in the module calls.
 
+use anyhow::Context as _;
+use fedimint_client::ClientHandleArc;
+use fedimint_core::core::OperationId;
+use fedimint_core::{Amount, TieredMulti};
+use fedimint_mint_client::{
+    MintClientModule, MintOperationMeta, MintOperationMetaVariant, NotesSelector, OOBNotes,
+    ReissueExternalNotesState,
+};
+use fedimint_mint_common::config::FeeConsensus;
+use fedimint_mintv2_client::{
+    ECash as MintV2Ecash, FinalReceiveOperationState as MintV2ReceiveState,
+    MintClientModule as MintV2ClientModule, MintOperationMeta as MintV2OperationMeta,
+    ReceiveECashError,
+};
+use futures::StreamExt as _;
+use tracing::info;
+
+use crate::payout_job::{Payout, PayoutRequestId};
+use crate::payout_operation_id::PayoutOperationId;
+
 /// Bound on a mint-v2 send that needs a reissue round first. A whole-balance
 /// send spends exact notes locally, so this only matters when notes arrived
 /// between reading the balance and spending it.
