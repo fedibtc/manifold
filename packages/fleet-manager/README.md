@@ -29,9 +29,9 @@ the optimized image is first built in the trusted publish workflow.
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
 [`flake.nix`](../../flake.nix), at the Fedi fork source branch
-[`roboman/fedi30-aleph-quiescence`](https://github.com/fedibtc/fedimint/tree/roboman/fedi30-aleph-quiescence),
+[`agent/lnv2-quiescent-time-vote`](https://github.com/fedibtc/fedimint/tree/agent/lnv2-quiescent-time-vote),
 pending a release tag. The branch has no binary release. `flake.lock` records its exact source revision.
-The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi30-quiescence`, while the typed DKG
+The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi30-quiescence-lnv2-time`, while the typed DKG
 identity in `FEDIMINTD_VERSION_0_1` is `0.12.0+fedi`. To update the source pin, change
 the `fedimint` flake input and `flake.lock`, not this package. The
 `fleet-manager-cli-contract` / OCI-image checks fail if the source pin, DKG constant,

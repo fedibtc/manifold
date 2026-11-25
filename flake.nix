@@ -21,10 +21,10 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    # fedi30-quiescence is fedi30 (batched AlephBFT backup write with
-    # fedibtc/AlephBFT v0.36.0-fedi1, RocksDB WAL tuning) plus Aleph
-    # quiescence, off at start and switched over the driven control channel.
-    fedimint.url = "github:fedibtc/fedimint/roboman/fedi30-aleph-quiescence";
+    # fedi30-quiescence-lnv2-time is fedi30-quiescence (batched AlephBFT backup
+    # write with fedibtc/AlephBFT v0.36.0-fedi1, RocksDB WAL tuning, runtime
+    # Aleph quiescence) plus 5-minute idle LNv2 UnixTimeVote cadence.
+    fedimint.url = "github:fedibtc/fedimint/agent/lnv2-quiescent-time-vote";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -1003,15 +1003,15 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi30-quiescence";
+        fedimintdRelease = "0.12.0-fedi30-quiescence-lnv2-time";
         # The fork ref the `fedimint` input pins: the release tag
         # `v''${fedimintdRelease}`, or a branch while the release is under test.
-        fedimintSourceRef = "roboman/fedi30-aleph-quiescence";
+        fedimintSourceRef = "agent/lnv2-quiescent-time-vote";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "dbec12ff3173b3f5ce64d2ada607c33efa6134fb";
+        fedimintSourceRev = "9776aedc63c8ed5657601709fba739ae66641610";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
