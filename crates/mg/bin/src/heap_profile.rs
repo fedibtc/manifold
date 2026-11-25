@@ -15,7 +15,10 @@
 //! [`MALLOC_CONF`]: crate::MALLOC_CONF
 
 use std::collections::HashMap;
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, OsString, c_void};
+use std::io::{self, Read as _};
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -30,9 +33,11 @@ const SITE_FRAMES: usize = 6;
 const MAX_FRAME_CHARS: usize = 160;
 
 /// Turn on heap sampling in this process and report the profile every hour
-/// until the runtime shuts down. The dump is written to `dump_path` and
-/// removed after it is read.
-pub(crate) fn spawn(dump_path: PathBuf) {
+/// until the runtime shuts down. Each dump is written inside a private `0700`
+/// temporary directory under the system temp dir (falling back to
+/// `fallback_dir` if the temp dir is unusable), and both the dump file and its
+/// temporary directory are removed immediately after reading.
+pub(crate) fn spawn(fallback_dir: PathBuf) {
     if let Err(errno) = set_sampling(true) {
         tracing::warn!(safe_to_share = true, errno, "heap profiling is unavailable");
         return;
@@ -41,8 +46,11 @@ pub(crate) fn spawn(dump_path: PathBuf) {
         tokio::time::sleep(FIRST_REPORT_DELAY).await;
         let mut previous = HashMap::new();
         loop {
-            let path = dump_path.clone();
-            match tokio::task::spawn_blocking(move || read_profile(&path)).await {
+            let preferred_dir = std::env::temp_dir();
+            let fallback = fallback_dir.clone();
+            match tokio::task::spawn_blocking(move || read_profile_in(&preferred_dir, &fallback))
+                .await
+            {
                 Ok(Ok(profile)) => {
                     report(&profile, &previous);
                     previous = profile.sites;
@@ -148,12 +156,107 @@ impl DumpFailure {
     }
 }
 
+/// A per-dump private `0700` directory holding a pre-created `0600` dump file.
+///
+/// jemalloc's `prof.dump` opens its target with `creat(path, 0644)`, which
+/// follows symlinks and defaults to `0644 & ~umask`. Isolating each dump inside
+/// a fresh `mkdtemp` (`0700`) directory owned by our effective UID and
+/// pre-creating the dump file `0600` with `O_CREAT | O_EXCL | O_NOFOLLOW` keeps
+/// process addresses private even on a shared `/tmp`. Both file and directory
+/// are removed on drop.
+struct PrivateDumpDir {
+    dir: PathBuf,
+    dump_path: PathBuf,
+}
+
+impl PrivateDumpDir {
+    fn create(preferred_parent: &Path, fallback_parent: &Path) -> io::Result<Self> {
+        Self::create_in(preferred_parent).or_else(|_| Self::create_in(fallback_parent))
+    }
+
+    fn create_in(parent: &Path) -> io::Result<Self> {
+        let template_path = parent.join("fleet-manager-heap-XXXXXX");
+        let mut template = CString::new(template_path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "temp path contains NUL"))?
+            .into_bytes_with_nul();
+        // SAFETY: `template` is a NUL-terminated mutable buffer ending with six
+        // `X` bytes; `mkdtemp` modifies it in place and returns null on error.
+        let result = unsafe { libc::mkdtemp(template.as_mut_ptr().cast::<libc::c_char>()) };
+        if result.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        template.pop();
+        let dir = PathBuf::from(OsString::from_vec(template));
+        let dump_path = dir.join("heap-profile.heap");
+        let guard = Self { dir, dump_path };
+
+        let meta = std::fs::symlink_metadata(&guard.dir)?;
+        // SAFETY: `geteuid` has no preconditions and always succeeds.
+        let euid = unsafe { libc::geteuid() };
+        if !meta.file_type().is_dir()
+            || meta.uid() != euid
+            || meta.permissions().mode() & 0o777 != 0o700
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "private heap dump directory failed ownership or mode check",
+            ));
+        }
+
+        // Pre-create the file `0600` without following symlinks so jemalloc's
+        // `creat(..., 0644)` truncates it in place while preserving `0600`.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&guard.dump_path)?;
+        Ok(guard)
+    }
+
+    fn dump_path(&self) -> &Path {
+        &self.dump_path
+    }
+}
+
+impl Drop for PrivateDumpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.dump_path);
+        let _ = std::fs::remove_dir(&self.dir);
+    }
+}
+
+/// Dump the live samples into a fresh private directory under
+/// `preferred_parent` (falling back to `fallback_parent`), read and symbolize
+/// them, and remove the dump file and directory before returning.
+fn read_profile_in(
+    preferred_parent: &Path,
+    fallback_parent: &Path,
+) -> Result<Profile, DumpFailure> {
+    let dir =
+        PrivateDumpDir::create(preferred_parent, fallback_parent).map_err(|_| DumpFailure::Dump)?;
+    read_profile(dir.dump_path())
+}
+
 /// Dump the live samples to `path`, then read and symbolize them.
 fn read_profile(path: &Path) -> Result<Profile, DumpFailure> {
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(DumpFailure::Dump);
+    }
     let dumped = dump(path);
-    let text = dumped
-        .map_err(|_| DumpFailure::Dump)
-        .and_then(|()| std::fs::read_to_string(path).map_err(|_| DumpFailure::Read));
+    let text = dumped.map_err(|_| DumpFailure::Dump).and_then(|()| {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| DumpFailure::Read)?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)
+            .map_err(|_| DumpFailure::Read)?;
+        Ok(buf)
+    });
     let _ = std::fs::remove_file(path);
     let stacks = parse_dump(&text?).ok_or(DumpFailure::Parse)?;
     let mut names = HashMap::new();
@@ -426,9 +529,11 @@ fn dump(path: &Path) -> Result<(), i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use super::{
-        Live, elide_generic_arguments, is_allocator_frame, is_profiler_frame, parse_dump,
-        read_profile, set_sampling, site, unsample,
+        DumpFailure, Live, PrivateDumpDir, elide_generic_arguments, is_allocator_frame,
+        is_profiler_frame, parse_dump, read_profile, read_profile_in, set_sampling, site, unsample,
     };
 
     #[test]
@@ -585,5 +690,76 @@ mod tests {
         // 64 samples of 1 MiB: the estimate is exact up to sampling noise.
         assert!((40.0..90.0).contains(&mib), "{mib} MiB at {site:?}");
         drop(held);
+    }
+
+    #[test]
+    fn private_dump_dir_enforces_modes_cleans_up_and_falls_back() {
+        let preferred = tempfile::tempdir().unwrap();
+        let fallback = tempfile::tempdir().unwrap();
+
+        let (dir_path, file_path) = {
+            let guard = PrivateDumpDir::create(preferred.path(), fallback.path()).unwrap();
+            let dir_path = guard.dir.clone();
+            let file_path = guard.dump_path().to_path_buf();
+            assert_eq!(dir_path.parent(), Some(preferred.path()));
+            let dir_meta = std::fs::symlink_metadata(&dir_path).unwrap();
+            assert!(dir_meta.file_type().is_dir());
+            assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
+            assert_eq!(dir_meta.uid(), unsafe { libc::geteuid() });
+            let file_meta = std::fs::symlink_metadata(&file_path).unwrap();
+            assert!(file_meta.file_type().is_file());
+            assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
+            (dir_path, file_path)
+        };
+        assert!(!file_path.exists(), "dump file must be removed on drop");
+        assert!(
+            !dir_path.exists(),
+            "private dump dir must be removed on drop"
+        );
+
+        // Missing preferred temp dir falls back cleanly to fallback_parent.
+        let missing = preferred.path().join("does-not-exist");
+        let fallback_dir = {
+            let guard = PrivateDumpDir::create(&missing, fallback.path()).unwrap();
+            assert_eq!(guard.dir.parent(), Some(fallback.path()));
+            guard.dir.clone()
+        };
+        assert!(!fallback_dir.exists());
+    }
+
+    #[test]
+    fn read_profile_in_uses_preferred_temp_dir_and_leaves_no_artifacts() {
+        set_sampling(true).expect("this binary links jemalloc with profiling");
+        let preferred = tempfile::tempdir().unwrap();
+        let fallback = tempfile::tempdir().unwrap();
+
+        let _profile = read_profile_in(preferred.path(), fallback.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_dir(preferred.path()).unwrap().count(),
+            0,
+            "preferred temp dir must be clean after dump"
+        );
+        assert_eq!(
+            std::fs::read_dir(fallback.path()).unwrap().count(),
+            0,
+            "fallback data dir must remain untouched when temp dir works"
+        );
+    }
+
+    #[test]
+    fn read_profile_refuses_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        let link = dir.path().join("heap-profile.heap");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        assert_eq!(read_profile(&link).unwrap_err(), DumpFailure::Dump);
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"untouched",
+            "symlink target must never be overwritten"
+        );
     }
 }

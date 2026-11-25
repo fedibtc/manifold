@@ -387,9 +387,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // including restored guardian children.
     tokio::fs::create_dir_all(&args.data_dir).await?;
     let db = mg_core::db::Db::open(&args.data_dir).await?;
-    // After the data-root lock, so one daemon at a time writes the dump file.
+    // After the data-root lock; dumps go into a private per-dump directory
+    // under the system temp dir (typically tmpfs) and fall back to data_dir.
     #[cfg(target_os = "linux")]
-    heap_profile::spawn(args.data_dir.join("heap-profile.heap"));
+    heap_profile::spawn(args.data_dir.clone());
     db.bind_manifold_environment(manifold_environment.environment())
         .await?;
     // Operator surfaces bind once, before the fleet exists, and serve every
