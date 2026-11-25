@@ -57,6 +57,38 @@ fn malformed_seat_id_is_an_unparsable_request() {
     );
 }
 
+/// A sweep request from before ecash payouts carries no `method`, and stays a
+/// Lightning sweep; an unknown method is refused rather than guessed.
+#[test]
+fn a_sweep_without_a_method_is_lightning() {
+    let method = |request: serde_json::Value| match serde_json::from_value(request) {
+        Ok(AdminRequest::SweepGuardianFees { method, .. }) => Ok(method),
+        Ok(_) => panic!("expected a guardian-fee sweep"),
+        Err(error) => Err(error),
+    };
+    let seat_id = "07".repeat(32);
+    assert_eq!(
+        method(serde_json::json!({
+            "SweepGuardianFees": { "seat_id": seat_id, "request_id": "r" }
+        }))
+        .unwrap(),
+        crate::wallet::PayoutRail::Lightning
+    );
+    assert_eq!(
+        method(serde_json::json!({
+            "SweepGuardianFees": { "seat_id": seat_id, "request_id": "r", "method": "ecash" }
+        }))
+        .unwrap(),
+        crate::wallet::PayoutRail::Ecash
+    );
+    assert!(
+        method(serde_json::json!({
+            "SweepGuardianFees": { "seat_id": seat_id, "request_id": "r", "method": "cash" }
+        }))
+        .is_err()
+    );
+}
+
 #[test]
 fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomplete_progress() {
     assert_eq!(
@@ -350,6 +382,7 @@ async fn admin_socket_round_trips_operator_verbs() {
     let sweep = ask(AdminRequest::SweepPaymentFees {
         federation_id: FederationId("nothere".to_owned()),
         request_id: "admin-test-payment".parse().unwrap(),
+        method: crate::wallet::PayoutRail::Lightning,
     })
     .await
     .unwrap_err();

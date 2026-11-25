@@ -4,6 +4,11 @@
       "request_id": "fixture-payment-payout"
     }
   },
+  "CancelEcashPayout": {
+    "CancelEcashPayout": {
+      "request_id": "fixture-ecash-payout"
+    }
+  },
   "CollectGuardianFees": {
     "CollectGuardianFees": {
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
@@ -14,6 +19,11 @@
       "max_seats": 4,
       "monthly_data_budget": "unlimited",
       "price_msats": 50000000
+    }
+  },
+  "ConfirmEcashPayout": {
+    "ConfirmEcashPayout": {
+      "request_id": "fixture-ecash-payout"
     }
   },
   "CreateGuardianLinkOffer": "CreateGuardianLinkOffer",
@@ -30,6 +40,7 @@
   },
   "GuardianLink": "GuardianLink",
   "ListPaymentFederations": "ListPaymentFederations",
+  "ListPayouts": "ListPayouts",
   "ListSeats": "ListSeats",
   "MarkSupportRead": {
     "MarkSupportRead": {
@@ -96,6 +107,7 @@
   "SupportChat": "SupportChat",
   "SweepGuardianFees": {
     "SweepGuardianFees": {
+      "method": "lightning",
       "request_id": "fixture-guardian-payout",
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
     }
@@ -103,6 +115,7 @@
   "SweepPaymentFees": {
     "SweepPaymentFees": {
       "federation_id": "fed1fixturepaymentfederation",
+      "method": "ecash",
       "request_id": "fixture-payment-payout"
     }
   },

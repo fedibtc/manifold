@@ -44,9 +44,10 @@ use mg_core::guardian_link::{
 use mg_core::host_pressure::{HostPressure, PressurePermille};
 use mg_core::onboarding;
 use mg_core::payout_wire::{
-    DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
-    PayoutJobOperationWire, PayoutJobStatusWire, PayoutJobWire, PayoutScopeWire,
-    WalletDrainStatusWire,
+    DestinationCapWire, DrainStateWire, EcashPayoutStateWire, EcashTokenWire,
+    OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire, PayoutJobOperationWire,
+    PayoutJobStatusWire, PayoutJobWire, PayoutMethodWire, PayoutNativeStatusWire, PayoutScopeWire,
+    PayoutsWire, WalletDrainStatusWire,
 };
 use mg_core::push_callback::CallbackAttemptOutcome;
 use mg_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
@@ -54,7 +55,7 @@ use mg_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport,
 use mg_core::seat_readiness::{
     ReadinessOutcome, ReadinessReport, UptimeComparison, UptimePermille, UptimeWaitSecs,
 };
-use mg_core::wallet::PayoutRequestId;
+use mg_core::wallet::{PayoutRail, PayoutRequestId};
 use serde_json::Value;
 use stability_pool_client::common::{Account, AccountType};
 
@@ -79,6 +80,11 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "mg_payout_job",
     "mg_payout_job_capped",
     "mg_payout_job_status",
+    "mg_payouts",
+    "mg_ecash_payout_issued",
+    "mg_ecash_payout_job_confirmed",
+    "mg_ecash_payout_reclaimed",
+    "mg_ecash_payout_already_spent",
     "mg_seats",
     "mg_seat_reports",
     "mg_seat_guardian_fees",
@@ -181,6 +187,27 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("mg_payout_job", payout_job_fixture()),
         ("mg_payout_job_capped", payout_job_capped_fixture()),
         ("mg_payout_job_status", payout_job_status_fixture()),
+        ("mg_payouts", payouts_fixture()),
+        (
+            "mg_ecash_payout_issued",
+            ecash_payout_fixture(EcashPayoutStateWire::Issued {
+                token: Some(EcashTokenWire(
+                    "fedimint1fixtureecashtokenplaceholder".into(),
+                )),
+            }),
+        ),
+        (
+            "mg_ecash_payout_job_confirmed",
+            ecash_payout_job_confirmed_fixture(),
+        ),
+        (
+            "mg_ecash_payout_reclaimed",
+            ecash_payout_fixture(EcashPayoutStateWire::Reclaimed),
+        ),
+        (
+            "mg_ecash_payout_already_spent",
+            ecash_payout_fixture(EcashPayoutStateWire::AlreadySpent),
+        ),
         ("mg_seats", seats_fixture()),
         ("mg_seat_reports", seat_reports_fixture()),
         ("mg_seat_guardian_fees", seat_guardian_fees_fixture()),
@@ -414,6 +441,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::SetPayoutDestination { .. } => AdminRequest::SweepPaymentFees {
             federation_id: FederationId("fed1fixturepaymentfederation".to_owned()),
             request_id: "fixture-payment-payout".parse().unwrap(),
+            method: PayoutRail::Ecash,
         },
         AdminRequest::SweepPaymentFees { .. } => AdminRequest::PayoutStatus {
             request_id: "fixture-payment-payout".parse().unwrap(),
@@ -421,7 +449,14 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::PayoutStatus { .. } => AdminRequest::AwaitPayout {
             request_id: "fixture-payment-payout".parse().unwrap(),
         },
-        AdminRequest::AwaitPayout { .. } => AdminRequest::ListSeats,
+        AdminRequest::AwaitPayout { .. } => AdminRequest::ListPayouts,
+        AdminRequest::ListPayouts => AdminRequest::ConfirmEcashPayout {
+            request_id: "fixture-ecash-payout".parse().unwrap(),
+        },
+        AdminRequest::ConfirmEcashPayout { .. } => AdminRequest::CancelEcashPayout {
+            request_id: "fixture-ecash-payout".parse().unwrap(),
+        },
+        AdminRequest::CancelEcashPayout { .. } => AdminRequest::ListSeats,
         AdminRequest::ListSeats => AdminRequest::SeatStatus {
             seat_id: seat_id.clone(),
         },
@@ -446,6 +481,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::CollectGuardianFees { .. } => AdminRequest::SweepGuardianFees {
             seat_id,
             request_id: "fixture-guardian-payout".parse().unwrap(),
+            method: PayoutRail::Lightning,
         },
         AdminRequest::SweepGuardianFees { .. } => AdminRequest::GuardianLink,
         AdminRequest::GuardianLink => AdminRequest::CreateGuardianLinkOffer,
@@ -485,6 +521,9 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::SweepPaymentFees { .. } => "SweepPaymentFees",
         AdminRequest::PayoutStatus { .. } => "PayoutStatus",
         AdminRequest::AwaitPayout { .. } => "AwaitPayout",
+        AdminRequest::ListPayouts => "ListPayouts",
+        AdminRequest::ConfirmEcashPayout { .. } => "ConfirmEcashPayout",
+        AdminRequest::CancelEcashPayout { .. } => "CancelEcashPayout",
         AdminRequest::ListSeats => "ListSeats",
         AdminRequest::SeatStatus { .. } => "SeatStatus",
         AdminRequest::DecommissionSeat { .. } => "DecommissionSeat",
@@ -597,12 +636,15 @@ pub fn payout_job() -> PayoutJobWire {
         scope: PayoutScopeWire::PaymentFederation {
             federation_id: FederationId("fed1fixturepayment".into()),
         },
-        destination: "operator@example.com".into(),
+        method: PayoutMethodWire::Lightning {
+            destination: "operator@example.com".into(),
+        },
         operation: Some(PayoutJobOperationWire {
             operation_id: "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f".into(),
             amount_msat: 250_000,
             capped: None,
             committed_at_ms: 1_753_600_002_000,
+            confirmed_at_ms: None,
         }),
         created_at_ms: 1_753_600_001_000,
     }
@@ -622,17 +664,108 @@ pub fn payout_job_capped_fixture() -> Value {
     serde_json::to_value(job).unwrap()
 }
 pub fn payout_job_status_fixture() -> Value {
-    serde_json::to_value(PayoutJobStatusWire {
+    serde_json::to_value(payout_job_status()).unwrap()
+}
+fn payout_job_status() -> PayoutJobStatusWire {
+    PayoutJobStatusWire {
         job: payout_job(),
-        payout: Some(OutgoingOperationWire {
-            operation_id: "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f".into(),
-            rail: OutgoingRailWire::Lnv2,
-            state: OutgoingStateWire::Succeeded,
-            recipient_amount_msat: 250_000,
-            contract_amount_msat: 251_000,
-            encumbered_msat: Some(0),
-            has_active_state_machines: false,
+        native: PayoutNativeStatusWire::Lightning {
+            payout: Some(OutgoingOperationWire {
+                operation_id: "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f"
+                    .into(),
+                rail: OutgoingRailWire::Lnv2,
+                state: OutgoingStateWire::Succeeded,
+                recipient_amount_msat: 250_000,
+                contract_amount_msat: 251_000,
+                encumbered_msat: Some(0),
+                has_active_state_machines: false,
+            }),
+        },
+    }
+}
+
+/// One committed ecash payout job, marked redeemed at `confirmed_at_ms`.
+fn ecash_job(
+    request_id: &str,
+    scope: PayoutScopeWire,
+    confirmed_at_ms: Option<u64>,
+) -> PayoutJobWire {
+    PayoutJobWire {
+        request_id: PayoutRequestId::parse(request_id).unwrap(),
+        scope,
+        method: PayoutMethodWire::Ecash,
+        operation: Some(PayoutJobOperationWire {
+            operation_id: "5e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f0f7c1b9a3e5d4c2b8a6f".into(),
+            amount_msat: 1_234_000,
+            capped: None,
+            committed_at_ms: 1_753_600_062_000,
+            confirmed_at_ms,
         }),
+        created_at_ms: 1_753_600_061_000,
+    }
+}
+fn payment_scope() -> PayoutScopeWire {
+    PayoutScopeWire::PaymentFederation {
+        federation_id: FederationId("fed1fixturepayment".into()),
+    }
+}
+/// One ecash payout of a payment federation's balance, in `state`.
+pub fn ecash_payout_fixture(state: EcashPayoutStateWire) -> Value {
+    serde_json::to_value(PayoutJobStatusWire {
+        job: ecash_job("fixture-ecash-payout", payment_scope(), None),
+        native: PayoutNativeStatusWire::Ecash { ecash: Some(state) },
+    })
+    .unwrap()
+}
+/// The `ConfirmEcashPayout` answer: the job with the operator's mark.
+pub fn ecash_payout_job_confirmed_fixture() -> Value {
+    serde_json::to_value(ecash_job(
+        "fixture-ecash-payout",
+        payment_scope(),
+        Some(1_753_600_090_000),
+    ))
+    .unwrap()
+}
+/// What the dashboard lists, newest first: a guardian-fee token waiting to be
+/// redeemed (listed without its token), a payment-federation reclaim still
+/// running, an issued ecash payout the operator marked redeemed, and a
+/// Lightning payout that succeeded. The token is a made-up placeholder, not a
+/// decodable note.
+pub fn payouts_fixture() -> Value {
+    let ecash_payout = |request_id, scope, confirmed_at_ms, state| PayoutJobStatusWire {
+        job: ecash_job(request_id, scope, confirmed_at_ms),
+        native: PayoutNativeStatusWire::Ecash { ecash: Some(state) },
+    };
+    serde_json::to_value(PayoutsWire {
+        payouts: vec![
+            ecash_payout(
+                "fixture-guardian-ecash-payout",
+                PayoutScopeWire::GuardianFee {
+                    federation_id: FederationId(
+                        "0b0dc4f1bf47d72e3fc7f62c2e6a5a1b0f3dcd8b2a0e2f9a47d4a3c0f18a2d01".into(),
+                    ),
+                    seat_id: seat_id(),
+                    invite_code: fedi_decentralized_service_manifold_guardian::InviteCode(
+                        "fed11fixtureguardianinvite".into(),
+                    ),
+                },
+                None,
+                EcashPayoutStateWire::Issued { token: None },
+            ),
+            ecash_payout(
+                "fixture-ecash-payout",
+                payment_scope(),
+                None,
+                EcashPayoutStateWire::Reclaiming,
+            ),
+            ecash_payout(
+                "fixture-confirmed-ecash-payout",
+                payment_scope(),
+                Some(1_753_600_090_000),
+                EcashPayoutStateWire::Issued { token: None },
+            ),
+            payout_job_status(),
+        ],
     })
     .unwrap()
 }
