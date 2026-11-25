@@ -904,7 +904,7 @@
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "roboman/fedi30-aleph-quiescence",
+        "ref": "v0.12.0-fedi30-quiescence.1",
         "repo": "fedimint",
         "type": "github"
       }

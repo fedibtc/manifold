@@ -24,7 +24,7 @@
     # fedi30-quiescence is fedi30 (batched AlephBFT backup write with
     # fedibtc/AlephBFT v0.36.0-fedi1, RocksDB WAL tuning) plus Aleph
     # quiescence, off at start and switched over the driven control channel.
-    fedimint.url = "github:fedibtc/fedimint/roboman/fedi30-aleph-quiescence";
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30-quiescence.1";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -1006,7 +1006,7 @@
         fedimintdRelease = "0.12.0-fedi30-quiescence";
         # The fork ref the `fedimint` input pins: the release tag
         # `v''${fedimintdRelease}`, or a branch while the release is under test.
-        fedimintSourceRef = "roboman/fedi30-aleph-quiescence";
+        fedimintSourceRef = "v0.12.0-fedi30-quiescence.1";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
