@@ -23,7 +23,7 @@
     };
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
     # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    fedimint.url = "github:fedibtc/fedimint/roboman/payout-caller-operation-id";
     # Stability Pool v2 module crates. MG bundles the server module; FLIP and
     # fa-client use the client.
     stability-pool = {
