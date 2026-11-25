@@ -1,0 +1,51 @@
+.idRow {
+  @apply uCopyRow;
+}
+
+.mono {
+  @apply uMono;
+}
+
+.error {
+  @apply uFieldError m-0;
+}
+
+.twoColumns {
+  @apply flex gap-6;
+}
+
+.codeText {
+  @apply flex min-w-0 flex-col gap-3 text-sm;
+}
+
+.codeHeading {
+  @apply m-0 text-base font-semibold text-ink;
+}
+
+.steps {
+  @apply m-0 flex list-decimal flex-col gap-1 pl-5 text-ink;
+}
+
+.steps li {
+  display: list-item;
+}
+
+.caption {
+  @apply uCaption;
+}
+
+.confirm {
+  @apply flex flex-col gap-2;
+}
+
+.body {
+  @apply uIntro m-0;
+}
+
+.dangerLink {
+  @apply uDangerLinkButton;
+}
+
+.quietLink {
+  @apply mt-2 cursor-pointer border-0 bg-transparent p-0 text-sm text-gray-500 underline;
+}

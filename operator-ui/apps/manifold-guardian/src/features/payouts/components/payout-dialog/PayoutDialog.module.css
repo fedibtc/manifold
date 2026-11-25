@@ -1,0 +1,40 @@
+.overlay {
+  @apply fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4;
+}
+
+.card {
+  @apply uStack4 max-h-full w-full overflow-y-auto rounded-card border border-muted bg-surface p-6 outline-none;
+  max-width: 540px;
+}
+
+.card[data-wide="true"] {
+  max-width: 760px;
+}
+
+.head {
+  @apply uStack1;
+}
+
+.title {
+  @apply uPageHeading m-0;
+}
+
+.idRow {
+  @apply uCopyRow text-sm text-gray-500;
+}
+
+.mono {
+  @apply uMono;
+}
+
+.note {
+  @apply m-0 rounded-card bg-gray-50 p-3 text-sm text-gray-500;
+}
+
+.footer {
+  @apply flex flex-wrap items-center justify-end gap-2 border-t border-muted pt-4;
+}
+
+.footerStart {
+  @apply mr-auto;
+}

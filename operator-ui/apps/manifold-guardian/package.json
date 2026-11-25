@@ -16,7 +16,9 @@
     "@operator-ui/types": "workspace:*",
     "@scure/base": "^2.3.0",
     "@tanstack/react-query": "^5.62.11",
+    "buffer": "^6.0.3",
     "qrcode.react": "^4.2.0",
+    "qrloop": "^1.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.18.2"

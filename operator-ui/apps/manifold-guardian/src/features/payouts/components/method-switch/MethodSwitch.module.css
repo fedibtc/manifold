@@ -1,0 +1,11 @@
+.root {
+  @apply flex rounded-full bg-gray-50 p-1;
+}
+
+.segment {
+  @apply flex-1 cursor-pointer rounded-full border-0 bg-transparent py-1.5 text-center text-sm font-medium text-gray-500;
+}
+
+.segment[data-on="true"] {
+  @apply bg-surface text-ink shadow-sm;
+}

@@ -1,0 +1,24 @@
+.list {
+  @apply m-0 list-none p-0;
+}
+
+.row {
+  @apply flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-muted px-4 py-3 text-sm last:border-b-0;
+}
+
+.amount {
+  @apply w-28 font-semibold text-ink;
+  font-variant-numeric: tabular-nums;
+}
+
+.how {
+  @apply min-w-0 break-words text-ink;
+}
+
+.source {
+  @apply min-w-0 flex-1 text-gray-500;
+}
+
+.action {
+  @apply ml-auto;
+}
