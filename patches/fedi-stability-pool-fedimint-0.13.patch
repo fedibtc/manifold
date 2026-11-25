@@ -1,0 +1,85 @@
+diff --git a/crates/modules/stability-pool/common/src/lib.rs b/crates/modules/stability-pool/common/src/lib.rs
+index 5fe15e2..dbdf1c4 100644
+--- a/crates/modules/stability-pool/common/src/lib.rs
++++ b/crates/modules/stability-pool/common/src/lib.rs
+@@ -183,7 +183,8 @@ impl Decodable for Account {
+         modules: &ModuleDecoderRegistry,
+     ) -> Result<Self, DecodeError> {
+         let raw = AccountUnchecked::consensus_decode_partial(r, modules)?;
+-        Ok(raw.try_into()?)
++        raw.try_into()
++            .map_err(|e: anyhow::Error| DecodeError::custom(e.to_string()))
+     }
+ }
+ 
+diff --git a/crates/modules/stability-pool/client/src/lib.rs b/crates/modules/stability-pool/client/src/lib.rs
+index 755055a..047845a 100644
+--- a/crates/modules/stability-pool/client/src/lib.rs
++++ b/crates/modules/stability-pool/client/src/lib.rs
+@@ -12,6 +12,7 @@ use common::{
+ };
+ use db::RecordedTransferItemKey;
+ use fedimint_api_client::api::{DynModuleApi, FederationApiExt as _, FederationError};
++use fedimint_client::module::error::ClientModuleError;
+ use fedimint_client::module::module::init::{ClientModuleInit, ClientModuleInitArgs};
+ use fedimint_client::module::module::recovery::NoModuleBackup;
+ use fedimint_client::module::module::{ClientContext, OutPointRange};
+@@ -95,7 +96,10 @@ impl ModuleInit for StabilityPoolClientInit {
+ impl ClientModuleInit for StabilityPoolClientInit {
+     type Module = StabilityPoolClientModule;
+ 
+-    async fn init(&self, args: &ClientModuleInitArgs<Self>) -> anyhow::Result<Self::Module> {
++    async fn init(
++        &self,
++        args: &ClientModuleInitArgs<Self>,
++    ) -> Result<Self::Module, ClientModuleError> {
+         Ok(StabilityPoolClientModule {
+             cfg: args.cfg().to_owned(),
+             client_key_pair: args
+@@ -166,7 +170,9 @@ impl ClientModule for StabilityPoolClientModule {
+     async fn handle_cli_command(
+         &self,
+         args: &[ffi::OsString],
+-    ) -> anyhow::Result<serde_json::Value> {
++    ) -> Result<serde_json::Value, ClientModuleError> {
++        // Fedimint 0.13 types this error; the body below is unchanged.
++        async {
+         let command = CliCommand::parse_from(
+             iter::once(&ffi::OsString::from("stability-pool")).chain(args.iter()),
+         );
+@@ -460,6 +466,9 @@ impl ClientModule for StabilityPoolClientModule {
+             }
+         }
+     }
++        .await
++        .map_err(|e: anyhow::Error| ClientModuleError::Other(e.into()))
++    }
+ }
+ 
+ #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable, Hash)]
+@@ -1334,6 +1343,7 @@ async fn submit_tx_with_output_dbtx(
+             tx,
+         )
+         .await
++        .map_err(anyhow::Error::from)
+ }
+ 
+ /// Composes an atomic multi-output deposit into an existing caller-owned DB
+@@ -1358,6 +1368,7 @@ async fn submit_tx_with_deposit_outputs_dbtx(
+             tx,
+         )
+         .await
++        .map_err(anyhow::Error::from)
+ }
+ 
+ fn validate_btc_balance_deposit_batch(
+@@ -1746,8 +1757,7 @@ mod tests {
+             client_key_pair: module_root_secret.clone().to_secp_key(secp256k1::SECP256K1),
+             btc_depositor_keypair_override,
+             module_api: DynGlobalApi::new(
+-                futures::executor::block_on(ConnectorRegistry::build_from_client_defaults().bind())
+-                    .expect("valid connector registry"),
++                futures::executor::block_on(ConnectorRegistry::build_from_client_defaults().bind()),
+                 Default::default(),
+                 None,
+             )

@@ -864,10 +864,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitmaps"
-version = "3.2.1"
+name = "bitreq"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6"
+checksum = "2118ef89c7d94696800407a4b0e555da52d36a791f522c3b98d7cceff9b45f51"
+dependencies = [
+ "base64 0.22.1",
+ "rustls",
+ "rustls-webpki 0.103.16",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 1.0.12",
+]
 
 [[package]]
 name = "bitvec"
@@ -2088,7 +2098,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2328,7 +2338,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2341,6 +2351,20 @@ dependencies = [
  "hex-conservative 0.2.2",
  "log",
  "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "esplora-client"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "647f9c89c653d69cce478202b7377c03737e33fc6bc5ec044187bf83e5597ea2"
+dependencies = [
+ "bitcoin",
+ "bitreq",
+ "hex-conservative 0.2.2",
  "serde",
  "serde_json",
  "tokio",
@@ -2413,7 +2437,7 @@ dependencies = [
  "fedimint-walletv2-client",
  "futures",
  "hex",
- "iroh 1.4.1",
+ "iroh",
  "libc",
  "lightning-invoice",
  "locked-payments",
@@ -2818,7 +2842,7 @@ dependencies = [
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
  "hex",
- "iroh 1.4.1",
+ "iroh",
  "nostr",
  "peerbadge-protocol",
  "petname",
@@ -2853,7 +2877,7 @@ dependencies = [
  "async-trait",
  "ciborium",
  "fedi-iroh-rpc-macros",
- "iroh 1.4.1",
+ "iroh",
  "serde",
  "serde_bytes",
  "thiserror 2.0.18",
@@ -2872,13 +2896,13 @@ dependencies = [
 
 [[package]]
 name = "fedimint-aead"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "argon2",
  "hex",
  "rand 0.8.6",
  "ring",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2904,9 +2928,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-api-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-channel",
  "async-trait",
  "bitcoin",
@@ -2929,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-bip39"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "bip39",
  "fedimint-client",
@@ -2940,30 +2963,30 @@ dependencies = [
 
 [[package]]
 name = "fedimint-bitcoind"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitcoin",
- "esplora-client",
+ "esplora-client 0.12.3",
+ "esplora-client 0.13.0",
  "fedimint-core",
  "fedimint-logging",
  "fedimint-metrics",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-build"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "fedimint-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-stream",
  "async-trait",
  "bitcoin",
@@ -2983,7 +3006,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -2993,9 +3016,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-client-module"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "async-stream",
  "async-trait",
@@ -3015,7 +3037,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -3024,18 +3046,17 @@ dependencies = [
 
 [[package]]
 name = "fedimint-connectors"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "aws-lc-sys 0.41.0",
- "base64 0.22.1",
+ "base64 0.23.1",
  "fedimint-core",
  "fedimint-logging",
  "fedimint-metrics",
  "futures",
- "iroh 0.35.0",
- "iroh 1.4.1",
+ "iroh",
+ "iroh-fedimint",
  "iroh-mainline-address-lookup",
  "jsonrpsee-core",
  "jsonrpsee-types",
@@ -3055,9 +3076,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-core"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-channel",
  "async-lock",
  "async-recursion",
@@ -3065,7 +3085,7 @@ dependencies = [
  "aws-lc-sys 0.41.0",
  "backon",
  "backtrace",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bech32",
  "bitcoin",
  "bitcoin-io",
@@ -3085,8 +3105,8 @@ dependencies = [
  "hex",
  "hex-conservative 1.2.0",
  "imbl",
- "iroh 0.35.0",
  "iroh-base 0.35.0",
+ "iroh-fedimint",
  "iroh-relay 0.35.0",
  "itertools 0.14.0",
  "js-sys",
@@ -3098,6 +3118,7 @@ dependencies = [
  "miniscript",
  "n0-future 0.1.3",
  "rand 0.8.6",
+ "rustls-webpki 0.103.16",
  "scopeguard",
  "secp256k1 0.29.1",
  "semver",
@@ -3106,7 +3127,7 @@ dependencies = [
  "serdect 0.2.0",
  "slotmap",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "subtle",
  "thiserror 2.0.18",
  "tokio",
@@ -3119,19 +3140,19 @@ dependencies = [
 
 [[package]]
 name = "fedimint-db-locked"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "fedimint-core",
  "fedimint-logging",
  "fs-lock",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-derive"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "itertools 0.14.0",
  "proc-macro2",
@@ -3141,9 +3162,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-derive-secret"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin_hashes",
  "bls12_381",
  "fedimint-core",
@@ -3153,9 +3173,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-eventlog"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "fedimint-core",
  "fedimint-logging",
@@ -3164,15 +3183,15 @@ dependencies = [
  "itertools 0.14.0",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-gateway-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bcrypt",
  "bitcoin",
  "chrono",
@@ -3195,9 +3214,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-gateway-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin",
  "clap",
  "fedimint-api-client",
@@ -3213,16 +3231,15 @@ dependencies = [
 
 [[package]]
 name = "fedimint-hkdf"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "bitcoin_hashes",
 ]
 
 [[package]]
 name = "fedimint-ln-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "assert_matches",
  "async-stream",
@@ -3245,7 +3262,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3253,22 +3270,22 @@ dependencies = [
 
 [[package]]
 name = "fedimint-ln-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitcoin",
  "fedimint-connectors",
  "fedimint-core",
  "fedimint-logging",
  "fedimint-threshold-crypto",
- "iroh 0.35.0",
+ "iroh-fedimint",
  "lightning",
  "lightning-invoice",
  "reqwest 0.12.28",
  "serde",
  "serde-big-array",
  "serde_json",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3276,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-ln-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3293,27 +3310,27 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-lnurl"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "bech32",
  "lightning-invoice",
  "reqwest 0.12.28",
  "serde",
+ "serde_json",
  "serde_with",
 ]
 
 [[package]]
 name = "fedimint-lnv2-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "async-stream",
  "async-trait",
@@ -3342,9 +3359,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-lnv2-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitcoin",
  "fedimint-connectors",
@@ -3362,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-lnv2-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3379,29 +3395,28 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-logging"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "console-subscriber",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "thiserror 2.0.18",
  "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "fedimint-meta-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "erased-serde",
  "fedimint-api-client",
@@ -3413,16 +3428,15 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-meta-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "fedimint-core",
  "fedimint-logging",
  "hex",
@@ -3434,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-meta-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3447,15 +3461,14 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-metrics"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "axum 0.8.9",
  "fedimint-core",
  "prometheus",
@@ -3465,14 +3478,13 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mint-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "assert_matches",
  "async-stream",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bitcoin_hashes",
  "bls12_381",
  "erased-serde",
@@ -3495,7 +3507,7 @@ dependencies = [
  "serde_json",
  "serdect 0.2.0",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -3504,9 +3516,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mint-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin_hashes",
  "fedimint-core",
  "fedimint-tbs",
@@ -3517,7 +3528,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mint-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3534,15 +3545,14 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-mintv2-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "async-channel",
  "async-stream",
@@ -3568,7 +3578,7 @@ dependencies = [
  "serde_json",
  "serdect 0.2.0",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -3577,9 +3587,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mintv2-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin_hashes",
  "fedimint-core",
  "fedimint-tbs",
@@ -3590,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-mintv2-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3608,15 +3617,14 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-rocksdb"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-trait",
  "bon",
  "fedimint-core",
@@ -3624,19 +3632,20 @@ dependencies = [
  "fedimint-logging",
  "futures",
  "rocksdb",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-channel",
  "async-trait",
  "axum 0.8.9",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bincode",
  "bitcoin",
  "bls12_381",
@@ -3656,8 +3665,8 @@ dependencies = [
  "group",
  "hex",
  "hyper",
- "iroh 0.35.0",
- "iroh 1.4.1",
+ "iroh",
+ "iroh-fedimint",
  "iroh-mainline-address-lookup",
  "iroh-relay 0.35.0",
  "itertools 0.14.0",
@@ -3675,7 +3684,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "subtle",
  "tar",
  "tokio",
@@ -3689,13 +3698,13 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-bitcoin-rpc"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "bitcoin",
  "bitcoincore-rpc",
- "esplora-client",
+ "esplora-client 0.13.0",
  "fedimint-core",
  "fedimint-logging",
  "fedimint-metrics",
@@ -3706,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-core"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3724,7 +3733,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-server-ui"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3751,7 +3760,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-tbs"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "bls12_381",
  "fedimint-core",
@@ -3787,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-tpe"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "bitcoin_hashes",
  "bls12_381",
@@ -3801,21 +3810,21 @@ dependencies = [
 
 [[package]]
 name = "fedimint-ui-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "axum 0.8.9",
  "axum-extra",
  "fedimint-core",
  "maud",
  "serde",
+ "subtle",
  "tokio",
 ]
 
 [[package]]
 name = "fedimint-unknown-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "fedimint-core",
  "serde",
  "thiserror 2.0.18",
@@ -3823,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-unknown-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3832,21 +3841,17 @@ dependencies = [
  "fedimint-server-core",
  "fedimint-unknown-common",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
 ]
 
 [[package]]
 name = "fedimint-util-error"
-version = "0.12.0"
-dependencies = [
- "anyhow",
-]
+version = "0.13.1"
 
 [[package]]
 name = "fedimint-wallet-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "aquamarine",
  "assert_matches",
  "async-stream",
@@ -3866,7 +3871,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3874,9 +3879,8 @@ dependencies = [
 
 [[package]]
 name = "fedimint-wallet-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin",
  "fedimint-core",
  "hex",
@@ -3889,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-wallet-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3909,16 +3913,15 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-walletv2-client"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "async-stream",
  "async-trait",
  "bitcoin",
@@ -3936,16 +3939,15 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "thiserror 2.0.18",
  "tracing",
 ]
 
 [[package]]
 name = "fedimint-walletv2-common"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
- "anyhow",
  "bitcoin",
  "fedimint-core",
  "miniscript",
@@ -3956,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "fedimint-walletv2-server"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3973,13 +3975,14 @@ dependencies = [
  "secp256k1 0.29.1",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
+ "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "fedimintd"
-version = "0.12.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -4016,7 +4019,7 @@ dependencies = [
 
 [[package]]
 name = "fedimintd-envs"
-version = "0.12.0"
+version = "0.13.1"
 
 [[package]]
 name = "ff"
@@ -4301,7 +4304,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.1.3",
+ "windows-link 0.2.1",
  "windows-result 0.4.1",
 ]
 
@@ -4835,7 +4838,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tower-service",
  "tracing",
@@ -5041,26 +5044,24 @@ dependencies = [
 
 [[package]]
 name = "imbl"
-version = "5.0.0"
+version = "7.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4308a675e4cfc1920f36a8f4d8fb62d5533b7da106844bd1ec51c6f1fa94a0c"
+checksum = "46bad832b9b463ed9398b8506488cc2e3b897a9d44f13af115f382aac71f4fec"
 dependencies = [
  "archery",
- "bitmaps",
+ "equivalent",
  "imbl-sized-chunks",
  "rand_core 0.9.5",
  "rand_xoshiro",
  "version_check",
+ "wide",
 ]
 
 [[package]]
 name = "imbl-sized-chunks"
-version = "0.1.3"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f4241005618a62f8d57b2febd02510fb96e0137304728543dfc5fd6f052c22d"
-dependencies = [
- "bitmaps",
-]
+checksum = "2a0813be332553f857953298749fa19549e8b61b80589757c29b4e2a804fa9c6"
 
 [[package]]
 name = "impl-tools"
@@ -5191,8 +5192,113 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iroh"
+version = "1.4.1"
+source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
+dependencies = [
+ "backon",
+ "blake3",
+ "bytes",
+ "cfg_aliases",
+ "ctutils",
+ "data-encoding",
+ "derive_more 2.1.1",
+ "ed25519-dalek 3.0.0-rc.0",
+ "futures-util",
+ "getrandom 0.4.2",
+ "http",
+ "ipnet",
+ "iroh-base 1.4.1",
+ "iroh-dns",
+ "iroh-metrics 1.0.2",
+ "iroh-relay 1.4.1",
+ "n0-error",
+ "n0-future 0.3.2",
+ "n0-watcher",
+ "netwatch 0.19.3",
+ "noq",
+ "noq-proto",
+ "noq-udp",
+ "papaya",
+ "pin-project",
+ "portable-atomic",
+ "portmapper 0.19.3",
+ "rand 0.10.1",
+ "reqwest 0.13.4",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "smallvec",
+ "strum 0.28.0",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "url",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "iroh-base"
 version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?tag=v0.35.0-fedi1#8384cc9a83f539c648c942863adc0a9ca8af80e6"
+source = "git+https://github.com/fedibtc/iroh?branch=roboman%2Firoh-fedimint-0.35-fedi1#7cf82f438a03ce14818443896c4dad962bab2e65"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "data-encoding",
+ "derive_more 1.0.0",
+ "ed25519-dalek 2.2.0",
+ "postcard",
+ "rand_core 0.6.4",
+ "serde",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "iroh-base"
+version = "1.4.1"
+source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
+dependencies = [
+ "curve25519-dalek 5.0.0-rc.0",
+ "data-encoding",
+ "data-encoding-macro",
+ "derive_more 2.1.1",
+ "ed25519-dalek 3.0.0-rc.0",
+ "getrandom 0.4.2",
+ "n0-error",
+ "rand 0.10.1",
+ "serde",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "iroh-dns"
+version = "1.4.1"
+source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
+dependencies = [
+ "arc-swap",
+ "cfg_aliases",
+ "derive_more 2.1.1",
+ "iroh-base 1.4.1",
+ "n0-dns-resolver",
+ "n0-error",
+ "n0-future 0.3.2",
+ "portable-atomic",
+ "rand 0.10.1",
+ "rustls",
+ "simple-dns 0.12.0",
+ "strum 0.28.0",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "iroh-fedimint"
+version = "0.35.0"
+source = "git+https://github.com/fedibtc/iroh?branch=roboman%2Firoh-fedimint-0.35-fedi1#7cf82f438a03ce14818443896c4dad962bab2e65"
 dependencies = [
  "aead",
  "anyhow",
@@ -5251,118 +5357,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh"
-version = "1.4.1"
-source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
-dependencies = [
- "backon",
- "blake3",
- "bytes",
- "cfg_aliases",
- "ctutils",
- "data-encoding",
- "derive_more 2.1.1",
- "ed25519-dalek 3.0.0-rc.0",
- "futures-util",
- "getrandom 0.4.2",
- "http",
- "ipnet",
- "iroh-base 1.4.1",
- "iroh-dns",
- "iroh-metrics 1.0.2",
- "iroh-relay 1.4.1",
- "n0-error",
- "n0-future 0.3.2",
- "n0-watcher",
- "netwatch 0.19.3",
- "noq",
- "noq-proto",
- "noq-udp",
- "papaya",
- "pin-project",
- "portable-atomic",
- "portmapper 0.19.3",
- "rand 0.10.1",
- "reqwest 0.13.4",
- "rustc-hash",
- "rustls",
- "rustls-pki-types",
- "serde",
- "smallvec",
- "strum 0.28.0",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "url",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "iroh-base"
-version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?tag=v0.35.0-fedi1#8384cc9a83f539c648c942863adc0a9ca8af80e6"
-dependencies = [
- "curve25519-dalek 4.1.3",
- "data-encoding",
- "derive_more 1.0.0",
- "ed25519-dalek 2.2.0",
- "postcard",
- "rand_core 0.6.4",
- "serde",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
-name = "iroh-base"
-version = "1.4.1"
-source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
-dependencies = [
- "curve25519-dalek 5.0.0-rc.0",
- "data-encoding",
- "data-encoding-macro",
- "derive_more 2.1.1",
- "ed25519-dalek 3.0.0-rc.0",
- "getrandom 0.4.2",
- "n0-error",
- "rand 0.10.1",
- "serde",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "iroh-dns"
-version = "1.4.1"
-source = "git+https://github.com/fedibtc/iroh?rev=ba77618cdf93ad7930fa934d5279ec556c46ef5d#ba77618cdf93ad7930fa934d5279ec556c46ef5d"
-dependencies = [
- "arc-swap",
- "cfg_aliases",
- "derive_more 2.1.1",
- "iroh-base 1.4.1",
- "n0-dns-resolver",
- "n0-error",
- "n0-future 0.3.2",
- "portable-atomic",
- "rand 0.10.1",
- "rustls",
- "simple-dns 0.12.0",
- "strum 0.28.0",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "iroh-mainline-address-lookup"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1fd07cb8b4af54ccf367fe79516484c544ea3e4b1984cdd2b9aaf3bacaa80f2"
 dependencies = [
  "derive_more 2.1.1",
- "iroh 1.4.1",
+ "iroh",
  "iroh-base 1.4.1",
  "iroh-dns",
  "n0-error",
@@ -5482,7 +5483,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "0.35.0"
-source = "git+https://github.com/fedibtc/iroh?tag=v0.35.0-fedi1#8384cc9a83f539c648c942863adc0a9ca8af80e6"
+source = "git+https://github.com/fedibtc/iroh?branch=roboman%2Firoh-fedimint-0.35-fedi1#7cf82f438a03ce14818443896c4dad962bab2e65"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5967,9 +5968,9 @@ dependencies = [
 
 [[package]]
 name = "lightning"
-version = "0.1.11"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c560d6c22b76ee0375c4fafcadd84dac7fcd9748af4d6626556c32b1a9753a0c"
+checksum = "1cb355abfb61d8ffe201cd5ce6b3e4304c9a897b05988ceed71987f9514fb642"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -5977,15 +5978,16 @@ dependencies = [
  "hashbrown 0.13.2",
  "libm",
  "lightning-invoice",
+ "lightning-macros",
  "lightning-types",
  "possiblyrandom",
 ]
 
 [[package]]
 name = "lightning-invoice"
-version = "0.33.3"
+version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b39b494954ed8f1d774d86473224fadf9f0dfcca38c2d16a7dbdf2b5800c8943"
+checksum = "5e874476e461bcca94ae30335bc5263f126f9219fdbd7bde6e02b530dbaa6567"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -5994,10 +5996,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "lightning-types"
+name = "lightning-macros"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16acfbf632be138618a255b353b1c4577f06cf85972aff1cf59f46554528751f"
+checksum = "d4c717494cdc2c8bb85bee7113031248f5f6c64f8802b33c1c9e2d98e594aa71"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "lightning-types"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c77c676d4a34cceb2ae3756916e446b4d17f9430a24107e099981f0f9aec77e6"
 dependencies = [
  "bitcoin",
 ]
@@ -6299,7 +6312,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
- "iroh 1.4.1",
+ "iroh",
  "libc",
  "mg-core",
  "mg-fedimint",
@@ -6369,7 +6382,7 @@ dependencies = [
  "hex",
  "hkdf",
  "humantime",
- "iroh 1.4.1",
+ "iroh",
  "iroh-base 0.35.0",
  "jsonrpsee-server",
  "libc",
@@ -7123,7 +7136,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -7166,7 +7179,7 @@ checksum = "8d0160422832eea1cc11c34be04ee6d5a046452b0b46cfb14695d55a1f24c954"
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -7269,7 +7282,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8390,7 +8403,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8428,7 +8441,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.59.0",
 ]
@@ -8922,7 +8935,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8981,7 +8994,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9040,6 +9053,15 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -9180,7 +9202,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10193,7 +10215,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11202,6 +11224,16 @@ checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
 dependencies = [
  "libredox",
  "wasite",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

@@ -440,6 +440,8 @@ pub struct FakeSeatProcessSpawner {
     /// API state each new child starts with, as its database would give it.
     spawn_state: Mutex<FakeApiState>,
     spawn_count: AtomicUsize,
+    /// The start-time features of each spawn, in order.
+    start_features: Mutex<Vec<crate::fedimintd_features::Features>>,
     request_count: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
@@ -454,6 +456,7 @@ impl Default for FakeSeatProcessSpawner {
             default_script: None,
             spawn_state: Default::default(),
             spawn_count: Default::default(),
+            start_features: Default::default(),
             request_count: Default::default(),
             requests: Default::default(),
             next_generation: Default::default(),
@@ -510,6 +513,11 @@ impl FakeSeatProcessSpawner {
         self.spawn_count.load(Ordering::Relaxed)
     }
 
+    /// The start-time features of each spawn so far, in order.
+    pub(crate) fn start_features(&self) -> Vec<crate::fedimintd_features::Features> {
+        self.start_features.lock().unwrap().clone()
+    }
+
     pub(crate) fn request_count(&self) -> usize {
         self.request_count.load(Ordering::Relaxed)
     }
@@ -547,7 +555,9 @@ impl FakeSeatProcessSpawner {
         seat_id: SeatId,
         seat_no: SeatNo,
         ports: SeatPorts,
+        features: &crate::fedimintd_features::Features,
     ) -> Result<SeatProcess, SeatProcessError> {
+        self.start_features.lock().unwrap().push(features.clone());
         self.spawn_count.fetch_add(1, Ordering::Relaxed);
         let mut steps = self
             .scripts

@@ -90,9 +90,12 @@ pub(crate) async fn check_invite_endpoints(
     policy: EndpointPolicy,
     invite_code: &str,
 ) -> Result<InviteCode, EndpointPolicyError> {
-    let invite: InviteCode = invite_code
-        .parse()
-        .map_err(|_: anyhow::Error| EndpointPolicyError::MalformedInvite)?;
+    let invite: InviteCode =
+        invite_code
+            .parse()
+            .map_err(|_: fedimint_core::invite_code::InviteCodeParseError| {
+                EndpointPolicyError::MalformedInvite
+            })?;
     let peers = invite.peers();
     if peers.len() > MAX_INVITE_ENDPOINTS {
         return Err(EndpointPolicyError::TooManyEndpoints);

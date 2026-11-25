@@ -274,7 +274,7 @@ where
     let operation_id = OperationId::from_encodable(ecash);
     let encoded_ecash = base32::encode_prefixed(FEDIMINT_PREFIX, ecash);
     let result = receive().await;
-    let existing = if result == Err(MintV2ReceiveError::AlreadyReceived) {
+    let existing = if matches!(result, Err(MintV2ReceiveError::AlreadyReceived)) {
         lookup(operation_id).await
     } else {
         None
@@ -419,11 +419,8 @@ impl Wallet {
                 }
                 Ok(operation_id)
             }
-            Err(err)
-                if matches!(
-                    err.downcast_ref::<ReissueExternalNotesError>(),
-                    Some(ReissueExternalNotesError::AlreadyReissued)
-                ) && client.operation_exists(expected).await =>
+            Err(ReissueExternalNotesError::AlreadyReissued)
+                if client.operation_exists(expected).await =>
             {
                 Ok(expected)
             }

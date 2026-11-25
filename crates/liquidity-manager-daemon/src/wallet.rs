@@ -122,9 +122,7 @@ impl GatewaydFundsWallet {
         config: SetupConfigView,
         admin_credential: String,
     ) -> anyhow::Result<Self> {
-        let connectors = ConnectorRegistry::build_from_client_defaults()
-            .bind()
-            .await?;
+        let connectors = ConnectorRegistry::build_from_client_defaults().bind().await;
         let base_url = SafeUrl::parse(&config.gateway.admin_url)?.join(V1_API_ENDPOINT)?;
         Ok(Self {
             config,

@@ -10,7 +10,7 @@ use fedimint_build::envs::{FEDIMINT_BUILD_CODE_VERSION_ENV, FORCE_GIT_HASH_ENV};
 /// must stamp the pinned source too — not this checkout's own commit, which is what
 /// `fedimint_build::set_code_version` would read. `manifoldGuardianReleaseSync` in
 /// `flake.nix` keeps it equal to the flake input.
-const FEDIMINT_SOURCE_REV: &str = "1e405794eb17bd06075ae103f64ea96ddb3ea412";
+const FEDIMINT_SOURCE_REV: &str = "0c14de213a3f95ae9dbd4d629c62a0ee003fc034";
 
 fn main() {
     // A packager can still override the stamp, as the Nix builds do.

@@ -886,6 +886,9 @@ struct MgState {
     /// MG index -> attestation requests left that answer `SeatUnavailable`,
     /// as while the seat's guardian process restarts.
     unavailable_attestations: Mutex<HashMap<usize, usize>>,
+    /// MG index -> StartDkg requests left that answer `SeatUnavailable`, as
+    /// while the seat's guardian process restarts after a failed ceremony.
+    unavailable_starts: Mutex<HashMap<usize, usize>>,
     /// Replacement MG index -> original federation peer id it operates.
     attested_peer_overrides: Mutex<HashMap<usize, usize>>,
     /// MG index -> federation peer id, the position of its guardian code in
@@ -1425,6 +1428,17 @@ impl ManifoldGuardianService for TestMg {
         &self,
         request: SignedRequest<StartDkgRequest>,
     ) -> FmResult<StartDkgResponse> {
+        if let Some(left) = self
+            .state
+            .unavailable_starts
+            .lock()
+            .expect("test lock")
+            .get_mut(&self.index)
+            && *left > 0
+        {
+            *left -= 1;
+            return Err(ManifoldGuardianError::SeatUnavailable);
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock follows Unix epoch")
@@ -9508,6 +9522,34 @@ async fn a_saved_formation_proposal_stops_dialing_once_a_threshold_voted() {
         mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
         Some(next),
         "seat 0 was dialed only in the first wave"
+    );
+}
+
+#[tokio::test]
+async fn dkg_start_retries_a_seat_while_its_guardian_restarts() {
+    // A guardian whose ceremony failed restarts its process, and its seat
+    // answers StartDkg with `SeatUnavailable` until the new process is ready
+    // for parameters; that is retried, not fatal.
+    let mg_state = Arc::new(MgState::default());
+    mg_state.unavailable_starts.lock().unwrap().insert(3, 2);
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        TestPayments::new().0,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+
+    client
+        .create_at(intent(), locators(), options())
+        .await
+        .unwrap();
+
+    formed(&client.status());
+    assert_eq!(
+        mg_state.unavailable_starts.lock().unwrap()[&3],
+        0,
+        "both unavailable answers were retried"
     );
 }
 

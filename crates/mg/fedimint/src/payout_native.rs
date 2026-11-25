@@ -127,12 +127,14 @@ pub(crate) async fn start_payout(
                 .completed_payment
                 .is_some()
         };
-        let payment = start_fresh_v1_payment(has_completed_payment, || {
-            lightning.pay_bolt11_invoice(
-                Some(gateway.clone()),
-                invoice,
-                payout_metadata(request_id, destination),
-            )
+        let payment = start_fresh_v1_payment(has_completed_payment, || async {
+            Ok(lightning
+                .pay_bolt11_invoice(
+                    Some(gateway.clone()),
+                    invoice,
+                    payout_metadata(request_id, destination),
+                )
+                .await?)
         })
         .await?;
         let operation_id = payment.payment_type.operation_id();
@@ -287,7 +289,11 @@ impl V2Fallback {
 fn v2_fallback_reason(error: &SelectGatewayError) -> V2Fallback {
     match error {
         SelectGatewayError::NoGatewaysAvailable => V2Fallback::NoAnnouncements,
-        SelectGatewayError::GatewaysUnresponsive => V2Fallback::NoResponsiveSupportedGateway,
+        // Only receive-gateway selection reports `NoGatewayAcceptsReceives`;
+        // a gateway that answered without the routing the payout needs.
+        SelectGatewayError::GatewaysUnresponsive | SelectGatewayError::NoGatewayAcceptsReceives => {
+            V2Fallback::NoResponsiveSupportedGateway
+        }
         SelectGatewayError::FailedToRequestGateways(_) => V2Fallback::AnnouncementQueryFailed,
     }
 }

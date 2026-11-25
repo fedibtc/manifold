@@ -439,7 +439,7 @@ impl TargetFedimintClients {
                 .map_err(|error| TargetFedimintError::EndpointPolicy(error.to_string()))?;
 
         let invite_code = InviteCode::from_str(&approved_invite.to_string())
-            .map_err(TargetFedimintError::InviteCode)?;
+            .map_err(|source| TargetFedimintError::InviteCode(source.into()))?;
         let (mut done, seq) = match self
             .open_slot(
                 federation_id,
@@ -921,10 +921,6 @@ pub(crate) enum TargetFedimintError {
     MnemonicFromEntropy(#[source] anyhow::Error),
     #[error("failed to store generated client secret: {0}")]
     StoreClientSecret(#[source] anyhow::Error),
-    #[error("failed to build fedimint client builder: {0}")]
-    ClientBuilder(#[source] anyhow::Error),
-    #[error("failed to build fedimint connectors: {0}")]
-    Connectors(#[source] anyhow::Error),
     #[error("failed to open RocksDB at {path}: {source}")]
     OpenRocksDb {
         path: String,
@@ -967,34 +963,28 @@ async fn load_or_generate_mnemonic(
         );
         Client::store_encodable_client_secret(db, mnemonic.to_entropy())
             .await
-            .map_err(TargetFedimintError::StoreClientSecret)?;
+            .map_err(|source| TargetFedimintError::StoreClientSecret(source.into()))?;
         mnemonic
     };
     Ok(mnemonic)
 }
 
-async fn make_client_builder()
--> Result<(fedimint_client::ClientBuilder, ConnectorRegistry), TargetFedimintError> {
-    let mut client_builder = Client::builder()
-        .await
-        .map_err(TargetFedimintError::ClientBuilder)?;
+async fn make_client_builder() -> (fedimint_client::ClientBuilder, ConnectorRegistry) {
+    let mut client_builder = Client::builder().await;
     client_builder.with_module(MetaClientInit);
     client_builder.with_module(MintClientInit);
     client_builder.with_module(MintV2ClientInit);
     client_builder.with_module(LightningClientInit::default());
     client_builder.with_module(WalletClientInit);
     client_builder.with_module(stability_pool_client::StabilityPoolClientInit::default());
-    let connectors = ConnectorRegistry::build_from_client_defaults()
-        .bind()
-        .await
-        .map_err(TargetFedimintError::Connectors)?;
-    Ok((client_builder, connectors))
+    let connectors = ConnectorRegistry::build_from_client_defaults().bind().await;
+    (client_builder, connectors)
 }
 
 async fn load_root_secret(db: &FedimintDatabase) -> Result<RootSecret, TargetFedimintError> {
     let secret = Client::load_decodable_client_secret::<Vec<u8>>(db)
         .await
-        .map_err(TargetFedimintError::LoadClientSecret)?;
+        .map_err(|source| TargetFedimintError::LoadClientSecret(source.into()))?;
     let mnemonic = fedimint_bip39::Mnemonic::from_entropy(&secret)
         .map_err(|source| TargetFedimintError::MnemonicFromEntropy(source.into()))?;
     Ok(RootSecret::StandardDoubleDerive(Bip39RootSecretStrategy::<
@@ -1019,7 +1009,7 @@ async fn open_rocksdb(
         .await
         .map_err(|source| TargetFedimintError::OpenRocksDb {
             path: db_path.display().to_string(),
-            source,
+            source: source.into(),
         })
 }
 
@@ -1028,7 +1018,7 @@ async fn create_or_load_client(
     rocksdb: &Path,
 ) -> Result<ClientHandleArc, TargetFedimintError> {
     let db: FedimintDatabase = open_rocksdb(rocksdb).await?.into();
-    let (client_builder, connectors) = make_client_builder().await?;
+    let (client_builder, connectors) = make_client_builder().await;
 
     let client = if Client::is_initialized(&db).await {
         debug!("target federation client is already initialized");
@@ -1036,7 +1026,7 @@ async fn create_or_load_client(
         client_builder
             .open(connectors, db, root_secret)
             .await
-            .map_err(TargetFedimintError::Open)?
+            .map_err(|source| TargetFedimintError::Open(source.into()))?
     } else {
         debug!(
             federation_id = %invite_code.federation_id(),
@@ -1054,11 +1044,11 @@ async fn create_or_load_client(
         .map_err(|_| TargetFedimintError::PreviewTimeout {
             seconds: TARGET_PREVIEW_BUDGET.as_secs(),
         })?
-        .map_err(TargetFedimintError::Preview)?;
+        .map_err(|source| TargetFedimintError::Preview(source.into()))?;
         preview
             .join(db, root_secret)
             .await
-            .map_err(TargetFedimintError::Join)?
+            .map_err(|source| TargetFedimintError::Join(source.into()))?
     };
     Ok(Arc::new(client))
 }

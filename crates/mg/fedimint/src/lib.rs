@@ -335,9 +335,7 @@ impl Wallet {
         let prefixes = load_prefixes(&database).await?;
         Ok(Self {
             database,
-            connectors: ConnectorRegistry::build_from_client_defaults()
-                .bind()
-                .await?,
+            connectors: ConnectorRegistry::build_from_client_defaults().bind().await,
             prefixes: Arc::new(RwLock::new(prefixes)),
             prefix_allocation: Mutex::new(()),
             _data_dir_lock: data_dir_lock,
@@ -596,10 +594,7 @@ impl Wallet {
         validate_scope_config(scope, &config)?;
         let required_mints = required_mint_modules(&config)?;
         ensure_mint_recoveries_finished(database, &required_mints).await?;
-        client
-            .wait_for_all_active_state_machines()
-            .await
-            .context("settle output state machines from completed federation recovery")?;
+        client.wait_for_all_active_state_machines().await;
         mark_recovery_ready(database).await
     }
 
@@ -637,10 +632,7 @@ impl Wallet {
         validate_scope_config(scope, &client.config().await)?;
         // Mint recovery can create output state machines. Their notes are not
         // spendable until they finish, so do not publish a premature balance.
-        client
-            .wait_for_all_active_state_machines()
-            .await
-            .with_context(|| format!("settle recovered mint outputs for {operation}"))?;
+        client.wait_for_all_active_state_machines().await;
         mark_recovery_ready(database).await?;
         Ok(client)
     }
@@ -739,10 +731,13 @@ impl Wallet {
         federation_id: FederationId,
         raw_token: &str,
     ) -> Result<Amount, WalletError> {
-        let notes: OOBNotes = raw_token
-            .trim()
-            .parse()
-            .map_err(WalletError::InvalidToken)?;
+        let notes: OOBNotes =
+            raw_token
+                .trim()
+                .parse()
+                .map_err(|err: fedimint_mint_client::OOBNotesParseError| {
+                    WalletError::InvalidToken(err.into())
+                })?;
         if notes.federation_id_prefix() != federation_id.to_prefix() {
             return Err(WalletError::WrongFederation {
                 selected: federation_id,
@@ -761,14 +756,7 @@ impl Wallet {
             // instead of failing: the reissue operation id is deterministic
             // in the notes, so the retry can find it (see
             // [`reissue_operation_id`]).
-            Err(err)
-                if matches!(
-                    err.downcast_ref::<ReissueExternalNotesError>(),
-                    Some(ReissueExternalNotesError::AlreadyReissued)
-                ) =>
-            {
-                reissue_operation_id(&notes)
-            }
+            Err(ReissueExternalNotesError::AlreadyReissued) => reissue_operation_id(&notes),
             Err(err) => return Err(WalletError::ReceiveFailed(format!("{err:#}"))),
         };
         let mut updates = mint
@@ -813,7 +801,10 @@ impl Wallet {
     /// Current ecash balance in one federation.
     pub async fn balance(&self, federation_id: FederationId) -> Result<Amount, WalletError> {
         let client = self.client(federation_id).await?;
-        Ok(client.get_balance_for_btc().await?)
+        Ok(client
+            .get_balance_for_btc()
+            .await
+            .map_err(anyhow::Error::from)?)
     }
 
     /// Every federation this wallet has joined.
@@ -1529,7 +1520,7 @@ fn v1_gateway_unavailable(
 async fn client_builder(
     guardian_key: Option<&GuardianFeeAccountKey>,
 ) -> anyhow::Result<fedimint_client::ClientBuilder> {
-    let mut builder = Client::builder().await?;
+    let mut builder = Client::builder().await;
     builder.with_module(MintClientInit);
     builder.with_module(MintV2ClientInit);
     builder.with_module(LightningClientInit::default());

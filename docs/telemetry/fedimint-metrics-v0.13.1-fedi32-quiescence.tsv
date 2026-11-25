@@ -11,13 +11,13 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.12.0-fedi30-quiescence
-producer	fedimint	fedibtc/fedimint	roboman/fedi30-aleph-quiescence	1e405794eb17bd06075ae103f64ea96ddb3ea412
+release_tag	0.13.1-fedi32-quiescence
+producer	fedimint	fedibtc/fedimint	roboman/v0.13-fedi	0c14de213a3f95ae9dbd4d629c62a0ee003fc034
 producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	1e405794eb17bd06075ae103f64ea96ddb3ea412
-metric_version	0.12.0
+revision	0c14de213a3f95ae9dbd4d629c62a0ee003fc034
+metric_version	0.13.1
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
 metric	admit	backup_write_size_bytes	fedimint

@@ -65,6 +65,8 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             guardian_transfer_v2: None,
             guardian_link: None,
             aleph_quiescence: None,
+            iroh_legacy_timeouts: None,
+            walletv2_legacy_vote_delay: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
         },
@@ -263,6 +265,8 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
                 guardian_transfer_v2: None,
                 guardian_link: None,
                 aleph_quiescence: None,
+                iroh_legacy_timeouts: None,
+                walletv2_legacy_vote_delay: None,
                 min_mg_version: None,
                 recommended_min_mg_version: None,
             },
@@ -904,6 +908,41 @@ fn aleph_quiescence_is_off_unless_the_policy_turns_it_on() {
     );
     assert_eq!(
         admitted(r#","aleph_quiescence":"yes""#),
+        Err(SetupPaymentFederationsContentError::MalformedContent)
+    );
+}
+
+#[test]
+fn fedimintd_kill_switches_are_off_unless_the_policy_turns_each_on() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let switches = |field: &str| {
+        AdmittedSetupPaymentFederations::parse(raw(field).as_bytes()).map(|admitted| {
+            let features = admitted.features();
+            (
+                features.iroh_legacy_timeouts(),
+                features.walletv2_legacy_vote_delay(),
+            )
+        })
+    };
+    assert_eq!(switches(""), Ok((false, false)));
+    assert_eq!(
+        switches(r#","iroh_legacy_timeouts":true"#),
+        Ok((true, false))
+    );
+    assert_eq!(
+        switches(r#","walletv2_legacy_vote_delay":true"#),
+        Ok((false, true))
+    );
+    assert_eq!(
+        switches(r#","iroh_legacy_timeouts":false,"walletv2_legacy_vote_delay":false"#),
+        Ok((false, false))
+    );
+    assert_eq!(
+        switches(r#","iroh_legacy_timeouts":1"#),
         Err(SetupPaymentFederationsContentError::MalformedContent)
     );
 }

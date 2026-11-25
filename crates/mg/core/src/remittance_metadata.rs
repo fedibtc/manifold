@@ -77,8 +77,8 @@ pub fn decrypt(
     let key = shared_key(&envelope.ephemeral_pubkey, &account_key.secret_key());
     let mut ciphertext =
         hex::decode(&envelope.ciphertext_hex).map_err(RemittanceMetadataError::CiphertextHex)?;
-    let plaintext =
-        fedimint_aead::decrypt(&mut ciphertext, &key).map_err(RemittanceMetadataError::Decrypt)?;
+    let plaintext = fedimint_aead::decrypt(&mut ciphertext, &key)
+        .map_err(|err| RemittanceMetadataError::Decrypt(err.into()))?;
 
     let metadata: RemittanceMetadata =
         serde_json::from_slice(plaintext).map_err(RemittanceMetadataError::Plaintext)?;

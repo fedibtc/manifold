@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use super::*;
 use crate::facts::{DkgCodeSet, SeatNo};
 use crate::fedimint_api::FedimintApi;
+use crate::fedimintd_features::Features;
 use crate::seat::SeatPhase;
 use crate::seat_process::fake::{
     FAKE_LNV2_INSTANCE_ID, FAKE_META_INSTANCE_ID, FakeApiState, FakeDkgStep, FakeSeatChildHandle,
@@ -321,6 +322,7 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
         .unwrap();
     drop(db);
     FleetConfig {
+        fedimintd_features_policy: tokio::sync::watch::channel(None).1,
         transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
         replacement_guardian_verifier: Arc::new(
             crate::replacement_guardian::UnverifiedReplacementGuardian,
@@ -743,8 +745,10 @@ fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
         enabled_modules: None,
         federation_size: None,
         network: bitcoin::Network::Regtest,
-        fedimint_version: fedi_decentralized_service_manifold_guardian::FEDIMINTD_VERSION_0_1
-            .to_owned(),
+        fedimint_version: fedimint_core::version::DkgVersion::parse(
+            fedi_decentralized_service_manifold_guardian::FEDIMINTD_VERSION_0_1,
+        )
+        .expect("FEDIMINTD_VERSION_0_1 is valid SemVer"),
     }
 }
 
@@ -3730,7 +3734,7 @@ async fn start_dkg_rejects_invalid_bare_codes_before_any_side_effect() {
     invalid.push((
         "invalid upstream setup",
         replace_peer(GuardianCode("not-a-fedimint-setup-code".to_owned())),
-        "Invalid Prefix",
+        "Invalid prefix",
     ));
     let mut duplicate_setup = valid.clone();
     duplicate_setup[2] = duplicate_setup[1].clone();
@@ -5871,9 +5875,9 @@ async fn seats_follow_the_published_aleph_quiescence_flag_across_restarts() {
         })],
     ]]));
     config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
-    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     let (policy, policy_rx) = tokio::sync::watch::channel(None);
-    fleet.bind_fedimintd_features_policy(policy_rx);
+    config.fedimintd_features_policy = policy_rx;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     let (_, seat_id) = create_free_seat(&fleet, 133).await;
     let fake = fleet
         .form_fake_child(&seat_id, running_federation(0, None))
@@ -5917,5 +5921,151 @@ async fn seats_follow_the_published_aleph_quiescence_flag_across_restarts() {
         .configure_fake_child(&seat_id, running_federation(0, None))
         .await;
     assert_eq!(quiescence_frames_reach(&replacement, 1).await, vec![true]);
+    fleet.shutdown().await;
+}
+
+/// A feature policy with these extra content fields.
+fn feature_policy(fields: serde_json::Value) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
+    let mut content = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    content
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+        content.to_string().as_bytes(),
+    )
+    .expect("test policy parses")
+    .features()
+    .clone()
+}
+
+/// A restarted MG must start its seats with the retained policy's start-time
+/// switches, not the defaults: the iroh timeouts cannot change on a running
+/// child, so a seat started before the policy applied would keep the wrong
+/// ones until its next restart.
+#[tokio::test]
+async fn reopened_fleet_starts_its_seats_with_the_policy_switches() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_330).await;
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::Hello {
+            proto: PROTOCOL_VERSION,
+            code_version: "fake-fedimintd".to_owned(),
+            state: ChildState::AlreadyConfigured {
+                invite_code: invite,
+            },
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 136).await;
+    fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    assert_eq!(spawner.start_features(), vec![Features::default()]);
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let (_policy, policy_rx) = tokio::sync::watch::channel(Some(feature_policy(
+        serde_json::json!({ "iroh_legacy_timeouts": true }),
+    )));
+    config.fedimintd_features_policy = policy_rx;
+    let reopened = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while spawner.spawn_count() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the reopened fleet respawns the seat");
+    assert_eq!(
+        spawner.start_features()[1],
+        Features {
+            iroh_legacy_timeouts: true,
+            ..Features::default()
+        }
+    );
+    reopened.shutdown().await;
+}
+
+/// A running child takes a policy change as a frame, without a restart; its
+/// replacement starts with the changed start-time switches.
+#[tokio::test]
+async fn seats_take_start_time_switches_at_respawn() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_310).await;
+    config.respawn.initial_backoff = Duration::from_millis(10);
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let hello = vec![FakeDkgStep::Message(ChildMessage::Hello {
+        proto: PROTOCOL_VERSION,
+        code_version: "fake-fedimintd".to_owned(),
+        state: ChildState::AlreadyConfigured {
+            invite_code: invite,
+        },
+    })];
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![vec![], hello]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let (policy, policy_rx) = tokio::sync::watch::channel(Some(feature_policy(
+        serde_json::json!({ "iroh_legacy_timeouts": true }),
+    )));
+    config.fedimintd_features_policy = policy_rx;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 135).await;
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    let legacy_iroh = Features {
+        iroh_legacy_timeouts: true,
+        ..Features::default()
+    };
+    assert_eq!(spawner.start_features().last(), Some(&legacy_iroh));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fake.state().features.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the seat sends the switches once consensus starts");
+    assert_eq!(fake.state().features, vec![legacy_iroh.clone()]);
+
+    // A change reaches the running child as a frame and does not restart it;
+    // the child applies only the runtime switches from it.
+    let spawns = spawner.spawn_count();
+    let vote_delay = Features {
+        walletv2_legacy_vote_delay: true,
+        ..Features::default()
+    };
+    policy.send_replace(Some(feature_policy(
+        serde_json::json!({ "walletv2_legacy_vote_delay": true }),
+    )));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fake.state().features.len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the change reaches the running child");
+    assert_eq!(fake.state().features[1], vote_delay);
+    assert_eq!(spawner.spawn_count(), spawns);
+
+    // The replacement child starts with the changed start-time switch.
+    fake.exit(1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while spawner.spawn_count() == spawns {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the exited child is replaced");
+    assert_eq!(spawner.start_features().last(), Some(&vote_delay));
     fleet.shutdown().await;
 }

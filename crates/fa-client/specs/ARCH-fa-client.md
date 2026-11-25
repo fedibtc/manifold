@@ -160,7 +160,9 @@ signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each MG retains the first start
 callback it accepts for delivery, while an MG without callback delivery
-configured discards it and proceeds callback-free.
+configured discards it and proceeds callback-free. A seat that answers
+`StartDkg` with `SeatUnavailable` while its guardian restarts, as after a
+failed ceremony, is retried until the run deadline.
 Callback state is deliberately absent from `FormationSnapshot`: a push is
 non-authoritative transport, while the durable formation driver remains the
 only source of lifecycle progress after the app resumes.

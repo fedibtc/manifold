@@ -285,7 +285,19 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
   something to order. Optional: absent means off in every environment. MGs
   apply a change to their running seats without restarting them, so
   publishing `false` is the rollback. Older MGs and FAs that admit unknown
-  fields ignore it; and
+  fields ignore it;
+- `iroh_legacy_timeouts` and `walletv2_legacy_vote_delay`, booleans that
+  turn off a fedimint 0.13 behaviour in the MG's seats. Each restores what
+  fedimint 0.12 did, so publishing `true` is the rollback of that behaviour.
+  `iroh_legacy_timeouts` starts each seat's fedimintd with 0.12's iroh QUIC
+  timeouts, 60 seconds idle and 30 seconds keep-alive instead of 5 and 1;
+  a seat takes a change when its fedimintd next starts.
+  `walletv2_legacy_vote_delay` makes each seat vote the walletv2 block count
+  one block further behind the chain tip, as 0.12 does; MGs apply a change
+  to their running seats without restarting them. Guardians with a switch
+  on and guardians with it off agree on every consensus outcome. Optional:
+  absent means off in every environment. MGs before the 0.13 line run 0.12
+  and ignore both, as do FAs that admit unknown fields; and
 - `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
   guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).

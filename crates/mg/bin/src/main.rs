@@ -520,6 +520,41 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?;
     let wallet_origin = db.wallet_origin().await?;
     let transfer_source = Arc::new(transfer_source::IrohTransferSource::new(endpoint.clone()));
+    // The Nostr boundary first: the fleet starts its seats with the feature
+    // policy it retained ([`mg_core::fedimintd_features`]).
+    let identity = db
+        .load_identity()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("completed onboarding has no fleet identity"))?;
+    let service_pubkey = identity.derive_service_pubkey();
+    let setup_payment_publisher = manifold_environment.setup_payment_publisher().copied();
+    let policy_store = Arc::new(FleetSetupPaymentPolicyStore::new(db.clone()));
+    // Revalidate retained authority before exposing the RPC router. A publisher
+    // rotation must fail startup without a window serving the old policy.
+    let retained_setup_payment_federations = mg_nostr::load_retained_setup_payment_policy(
+        &policy_store,
+        setup_payment_publisher,
+        manifold_environment.feature_config_publisher().copied(),
+        &db,
+    )
+    .await?;
+    let keys = identity.derive_service_nostr_keys();
+    let telemetry_registration_keys = keys.clone();
+    let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::new(db.clone()));
+    let retained_holder_authorizations = mg_nostr::load_retained_holder_authorizations(
+        &holder_authorization_store,
+        keys.public_key(),
+    )
+    .await?;
+    let nostr = mg_nostr::ManifoldGuardianNostr::new(
+        keys,
+        setup_payment_publisher,
+        retained_holder_authorizations,
+        retained_setup_payment_federations,
+        manifold_environment.clone(),
+        holder_authorization_store,
+        db.clone(),
+    );
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db.clone(),
@@ -546,6 +581,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 completion_callback_invoker: Arc::new(PushGatewayCallbackInvoker::new()),
                 process_spawner: SeatProcessSpawner::Bundled,
                 process: process.clone(),
+                // The fleet reads the retained policy before its seats start.
+                fedimintd_features_policy: nostr.subscribe_features(),
             },
             async |identity| {
                 let wallet = mg_fedimint::Wallet::open_guarding(
@@ -567,38 +604,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?,
     );
 
-    let identity = fleet.identity();
-    let service_pubkey = identity.derive_service_pubkey();
-    let setup_payment_publisher = manifold_environment.setup_payment_publisher().copied();
-    let policy_store = Arc::new(FleetSetupPaymentPolicyStore::new(fleet.clone()));
-    // Revalidate retained authority before exposing the RPC router. A publisher
-    // rotation must fail startup without a window serving the old policy.
-    let retained_setup_payment_federations = mg_nostr::load_retained_setup_payment_policy(
-        &policy_store,
-        setup_payment_publisher,
-        manifold_environment.feature_config_publisher().copied(),
-        &db,
-    )
-    .await?;
-    let keys = identity.derive_service_nostr_keys();
-    let telemetry_registration_keys = keys.clone();
-    let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::for_fleet(&fleet));
-    let retained_holder_authorizations = mg_nostr::load_retained_holder_authorizations(
-        &holder_authorization_store,
-        keys.public_key(),
-    )
-    .await?;
-    let nostr = mg_nostr::ManifoldGuardianNostr::new(
-        keys,
-        setup_payment_publisher,
-        retained_holder_authorizations,
-        retained_setup_payment_federations,
-        manifold_environment,
-        holder_authorization_store,
-        db,
-    );
     fleet.bind_guardian_link_policy(nostr.subscribe_features());
-    fleet.bind_fedimintd_features_policy(nostr.subscribe_features());
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
     let rpc = ManifoldGuardianRpc::new(

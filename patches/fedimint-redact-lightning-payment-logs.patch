@@ -1,17 +1,17 @@
 diff --git a/modules/fedimint-ln-client/src/pay.rs b/modules/fedimint-ln-client/src/pay.rs
-index ec56bfd6..c5b9d70c 100644
+index ca75ab9c480..991719a54c4 100644
 --- a/modules/fedimint-ln-client/src/pay.rs
 +++ b/modules/fedimint-ln-client/src/pay.rs
-@@ -85,7 +85,7 @@ pub(super) mod lightningpay {
-     }
- }
+@@ -43,7 +43,7 @@
+ #[allow(deprecated)]
+ pub(super) mod lightningpay;
  
 -#[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
 +#[derive(Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
  pub struct LightningPayCommon {
      pub operation_id: OperationId,
      pub federation_id: FederationId,
-@@ -95,12 +95,45 @@ pub struct LightningPayCommon {
+@@ -53,12 +53,45 @@ pub struct LightningPayCommon {
      pub invoice: lightning_invoice::Bolt11Invoice,
  }
  
@@ -58,7 +58,7 @@ index ec56bfd6..c5b9d70c 100644
  impl State for LightningPayStateMachine {
      type ModuleContext = LightningClientContext;
  
-@@ -348,20 +381,15 @@ impl LightningPayFunded {
+@@ -347,20 +380,15 @@ async fn gateway_pay_invoice(
                  Ok(preimage) => return Ok(preimage),
                  Err(err) => {
                      match err.clone() {
@@ -83,7 +83,7 @@ index ec56bfd6..c5b9d70c 100644
                                  );
                                  sleep(RETRY_DELAY).await;
                                  continue;
-@@ -373,11 +401,8 @@ impl LightningPayFunded {
+@@ -372,11 +400,8 @@ async fn gateway_pay_invoice(
                      }
  
                      warn!(

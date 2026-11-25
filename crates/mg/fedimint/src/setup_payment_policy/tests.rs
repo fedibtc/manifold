@@ -159,7 +159,11 @@ impl EcashWallet for RecordingWallet {
     }
 
     async fn join(&self, invite_code: &str) -> Result<FederationId, JoinError> {
-        let invite: FedimintInviteCode = invite_code.parse().map_err(JoinError::Retryable)?;
+        let invite: FedimintInviteCode = invite_code.parse().map_err(
+            |err: fedimint_core::invite_code::InviteCodeParseError| {
+                JoinError::Retryable(err.into())
+            },
+        )?;
         let federation_id = invite.federation_id().to_string();
         self.join_calls.lock().unwrap().push(federation_id.clone());
         let active = self.active_joins.fetch_add(1, Ordering::SeqCst) + 1;

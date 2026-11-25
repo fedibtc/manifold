@@ -74,6 +74,7 @@ async fn harness_in(environment: ManifoldEnvironment, origin: Option<&str>) -> H
     let fleet = Fleet::open(
         db,
         FleetConfig {
+            fedimintd_features_policy: tokio::sync::watch::channel(None).1,
             transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
             replacement_guardian_verifier: Arc::new(
                 crate::replacement_guardian::UnverifiedReplacementGuardian,

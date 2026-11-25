@@ -26,7 +26,9 @@
 //! `FM_PASSWORD_UI` environment settings on every spawn, never through argv.
 //! The same secret travels through the private driven-DKG socket to encrypt
 //! guardian configuration. Bitcoin Core RPC credentials also use the child
-//! environment; Esplora configuration is public.
+//! environment; Esplora configuration is public. The child's start-time
+//! feature switches travel as JSON in `FM_FEATURES`
+//! ([`crate::fedimintd_features`]).
 //!
 //! Guarantees the rest of the daemon relies on:
 //! - **Daemon exit kills the child, even on SIGKILL** (kill-on-drop plus a
@@ -60,14 +62,13 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
-#[cfg(test)]
-use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber;
 
 #[cfg(not(test))]
 use crate::bundled_fedimintd;
 use crate::facts::{SeatNo, SeatPorts};
+use crate::fedimintd_features::{FM_FEATURES_ENV, Features};
 use crate::identity::SeatKeys;
 
 #[cfg(target_os = "linux")]
@@ -207,11 +208,14 @@ impl SeatProcessSpawner {
         seat_no: SeatNo,
         ports: SeatPorts,
         api_auth: &str,
+        features: &Features,
     ) -> Result<SeatProcess, SeatProcessError> {
         match self {
-            Self::Bundled => SeatProcess::start(config, seat_id, seat_no, ports, api_auth).await,
+            Self::Bundled => {
+                SeatProcess::start(config, seat_id, seat_no, ports, api_auth, features).await
+            }
             #[cfg(test)]
-            Self::Fake(fake) => fake.start(config, seat_id, seat_no, ports).await,
+            Self::Fake(fake) => fake.start(config, seat_id, seat_no, ports, features).await,
         }
     }
 
@@ -249,9 +253,10 @@ impl SeatProcess {
         seat_no: SeatNo,
         ports: SeatPorts,
         api_auth: &str,
+        features: &Features,
     ) -> Result<Self, SeatProcessError> {
         let (child, stdout_pump, stderr_pump, control) =
-            spawn_child(config, &seat_id, seat_no, ports, api_auth).await?;
+            spawn_child(config, &seat_id, seat_no, ports, api_auth, features).await?;
         Ok(Self {
             seat_id,
             child: SeatChild::Real(child),
@@ -488,6 +493,7 @@ async fn spawn_child(
     seat_no: SeatNo,
     ports: SeatPorts,
     api_auth: &str,
+    features: &Features,
 ) -> Result<
     (
         Child,
@@ -518,11 +524,13 @@ async fn spawn_child(
         std::env::current_exe().map_err(|source| SeatProcessError::LocateSelf { source })?;
     #[cfg(test)]
     let program = config.fedimintd.clone();
+    let features = serde_json::to_string(features).expect("features serialize to JSON");
     let mut command = Command::new(&program);
     #[cfg(not(test))]
     command.as_std_mut().arg0(bundled_fedimintd::ARGV0);
     command
         .env_clear()
+        .env(FM_FEATURES_ENV, features)
         .env("FM_PASSWORD_API", api_auth)
         .env("FM_PASSWORD_UI", api_auth)
         .arg("--data-dir")

@@ -19,7 +19,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, anyhow};
+use anyhow::anyhow;
 use fedi_decentralized_domain::Pubkey;
 use fedi_decentralized_service_manifold_guardian::{
     CreateSeatResponse, FaId, FederationId, GuardianTelemetrySeat, Plan, QuoteId, QuoteTerms,
@@ -93,6 +93,11 @@ pub struct FleetConfig {
     /// Fresh destination trust admission, independent of the FA's grant.
     pub replacement_guardian_verifier:
         Arc<dyn crate::replacement_guardian::ReplacementGuardianVerifier>,
+    /// The admitted feature policy the seats' fedimintd switches follow
+    /// ([`crate::fedimintd_features`]). The fleet reads it before its first
+    /// seat starts, because some switches are fixed at process start.
+    pub fedimintd_features_policy:
+        tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>>,
 }
 
 /// Payment has already been authenticated and verified offline. Fleet owns
@@ -273,7 +278,7 @@ impl FleetNostrHost {
 /// membership — bumping the offer epoch when a member was removed — in one
 /// database transaction ([`Db::replace_setup_payment_policy`]).
 pub struct FleetSetupPaymentPolicyStore {
-    fleet: Arc<Fleet>,
+    db: Db,
 }
 
 /// Durable cache owned by the fleet and populated only by explicit
@@ -285,12 +290,6 @@ pub struct FleetHolderAuthorizationStore {
 impl FleetHolderAuthorizationStore {
     pub fn new(db: Db) -> Self {
         Self { db }
-    }
-
-    pub fn for_fleet(fleet: &Fleet) -> Self {
-        Self {
-            db: fleet.db.clone(),
-        }
     }
 
     pub async fn load(&self, max_issued_at: u64) -> anyhow::Result<Option<String>> {
@@ -314,13 +313,13 @@ impl FleetHolderAuthorizationStore {
 }
 
 impl FleetSetupPaymentPolicyStore {
-    pub fn new(fleet: Arc<Fleet>) -> Self {
-        Self { fleet }
+    pub fn new(db: Db) -> Self {
+        Self { db }
     }
 
     /// Load the durably retained complete event JSON, if any.
     pub async fn load(&self) -> anyhow::Result<Option<String>> {
-        Ok(self.fleet.db.setup_payment_event_json().await?)
+        Ok(self.db.setup_payment_event_json().await?)
     }
 
     /// Atomically retain a newly admitted event (already authenticated and
@@ -341,8 +340,7 @@ impl FleetSetupPaymentPolicyStore {
             .iter()
             .map(|(federation_id, _)| FederationId(federation_id.0.clone()))
             .collect();
-        self.fleet
-            .db
+        self.db
             .replace_setup_payment_policy(event_json, &member_ids)
             .await?;
         Ok(())
@@ -526,10 +524,10 @@ impl Fleet {
         let fedimint_connectors =
             fedimint_connectors::ConnectorRegistry::build_from_server_defaults()
                 .bind()
-                .await
-                .context("bind native Fedimint API connectors")?;
+                .await;
         let transfer_wake = crate::transfer_worker::TransferWake::default();
-        let (fedimintd_features, _) = tokio::sync::watch::channel(Default::default());
+        let fedimintd_features =
+            crate::fedimintd_features::follow_policy(config.fedimintd_features_policy.clone());
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {

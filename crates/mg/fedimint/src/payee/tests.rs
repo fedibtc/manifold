@@ -223,27 +223,23 @@ async fn initial_mint_v2_receive_and_exact_replay_converge_on_one_operation() {
     let encoded_ecash = base32::encode_prefixed(FEDIMINT_PREFIX, &ecash);
     let existing = mint_v2_receive_operation(&encoded_ecash);
 
-    assert_eq!(
-        handoff_mint_v2_receive(
+    assert!(matches!(        handoff_mint_v2_receive(
             &ecash,
             || async { Ok(operation_id) },
             |_| async { panic!("successful initial receive must not read the operation log") },
-        )
-        .await,
-        Ok(operation_id)
-    );
-    assert_eq!(
-        handoff_mint_v2_receive(
+        ).await,
+        Ok(id) if id == operation_id
+    ));
+    assert!(matches!(        handoff_mint_v2_receive(
             &ecash,
             || async { Err(MintV2ReceiveError::AlreadyReceived) },
             |derived_operation_id| async move {
                 assert_eq!(derived_operation_id, operation_id);
                 Some(existing)
             },
-        )
-        .await,
-        Ok(operation_id)
-    );
+        ).await,
+        Ok(id) if id == operation_id
+    ));
 }
 
 #[tokio::test]
@@ -277,7 +273,7 @@ async fn mint_v2_replay_requires_exact_receive_metadata() {
     );
 
     for existing in [receive_other_ecash, malformed, wrong_kind, send] {
-        assert_eq!(
+        assert!(matches!(
             handoff_mint_v2_receive(
                 &ecash,
                 || async { Err(MintV2ReceiveError::AlreadyReceived) },
@@ -285,9 +281,9 @@ async fn mint_v2_replay_requires_exact_receive_metadata() {
             )
             .await,
             Err(MintV2ReceiveError::AlreadyReceived)
-        );
+        ));
     }
-    assert_eq!(
+    assert!(matches!(
         handoff_mint_v2_receive(
             &ecash,
             || async { Err(MintV2ReceiveError::AlreadyReceived) },
@@ -295,5 +291,5 @@ async fn mint_v2_replay_requires_exact_receive_metadata() {
         )
         .await,
         Err(MintV2ReceiveError::AlreadyReceived)
-    );
+    ));
 }

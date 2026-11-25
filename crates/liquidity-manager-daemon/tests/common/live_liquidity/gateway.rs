@@ -39,9 +39,7 @@ impl GatewayFixture {
         // Use the gateway fixture's existing 120s setup allowance, separately
         // from any test's funding-state observation deadline. No retries.
         tokio::time::timeout(Duration::from_secs(120), async {
-            let connectors = ConnectorRegistry::build_from_client_defaults()
-                .bind()
-                .await?;
+            let connectors = ConnectorRegistry::build_from_client_defaults().bind().await;
             let api = GatewayApi::new(Some(self.password.clone()), connectors);
             let base_url = SafeUrl::parse(&self.api_url)?.join(V1_API_ENDPOINT)?;
             let federation = fedimint_gateway_client::connect_federation(

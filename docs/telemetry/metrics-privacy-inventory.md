@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`1e405794eb17bd06075ae103f64ea96ddb3ea412` (branch `roboman/fedi30-aleph-quiescence`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi30-quiescence.tsv`](./fedimint-metrics-v0.12.0-fedi30-quiescence.tsv)
+`0c14de213a3f95ae9dbd4d629c62a0ee003fc034` (branch `roboman/v0.13-fedi`). The machine-checked
+[`fedimint-metrics-v0.13.1-fedi32-quiescence.tsv`](./fedimint-metrics-v0.13.1-fedi32-quiescence.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -50,8 +50,8 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi30-quiescence`, while `fedimintd` emits its
-upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
+The bundled Fedimint release label is `0.13.1-fedi32-quiescence`, while `fedimintd` emits its
+Cargo package version `0.13.1` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
 older and newer sources when the marker is otherwise valid, and still admits
