@@ -49,7 +49,7 @@ pub mod setup_payment_policy;
 mod wallet_drain;
 
 pub(crate) use payout_job::DestinationCap;
-pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
+pub(crate) use payout_native::{await_payout, payout_status};
 
 pub use mg_core::db::WalletOrigin;
 pub use mg_core::guardian_fee::GuardianFeeAccountKey;

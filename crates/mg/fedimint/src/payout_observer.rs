@@ -59,8 +59,7 @@ impl FedimintPayoutObserver<'_> {
 #[async_trait::async_trait]
 impl PayoutObservation for FedimintPayoutObserver<'_> {
     async fn status(&self, operation_id: &PayoutOperationId) -> anyhow::Result<OutgoingOperation> {
-        crate::drain_status::payout_status(self.client, Self::native_id(operation_id), None, None)
-            .await
+        crate::drain_status::payout_status(self.client, Self::native_id(operation_id)).await
     }
 
     async fn await_terminal(

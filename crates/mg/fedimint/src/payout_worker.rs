@@ -12,9 +12,7 @@ use mg_core::payout_wire::{
     PayoutJobStatusWire, PayoutJobWire, PayoutsWire, WalletDrainStatusWire,
 };
 use mg_core::wallet::{EcashPayoutWorker, PayoutRail, PayoutRequestId};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::payout_job::{Payout, PayoutJob, PayoutMethod, PayoutScope};
 use crate::payout_job_status::{PayoutJobStatus, PayoutNativeStatus};
@@ -31,7 +29,6 @@ pub(crate) struct PayoutWorker {
     db: Db,
     native: Arc<dyn PayoutNative>,
     guardian_key: Arc<dyn Fn(&SeatId) -> GuardianFeeAccountKey + Send + Sync>,
-    start_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 impl PayoutWorker {
     pub(crate) fn start(
@@ -42,29 +39,28 @@ impl PayoutWorker {
         Arc::new(Self {
             native: Arc::new(WalletPayoutNative {
                 wallet: wallet.clone(),
+                db: db.clone(),
                 guardian_key: guardian_key.clone(),
             }),
             wallet: Some(wallet),
             db,
             guardian_key,
-            start_locks: Mutex::new(HashMap::new()),
         })
     }
 }
 
 /// Wallet-side effects required by the durable payout orchestrator.
 ///
-/// The worker owns an outer per-scope replay fence; the production adapter owns
-/// Fedimint client opening and its inner native-operation fence. Keeping this
-/// seam here makes the worker's SQLite/replay fence independently testable
-/// without treating a test double as the core boundary.
+/// The production adapter owns Fedimint client opening and the wallet's
+/// payout fence, which serializes every start and reclaim of one wallet.
 #[async_trait::async_trait]
 trait PayoutNative: Send + Sync {
-    /// Start a native payout by the job's method, or recover its prior native
-    /// commit by request id.
-    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout>;
+    /// Start the job's native payout under the operation id the ledger names
+    /// for it, or find the one already there.
+    async fn start(&self, job: &PayoutJob) -> anyhow::Result<Payout>;
 
-    /// Find a native payout by its request id without starting one.
+    /// Find the native payout the ledger names for the job, without starting
+    /// one.
     async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>>;
 
     /// Read or await one already committed native payout. For an ecash payout,
@@ -85,6 +81,8 @@ trait PayoutNative: Send + Sync {
 struct WalletPayoutNative {
     /// Shared wallet that opens the client for one persisted payout scope.
     wallet: Arc<Wallet>,
+    /// The payout ledger, which records a Lightning attempt before paying it.
+    db: Db,
     /// Mnemonic-derived key lookup for a guardian-fee wallet scope.
     guardian_key: Arc<dyn Fn(&SeatId) -> GuardianFeeAccountKey + Send + Sync>,
 }
@@ -251,6 +249,8 @@ async fn stored_guardian_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tokio::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use crate::payout_ecash::{EcashPayoutState, EcashToken};
@@ -269,6 +269,9 @@ mod tests {
 
     #[derive(Default)]
     struct FakeNative {
+        /// The wallet's payout fence.
+        fence: Mutex<()>,
+        /// Native payouts by the operation id the ledger names for a request.
         payouts: Mutex<HashMap<PayoutRequestId, Payout>>,
         notes: Mutex<HashMap<PayoutOperationId, FakeNotes>>,
         lose_next_response: AtomicBool,
@@ -287,7 +290,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PayoutNative for FakeNative {
-        async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+        async fn start(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+            let _fence = self.fence.lock().await;
             if let Some(payout) = self.payouts.lock().await.get(&job.request_id).cloned() {
                 return Ok(payout);
             }
@@ -295,15 +299,13 @@ mod tests {
                 anyhow::bail!("simulated start refusal: no gateway");
             }
             self.starts.fetch_add(1, Ordering::SeqCst);
-            // A second caller reaches this yield before the first writes if
-            // PayoutWorker stops holding its scope exclusion across the
-            // native lookup/start boundary.
+            // A second caller reaches this yield before the first writes
+            // unless the fence holds across the lookup and the start.
             tokio::task::yield_now().await;
             let started = self.starts.load(Ordering::SeqCst);
             let payout = Payout {
                 operation_id: PayoutOperationId::parse(&format!("{started:064x}"))?,
                 amount_msat: 42,
-                capped: None,
             };
             if job.method == PayoutMethod::Ecash {
                 self.notes
@@ -377,7 +379,6 @@ mod tests {
             db,
             native,
             guardian_key: Arc::new(|_| GuardianFeeAccountKey::from_secret_bytes(&[1; 32])),
-            start_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1061,45 +1062,13 @@ impl PayoutWorker {
         if job.operation.is_some() {
             return Ok(job);
         }
-        let _start = self.start_exclusion(&job.scope).await;
-        let payout = self.start_native(&job).await?;
+        let payout = self.native.start(&job).await?;
         if matches!(job.scope, PayoutScope::GuardianFee { .. }) {
             pause_after_guardian_fee_payout_start_for_e2e().await?;
         }
         crate::payout_store::commit(&self.db, request_id, &payout).await
     }
 
-    /// Serialize start-or-recover attempts, and ecash reclaims, for one
-    /// immutable wallet scope.
-    ///
-    /// The native wallet repeats this exclusion around its durable operation
-    /// lookup and start. Keeping the worker fence at the ownership boundary
-    /// makes request replay safe for every native implementation and makes the
-    /// same invariant directly testable here.
-    async fn start_exclusion(&self, scope: &PayoutScope) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = match scope {
-            PayoutScope::PaymentFederation { federation_id } => {
-                format!("payment:{}", federation_id.0)
-            }
-            PayoutScope::GuardianFee {
-                federation_id,
-                seat_id,
-                ..
-            } => format!("guardian:{}:{seat_id}", federation_id.0),
-        };
-        let lock = self
-            .start_locks
-            .lock()
-            .await
-            .entry(key)
-            .or_default()
-            .clone();
-        lock.lock_owned().await
-    }
-    async fn start_native(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
-        validate_scope(&job.scope)?;
-        self.native.start_or_recover(job).await
-    }
     async fn reconcile(&self, job: PayoutJob) -> anyhow::Result<PayoutJob> {
         validate_scope(&job.scope)?;
         if job.operation.is_some() {
@@ -1166,17 +1135,14 @@ impl PayoutWorker {
         Ok((job, id))
     }
 
-    /// Submit the reclaim of a payout's notes under the scope fence, then
-    /// await the federation's answer outside it. A confirmation does not
-    /// prevent it: the operator's word that a token arrived can be wrong, and
-    /// the reclaim itself finds out whether the notes were spent.
+    /// Submit the reclaim of a payout's notes, then await the federation's
+    /// answer. A confirmation does not prevent it: the operator's word that a
+    /// token arrived can be wrong, and the reclaim itself finds out whether
+    /// the notes were spent.
     async fn cancel(&self, request_id: &PayoutRequestId) -> anyhow::Result<PayoutJobStatus> {
         let (job, id) = self.issued_ecash_job(request_id).await?;
-        {
-            let _fence = self.start_exclusion(&job.scope).await;
-            validate_scope(&job.scope)?;
-            self.native.reclaim(&job, id).await?;
-        }
+        validate_scope(&job.scope)?;
+        self.native.reclaim(&job, id).await?;
         self.status(request_id, true).await
     }
 
@@ -1271,30 +1237,50 @@ impl WalletPayoutNative {
 
 #[async_trait::async_trait]
 impl PayoutNative for WalletPayoutNative {
-    async fn start_or_recover(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
+    async fn start(&self, job: &PayoutJob) -> anyhow::Result<Payout> {
         let _lock = self
             .wallet
             .payout_exclusion(Self::client_scope(&job.scope)?)
             .await;
         let client = self.client(&job.scope).await?;
-        if let Some(payout) =
-            crate::payout_for_request(&client, &job.request_id, &job.method).await?
-        {
+        let PayoutMethod::Lightning { destination } = &job.method else {
+            return crate::payout_ecash::start_ecash_payout(&client, &job.request_id).await;
+        };
+        // Under the fence, the ledger's attempt is the last one any caller
+        // wrote, and no other caller is paying it.
+        let job = crate::payout_store::get(&self.db, &job.request_id)
+            .await?
+            .context("unknown payout request id")?;
+        if let Some(operation) = &job.operation {
+            return Ok(Payout {
+                operation_id: operation.operation_id.clone(),
+                amount_msat: operation.amount_msat,
+            });
+        }
+        if let Some(payout) = crate::payout_native::attempted_payout(&client, &job).await {
             return Ok(payout);
         }
-        match &job.method {
-            PayoutMethod::Lightning { destination } => {
-                crate::start_payout(&client, &job.request_id, destination).await
-            }
-            PayoutMethod::Ecash => {
-                crate::payout_ecash::start_ecash_payout(&client, &job.request_id).await
-            }
-        }
+        // No operation exists for the recorded attempt, if any, so nothing
+        // was paid and a fresh attempt replaces it.
+        let prepared = crate::payout_native::prepare_payout(&client, destination).await?;
+        crate::payout_store::attempt(&self.db, &job.request_id, &prepared.attempt).await?;
+        crate::payout_native::pay_payout(&client, &job.request_id, destination, prepared).await
     }
 
     async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>> {
         let client = self.client(&job.scope).await?;
-        crate::payout_for_request(&client, &job.request_id, &job.method).await
+        Ok(match &job.method {
+            PayoutMethod::Lightning { .. } => {
+                crate::payout_native::attempted_payout(&client, job).await
+            }
+            PayoutMethod::Ecash => {
+                crate::payout_ecash::find_ecash_payout(
+                    &client,
+                    &PayoutOperationId::ecash(&job.request_id),
+                )
+                .await?
+            }
+        })
     }
 
     async fn observe(
@@ -1305,16 +1291,13 @@ impl PayoutNative for WalletPayoutNative {
     ) -> anyhow::Result<PayoutNativeStatus> {
         let client = self.client(&job.scope).await?;
         Ok(match &job.method {
-            PayoutMethod::Lightning { destination } => {
-                PayoutNativeStatus::Lightning(Some(if wait {
-                    crate::await_payout(&client, &job.request_id, destination, &id).await?
-                } else {
-                    crate::payout_status(&client, &job.request_id, destination, &id).await?
-                }))
-            }
+            PayoutMethod::Lightning { .. } => PayoutNativeStatus::Lightning(Some(if wait {
+                crate::await_payout(&client, &id).await?
+            } else {
+                crate::payout_status(&client, &id).await?
+            })),
             PayoutMethod::Ecash => PayoutNativeStatus::Ecash(Some(
-                crate::payout_ecash::ecash_payout_state(&client, &job.request_id, &id, wait)
-                    .await?,
+                crate::payout_ecash::ecash_payout_state(&client, &id, wait).await?,
             )),
         })
     }

@@ -3,10 +3,13 @@ use mg_core::db::Db;
 use sqlx::FromRow;
 
 use crate::payout_job::{
-    DestinationCap, Payout, PayoutJob, PayoutJobOperation, PayoutMethod, PayoutRequestId,
-    PayoutScope,
+    DestinationCap, LightningAttempt, Payout, PayoutJob, PayoutJobOperation, PayoutMethod,
+    PayoutRequestId, PayoutScope,
 };
 use crate::payout_operation_id::PayoutOperationId;
+use crate::wallet_drain::OutgoingRail;
+
+const COLUMNS: &str = "request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, lightning_rail, invoice, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms";
 
 pub(crate) async fn destination(db: &Db) -> anyhow::Result<Option<String>> {
     Ok(
@@ -57,8 +60,12 @@ pub(crate) async fn get(
     db: &Db,
     request_id: &PayoutRequestId,
 ) -> anyhow::Result<Option<PayoutJob>> {
-    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs WHERE request_id = ?")
-        .bind(request_id.as_str()).fetch_optional(db.pool()).await?;
+    let row: Option<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM payout_jobs WHERE request_id = ?"
+    ))
+    .bind(request_id.as_str())
+    .fetch_optional(db.pool())
+    .await?;
     row.map(parse).transpose()
 }
 
@@ -66,15 +73,19 @@ pub(crate) async fn get(
 /// already-spent jobs are among them: whether a reclaim exists is the wallet
 /// database's fact, not this ledger's.
 pub(crate) async fn unconfirmed_ecash(db: &Db) -> anyhow::Result<Vec<PayoutJob>> {
-    let rows: Vec<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs WHERE method = 'ecash' AND confirmed_at_ms IS NULL ORDER BY created_at_ms, request_id")
+    let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLUMNS} FROM payout_jobs WHERE method = 'ecash' AND confirmed_at_ms IS NULL ORDER BY created_at_ms, request_id"))
         .fetch_all(db.pool()).await?;
     rows.into_iter().map(parse).collect()
 }
 
 /// The newest `limit` jobs of both methods, newest first.
 pub(crate) async fn recent(db: &Db, limit: u32) -> anyhow::Result<Vec<PayoutJob>> {
-    let rows: Vec<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, method, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms, confirmed_at_ms FROM payout_jobs ORDER BY created_at_ms DESC, request_id DESC LIMIT ?")
-        .bind(limit).fetch_all(db.pool()).await?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM payout_jobs ORDER BY created_at_ms DESC, request_id DESC LIMIT ?"
+    ))
+    .bind(limit)
+    .fetch_all(db.pool())
+    .await?;
     rows.into_iter().map(parse).collect()
 }
 
@@ -99,27 +110,40 @@ pub(crate) async fn confirm(db: &Db, request_id: &PayoutRequestId) -> anyhow::Re
     Ok(job)
 }
 
+/// Write the Lightning payment about to be paid, replacing an attempt whose
+/// payment never started. The caller holds the wallet's payout fence and has
+/// found no native operation for the attempt it replaces.
+pub(crate) async fn attempt(
+    db: &Db,
+    request_id: &PayoutRequestId,
+    attempt: &LightningAttempt,
+) -> anyhow::Result<PayoutJob> {
+    let (cap_maximum, cap_remaining) = match attempt.capped {
+        Some(cap) => (
+            Some(to_sql(cap.maximum_msat)?),
+            Some(to_sql(cap.remaining_msat)?),
+        ),
+        None => (None, None),
+    };
+    sqlx::query("UPDATE payout_jobs SET lightning_rail = ?, invoice = ?, cap_maximum_msat = ?, cap_remaining_msat = ? WHERE request_id = ? AND operation_id IS NULL")
+        .bind(rail_name(attempt.rail)).bind(attempt.invoice.to_string()).bind(cap_maximum).bind(cap_remaining).bind(request_id.as_str()).execute(db.pool()).await?;
+    let job = get(db, request_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("payout request {request_id} does not exist"))?;
+    anyhow::ensure!(
+        job.operation.is_none() && job.attempt.as_ref() == Some(attempt),
+        "payout request already has a committed operation"
+    );
+    Ok(job)
+}
+
 pub(crate) async fn commit(
     db: &Db,
     request_id: &PayoutRequestId,
     payout: &Payout,
 ) -> anyhow::Result<PayoutJob> {
-    let amount = i64::try_from(payout.amount_msat).map_err(|_| {
-        anyhow::anyhow!("payout amount does not fit the durable SQLite representation")
-    })?;
-    let (cap_maximum, cap_remaining) = match payout.capped {
-        Some(cap) => (
-            Some(i64::try_from(cap.maximum_msat).map_err(|_| {
-                anyhow::anyhow!("payout cap does not fit the durable SQLite representation")
-            })?),
-            Some(i64::try_from(cap.remaining_msat).map_err(|_| {
-                anyhow::anyhow!("payout cap does not fit the durable SQLite representation")
-            })?),
-        ),
-        None => (None, None),
-    };
-    sqlx::query("UPDATE payout_jobs SET operation_id = ?, amount_msat = ?, cap_maximum_msat = ?, cap_remaining_msat = ?, committed_at_ms = ? WHERE request_id = ? AND operation_id IS NULL")
-        .bind(payout.operation_id.as_str()).bind(amount).bind(cap_maximum).bind(cap_remaining).bind(now_ms()).bind(request_id.as_str()).execute(db.pool()).await?;
+    sqlx::query("UPDATE payout_jobs SET operation_id = ?, amount_msat = ?, committed_at_ms = ? WHERE request_id = ? AND operation_id IS NULL")
+        .bind(payout.operation_id.as_str()).bind(to_sql(payout.amount_msat)?).bind(now_ms()).bind(request_id.as_str()).execute(db.pool()).await?;
     let job = get(db, request_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("payout request {request_id} does not exist"))?;
@@ -132,6 +156,19 @@ pub(crate) async fn commit(
     Ok(job)
 }
 
+fn to_sql(msat: u64) -> anyhow::Result<i64> {
+    i64::try_from(msat).map_err(|_| {
+        anyhow::anyhow!("payout amount does not fit the durable SQLite representation")
+    })
+}
+
+fn rail_name(rail: OutgoingRail) -> &'static str {
+    match rail {
+        OutgoingRail::Lnv1 => "lnv1",
+        OutgoingRail::Lnv2 => "lnv2",
+    }
+}
+
 #[derive(FromRow)]
 struct Row {
     request_id: String,
@@ -141,6 +178,8 @@ struct Row {
     invite_code: Option<String>,
     method: String,
     destination: Option<String>,
+    lightning_rail: Option<String>,
+    invoice: Option<String>,
     operation_id: Option<String>,
     amount_msat: Option<i64>,
     cap_maximum_msat: Option<i64>,
@@ -175,10 +214,25 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
         }),
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: partial destination cap"),
     };
+    let attempt = match (r.lightning_rail.as_deref(), r.invoice) {
+        (None, None) => None,
+        (Some(rail), Some(invoice)) => Some(LightningAttempt {
+            rail: match rail {
+                "lnv1" => OutgoingRail::Lnv1,
+                "lnv2" => OutgoingRail::Lnv2,
+                _ => anyhow::bail!("corrupt payout_jobs row {request_id}: unknown rail"),
+            },
+            invoice: invoice.parse().map_err(|error| {
+                anyhow::anyhow!("corrupt payout_jobs row {request_id}: invoice: {error}")
+            })?,
+            capped,
+        }),
+        _ => anyhow::bail!("corrupt payout_jobs row {request_id}: partial Lightning attempt"),
+    };
     let operation = match (r.operation_id, r.amount_msat, r.committed_at_ms) {
         (None, None, None) => {
             anyhow::ensure!(
-                capped.is_none() && confirmed_at_ms.is_none(),
+                (capped.is_none() || attempt.is_some()) && confirmed_at_ms.is_none(),
                 "corrupt payout_jobs row {request_id}: operation facts without an operation"
             );
             None
@@ -196,6 +250,7 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
         request_id,
         scope,
         method,
+        attempt,
         operation,
         created_at_ms: u64::try_from(r.created_at_ms)?,
     })
@@ -221,7 +276,33 @@ mod tests {
         Payout {
             operation_id: PayoutOperationId::parse(&byte.repeat(32)).unwrap(),
             amount_msat,
-            capped: None,
+        }
+    }
+
+    fn lightning_attempt(
+        rail: OutgoingRail,
+        seed: u8,
+        capped: Option<DestinationCap>,
+    ) -> LightningAttempt {
+        use bitcoin::secp256k1::{SECP256K1, SecretKey};
+        use bitcoin_hashes::{Hash as _, sha256};
+        use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
+        LightningAttempt {
+            rail,
+            invoice: InvoiceBuilder::new(Currency::Regtest)
+                .description(String::new())
+                .payment_hash(sha256::Hash::hash(&[seed; 32]))
+                .current_timestamp()
+                .min_final_cltv_expiry_delta(0)
+                .payment_secret(PaymentSecret([2; 32]))
+                .amount_milli_satoshis(42)
+                .build_signed(|message| {
+                    SECP256K1
+                        .sign_ecdsa_recoverable(message, &SecretKey::from_slice(&[3; 32]).unwrap())
+                })
+                .unwrap(),
+            capped,
         }
     }
 
@@ -258,6 +339,16 @@ mod tests {
                 .is_err()
         );
 
+        // An ecash payout pays no invoice.
+        assert!(
+            attempt(
+                &db,
+                &request,
+                &lightning_attempt(OutgoingRail::Lnv2, 1, None)
+            )
+            .await
+            .is_err()
+        );
         // Nothing was issued yet, so there is nothing to confirm.
         assert!(confirm(&db, &request).await.is_err());
         assert_eq!(unconfirmed_ecash(&db).await.unwrap(), vec![pending.clone()]);
@@ -331,13 +422,25 @@ mod tests {
             .execute(db.pool())
             .await
             .expect_err("the schema rejects direct payout identity mutation");
+        let cap = Some(DestinationCap {
+            maximum_msat: 42,
+            remaining_msat: 58,
+        });
+        // A first attempt whose payment never started is replaced.
+        attempt(
+            &db,
+            &request,
+            &lightning_attempt(OutgoingRail::Lnv1, 4, None),
+        )
+        .await
+        .unwrap();
+        let paid = lightning_attempt(OutgoingRail::Lnv2, 5, cap);
+        let attempted = attempt(&db, &request, &paid).await.unwrap();
+        assert_eq!(attempted.attempt.as_ref(), Some(&paid));
+        assert!(attempted.operation.is_none());
         let payout = Payout {
-            operation_id: PayoutOperationId::parse(&"ab".repeat(32)).unwrap(),
+            operation_id: paid.operation_id(),
             amount_msat: 42,
-            capped: Some(DestinationCap {
-                maximum_msat: 42,
-                remaining_msat: 58,
-            }),
         };
         let committed = commit(&db, &request, &payout).await.unwrap();
         assert_eq!(
@@ -345,14 +448,34 @@ mod tests {
             payout.operation_id
         );
         assert_eq!(committed.operation.as_ref().unwrap().amount_msat, 42);
-        assert_eq!(committed.operation.as_ref().unwrap().capped, payout.capped);
+        assert_eq!(committed.operation.as_ref().unwrap().capped, cap);
+        assert_eq!(committed.attempt.as_ref(), Some(&paid));
         assert_eq!(commit(&db, &request, &payout).await.unwrap(), committed);
         let other = Payout {
             operation_id: PayoutOperationId::parse(&"cd".repeat(32)).unwrap(),
             amount_msat: 43,
-            capped: None,
         };
         assert!(commit(&db, &request, &other).await.is_err());
+        // Once committed, the attempt is the payment's and stays.
+        assert!(
+            attempt(
+                &db,
+                &request,
+                &lightning_attempt(OutgoingRail::Lnv2, 6, None)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(get(&db, &request).await.unwrap().unwrap(), committed);
+        for column in ["invoice", "lightning_rail"] {
+            sqlx::query(&format!(
+                "UPDATE payout_jobs SET {column} = NULL WHERE request_id = ?"
+            ))
+            .bind(request.as_str())
+            .execute(db.pool())
+            .await
+            .expect_err("the schema rejects replacing a committed attempt");
+        }
         sqlx::query("UPDATE payout_jobs SET operation_id = ? WHERE request_id = ?")
             .bind("ef".repeat(32))
             .bind(request.as_str())
@@ -364,7 +487,6 @@ mod tests {
             .execute(db.pool())
             .await
             .expect_err("the schema rejects direct payout cap replacement");
-
         drop(db);
         let reopened = Db::open(&path).await.unwrap();
         assert_eq!(get(&reopened, &request).await.unwrap(), Some(committed));
@@ -389,7 +511,6 @@ mod tests {
         let native = Payout {
             operation_id: PayoutOperationId::parse(&"cd".repeat(32)).unwrap(),
             amount_msat: 1_000,
-            capped: None,
         };
         let reconciled = commit(&db, &request, &native).await.unwrap();
         assert_eq!(
@@ -421,7 +542,6 @@ mod tests {
         let payout = Payout {
             operation_id: PayoutOperationId::parse(&"ef".repeat(32)).unwrap(),
             amount_msat: 2_000,
-            capped: None,
         };
         let (left, right) = tokio::join!(
             commit(&db, &request, &payout),

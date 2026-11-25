@@ -20,6 +20,7 @@ fn job() -> PayoutJob {
         method: PayoutMethod::Lightning {
             destination: "operator@example.com".into(),
         },
+        attempt: None,
         operation: Some(PayoutJobOperation {
             operation_id: operation_id(),
             amount_msat: 250_000,
@@ -89,6 +90,7 @@ fn internal_ecash_projection_matches_committed_operator_contracts() {
             federation_id: FederationId("fed1fixturepayment".into()),
         },
         method: PayoutMethod::Ecash,
+        attempt: None,
         operation: Some(PayoutJobOperation {
             operation_id: PayoutOperationId::parse(
                 "5e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f0f7c1b9a3e5d4c2b8a6f",

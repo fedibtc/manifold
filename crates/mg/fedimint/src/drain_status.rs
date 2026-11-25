@@ -1,8 +1,5 @@
 //! Read-only, fail-closed wallet drain projection.
 
-use crate::payout_job::Payout;
-use crate::payout_job::PayoutMethod;
-use crate::payout_job::PayoutRequestId;
 use crate::payout_operation_id::PayoutOperationId;
 use crate::wallet_drain::{
     OutgoingOperation, OutgoingRail, OutgoingState, WalletDrainQuery, WalletDrainStatus,
@@ -24,8 +21,6 @@ use fedimint_lnv2_client::{
     LightningClientModule as LightningV2ClientModule,
     LightningOperationMeta as LightningV2OperationMeta, SendOperationState,
 };
-use fedimint_mint_client::{MintOperationMeta as MintV1OperationMeta, MintOperationMetaVariant};
-use fedimint_mintv2_client::MintOperationMeta as MintV2OperationMeta;
 use futures::StreamExt as _;
 use mg_core::wallet::Msats;
 
@@ -192,8 +187,6 @@ async fn outgoing_operations_from(
 pub(crate) async fn payout_status(
     client: &ClientHandleArc,
     operation_id: OperationId,
-    request_id: Option<&PayoutRequestId>,
-    destination: Option<&str>,
 ) -> anyhow::Result<OutgoingOperation> {
     let active = client.get_active_operations().await.contains(&operation_id);
     let mut dbtx = client.db().begin_transaction_nc().await;
@@ -201,196 +194,8 @@ pub(crate) async fn payout_status(
         .get_value(&OperationLogKey { operation_id })
         .await
         .context("native payout operation does not exist")?;
-    let outgoing = outgoing_operation(operation_id, &entry, active)?
-        .context("native operation is not an MG payout")?;
-    if let (Some(request_id), Some(destination)) = (request_id, destination) {
-        let method = PayoutMethod::Lightning {
-            destination: destination.to_owned(),
-        };
-        anyhow::ensure!(
-            payout_request_amount(&entry, request_id, &method)?.is_some(),
-            "native payout operation belongs to another request or destination"
-        );
-    }
-    Ok(outgoing)
-}
-
-/// Read the exact returned operation's v1 payout binding without scanning
-/// active state machines or any other operation.
-pub(crate) async fn v1_payout_request_amount(
-    client: &ClientHandleArc,
-    operation_id: OperationId,
-    request_id: &PayoutRequestId,
-    destination: &str,
-) -> anyhow::Result<u64> {
-    let mut dbtx = client.db().begin_transaction_nc().await;
-    let entry = dbtx
-        .get_value(&OperationLogKey { operation_id })
-        .await
-        .context("returned Lightning v1 payout operation does not exist")?;
-    anyhow::ensure!(
-        entry.operation_module_kind() == "ln",
-        "returned Lightning v1 payout operation belongs to another rail"
-    );
-    let method = PayoutMethod::Lightning {
-        destination: destination.to_owned(),
-    };
-    payout_request_amount(&entry, request_id, &method)?
-        .context("returned Lightning v1 payout operation belongs to another request")
-}
-
-/// Find the unique native payout carrying the caller's request metadata.
-pub(crate) async fn payout_for_request(
-    client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
-    method: &PayoutMethod,
-) -> anyhow::Result<Option<Payout>> {
-    let mut found = None;
-    for (key, entry) in ClientOperationSource(client).all().await? {
-        let Some(amount_msat) = payout_request_amount(&entry, request_id, method)? else {
-            continue;
-        };
-        anyhow::ensure!(
-            found.is_none(),
-            "multiple native payouts carry the same MG request id"
-        );
-        found = Some(Payout {
-            operation_id: PayoutOperationId::parse(&key.operation_id.fmt_full().to_string())
-                .expect("Fedimint formats a canonical operation id"),
-            amount_msat,
-            capped: None,
-        });
-    }
-    Ok(found)
-}
-
-/// The amount of a native payout carrying this request id, `None` when the
-/// operation carries another request or none. An operation carrying the id
-/// under the other method, or a Lightning payment bound to another
-/// destination, fails closed: the ledger and wallet disagree about the request.
-fn payout_request_amount(
-    entry: &fedimint_client_module::oplog::OperationLogEntry,
-    request_id: &PayoutRequestId,
-    method: &PayoutMethod,
-) -> anyhow::Result<Option<u64>> {
-    let Some(native) = request_marked_payout(entry, request_id)? else {
-        return Ok(None);
-    };
-    match (method, native) {
-        (
-            PayoutMethod::Lightning { destination },
-            NativePayout::Lightning {
-                metadata,
-                amount_msat,
-            },
-        ) => {
-            ensure_destination_binding(&metadata, destination)?;
-            Ok(Some(amount_msat))
-        }
-        (PayoutMethod::Ecash, NativePayout::Ecash { amount_msat }) => Ok(Some(amount_msat)),
-        _ => anyhow::bail!("native payout request id is bound to another payout method"),
-    }
-}
-
-/// The amount of the exact ecash spend carrying this request id.
-pub(crate) fn ecash_payout_request_amount(
-    entry: &fedimint_client_module::oplog::OperationLogEntry,
-    request_id: &PayoutRequestId,
-) -> anyhow::Result<Option<u64>> {
-    payout_request_amount(entry, request_id, &PayoutMethod::Ecash)
-}
-
-/// One request-marked native payout, before its method is checked.
-enum NativePayout {
-    Lightning {
-        metadata: serde_json::Value,
-        amount_msat: u64,
-    },
-    Ecash {
-        amount_msat: u64,
-    },
-}
-
-fn request_marked_payout(
-    entry: &fedimint_client_module::oplog::OperationLogEntry,
-    request_id: &PayoutRequestId,
-) -> anyhow::Result<Option<NativePayout>> {
-    Ok(match entry.operation_module_kind() {
-        "ln" => {
-            let metadata = entry
-                .try_meta::<LightningV1OperationMeta>()
-                .context("decode Lightning v1 operation metadata")?;
-            let LightningOperationMetaVariant::Pay(payment) = metadata.variant else {
-                return Ok(None);
-            };
-            if !has_request_id(&metadata.extra_meta, request_id) {
-                return Ok(None);
-            }
-            Some(NativePayout::Lightning {
-                amount_msat: payment
-                    .invoice
-                    .amount_milli_satoshis()
-                    .context("Lightning v1 payout invoice has no amount")?,
-                metadata: metadata.extra_meta,
-            })
-        }
-        "lnv2" => {
-            let metadata = entry
-                .try_meta::<LightningV2OperationMeta>()
-                .context("decode Lightning v2 operation metadata")?;
-            let LightningV2OperationMeta::Send(payment) = metadata else {
-                return Ok(None);
-            };
-            if !has_request_id(&payment.custom_meta, request_id) {
-                return Ok(None);
-            }
-            Some(NativePayout::Lightning {
-                amount_msat: match &payment.invoice {
-                    fedimint_lnv2_common::LightningInvoice::Bolt11(invoice) => invoice
-                        .amount_milli_satoshis()
-                        .context("Lightning v2 payout invoice has no amount")?,
-                },
-                metadata: payment.custom_meta,
-            })
-        }
-        // Only the out-of-band spend is a payout. A reclaim reissue carries
-        // a different purpose, and a mint-v2 send's change-making reissue,
-        // which repeats the send's metadata, is a `Reissue`, not a `Send`.
-        "mint" => {
-            let metadata = entry
-                .try_meta::<MintV1OperationMeta>()
-                .context("decode mint operation metadata")?;
-            let MintOperationMetaVariant::SpendOOB { oob_notes, .. } = metadata.variant else {
-                return Ok(None);
-            };
-            if !has_request_id(&metadata.extra_meta, request_id) {
-                return Ok(None);
-            }
-            Some(NativePayout::Ecash {
-                amount_msat: oob_notes.total_amount().msats,
-            })
-        }
-        "mintv2" => {
-            let metadata = entry
-                .try_meta::<MintV2OperationMeta>()
-                .context("decode mint-v2 operation metadata")?;
-            let MintV2OperationMeta::Send { ecash, custom_meta } = metadata else {
-                return Ok(None);
-            };
-            if !has_request_id(&custom_meta, request_id) {
-                return Ok(None);
-            }
-            let ecash: fedimint_mintv2_client::ECash = fedimint_core::base32::decode_prefixed(
-                fedimint_core::base32::FEDIMINT_PREFIX,
-                &ecash,
-            )
-            .context("decode mint-v2 ecash payout")?;
-            Some(NativePayout::Ecash {
-                amount_msat: ecash.amount().msats,
-            })
-        }
-        _ => None,
-    })
+    outgoing_operation(operation_id, &entry, active)?
+        .context("native operation is not an MG payout")
 }
 
 fn outgoing_operation(
@@ -455,28 +260,6 @@ fn outgoing_operation(
 
 fn is_mg_payout(metadata: &serde_json::Value) -> bool {
     metadata.get("purpose").and_then(serde_json::Value::as_str) == Some("fman-payout")
-}
-
-fn has_request_id(metadata: &serde_json::Value, request_id: &PayoutRequestId) -> bool {
-    is_mg_payout(metadata)
-        && metadata
-            .get("request_id")
-            .and_then(serde_json::Value::as_str)
-            == Some(request_id.as_str())
-}
-
-fn ensure_destination_binding(
-    metadata: &serde_json::Value,
-    destination: &str,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        metadata
-            .get("destination")
-            .and_then(serde_json::Value::as_str)
-            == Some(destination),
-        "native payout request id is bound to another destination"
-    );
-    Ok(())
 }
 
 fn v1_state(
@@ -570,8 +353,7 @@ fn operation(
     active: bool,
 ) -> OutgoingOperation {
     OutgoingOperation::new(
-        PayoutOperationId::parse(&operation_id.fmt_full().to_string())
-            .expect("Fedimint formats a canonical operation id"),
+        PayoutOperationId::from_native(operation_id),
         rail,
         state,
         recipient_amount_msat,
@@ -604,12 +386,6 @@ mod tests {
 
     fn id() -> OperationId {
         OperationId([7; 32])
-    }
-
-    fn ln(destination: &str) -> PayoutMethod {
-        PayoutMethod::Lightning {
-            destination: destination.to_owned(),
-        }
     }
 
     fn entry_with_outcome(outcome: impl serde::Serialize) -> OperationLogEntry {
@@ -762,42 +538,11 @@ mod tests {
 
         assert!(is_mg_payout(&decoded.extra_meta));
         assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                &ln("operator@example.com"),
-            )
-            .unwrap(),
-            Some(900)
-        );
-        assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("other").unwrap(),
-                &ln("operator@example.com"),
-            )
-            .unwrap(),
-            None
-        );
-        assert!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                &ln("retargeted@example.com"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("another destination")
-        );
-        assert!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                &PayoutMethod::Ecash,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("another payout method")
+            outgoing_operation(id(), &entry, true)
+                .unwrap()
+                .unwrap()
+                .recipient_amount_msat,
+            900
         );
         assert!(matches!(
             decoded.variant,
@@ -810,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_v2_payout_metadata_binds_request_and_destination() {
+    fn pinned_v2_payout_metadata_decodes() {
         use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
         use bitcoin_hashes::{Hash as _, sha256};
         use fedimint_core::OutPointRange;
@@ -848,172 +593,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                &ln("operator@example.com"),
-            )
-            .unwrap(),
-            Some(900)
-        );
-        assert!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                &ln("retargeted@example.com"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("another destination")
-        );
-    }
-
-    fn keypair(byte: u8) -> bitcoin::secp256k1::Keypair {
-        bitcoin::secp256k1::Keypair::from_secret_key(
-            bitcoin::secp256k1::SECP256K1,
-            &bitcoin::secp256k1::SecretKey::from_slice(&[byte; 32]).unwrap(),
-        )
-    }
-
-    fn signature(byte: u8) -> tbs::Signature {
-        tbs::Signature(tbs::Message::from_bytes(&[byte]).0)
-    }
-
-    fn mint_entry(kind: &str, metadata: impl serde::Serialize) -> OperationLogEntry {
-        OperationLogEntry::new(
-            kind.to_owned(),
-            JsonStringed(serde_json::to_value(metadata).unwrap()),
-            None,
-        )
-    }
-
-    fn payout_meta(request_id: &str) -> serde_json::Value {
-        serde_json::json!({"purpose": "fman-payout", "request_id": request_id})
-    }
-
-    /// The ecash spend is found by its request id under either mint, with the
-    /// amount of the notes it carries; everything else that a mint writes with
-    /// similar metadata is not a payout.
-    #[test]
-    fn ecash_spends_bind_their_request_and_ignore_change_and_reclaims() {
-        use bitcoin_hashes::Hash as _;
-        use fedimint_mint_client::{OOBNotes, SpendableNote};
-        let request = PayoutRequestId::parse("caller-request").unwrap();
-        let federation: fedimint_core::config::FederationId = "02".repeat(32).parse().unwrap();
-
-        let notes = OOBNotes::new(
-            federation.to_prefix(),
-            [
-                (
-                    Amount::from_msats(1_024),
-                    SpendableNote {
-                        signature: signature(1),
-                        spend_key: keypair(1),
-                    },
-                ),
-                (
-                    Amount::from_msats(4_096),
-                    SpendableNote {
-                        signature: signature(2),
-                        spend_key: keypair(2),
-                    },
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        let v1_spend = mint_entry(
-            "mint",
-            MintV1OperationMeta {
-                variant: MintOperationMetaVariant::SpendOOB {
-                    requested_amount: Amount::from_msats(1),
-                    oob_notes: notes,
-                    no_timeout: true,
-                },
-                amount: Amount::from_msats(5_120),
-                extra_meta: payout_meta("caller-request"),
-            },
-        );
-        // The amount is the notes', not the requested amount the selector ignores.
-        assert_eq!(
-            payout_request_amount(&v1_spend, &request, &PayoutMethod::Ecash).unwrap(),
-            Some(5_120)
-        );
-        assert_eq!(
-            payout_request_amount(
-                &v1_spend,
-                &PayoutRequestId::parse("other").unwrap(),
-                &PayoutMethod::Ecash
-            )
-            .unwrap(),
-            None
-        );
-        assert!(
-            payout_request_amount(&v1_spend, &request, &ln("operator@example.com"))
-                .unwrap_err()
-                .to_string()
-                .contains("another payout method")
-        );
-        let v1_reissue = mint_entry(
-            "mint",
-            MintV1OperationMeta {
-                variant: MintOperationMetaVariant::Reissuance {
-                    legacy_out_point: None,
-                    txid: Some(TransactionId::from_byte_array([3; 32])),
-                    out_point_indices: vec![0],
-                },
-                amount: Amount::from_msats(5_120),
-                extra_meta: payout_meta("caller-request"),
-            },
-        );
-        assert_eq!(
-            payout_request_amount(&v1_reissue, &request, &PayoutMethod::Ecash).unwrap(),
-            None
-        );
-
-        let ecash = fedimint_mintv2_client::ECash::new(
-            federation,
-            vec![fedimint_mintv2_client::SpendableNote {
-                denomination: fedimint_mintv2_common::Denomination(11),
-                keypair: keypair(3),
-                signature: signature(3),
-            }],
-        );
-        let v2_send = || {
-            mint_entry(
-                "mintv2",
-                MintV2OperationMeta::Send {
-                    ecash: fedimint_core::base32::encode_prefixed(
-                        fedimint_core::base32::FEDIMINT_PREFIX,
-                        &ecash,
-                    ),
-                    custom_meta: payout_meta("caller-request"),
-                },
-            )
-        };
-        // mint-v2 `send` repeats the send's metadata on the reissue that makes
-        // change for it; only the send is the payout.
-        let v2_change = mint_entry(
-            "mintv2",
-            MintV2OperationMeta::Reissue {
-                change_outpoint_range: fedimint_core::OutPointRange::new_single(
-                    TransactionId::from_byte_array([4; 32]),
-                    0,
-                )
-                .unwrap(),
-                amount: Amount::from_msats(2_048),
-                custom_meta: payout_meta("caller-request"),
-            },
-        );
-        assert_eq!(
-            payout_request_amount(&v2_change, &request, &PayoutMethod::Ecash).unwrap(),
-            None
-        );
-        assert_eq!(
-            payout_request_amount(&v2_send(), &request, &PayoutMethod::Ecash).unwrap(),
-            Some(2_048)
-        );
+        let payout = outgoing_operation(id(), &entry, false).unwrap().unwrap();
+        assert_eq!(payout.rail, OutgoingRail::Lnv2);
+        assert_eq!(payout.recipient_amount_msat, 900);
     }
 
     #[test]
