@@ -85,11 +85,24 @@ pub fn layer_with_config(
 
 fn write_records(mut appender: RollingFileAppender, receiver: Receiver<Vec<u8>>) {
     let mut enabled = true;
-    for record in receiver {
-        if enabled && appender.append_record(&record).is_err() {
+    let mut batch = Vec::with_capacity(RECORD_QUEUE_CAPACITY);
+    while let Ok(first) = receiver.recv() {
+        if !enabled {
             // Keep draining the bounded queue and retain the appender so its
             // single-writer lock remains held for this layer's lifetime.
+            continue;
+        }
+        batch.clear();
+        batch.push(first);
+        while batch.len() < RECORD_QUEUE_CAPACITY {
+            match receiver.try_recv() {
+                Ok(record) => batch.push(record),
+                Err(_) => break,
+            }
+        }
+        if appender.append_records(&batch).is_err() {
             enabled = false;
+            batch = Vec::new();
         }
     }
 }
@@ -467,5 +480,34 @@ mod tests {
 
         std::fs::remove_dir(segment_paths(directory.path()).pop().unwrap()).unwrap();
         layer_with_config(directory.path(), config).unwrap();
+    }
+
+    #[test]
+    fn queued_burst_flushes_in_order_across_rotation() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = JournalConfig {
+            max_segment_bytes: 1024,
+            max_segments: 2,
+            max_event_bytes: 512,
+        };
+        let subscriber = tracing_subscriber::registry()
+            .with(layer_with_config(directory.path(), config).unwrap());
+        tracing::subscriber::with_default(subscriber, || {
+            for seq in 0..16u64 {
+                tracing::info!(safe_to_share = true, seq, "burst event");
+            }
+        });
+
+        let events = read_all(directory.path());
+        assert!(!events.is_empty());
+        // The newest retained suffix is strictly consecutive and ends at seq 15.
+        let seqs: Vec<u64> = events
+            .iter()
+            .map(|event| event["fields"]["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(*seqs.last().unwrap(), 15);
+        for window in seqs.windows(2) {
+            assert_eq!(window[1], window[0] + 1);
+        }
     }
 }

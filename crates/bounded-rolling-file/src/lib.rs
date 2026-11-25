@@ -331,44 +331,84 @@ impl RollingFileAppender {
     /// synchronously persisted. Later appends fail while the writer lock remains
     /// held.
     pub fn append_record(&mut self, record: &[u8]) -> io::Result<()> {
+        self.append_records(&[record])
+    }
+
+    /// Append a batch of complete newline-terminated records with at most one
+    /// `sync_data` per segment touched.
+    ///
+    /// Every record is validated before any file is created or modified. When
+    /// the batch crosses a segment boundary, the filled segment is synced
+    /// before rotation creates the next segment. A write or sync error
+    /// permanently poisons this appender because rollback cannot be confirmed.
+    pub fn append_records<T: AsRef<[u8]>>(&mut self, records: &[T]) -> io::Result<()> {
         if self.poisoned {
             return Err(io::Error::other("rolling file appender is poisoned"));
         }
-        if record.is_empty() || !record.ends_with(b"\n") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "rolling record must be nonempty and newline-terminated",
-            ));
+        for record in records {
+            let record = record.as_ref();
+            if record.is_empty() || !record.ends_with(b"\n") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "rolling record must be nonempty and newline-terminated",
+                ));
+            }
+            if record.len() as u64 > self.config.max_file_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "rolling record exceeds maximum file size",
+                ));
+            }
         }
-        if record.len() as u64 > self.config.max_file_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "rolling record exceeds maximum file size",
-            ));
-        }
-
-        let needs_rotation = self.active.as_ref().is_none_or(|active| {
-            active.bytes > 0
-                && active.bytes.saturating_add(record.len() as u64) > self.config.max_file_bytes
-        });
-        if needs_rotation {
-            self.rotate()?;
+        if records.is_empty() {
+            return Ok(());
         }
 
-        let active = self
-            .active
-            .as_mut()
-            .expect("rotation always creates an active file");
-        if let Err(error) = active.file.write_all(record) {
-            let _ = active.file.set_len(active.bytes);
-            self.poisoned = true;
-            return Err(error);
+        let mut dirty_active = false;
+        for record in records {
+            let record = record.as_ref();
+            let needs_rotation = self.active.as_ref().is_none_or(|active| {
+                active.bytes > 0
+                    && active.bytes.saturating_add(record.len() as u64) > self.config.max_file_bytes
+            });
+            if needs_rotation {
+                if dirty_active {
+                    let active = self
+                        .active
+                        .as_mut()
+                        .expect("dirty active segment exists before rotation");
+                    if let Err(error) = active.file.sync_data() {
+                        self.poisoned = true;
+                        return Err(error);
+                    }
+                    dirty_active = false;
+                }
+                self.rotate()?;
+            }
+
+            let active = self
+                .active
+                .as_mut()
+                .expect("rotation always creates an active file");
+            if let Err(error) = active.file.write_all(record) {
+                let _ = active.file.set_len(active.bytes);
+                self.poisoned = true;
+                return Err(error);
+            }
+            active.bytes = active.bytes.saturating_add(record.len() as u64);
+            dirty_active = true;
         }
-        if let Err(error) = active.file.sync_data() {
-            self.poisoned = true;
-            return Err(error);
+
+        if dirty_active {
+            let active = self
+                .active
+                .as_mut()
+                .expect("dirty active segment exists after writes");
+            if let Err(error) = active.file.sync_data() {
+                self.poisoned = true;
+                return Err(error);
+            }
         }
-        active.bytes = active.bytes.saturating_add(record.len() as u64);
         Ok(())
     }
 
@@ -1195,6 +1235,92 @@ mod tests {
         assert!(
             read_batch_for_incarnation(directory.path(), incarnation.as_str(), None, 16, 16)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn append_records_batches_writes_and_rotates_mid_batch() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            max_file_bytes: 8,
+            max_files: 2,
+        };
+        let mut appender = RollingFileAppender::open(directory.path(), config).unwrap();
+
+        // Empty batch is a no-op and creates no segment.
+        appender.append_records::<&[u8]>(&[]).unwrap();
+        assert!(test_segments(directory.path()).is_empty());
+
+        // Single batch that spans three segments (4 bytes each, max 8 per segment -> 2 per segment,
+        // max 2 segments retained so oldest is pruned mid-batch).
+        appender
+            .append_records(&[
+                b"aaa\n".as_slice(),
+                b"bbb\n".as_slice(),
+                b"ccc\n".as_slice(),
+                b"ddd\n".as_slice(),
+                b"eee\n".as_slice(),
+            ])
+            .unwrap();
+        drop(appender);
+
+        let segments = test_segments(directory.path());
+        assert_eq!(segments.keys().copied().collect::<Vec<_>>(), [1, 2]);
+        let contents = segments
+            .into_values()
+            .map(std::fs::read_to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(contents, ["ccc\nddd\n", "eee\n"]);
+
+        let batch = read_batch(directory.path(), None, 64, 8).unwrap();
+        assert_eq!(batch.records, b"ccc\nddd\neee\n");
+        assert!(!batch.continuity_gap);
+    }
+
+    #[test]
+    fn append_records_validates_whole_batch_before_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+
+        let err = appender
+            .append_records(&[b"ok\n".as_slice(), b"no-newline".as_slice()])
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            test_segments(directory.path()).is_empty(),
+            "earlier valid records must not be written when a later record in the batch is invalid"
+        );
+
+        let err = appender
+            .append_records(&[b"ok\n".as_slice(), b"too-long!\n".as_slice()])
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(test_segments(directory.path()).is_empty());
+
+        // Appender is not poisoned by validation failure and still accepts valid batches.
+        appender
+            .append_records(&[b"one\n".as_slice(), b"two\n".as_slice()])
+            .unwrap();
+        let batch = read_batch(directory.path(), None, 64, 8).unwrap();
+        assert_eq!(batch.records, b"one\ntwo\n");
+    }
+
+    #[test]
+    fn append_records_write_failure_poisons_and_rejects_empty_batches() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut appender = RollingFileAppender::open(directory.path(), config()).unwrap();
+        appender.append_records(&[b"one\n"]).unwrap();
+        let path = appender.segments.last_key_value().unwrap().1.clone();
+
+        appender.active.as_mut().unwrap().file = appender
+            .directory
+            .open_file(&path, rustix::fs::OFlags::RDONLY, rustix::fs::Mode::empty())
+            .unwrap();
+        assert!(appender.append_records(&[b"two\n"]).is_err());
+        assert_eq!(
+            appender.append_records::<&[u8]>(&[]).unwrap_err().kind(),
+            io::ErrorKind::Other
         );
     }
 }
