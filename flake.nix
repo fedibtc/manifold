@@ -23,7 +23,7 @@
     };
     # fedi30 is fedi29 plus the batched AlephBFT backup write (with
     # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    fedimint.url = "github:fedibtc/fedimint/roboman/payout-caller-operation-id";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
