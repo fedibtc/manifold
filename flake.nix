@@ -1017,7 +1017,7 @@
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "852b005d817fdb641103b06aef0f1dd8b63845b9";
+        fedimintSourceRev = "46a744dcb999d6c37467cfd66fc2db6959e0ce5d";
         stabilityPoolSourceRev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the

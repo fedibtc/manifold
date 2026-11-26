@@ -12,11 +12,11 @@
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi30-idle
-producer	fedimint	fedibtc/fedimint	roboman/quiescence-slow-idle-rounds	852b005d817fdb641103b06aef0f1dd8b63845b9
+producer	fedimint	fedibtc/fedimint	roboman/quiescence-slow-idle-rounds	46a744dcb999d6c37467cfd66fc2db6959e0ce5d
 producer	stability_pool	fedibtc/stability-pool	212c29d7e09f1fd7eee44e0132ca2092d41efa8d	212c29d7e09f1fd7eee44e0132ca2092d41efa8d
 package	stability_pool	fedi-stability-pool-common	crates/common
 package	stability_pool	fedi-stability-pool-server	crates/server
-revision	852b005d817fdb641103b06aef0f1dd8b63845b9
+revision	46a744dcb999d6c37467cfd66fc2db6959e0ce5d
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
