@@ -1144,7 +1144,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
     let miner_address = bitcoin_cli.funded_miner_address().await?;
     let state_dir = temp.join("fi-state");
     #[cfg(target_os = "linux")]
-    {
+    if upgrade_from.is_none() {
         let mg0 = temp.join("mg-0");
         std::fs::create_dir_all(&mg0)?;
         std::fs::write(mg0.join(PAYOUT_CRASH_SEAM_ENABLE), b"enabled\n")?;
@@ -1602,7 +1602,75 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     }
     let request_id = "guardian-fee-payout-restart-e2e";
     #[cfg(target_os = "linux")]
-    let (expected_operation_id, restarted_locators) = {
+    let (expected_operation_id, restarted_locators) = if let Some(candidate) = upgrade_to {
+        // The old release links its payout before the upgrade. A payout it
+        // left started but unlinked is not recovered by the candidate, whose
+        // ledger names each operation before paying; a retry cannot pay
+        // twice, because a sweep sends the whole balance.
+        let started = manifold_guardian_admin(
+            manifold_guardian_bin,
+            &mg0_dir,
+            &[
+                "guardian-fees",
+                "sweep",
+                &seat_id,
+                "--request-id",
+                request_id,
+            ],
+        )
+        .await?;
+        let operation_id = started["operation"]["operation_id"]
+            .as_str()
+            .context("the old release's payout start links a native operation")?
+            .to_owned();
+        // Stop the other old guardians before switching the whole federation,
+        // just as devimint restart_all_with_bin does. Never re-onboard.
+        shutdown_daemons(std::mem::take(daemons)).await?;
+        let mut restarted_locators = Vec::new();
+        for (index, (old_identity, old_seats)) in upgrade_identities.iter().enumerate() {
+            let dir = temp.join(format!("mg-{index}"));
+            let mut daemon = spawn_manifold_guardian(
+                candidate,
+                &dir,
+                &bitcoind.rpc_url,
+                &bitcoind.rpc_username,
+                &bitcoind.rpc_password,
+                port_base + u16::try_from(index)? * MG_PORT_STRIDE,
+                Some(iroh_overrides),
+                None,
+                None,
+            )?;
+            let locator = read_locator(&mut daemon, index).await?;
+            restarted_locators.push(locator);
+            daemons.push(daemon);
+            let identity = manifold_guardian_admin(candidate, &dir, &["show-mnemonic"]).await?;
+            anyhow::ensure!(
+                identity == *old_identity,
+                "upgrade changed MG {index} identity"
+            );
+            let seats = manifold_guardian_admin(candidate, &dir, &["seats", "list"]).await?;
+            let before = old_seats["seats"].as_array().context("old release seats")?;
+            let after = seats["seats"].as_array().context("upgraded seats")?;
+            anyhow::ensure!(
+                before.len() == 1 && after.len() == 1,
+                "upgrade changed MG {index} seat count"
+            );
+            for field in [
+                "seat_id",
+                "fi_id",
+                "plan",
+                "created_at_ms",
+                "decommissioned",
+                "payment_claim",
+            ] {
+                anyhow::ensure!(
+                    before[0].get(field).is_some() && before[0][field] == after[0][field],
+                    "upgrade changed MG {index} seat field {field}"
+                );
+            }
+        }
+        (Some(operation_id), restarted_locators)
+    } else {
         let sweep_manifold_guardian_bin = manifold_guardian_bin.to_owned();
         let sweep_dir = mg0_dir.clone();
         let sweep_seat_id = seat_id.clone();
@@ -1644,71 +1712,21 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         );
         std::fs::remove_file(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE))?;
         std::fs::remove_file(crash_seam)?;
-        if let Some(candidate) = upgrade_to {
-            // Stop the other old guardians before switching the whole federation,
-            // just as devimint restart_all_with_bin does. Never re-onboard.
-            shutdown_daemons(std::mem::take(daemons)).await?;
-            let mut restarted_locators = Vec::new();
-            for (index, (old_identity, old_seats)) in upgrade_identities.iter().enumerate() {
-                let dir = temp.join(format!("mg-{index}"));
-                let mut daemon = spawn_manifold_guardian(
-                    candidate,
-                    &dir,
-                    &bitcoind.rpc_url,
-                    &bitcoind.rpc_username,
-                    &bitcoind.rpc_password,
-                    port_base + u16::try_from(index)? * MG_PORT_STRIDE,
-                    Some(iroh_overrides),
-                    None,
-                    None,
-                )?;
-                let locator = read_locator(&mut daemon, index).await?;
-                restarted_locators.push(locator);
-                daemons.push(daemon);
-                let identity = manifold_guardian_admin(candidate, &dir, &["show-mnemonic"]).await?;
-                anyhow::ensure!(
-                    identity == *old_identity,
-                    "upgrade changed MG {index} identity"
-                );
-                let seats = manifold_guardian_admin(candidate, &dir, &["seats", "list"]).await?;
-                let before = old_seats["seats"].as_array().context("old release seats")?;
-                let after = seats["seats"].as_array().context("upgraded seats")?;
-                anyhow::ensure!(
-                    before.len() == 1 && after.len() == 1,
-                    "upgrade changed MG {index} seat count"
-                );
-                for field in [
-                    "seat_id",
-                    "fi_id",
-                    "plan",
-                    "created_at_ms",
-                    "decommissioned",
-                    "payment_claim",
-                ] {
-                    anyhow::ensure!(
-                        before[0].get(field).is_some() && before[0][field] == after[0][field],
-                        "upgrade changed MG {index} seat field {field}"
-                    );
-                }
-            }
-            (None::<String>, restarted_locators)
-        } else {
-            let mut restarted = spawn_manifold_guardian(
-                manifold_guardian_bin,
-                &mg0_dir,
-                &bitcoind.rpc_url,
-                &bitcoind.rpc_username,
-                &bitcoind.rpc_password,
-                port_base,
-                Some(iroh_overrides),
-                None,
-                None,
-            )?;
-            let mut restarted_locators = locators.to_vec();
-            restarted_locators[0] = read_locator(&mut restarted, 0).await?;
-            daemons.insert(0, restarted);
-            (None::<String>, restarted_locators)
-        }
+        let mut restarted = spawn_manifold_guardian(
+            manifold_guardian_bin,
+            &mg0_dir,
+            &bitcoind.rpc_url,
+            &bitcoind.rpc_username,
+            &bitcoind.rpc_password,
+            port_base,
+            Some(iroh_overrides),
+            None,
+            None,
+        )?;
+        let mut restarted_locators = locators.to_vec();
+        restarted_locators[0] = read_locator(&mut restarted, 0).await?;
+        daemons.insert(0, restarted);
+        (None::<String>, restarted_locators)
     };
     #[cfg(not(target_os = "linux"))]
     let (expected_operation_id, restarted_locators) = {
