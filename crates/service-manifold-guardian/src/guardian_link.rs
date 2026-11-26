@@ -5,17 +5,103 @@
 //! This is its own Iroh ALPN beside the FI-facing service and the telemetry
 //! service: the caller is the operator's phone, not an FI, and nothing here
 //! grants seat authority. The phone makes one call, `link_device`, authorized
-//! by the one-time secret the dashboard shows as a QR code; nothing after
-//! that, so the phone holds no key for this MG.
+//! by the one-time secret the dashboard shows as a QR code. The MG records
+//! the Iroh endpoint id the call came from: only that endpoint may then open
+//! the host's own web UI over [`HOST_UI_ALPN`].
 
 use fedi_decentralized_services::domain::ProtocolV1;
-use fedi_iroh_rpc::service;
+use fedi_iroh_rpc::{RpcConnectionContext, service};
 use serde::{Deserialize, Serialize};
 
 use crate::DkgCompletionCallback;
 
 /// Dedicated Iroh ALPN for the operator's app to reach its own MG.
 pub const GUARDIAN_LINK_ALPN: &[u8] = b"fedi/fman/guardian-link/1";
+
+/// Iroh ALPN on which the linked device reaches the web UI of the host the MG
+/// runs on (the umbrelOS or StartOS dashboard). Each bidirectional stream is
+/// one TCP connection to the one host-UI address the MG was started with:
+/// bytes pass through unchanged both ways, so HTTP/1.1 requests and WebSocket
+/// upgrades work as they would over TCP. The caller never names a target.
+///
+/// A connection from anything but the linked device is closed with a
+/// [`HostUiRefusal`] code before any stream is served, and an open one is
+/// closed the same way once the link is revoked or replaced or the policy
+/// turns the feature off. A stream the MG cannot serve is reset with a
+/// [`HostUiStreamError`] code.
+pub const HOST_UI_ALPN: &[u8] = b"fedi/fman/guardian-link-host-ui/1";
+
+/// Why the MG closed a [`HOST_UI_ALPN`] connection, as its QUIC application
+/// close code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostUiRefusal {
+    /// The caller is not the endpoint that linked to this MG, or no device
+    /// is linked. The same answer for both, so it tells a stranger nothing.
+    NotLinked,
+    /// The feature policy has the guardian link switched off.
+    Disabled,
+    /// This MG was started without a host-UI address: the host has no web
+    /// UI it can forward.
+    Unavailable,
+}
+
+impl HostUiRefusal {
+    const ALL: [Self; 3] = [Self::NotLinked, Self::Disabled, Self::Unavailable];
+
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::NotLinked => 1,
+            Self::Disabled => 2,
+            Self::Unavailable => 3,
+        }
+    }
+
+    #[must_use]
+    pub fn from_code(code: u64) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|refusal| u64::from(refusal.code()) == code)
+    }
+
+    /// The close reason sent with the code, for logs on the caller's side.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::NotLinked => "not_linked",
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Why the MG reset one [`HOST_UI_ALPN`] stream, as its QUIC reset code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostUiStreamError {
+    /// The MG could not open a TCP connection to the host UI.
+    HostUnreachable,
+    /// The connection already has as many streams open as the MG serves.
+    TooManyStreams,
+}
+
+impl HostUiStreamError {
+    const ALL: [Self; 2] = [Self::HostUnreachable, Self::TooManyStreams];
+
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::HostUnreachable => 1,
+            Self::TooManyStreams => 2,
+        }
+    }
+
+    #[must_use]
+    pub fn from_code(code: u64) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|error| u64::from(error.code()) == code)
+    }
+}
 
 /// Longest device label accepted, in characters.
 pub const DEVICE_LABEL_MAX_CHARS: usize = 64;
@@ -211,9 +297,12 @@ pub type GuardianLinkResult<T> = Result<T, GuardianLinkError>;
 #[service]
 pub trait GuardianLinkService {
     /// Link the calling device with the dashboard's one-time secret. A new
-    /// link replaces the previous device.
+    /// link replaces the previous device. The MG keeps the caller's endpoint
+    /// id, which alone may then use [`HOST_UI_ALPN`], so the device dials
+    /// from the stable key it will use for that.
     async fn link_device(
         &self,
+        caller: RpcConnectionContext,
         request: LinkDeviceRequest,
     ) -> GuardianLinkResult<LinkDeviceResponse>;
 }
@@ -251,6 +340,27 @@ mod tests {
         assert!(GuardianLinkInvite::parse(&format!("fedi://guardian-link?{query}")).is_err());
         assert!(GuardianLinkInvite::parse(&format!("manifold://guardian-link?{query}")).is_err());
         assert!(GuardianLinkInvite::parse(&uri.replace("&secret=", "&secret=00")).is_err());
+    }
+
+    #[test]
+    fn host_ui_codes_are_distinct_and_round_trip() {
+        let refusals = HostUiRefusal::ALL.map(HostUiRefusal::code);
+        assert_eq!(refusals, [1, 2, 3]);
+        for refusal in HostUiRefusal::ALL {
+            assert_eq!(
+                HostUiRefusal::from_code(refusal.code().into()),
+                Some(refusal)
+            );
+        }
+        assert_eq!(HostUiRefusal::from_code(0), None);
+        assert_eq!(HostUiRefusal::from_code(4), None);
+        for error in HostUiStreamError::ALL {
+            assert_eq!(
+                HostUiStreamError::from_code(error.code().into()),
+                Some(error)
+            );
+        }
+        assert_eq!(HostUiStreamError::from_code(0), None);
     }
 
     #[test]

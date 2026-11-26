@@ -51,7 +51,8 @@ fleet-manager serve \
   [--esplora-url $FLEET_MANAGER_ESPLORA_URL] \
   [--admin-http-bind $FLEET_MANAGER_ADMIN_HTTP_BIND \
    --admin-http-auth $FLEET_MANAGER_ADMIN_HTTP_AUTH \
-   --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE]
+   --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE] \
+  [--host-ui-addr $FLEET_MANAGER_HOST_UI_ADDR]
 ```
 
 Seat capacity, price and the answer about a monthly data cap are configured durably during browser or admin-socket onboarding. The daemon presents the available-RAM recommendation from [REQ-seat-capacity-default](../../crates/mg/specs/REQ-seat-capacity-default.md); it is not a process-start argument.
@@ -80,6 +81,12 @@ authenticating platform proxy is the listener's sole peer, and `password`
 additionally requires `FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE`. Setting the auth
 mode or the password file without a bind address fails startup rather than
 starting a daemon with no dashboard.
+
+`FLEET_MANAGER_HOST_UI_ADDR` is where the platform serves its own dashboard
+as seen from this container: `10.21.0.1:80` on umbrelOS. The operator's linked
+phone may open that dashboard over Guardian Link
+([`SPEC-guardian-link`](../../crates/mg/specs/SPEC-guardian-link.md#the-hosts-web-ui));
+without it there is nothing to forward.
 
 No package performs a runtime `fedimintd --version` probe or downloads a binary:
 a seat's `fedimintd` is this very binary, spawned under a `fedimintd` argv[0].

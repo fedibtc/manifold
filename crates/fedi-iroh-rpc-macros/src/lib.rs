@@ -8,6 +8,11 @@ use syn::{
 
 /// Generate a client and a server for an RPC service trait.
 ///
+/// A method may take an `RpcConnectionContext` argument before its request:
+/// the server then passes it the connection the call arrived on. The client
+/// has nothing to put there, so a service with such a method gets no trait
+/// implementation on its client; callers use `transport()`.
+///
 /// `#[service(api_version = Type)]` versions the service's API: every method
 /// then names the API version that added it in its current shape with
 /// `#[added_in(expr)]`, where `expr` is a constant of `Type`, and the client
@@ -100,6 +105,7 @@ fn expand_service(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let takes_context = methods.iter().any(|method| method.takes_context);
 
     for item in &mut generated_trait.items {
         if let TraitItem::Fn(method) = item {
@@ -153,12 +159,24 @@ fn expand_service(
         let req_ty = &method.request_ty;
         let ret_ty = &method.return_ty;
         let method_name = ident.to_string();
+        let call = if method.takes_context {
+            quote! { self.service.#ident(context.clone(), request) }
+        } else {
+            quote! { self.service.#ident(request) }
+        };
         quote! {
             #method_name => {
                 #rpc::__private::decode_call::<#req_ty, #ret_ty, _>(
                     body,
-                    |request| self.service.#ident(request),
+                    |request| #call,
                 ).await
+            }
+        }
+    });
+    let client_trait_impl = (!takes_context).then(|| {
+        quote! {
+            impl #trait_ident for #client_ident {
+                #(#client_methods)*
             }
         }
     });
@@ -219,9 +237,7 @@ fn expand_service(
             #(#raw_client_methods)*
         }
 
-        impl #trait_ident for #client_ident {
-            #(#client_methods)*
-        }
+        #client_trait_impl
 
         #[derive(Debug, Clone)]
         pub struct #server_ident<S> {
@@ -240,7 +256,13 @@ fn expand_service(
         where
             S: #trait_ident + Send + Sync + 'static,
         {
-            async fn handle_rpc(&self, method: &str, body: &[u8]) -> #rpc::RpcResult<Vec<u8>> {
+            async fn handle_rpc(
+                &self,
+                context: &#rpc::RpcConnectionContext,
+                method: &str,
+                body: &[u8],
+            ) -> #rpc::RpcResult<Vec<u8>> {
+                let _ = context;
                 match method {
                     #(#server_arms,)*
                     _ => Err(#rpc::__private::unknown_method(method)),
@@ -341,7 +363,13 @@ fn validate_method(error: &mut Option<syn::Error>, method: &TraitItemFn) {
         ),
     }
 
-    match inputs.next() {
+    let mut next = inputs.next();
+    if let Some(FnArg::Typed(first)) = next
+        && is_context_type(&first.ty)
+    {
+        next = inputs.next();
+    }
+    match next {
         Some(FnArg::Typed(request)) => {
             if matches!(request.ty.as_ref(), Type::Reference(_)) {
                 push_error(
@@ -395,8 +423,21 @@ fn push_error(target: &mut Option<syn::Error>, error: syn::Error) {
         *target = Some(error);
     }
 }
+/// Whether an argument type names `RpcConnectionContext`, by its last path
+/// segment, so both a plain and a crate-qualified path work.
+fn is_context_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path)
+        if path.qself.is_none()
+            && path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "RpcConnectionContext"))
+}
+
 struct Method {
     ident: Ident,
+    takes_context: bool,
     request_ident: Ident,
     request_ty: Type,
     return_ty: Type,
@@ -413,10 +454,17 @@ fn parse_method(method: &TraitItemFn) -> Method {
         _ => panic!("#[service] methods must take &self as their first argument"),
     }
 
-    let request = match inputs.next() {
+    let mut request = match inputs.next() {
         Some(FnArg::Typed(request)) => request,
         _ => panic!("#[service] methods must take exactly one request argument"),
     };
+    let takes_context = is_context_type(&request.ty);
+    if takes_context {
+        request = match inputs.next() {
+            Some(FnArg::Typed(request)) => request,
+            _ => panic!("#[service] methods must take exactly one request argument"),
+        };
+    }
     if inputs.next().is_some() {
         panic!("#[service] methods must take exactly one request argument");
     }
@@ -433,6 +481,7 @@ fn parse_method(method: &TraitItemFn) -> Method {
 
     Method {
         ident: method.sig.ident.clone(),
+        takes_context,
         request_ident,
         request_ty,
         return_ty,

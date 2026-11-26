@@ -817,6 +817,7 @@ pub fn guardian_link_fixture() -> Value {
         availability: GuardianLinkAvailability::Ready,
         link: Some(GuardianLinkRecord {
             device_label: "Pixel 8".to_owned(),
+            device_endpoint_id: Some(iroh::SecretKey::from_bytes(&[8; 32]).public()),
             callback: Some(callback),
             linked_at_ms: 1_700_000_000_000,
             notification_seq: 3,

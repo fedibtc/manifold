@@ -26,6 +26,9 @@ pub enum GuardianLinkDelivery {
 #[derive(Clone)]
 pub struct GuardianLinkRecord {
     pub device_label: String,
+    /// The endpoint the device linked from, the only one the host UI is
+    /// forwarded to. `None` for a link made before the MG recorded it.
+    pub device_endpoint_id: Option<iroh::EndpointId>,
     pub callback: Option<DkgCompletionCallback>,
     pub linked_at_ms: i64,
     pub notification_seq: u64,
@@ -39,6 +42,7 @@ impl std::fmt::Debug for GuardianLinkRecord {
         formatter
             .debug_struct("GuardianLinkRecord")
             .field("device_label", &self.device_label)
+            .field("device_endpoint_id", &self.device_endpoint_id)
             .field("callback", &self.callback.as_ref().map(|_| "<redacted>"))
             .field("linked_at_ms", &self.linked_at_ms)
             .field("notification_seq", &self.notification_seq)
@@ -52,6 +56,7 @@ impl std::fmt::Debug for GuardianLinkRecord {
 #[derive(sqlx::FromRow)]
 struct GuardianLinkRow {
     device_label: String,
+    device_endpoint_id: Option<String>,
     callback: Option<String>,
     linked_at_ms: i64,
     notification_seq: i64,
@@ -97,8 +102,15 @@ impl TryFrom<GuardianLinkRow> for GuardianLinkRecord {
         if !matches!(delivery, GuardianLinkDelivery::Terminal(_)) && callback.is_none() {
             return Err(corrupt("live delivery without a callback"));
         }
+        let device_endpoint_id = row
+            .device_endpoint_id
+            .as_deref()
+            .map(str::parse::<iroh::EndpointId>)
+            .transpose()
+            .map_err(|_| corrupt("device_endpoint_id does not parse"))?;
         Ok(Self {
             device_label: row.device_label,
+            device_endpoint_id,
             callback,
             linked_at_ms: row.linked_at_ms,
             notification_seq: u64::try_from(row.notification_seq)
@@ -122,7 +134,7 @@ impl Db {
     /// The linked device, if any.
     pub async fn guardian_link(&self) -> Result<Option<GuardianLinkRecord>, DbError> {
         sqlx::query_as::<_, GuardianLinkRow>(
-            "SELECT device_label, callback, linked_at_ms, \
+            "SELECT device_label, device_endpoint_id, callback, linked_at_ms, \
              notification_seq, notified_reasons, last_notified_at_ms, delivery, delivery_reason \
              FROM guardian_link WHERE id = ?",
         )
@@ -138,6 +150,7 @@ impl Db {
     pub async fn replace_guardian_link(
         &self,
         device_label: &str,
+        device_endpoint_id: iroh::EndpointId,
         callback: &DkgCompletionCallback,
     ) -> Result<(), DbError> {
         let linked_at_ms = now_ms();
@@ -147,11 +160,13 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO guardian_link (id, device_label, callback, linked_at_ms) \
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO guardian_link \
+             (id, device_label, device_endpoint_id, callback, linked_at_ms) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(LINK_ID)
         .bind(device_label)
+        .bind(device_endpoint_id.to_string())
         .bind(callback_json(callback))
         .bind(linked_at_ms)
         .execute(&mut *tx)

@@ -193,7 +193,7 @@ where
 {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let connection_context = RpcConnectionContext {
-            remote_node_id: Some(connection.remote_id().to_string()),
+            remote_id: connection.remote_id(),
         };
         loop {
             let Ok((mut send, mut recv)) = connection.accept_bi().await else {
@@ -232,7 +232,7 @@ where
                                 let write_permits =
                                     method_response_write_permits.get(&frame.method).cloned();
                                 let response = handler
-                                    .handle_rpc_with_context(context, &frame.method, &frame.body)
+                                    .handle_rpc(&context, &frame.method, &frame.body)
                                     .await;
                                 (response, write_permits)
                             }
@@ -425,7 +425,7 @@ mod tests {
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await?;
-        let client_node_id = client_endpoint.id().to_string();
+        let client_id = client_endpoint.id();
         let connection = client_endpoint
             .connect(router.endpoint().addr(), ALPN)
             .await?;
@@ -434,10 +434,7 @@ mod tests {
         let response: String = client.call("record_context", ()).await?;
         assert_eq!(response, "ok");
         let context = tokio::time::timeout(Duration::from_secs(10), receiver).await??;
-        assert_eq!(
-            context.remote_node_id.as_deref(),
-            Some(client_node_id.as_str())
-        );
+        assert_eq!(context.remote_id, client_id);
 
         router.shutdown().await?;
         client_endpoint.close().await;
@@ -733,18 +730,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RpcServiceHandler for ContextRecordingHandler {
-        async fn handle_rpc(&self, method: &str, _body: &[u8]) -> RpcResult<Vec<u8>> {
-            Err(RpcError::UnknownMethod(method.to_owned()))
-        }
-
-        async fn handle_rpc_with_context(
+        async fn handle_rpc(
             &self,
-            context: RpcConnectionContext,
+            context: &RpcConnectionContext,
             _method: &str,
             body: &[u8],
         ) -> RpcResult<Vec<u8>> {
             if let Some(sender) = self.sender.lock().expect("context sender mutex").take() {
-                let _ = sender.send(context);
+                let _ = sender.send(context.clone());
             }
             crate::__private::decode_call::<(), String, _>(body, |_| async { "ok".to_owned() })
                 .await
@@ -755,7 +748,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RpcServiceHandler for EchoHandler {
-        async fn handle_rpc(&self, _method: &str, body: &[u8]) -> RpcResult<Vec<u8>> {
+        async fn handle_rpc(
+            &self,
+            _context: &RpcConnectionContext,
+            _method: &str,
+            body: &[u8],
+        ) -> RpcResult<Vec<u8>> {
             crate::__private::decode_call::<(), String, _>(body, |_| async { "ok".to_owned() })
                 .await
         }
@@ -767,7 +765,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RpcServiceHandler for LargeResponseHandler {
-        async fn handle_rpc(&self, _method: &str, body: &[u8]) -> RpcResult<Vec<u8>> {
+        async fn handle_rpc(
+            &self,
+            _context: &RpcConnectionContext,
+            _method: &str,
+            body: &[u8],
+        ) -> RpcResult<Vec<u8>> {
             crate::__private::decode_call::<(), Vec<u8>, _>(body, |_| async {
                 vec![0x5a; self.bytes]
             })
@@ -784,7 +787,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RpcServiceHandler for DisconnectResilientHandler {
-        async fn handle_rpc(&self, _method: &str, body: &[u8]) -> RpcResult<Vec<u8>> {
+        async fn handle_rpc(
+            &self,
+            _context: &RpcConnectionContext,
+            _method: &str,
+            body: &[u8],
+        ) -> RpcResult<Vec<u8>> {
             self.started.notify_one();
             self.resume.notified().await;
             self.completed.notify_one();

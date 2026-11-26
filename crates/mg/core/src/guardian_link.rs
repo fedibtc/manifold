@@ -8,8 +8,8 @@
 //!   fleet keeps in memory for ten minutes and shows as a QR code. The app
 //!   dials the [`GUARDIAN_LINK_ALPN`] service with that secret and its
 //!   push-gateway hook; [`GuardianLinkRpc`] consumes the secret and stores
-//!   the link. That is the phone's only call: the hook lives a year and is
-//!   not renewed, so when it expires the host links the phone again.
+//!   the link, with the endpoint id the call came from. That endpoint alone
+//!   may then open the host's web UI ([`crate::guardian_link_host_ui`]).
 //! - **Attention.** [`Fleet::attention_reasons`] derives the coarse set of
 //!   reasons the operator should look from what the daemon already holds:
 //!   the latest readiness report (the Health page's checks), the
@@ -30,9 +30,10 @@ use std::time::Duration;
 use fedi_decentralized_domain::{AdmittedFeaturePolicy, ProtocolV1};
 use fedi_decentralized_service_manifold_guardian::{
     DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, GuardianLinkError,
-    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, LinkDeviceRequest,
+    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, HostUiRefusal, LinkDeviceRequest,
     LinkDeviceResponse, LinkSecret,
 };
+use fedi_iroh_rpc::RpcConnectionContext;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -85,6 +86,9 @@ pub(crate) struct GuardianLinkState {
     policy: OnceLock<watch::Receiver<Option<AdmittedFeaturePolicy>>>,
     /// Wakes the notifier after a link, a revoke, or a new readiness report.
     pub(crate) changed: tokio::sync::Notify,
+    /// Ticks on every link and revoke, so an open host-UI connection checks
+    /// whether its device is still the linked one.
+    pub(crate) linked_device: watch::Sender<()>,
 }
 
 /// Whether the guardian link can be used on this MG.
@@ -136,7 +140,7 @@ impl Fleet {
     /// The `guardian_link` flag of the setup-payment policy this MG holds,
     /// or, without one, its Manifold environment's default
     /// ([`SPEC-guardian-link`](../../specs/SPEC-guardian-link.md)).
-    fn guardian_link_enabled(&self) -> bool {
+    pub(crate) fn guardian_link_enabled(&self) -> bool {
         match self.guardian_link.policy.get() {
             Some(policy) => self.guardian_link_enabled_by(policy.borrow().as_ref()),
             None => self.guardian_link_enabled_by(None),
@@ -244,7 +248,43 @@ impl Fleet {
         *self.guardian_link.offer.lock().expect("offer lock") = None;
         let removed = self.db().delete_guardian_link().await?;
         self.guardian_link.changed.notify_one();
+        self.guardian_link.linked_device.send_replace(());
         Ok(removed)
+    }
+
+    /// Whether `caller` may use the host-UI forward now: it is the endpoint
+    /// the linked device linked from, and the feature is on. The device is
+    /// checked first, so anyone else gets [`HostUiRefusal::NotLinked`]
+    /// whatever the policy says.
+    pub(crate) async fn host_ui_refusal(&self, caller: &iroh::EndpointId) -> Option<HostUiRefusal> {
+        let linked = match self.db().guardian_link().await {
+            Ok(link) => link.and_then(|link| link.device_endpoint_id),
+            Err(error) => {
+                tracing::warn!(%error, "host UI forward could not read the guardian link");
+                None
+            }
+        };
+        if linked.as_ref() != Some(caller) {
+            return Some(HostUiRefusal::NotLinked);
+        }
+        if !self.guardian_link_enabled() {
+            return Some(HostUiRefusal::Disabled);
+        }
+        None
+    }
+
+    /// Changes that can revoke an open host-UI connection: a link or revoke,
+    /// and the feature policy.
+    pub(crate) fn host_ui_gate_changes(
+        &self,
+    ) -> (
+        watch::Receiver<()>,
+        Option<watch::Receiver<Option<AdmittedFeaturePolicy>>>,
+    ) {
+        (
+            self.guardian_link.linked_device.subscribe(),
+            self.guardian_link.policy.get().cloned(),
+        )
     }
 
     /// Validate a device's hook against the deployment's gateway origin.
@@ -589,6 +629,7 @@ fn validate_device_label(label: &str) -> GuardianLinkResult<()> {
 impl GuardianLinkService for GuardianLinkRpc {
     async fn link_device(
         &self,
+        caller: RpcConnectionContext,
         request: LinkDeviceRequest,
     ) -> GuardianLinkResult<LinkDeviceResponse> {
         if !self.fleet.guardian_link_enabled() {
@@ -602,10 +643,15 @@ impl GuardianLinkService for GuardianLinkRpc {
         }
         self.fleet
             .db()
-            .replace_guardian_link(request.device_label.trim(), &request.callback)
+            .replace_guardian_link(
+                request.device_label.trim(),
+                caller.remote_id,
+                &request.callback,
+            )
             .await
             .map_err(|error| internal("link_device", &error))?;
         self.fleet.guardian_link.changed.notify_one();
+        self.fleet.guardian_link.linked_device.send_replace(());
         tracing::info!("guardian link established");
         Ok(LinkDeviceResponse {
             version: ProtocolV1,

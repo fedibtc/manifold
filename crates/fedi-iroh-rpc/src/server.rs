@@ -8,28 +8,28 @@ use crate::{
     client::{decode, encode},
 };
 
-/// Per-connection metadata available to RPC service handlers.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Per-connection metadata available to RPC service handlers. A service
+/// method receives it by taking an `RpcConnectionContext` argument before its
+/// request.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcConnectionContext {
-    /// Authenticated remote Iroh node id, when available from the connection.
-    pub remote_node_id: Option<String>,
+    /// The caller's Iroh endpoint id, authenticated by the connection's
+    /// handshake.
+    pub remote_id: iroh::EndpointId,
 }
 
 #[async_trait]
 /// Type-erased method dispatcher implemented by generated service servers.
 pub trait RpcServiceHandler: Send + Sync + 'static {
-    /// Dispatches a encoded request body to a method and returns a encoded service return value.
-    async fn handle_rpc(&self, method: &str, body: &[u8]) -> RpcResult<Vec<u8>>;
-
-    /// Dispatches a request with transport connection metadata.
-    async fn handle_rpc_with_context(
+    /// Dispatches an encoded request body, sent over the connection
+    /// `context` describes, to a method and returns an encoded service
+    /// return value.
+    async fn handle_rpc(
         &self,
-        _context: RpcConnectionContext,
+        context: &RpcConnectionContext,
         method: &str,
         body: &[u8],
-    ) -> RpcResult<Vec<u8>> {
-        self.handle_rpc(method, body).await
-    }
+    ) -> RpcResult<Vec<u8>>;
 }
 
 pub async fn decode_call<Req, Ret, Fut>(
