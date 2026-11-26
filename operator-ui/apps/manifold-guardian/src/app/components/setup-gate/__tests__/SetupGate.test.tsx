@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -113,7 +113,10 @@ it('should wait out a configured host whose runtime is still starting', async ()
   ).toBeNull();
 });
 
-it('should hold a first-time setup in the wizard while the new runtime starts', async () => {
+// Finishing the last step stores the offer, and the daemon answers complete
+// while the new runtime starts. The wizard can no longer tell which form it was
+// on, so the starting screen takes over until the dashboard is ready.
+it('should show the starting screen once first-time setup completes', async () => {
   const adminCall = stubNotOnboarded();
   const { client } = renderGate();
 
@@ -122,10 +125,8 @@ it('should hold a first-time setup in the wizard while the new runtime starts', 
   adminCall.mockResolvedValue({ stage: 'complete', runtime: 'starting' });
   await deliverNextAnswer(client);
 
-  screen.getByRole('heading', { name: 'Set up Manifold Fedimint Guardian' });
-  expect(
-    screen.queryByRole('heading', { name: 'Manifold Fedimint Guardian is starting' })
-  ).toBeNull();
+  await screen.findByRole('heading', { name: 'Manifold Fedimint Guardian is starting' });
+  expect(screen.queryByRole('heading', { name: 'Set up Manifold Fedimint Guardian' })).toBeNull();
   expect(screen.queryByText('dashboard')).toBeNull();
 
   adminCall.mockResolvedValue({ stage: 'complete', runtime: 'ready' });
@@ -134,6 +135,28 @@ it('should hold a first-time setup in the wizard while the new runtime starts', 
   await screen.findByText('dashboard');
 
   expect(screen.queryByRole('heading', { name: 'Set up Manifold Fedimint Guardian' })).toBeNull();
+});
+
+// The regression: a host set up without a badge stores its offer from the
+// Monthly data step. The next answer is complete while starting, which no
+// longer looks like a badgeless initial_offer, and the wizard used to flash the
+// badged "Set your price" form before the dashboard opened.
+it('should not flash the price form after a no-badge setup completes', async () => {
+  const badgeless = { badgeless_mg: true, nostr: { state: 'checking' } };
+  const adminCall = vi
+    .spyOn(adminCallModule, 'adminCall')
+    .mockResolvedValue({ ...badgeless, stage: 'initial_offer', runtime: 'starting' });
+  const { client } = renderGate();
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Accept and continue' }));
+  await screen.findByRole('heading', { name: 'Set your monthly data' });
+
+  adminCall.mockResolvedValue({ ...badgeless, stage: 'complete', runtime: 'starting' });
+  await deliverNextAnswer(client);
+
+  await screen.findByRole('heading', { name: 'Manifold Fedimint Guardian is starting' });
+  expect(screen.queryByRole('heading', { name: 'Set your price' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Set your monthly data' })).toBeNull();
 });
 
 it('should keep its surface through the StrictMode double invoke', async () => {
