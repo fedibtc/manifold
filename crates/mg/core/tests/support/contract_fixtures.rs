@@ -206,7 +206,11 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ),
         (
             "mg_ecash_payout_already_spent",
-            ecash_payout_fixture(EcashPayoutStateWire::AlreadySpent),
+            ecash_payout_fixture(EcashPayoutStateWire::AlreadySpent {
+                token: Some(EcashTokenWire(
+                    "fedimint1fixtureecashtokenplaceholder".into(),
+                )),
+            }),
         ),
         ("mg_seats", seats_fixture()),
         ("mg_seat_reports", seat_reports_fixture()),

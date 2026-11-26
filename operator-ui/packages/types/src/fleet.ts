@@ -392,13 +392,13 @@ export type PayoutJob = LightningPayoutJob | EcashPayoutJob;
 // carries the bearer token in a single-payout answer, and `token: null` in a
 // list, so a polled list never holds it. `reclaiming` is a cancel the
 // federation has not settled yet; `already_spent` is a cancel that lost to a
-// redemption. The operator's "redeemed" mark is not a state: it is
+// redemption, and carries the token as `issued` does. The operator's "redeemed" mark is not a state: it is
 // `confirmed_at_ms` on the job's operation.
 export type EcashPayoutState =
   | { state: 'issued'; token: string | null }
   | { state: 'reclaiming' }
   | { state: 'reclaimed' }
-  | { state: 'already_spent' };
+  | { state: 'already_spent'; token: string | null };
 export interface LightningPayoutStatus {
   job: LightningPayoutJob;
   payout: WalletOutgoingOperation | null;

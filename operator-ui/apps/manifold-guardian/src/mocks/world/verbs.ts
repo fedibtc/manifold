@@ -339,8 +339,8 @@ const paymentFederation = (federation_id: string) => {
 
 /** The list item the daemon answers: a polled list never carries a token. */
 const listed = (payout: PayoutJobStatusResponse): PayoutJobStatusResponse =>
-  'ecash' in payout && payout.ecash?.state === 'issued'
-    ? { job: payout.job, ecash: { state: 'issued', token: null } }
+  'ecash' in payout && payout.ecash && 'token' in payout.ecash
+    ? { job: payout.job, ecash: { ...payout.ecash, token: null } }
     : payout;
 
 /** How many of the newest payouts the daemon lists. */

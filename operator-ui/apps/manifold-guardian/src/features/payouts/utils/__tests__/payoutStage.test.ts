@@ -68,7 +68,7 @@ describe('payoutStage', () => {
     [ecash({ state: 'reclaimed' }, 2), false, 'Returned to balance'],
     [ecash({ state: 'reclaiming' }, 2), true, 'Returning to balance'],
     // A cancel that lost the race found the token redeemed.
-    [ecash({ state: 'already_spent' }), false, 'Redeemed'],
+    [ecash({ state: 'already_spent', token: null }), false, 'Redeemed'],
     [ecash({ state: 'reclaimed' }), false, 'Returned to balance']
   ])('should place %j', (payout, open, label) => {
     expect(payoutStage(payout)).toMatchObject({ open, label });

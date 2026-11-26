@@ -36,23 +36,32 @@ async fn whole_balance_selection_takes_every_note_whatever_is_requested() {
 /// reissue decides, so an in-flight one reads as no decision yet.
 #[test]
 fn reclaim_outcomes_map_to_payout_states() {
+    let token = EcashToken::test("t");
     assert_eq!(
-        v1_reclaim_state(ReissueExternalNotesState::Done),
+        v1_reclaim_state(ReissueExternalNotesState::Done, &token),
         Some(EcashPayoutState::Reclaimed)
     );
     assert_eq!(
-        v1_reclaim_state(ReissueExternalNotesState::Failed("spent".into())),
-        Some(EcashPayoutState::AlreadySpent)
+        v1_reclaim_state(ReissueExternalNotesState::Failed("spent".into()), &token),
+        Some(EcashPayoutState::AlreadySpent {
+            token: token.clone()
+        })
     );
-    assert_eq!(v1_reclaim_state(ReissueExternalNotesState::Created), None);
-    assert_eq!(v1_reclaim_state(ReissueExternalNotesState::Issuing), None);
     assert_eq!(
-        v2_reclaim_state(MintV2ReceiveState::Success),
+        v1_reclaim_state(ReissueExternalNotesState::Created, &token),
+        None
+    );
+    assert_eq!(
+        v1_reclaim_state(ReissueExternalNotesState::Issuing, &token),
+        None
+    );
+    assert_eq!(
+        v2_reclaim_state(MintV2ReceiveState::Success, token.clone()),
         EcashPayoutState::Reclaimed
     );
     assert_eq!(
-        v2_reclaim_state(MintV2ReceiveState::Rejected),
-        EcashPayoutState::AlreadySpent
+        v2_reclaim_state(MintV2ReceiveState::Rejected, token.clone()),
+        EcashPayoutState::AlreadySpent { token }
     );
 }
 
@@ -65,7 +74,12 @@ fn only_issued_and_reclaiming_payouts_are_open() {
         .is_open()
     );
     assert!(EcashPayoutState::Reclaiming.is_open());
-    for closed in [EcashPayoutState::Reclaimed, EcashPayoutState::AlreadySpent] {
+    for closed in [
+        EcashPayoutState::Reclaimed,
+        EcashPayoutState::AlreadySpent {
+            token: EcashToken::test("t"),
+        },
+    ] {
         assert!(!closed.is_open(), "{closed:?}");
     }
 }
@@ -88,5 +102,18 @@ fn bearer_tokens_never_format() {
     assert_eq!(
         serde_json::to_value(state.to_wire(false)).unwrap(),
         serde_json::json!({"state": "issued", "token": null})
+    );
+    // A refused reclaim keeps the token in a single-payout answer only.
+    let spent = EcashPayoutState::AlreadySpent {
+        token: EcashToken::test(token),
+    };
+    assert!(!format!("{spent:?}").contains(token));
+    assert_eq!(
+        serde_json::to_value(spent.to_wire(true)).unwrap(),
+        serde_json::json!({"state": "already_spent", "token": token})
+    );
+    assert_eq!(
+        serde_json::to_value(spent.to_wire(false)).unwrap(),
+        serde_json::json!({"state": "already_spent", "token": null})
     );
 }

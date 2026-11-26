@@ -1,7 +1,7 @@
 use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 use mg_core::wallet::{Msats, PayoutRequestId};
 
-use crate::payout_ecash::EcashPayoutState;
+use crate::payout_ecash::{EcashPayoutState, EcashToken};
 use crate::payout_job::{PayoutJob, PayoutJobOperation, PayoutMethod, PayoutScope};
 use crate::payout_job_status::{PayoutJobStatus, PayoutNativeStatus};
 use crate::payout_operation_id::PayoutOperationId;
@@ -111,7 +111,12 @@ fn internal_ecash_projection_matches_committed_operator_contracts() {
     );
     for (state, path) in [
         (EcashPayoutState::Reclaimed, "ecash_reclaimed"),
-        (EcashPayoutState::AlreadySpent, "ecash_already_spent"),
+        (
+            EcashPayoutState::AlreadySpent {
+                token: EcashToken::test("fedimint1fixtureecashtokenplaceholder"),
+            },
+            "ecash_already_spent",
+        ),
     ] {
         let status = PayoutJobStatus {
             job: job.clone(),

@@ -40,7 +40,7 @@ type View =
   | { kind: 'returning'; committing: boolean }
   | { kind: 'redeemed'; confirmedAtMs: number }
   | { kind: 'returned' }
-  | { kind: 'already_redeemed' };
+  | { kind: 'already_redeemed'; token: string | null };
 
 /** What every step can read and do. */
 interface StepContext {
@@ -106,7 +106,7 @@ const viewOf = (
     case 'reclaimed':
       return { kind: 'returned' };
     case 'already_spent':
-      return { kind: 'already_redeemed' };
+      return { kind: 'already_redeemed', token: payout.ecash.token };
   }
 };
 
@@ -305,11 +305,19 @@ const STEPS: {
   returned: (_view, ctx) => ({
     body: receipt(ctx, `Returned ${ctx.amount}`, 'They are back in this balance.')
   }),
-  already_redeemed: (_view, ctx) => ({
-    body: receipt(
-      ctx,
-      'Already redeemed',
-      'This ecash was redeemed before the cancel reached the federation, so nothing returned.'
+  // The token stays copyable: if the federation refused the cancel for any
+  // reason but a redemption, it is the only way left to the notes.
+  already_redeemed: ({ token }, ctx) => ({
+    body: (
+      <DialogResult tone="success" heading="Already redeemed">
+        <p>
+          This ecash was redeemed before the cancel reached the federation, so nothing returned.
+        </p>
+
+        <OperationId id={ctx.operationId} />
+
+        {token && <CopyButton value={token} label="Copy ecash" showLabel />}
+      </DialogResult>
     )
   })
 };

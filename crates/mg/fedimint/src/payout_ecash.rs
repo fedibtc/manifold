@@ -57,10 +57,17 @@ impl std::fmt::Debug for EcashToken {
 /// state; the operator's confirmation is a separate fact of the job.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EcashPayoutState {
-    Issued { token: EcashToken },
+    Issued {
+        token: EcashToken,
+    },
     Reclaiming,
     Reclaimed,
-    AlreadySpent,
+    /// The reclaim was refused, which almost always means the token was
+    /// redeemed first. The token stays readable: a refusal for another reason
+    /// would leave notes behind it that only the token can still reach.
+    AlreadySpent {
+        token: EcashToken,
+    },
 }
 
 impl EcashPayoutState {
@@ -73,7 +80,9 @@ impl EcashPayoutState {
             },
             Self::Reclaiming => EcashPayoutStateWire::Reclaiming,
             Self::Reclaimed => EcashPayoutStateWire::Reclaimed,
-            Self::AlreadySpent => EcashPayoutStateWire::AlreadySpent,
+            Self::AlreadySpent { token } => EcashPayoutStateWire::AlreadySpent {
+                token: with_token.then(|| EcashTokenWire(token.0.clone())),
+            },
         }
     }
 
@@ -235,15 +244,14 @@ pub(crate) async fn ecash_payout_state(
     match committed_spend(client, operation_id).await? {
         SpentNotes::V1(notes) => {
             let reclaim_id = crate::reissue_operation_id(&notes);
+            let token = EcashToken(notes.to_string());
             let Some(reclaim) = client.operation_log().get_operation(reclaim_id).await else {
-                return Ok(EcashPayoutState::Issued {
-                    token: EcashToken(notes.to_string()),
-                });
+                return Ok(EcashPayoutState::Issued { token });
             };
             if let Some(state) = reclaim
                 .try_outcome::<ReissueExternalNotesState>()
                 .context("decode ecash reclaim outcome")?
-                .and_then(v1_reclaim_state)
+                .and_then(|state| v1_reclaim_state(state, &token))
             {
                 return Ok(state);
             }
@@ -260,18 +268,17 @@ pub(crate) async fn ecash_payout_state(
             while let Some(update) = updates.next().await {
                 last = Some(update);
             }
-            last.and_then(v1_reclaim_state)
+            last.and_then(|state| v1_reclaim_state(state, &token))
                 .context("ecash reclaim updates ended before a terminal state")
         }
         SpentNotes::V2(ecash) => {
             let reclaim_id = OperationId::from_encodable(&ecash);
+            let token = EcashToken(fedimint_core::base32::encode_prefixed(
+                fedimint_core::base32::FEDIMINT_PREFIX,
+                &ecash,
+            ));
             let Some(reclaim) = client.operation_log().get_operation(reclaim_id).await else {
-                return Ok(EcashPayoutState::Issued {
-                    token: EcashToken(fedimint_core::base32::encode_prefixed(
-                        fedimint_core::base32::FEDIMINT_PREFIX,
-                        &ecash,
-                    )),
-                });
+                return Ok(EcashPayoutState::Issued { token });
             };
             let outcome = match reclaim
                 .try_outcome::<MintV2ReceiveState>()
@@ -314,7 +321,7 @@ pub(crate) async fn ecash_payout_state(
                         .context("await mint-v2 ecash reclaim notes")?;
                 }
             }
-            Ok(v2_reclaim_state(outcome))
+            Ok(v2_reclaim_state(outcome, token))
         }
     }
 }
@@ -448,18 +455,23 @@ fn payout_metadata(request_id: &PayoutRequestId) -> serde_json::Value {
 
 /// A mint-v1 reissue rejected by the federation means the notes' inputs were
 /// already spent: the recipient redeemed the token first.
-fn v1_reclaim_state(state: ReissueExternalNotesState) -> Option<EcashPayoutState> {
+fn v1_reclaim_state(
+    state: ReissueExternalNotesState,
+    token: &EcashToken,
+) -> Option<EcashPayoutState> {
     match state {
         ReissueExternalNotesState::Done => Some(EcashPayoutState::Reclaimed),
-        ReissueExternalNotesState::Failed(_) => Some(EcashPayoutState::AlreadySpent),
+        ReissueExternalNotesState::Failed(_) => Some(EcashPayoutState::AlreadySpent {
+            token: token.clone(),
+        }),
         ReissueExternalNotesState::Created | ReissueExternalNotesState::Issuing => None,
     }
 }
 
-fn v2_reclaim_state(state: MintV2ReceiveState) -> EcashPayoutState {
+fn v2_reclaim_state(state: MintV2ReceiveState, token: EcashToken) -> EcashPayoutState {
     match state {
         MintV2ReceiveState::Success => EcashPayoutState::Reclaimed,
-        MintV2ReceiveState::Rejected => EcashPayoutState::AlreadySpent,
+        MintV2ReceiveState::Rejected => EcashPayoutState::AlreadySpent { token },
     }
 }
 

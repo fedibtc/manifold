@@ -369,8 +369,11 @@ the fleet.
   The answers to `PayoutStatus` and `AwaitPayout` for an ecash job are
   `{job, ecash}`: `ecash` is null before the
   spend commits, then the wallet's state of the notes: `issued` with the
-  token, `reclaiming`, `reclaimed`, or `already_spent`. Only `issued` carries
-  the token, and the admin socket is the only place it leaves the wallet.
+  token, `reclaiming`, `reclaimed`, or `already_spent` with the token. A
+  refused reclaim almost always means the token was redeemed, but the token
+  stays readable in case the refusal had another cause, such as a partly
+  redeemed token, and left notes only the token reaches. The admin socket is
+  the only place the token leaves the wallet.
   `ListPayouts` takes no arguments and returns jobs of both methods, newest
   first, in the `PayoutStatus` shape: the 20 newest jobs (a daemon constant,
   because every listed job opens its wallet to read its state) plus every
@@ -379,7 +382,7 @@ the fleet.
   once it has a native operation, after the same lookup
   `PayoutStatus` does: a start the wallet refused (no gateway, an LNURL error)
   leaves a ledger row but never a payout. List items never carry the token:
-  an `issued` item is `{"state": "issued", "token": null}`, and
+  an `issued` or `already_spent` item has `"token": null`, and
   `PayoutStatus` returns the token when the operator opens the payout.
   `ConfirmEcashPayout` records the operator's word
   that the token was redeemed as `confirmed_at_ms` on the job's operation and

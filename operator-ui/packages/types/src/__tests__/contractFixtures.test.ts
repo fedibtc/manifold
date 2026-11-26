@@ -571,7 +571,7 @@ const mgEcashPayoutReclaimedMirror = {
 } satisfies EcashPayoutStatus;
 
 const mgEcashPayoutAlreadySpentMirror = {
-  ecash: { state: 'already_spent' },
+  ecash: { state: 'already_spent', token: 'fedimint1fixtureecashtokenplaceholder' },
   job: mgEcashPayoutJobMirror
 } satisfies EcashPayoutStatus;
 

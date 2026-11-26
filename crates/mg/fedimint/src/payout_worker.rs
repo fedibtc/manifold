@@ -352,7 +352,9 @@ mod tests {
                     },
                     (true, _) if !wait && notes.reclaim_running => EcashPayoutState::Reclaiming,
                     (true, false) => EcashPayoutState::Reclaimed,
-                    (true, true) => EcashPayoutState::AlreadySpent,
+                    (true, true) => EcashPayoutState::AlreadySpent {
+                        token: EcashToken::test(&format!("token-for-{id}")),
+                    },
                 };
                 return Ok(PayoutNativeStatus::Ecash(Some(state)));
             }
@@ -769,10 +771,10 @@ mod tests {
             .unwrap()
             .redeemed = true;
 
-        assert_eq!(
+        assert!(matches!(
             ecash_state(&worker.cancel(&request_id).await.unwrap()),
-            &EcashPayoutState::AlreadySpent
-        );
+            EcashPayoutState::AlreadySpent { .. }
+        ));
         assert!(open_payouts(&worker).await.is_empty());
     }
 
@@ -883,14 +885,14 @@ mod tests {
             .unwrap()
             .redeemed = true;
 
-        assert_eq!(
+        assert!(matches!(
             ecash_state(&worker.cancel(&request_id).await.unwrap()),
-            &EcashPayoutState::AlreadySpent
-        );
-        assert_eq!(
+            EcashPayoutState::AlreadySpent { .. }
+        ));
+        assert!(matches!(
             ecash_state(&worker.status(&request_id, false).await.unwrap()),
-            &EcashPayoutState::AlreadySpent
-        );
+            EcashPayoutState::AlreadySpent { .. }
+        ));
     }
 
     /// A job whose wallet cannot be read is left out of the list, and the

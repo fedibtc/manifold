@@ -1,6 +1,7 @@
 {
   "ecash": {
-    "state": "already_spent"
+    "state": "already_spent",
+    "token": "fedimint1fixtureecashtokenplaceholder"
   },
   "job": {
     "created_at_ms": 1753600061000,

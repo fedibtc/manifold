@@ -178,9 +178,11 @@ pub enum EcashPayoutStateWire {
     Reclaiming,
     /// The reclaim succeeded: the notes are back in this wallet.
     Reclaimed,
-    /// The federation refused the reclaim because the notes' inputs were
-    /// already spent, which means the token was redeemed first.
-    AlreadySpent,
+    /// The federation refused the reclaim, almost always because the notes'
+    /// inputs were already spent: the token was redeemed first. `token` is
+    /// carried as in `Issued`, so notes a refusal for another reason left
+    /// behind stay reachable.
+    AlreadySpent { token: Option<EcashTokenWire> },
 }
 
 /// A bearer ecash token returned to the authorized operator. Whoever holds the
