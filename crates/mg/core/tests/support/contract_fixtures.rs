@@ -85,7 +85,6 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "mg_seat_status",
     "mg_decommission_seat",
     "mg_reenroll_telemetry",
-    "mg_reset_uptime",
     "mg_guardian_fees",
     "mg_guardian_fees_policy_error",
     "mg_collect_guardian_fees",
@@ -152,6 +151,10 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
                             three_and_a_half_days: 650,
                         },
                     }),
+                    // 6.2 s, above the 5 s maximum.
+                    ordering_latency: ReadinessOutcome::OrderingLatencyHigh,
+                    ordering_latency_6h_ms: Some(6_200),
+                    max_ordering_latency_6h_ms: Some(5_000),
                     uptime: ReadinessOutcome::WeekUptimeLow,
                     uptime_comparison: Some(UptimeComparison {
                         scores: UptimePermille {
@@ -184,7 +187,6 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("mg_seat_status", seat_status_fixture()),
         ("mg_decommission_seat", decommission_seat_fixture()),
         ("mg_reenroll_telemetry", reenroll_telemetry_fixture()),
-        ("mg_reset_uptime", admin::reset_uptime_json()),
         ("mg_guardian_fees", guardian_fees_fixture()),
         (
             "mg_guardian_fees_policy_error",
@@ -397,8 +399,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         },
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
         AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
-        AdminRequest::ShowSeatReadiness => AdminRequest::ResetUptime,
-        AdminRequest::ResetUptime => AdminRequest::SetCapacity { max_seats: Some(4) },
+        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: Some(4) },
         AdminRequest::SetCapacity { .. } => AdminRequest::SetDataBudget {
             monthly_data_budget:
                 fedi_decentralized_service_manifold_guardian::MonthlyDataBudget::Gb(
@@ -477,7 +478,6 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::SetPrice { .. } => "SetPrice",
         AdminRequest::ShowCapacity => "ShowCapacity",
         AdminRequest::ShowSeatReadiness => "ShowSeatReadiness",
-        AdminRequest::ResetUptime => "ResetUptime",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
         AdminRequest::SetDataBudget { .. } => "SetDataBudget",
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",

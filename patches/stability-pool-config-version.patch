@@ -1,6 +1,6 @@
---- a/crates/modules/stability-pool/common/src/lib.rs	2026-10-16 09:43:23.335972137 +0000
-+++ b/crates/modules/stability-pool/common/src/lib.rs	2026-10-16 09:43:23.336972146 +0000
-@@ -1035,7 +1035,12 @@
+--- a/crates/common/src/lib.rs
++++ b/crates/common/src/lib.rs
+@@ -1065,7 +1065,12 @@
  pub struct StabilityPoolCommonGen;
  
  impl CommonModuleInit for StabilityPoolCommonGen {

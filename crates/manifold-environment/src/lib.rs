@@ -128,6 +128,8 @@ const PRODUCTION_ISSUERS: &[&str] = &[
     "c3cfb8370910591401f31937da09ffedc0ed4ff64e46772ba7c3e267784a4c1a",
     // npub124rwnjk2dw9ywndfm2ren70clxyg3qqcksjzn6lqph2tnnf0dgcsk67pr9
     "5546e9caca6b8a474da9da8799f9f8f988888018b42429ebe00dd4b9cd2f6a31",
+    // npub1ff79m5ykm69ude3x4zxs3n5cdglmpwe4gl0re84nx3m5v3c4rx0s3wntpz
+    "4a7c5dd096de8bc6e626a88d08ce986a3fb0bb3547de3c9eb33477464715199f",
 ];
 
 /// Identity-signed public authorities in the same order as `PRODUCTION_ISSUERS`.
@@ -140,6 +142,7 @@ const PRODUCTION_ISSUER_AUTHORITIES: &[&str] = &[
     include_str!("../fixtures/production-issuer-authority-ef245cb4.json"),
     include_str!("../fixtures/production-issuer-authority-c3cfb837.json"),
     include_str!("../fixtures/production-issuer-authority-5546e9ca.json"),
+    include_str!("../fixtures/production-issuer-authority-4a7c5dd0.json"),
 ];
 
 /// Deployment environment selecting one canonical Manifold profile.

@@ -17,6 +17,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use mg_core::host_pressure::{Pressure, cgroup_v2_dir};
+use mg_core::seat_capacity::FilesystemKind;
 
 /// Early enough to see post-startup memory, after RocksDB and Iroh have opened.
 const FIRST_SAMPLE_DELAY: Duration = Duration::from_secs(60);
@@ -31,7 +32,7 @@ pub(crate) enum Role {
     /// that holds the data directory and its size, `None` where it cannot be
     /// read.
     Daemon {
-        data_filesystem: DataFilesystem,
+        data_filesystem: FilesystemKind,
         data_filesystem_bytes: Option<u64>,
     },
     /// One bundled `fedimintd` seat process.
@@ -90,7 +91,7 @@ pub(crate) fn spawn(role: Role) {
 /// Report the cgroup and the network namespace that the daemon shares with
 /// its seats, and the host's pressure. The cgroup path, device numbers and
 /// interface names stay local.
-fn report_cgroup(data_filesystem: DataFilesystem, data_filesystem_bytes: Option<u64>) {
+fn report_cgroup(data_filesystem: FilesystemKind, data_filesystem_bytes: Option<u64>) {
     let cgroup = read("/proc/self/cgroup", cgroup_v2_dir);
     let cgroup_file = |name: &str| cgroup.as_ref().map(|dir| dir.join(name));
     let cpu = cgroup_file("cpu.stat").and_then(|path| read(&path, CgroupCpu::parse));
@@ -285,70 +286,6 @@ impl CgroupBlockIo {
     }
 }
 
-/// The kind of filesystem that holds the MG data directory, where the seats'
-/// databases sync every consensus unit. Filesystems count and write those
-/// small synced writes differently, so storage figures compare only within
-/// one kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DataFilesystem {
-    Known(&'static str),
-    /// A filesystem not in [`FILESYSTEM_MAGICS`], by its `statfs` magic.
-    Other(u32),
-    /// `statfs` failed.
-    Unknown,
-}
-
-/// `statfs` `f_type` magics, from Linux `include/uapi/linux/magic.h` and
-/// OpenZFS.
-const FILESYSTEM_MAGICS: &[(u32, &str)] = &[
-    (0xEF53, "ext4"),
-    (0x9123_683E, "btrfs"),
-    (0x5846_5342, "xfs"),
-    (0x2FC1_2FC1, "zfs"),
-    (0xF2F5_2010, "f2fs"),
-    (0xCA45_1A4E, "bcachefs"),
-    (0x794C_7630, "overlayfs"),
-    (0x0102_1994, "tmpfs"),
-    (0x6573_5546, "fuse"),
-    (0x6969, "nfs"),
-];
-
-impl DataFilesystem {
-    /// The filesystem that holds `path`.
-    pub(crate) fn of(path: &Path) -> Self {
-        use std::os::unix::ffi::OsStrExt as _;
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return Self::Unknown;
-        };
-        // SAFETY: `statfs` writes only into `stat`, which outlives the call,
-        // and reads the NUL-terminated `path`.
-        let mut stat = unsafe { std::mem::zeroed::<libc::statfs>() };
-        if unsafe { libc::statfs(path.as_ptr(), &raw mut stat) } != 0 {
-            return Self::Unknown;
-        }
-        // `f_type` is a signed word on some targets; the magics are 32-bit.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        Self::from_magic(stat.f_type as u32)
-    }
-
-    fn from_magic(magic: u32) -> Self {
-        FILESYSTEM_MAGICS
-            .iter()
-            .find(|(known, _)| *known == magic)
-            .map_or(Self::Other(magic), |(_, name)| Self::Known(name))
-    }
-}
-
-impl std::fmt::Display for DataFilesystem {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Known(name) => formatter.write_str(name),
-            Self::Other(magic) => write!(formatter, "0x{magic:x}"),
-            Self::Unknown => formatter.write_str("unknown"),
-        }
-    }
-}
-
 /// Bytes received and sent on every interface of this process's network
 /// namespace except loopback.
 ///
@@ -399,10 +336,7 @@ impl NetnsTraffic {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CgroupBlockIo, CgroupCpu, DataFilesystem, NetnsTraffic, ProcessCpu, ProcessIo,
-        ProcessMemory,
-    };
+    use super::{CgroupBlockIo, CgroupCpu, NetnsTraffic, ProcessCpu, ProcessIo, ProcessMemory};
 
     #[test]
     fn sums_cgroup_block_io_over_devices() {
@@ -426,24 +360,6 @@ mod tests {
             })
         );
         assert_eq!(CgroupBlockIo::parse("259:0 rbytes=4096 wbytes=x\n"), None);
-    }
-
-    #[test]
-    fn names_filesystems_by_statfs_magic() {
-        assert_eq!(DataFilesystem::from_magic(0x9123_683E).to_string(), "btrfs");
-        assert_eq!(DataFilesystem::from_magic(0x2FC1_2FC1).to_string(), "zfs");
-        assert_eq!(
-            DataFilesystem::from_magic(0x1234_5678).to_string(),
-            "0x12345678"
-        );
-        assert_ne!(
-            DataFilesystem::of(&std::env::temp_dir()),
-            DataFilesystem::Unknown
-        );
-        assert_eq!(
-            DataFilesystem::of(std::path::Path::new("/nonexistent/mg-data")),
-            DataFilesystem::Unknown
-        );
     }
 
     #[test]

@@ -504,7 +504,9 @@ abuse and backlog guardrails (source-prefix, per-hook, hook creation,
 registration writes, active resource caps, and outbox backlog caps). These
 counters reset on restart and are not distributed. Source-prefix limits use the
 direct socket peer unless that peer is in configured trusted-proxy CIDRs; trusted
-proxies must strip/overwrite inbound `X-Forwarded-For`/`Forwarded` headers.
+proxies must strip/overwrite the forwarding headers they write
+(`X-Forwarded-For` and/or RFC `Forwarded`); a trusted-proxy request whose two
+headers name different clients is refused.
 These controls are not a substitute for a distributed rate-limit/replay backend,
 deployment hardening, or multi-replica worker coordination before public
 production exposure. Management and registration endpoints use Nostr/NIP-98

@@ -111,7 +111,7 @@ async fn enforce_registration_write_rate_limit(
         peer,
         headers,
         limits.trusted_proxy_cidrs.as_ref(),
-    );
+    )?;
     // Consume the low-cardinality source budget before allocating a rotating
     // recipient/source key.
     if 0 < limits.registration_changes_per_source_prefix

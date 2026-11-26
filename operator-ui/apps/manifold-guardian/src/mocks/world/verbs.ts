@@ -7,14 +7,12 @@ import type {
   AdminResult,
   MonthlyDataBudget,
   PayoutJob,
-  Plan,
-  ReadinessReport
+  Plan
 } from '@operator-ui/types';
 import { mockGuardianLinkOffer } from '@/mocks/scenarios';
 import { getState, type MockSeat, RESTORE_COUNTS } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY } from '@/mocks/world/keys';
-import { failedChecks } from '@/shared/utils/seatReadiness';
 
 /** One verb, standing in for the daemon: it takes the payload the Rust enum
  *  declares for that name and answers the response type declared beside it. The
@@ -372,28 +370,6 @@ const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
   };
 };
 
-// Like the daemon: the history restarts at 95% and the checks rerun, so the
-// next read carries the new run, which passes uptime and reopens the MG when
-// every other check passes too.
-const resetUptime: Verb<'ResetUptime'> = () => {
-  const state = getState();
-  const report = state.seatReadiness;
-  if (report) {
-    const rerun: ReadinessReport = {
-      ...report,
-      uptime: 'pass',
-      uptime_comparison: report.uptime_comparison && {
-        ...report.uptime_comparison,
-        scores: { '1d': 950, '7d': 950, '30d': 950 },
-        wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
-      }
-    };
-    state.seatReadiness = rerun;
-    state.readyForNewSeats = failedChecks(rerun).length === 0;
-  }
-  return { uptime_reset: 'rechecking' };
-};
-
 // The durable ceiling never moves below seats that are still active,
 // mirroring Db::set_max_seats and its error text.
 const setCapacity: Verb<'SetCapacity'> = ({ max_seats }) => {
@@ -658,7 +634,6 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
   ShowSeatReadiness: showSeatReadiness,
-  ResetUptime: resetUptime,
   SetCapacity: setCapacity,
   SetDataBudget: setDataBudget,
   ListPaymentFederations: listPaymentFederations,
@@ -695,7 +670,6 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'ConfigureInitialOffer',
   'SetCapacity',
   'SetDataBudget',
-  'ResetUptime',
   'SendSupportMessage',
   'MarkSupportRead',
   'CreateGuardianLinkOffer',

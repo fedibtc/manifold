@@ -5,7 +5,7 @@ cost simulation's CPU benchmark, and operators whose hosts share a capped
 internet plan.
 
 The MG limits seats from **available** RAM at runtime: one seat per whole
-per-seat budget, by default 1,229 MiB (about 1.2 GiB). For memory, GB means
+per-seat budget, by default 1,024 MiB (1 GiB). For memory, GB means
 GiB (2³⁰ bytes, the kernel's binary units); for data it means 10⁹ bytes. A fractional budget truncates toward fewer
 seats. Onboarding asks for no seat count: the operator limit starts
 automatic, and the operator can set one later. It does ask whether the
@@ -32,14 +32,15 @@ Admission sells up to the lowest of six limits on total seats:
   publication's `seat_cpu_iterations_per_sec`, rounded down. Without that
   field there is no CPU limit;
 - a disk limit: the size of the filesystem holding the MG data directory
-  divided by the publication's `seat_disk_gb` (default 80 GB), rounded down
-  ([Disk](#disk)). Without a measurement there is no disk limit;
+  divided by the publication's `seat_disk_gb` (default 80 GB), or on btrfs
+  its `seat_disk_gb_btrfs` (default 160 GB), rounded down ([Disk](#disk)).
+  Without a measurement there is no disk limit;
 - a data limit: the operator's monthly data budget divided by the
   publication's `seat_monthly_data_gb` (default 65 GB), rounded down. It
   binds only when the operator gave a budget in GB.
 
 The effective feature snapshot (37710, or the legacy 37707 projection before admission)
-supplies `seat_memory_budget_mib_v2`, which replaces the default budget
+supplies `seat_memory_budget_mib_v3`, which replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release.
@@ -145,6 +146,17 @@ The figure does not model writes per seat. Fedi measures those across the
 fleet (`cgroup_block_write_bytes` in the resource sample) and moves the
 figure when they change, for example when seats sync less often.
 
+What a seat writes per sync depends on the filesystem, so btrfs has its own
+figure, `seat_disk_gb_btrfs`, by default twice the general one: 160 GB, 12
+seats on the 2 TB drive of a StartOS server. btrfs copies its metadata tree
+on every sync, about 90 KB however little the seat stores, against about
+5 KB on ext4 and 6 KB on ZFS in a lab measurement of the seats' sync
+pattern, so the same drive wears out many times sooner. StartOS formats or
+converts every data volume to btrfs, so its hosts cannot choose another
+filesystem. Every other kind, including one the MG cannot name, takes the
+general figure. The MG names the kind by its `statfs` magic, read at daemon
+start with the size.
+
 ## Data budget
 
 Some hosts run on home internet with a monthly data cap that the household
@@ -214,8 +226,8 @@ basis.
 
 The budget moved from 1.5 GiB to 1.2 GiB as a conservative first step after
 a 7-guardian federation under a 30-minute payment and ecash workload measured
-`fedimintd` at 129 MiB peak RSS per seat with a bounded blocking pool. The
-publication can move it further without a release.
+`fedimintd` at 129 MiB peak RSS per seat with a bounded blocking pool, and to
+1 GiB from 0.1.20. The publication can move it further without a release.
 
 Peak RSS depends on the host's transparent huge page mode. With
 `transparent_hugepage=always`, a local 10-guardian federation with production

@@ -47,6 +47,8 @@ use tokio::process::{Child, Command};
 mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
 mod restart_dkg;
+#[path = "manifold_guardian_0_1_formation/setup_payment_join_retry.rs"]
+mod setup_payment_join_retry;
 
 const OPT_IN_ENV: &str = "MG_E2E";
 const MANIFOLD_GUARDIAN_BIN_ENV: &str = "MG_E2E_MANIFOLD_GUARDIAN_BIN";
@@ -1927,7 +1929,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"4679cb5a02adeeefca3cce0a6b02fa19ed39777f\"")
+                && line.contains("version_hash=\"15671ec113a28273ccfca84c549a9dcfd03eb67d\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );

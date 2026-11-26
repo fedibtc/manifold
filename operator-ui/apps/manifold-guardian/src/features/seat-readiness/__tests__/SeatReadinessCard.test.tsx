@@ -1,20 +1,16 @@
 import type { ReadinessReport } from '@operator-ui/types';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render as renderUi, screen } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
+  describeOutcome,
   guidance,
   labels,
+  orderingLatencyGuidance,
   outcomes,
   pressureGuidance,
   updateGuidance
 } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
-
-// The uptime title holds the reset's mutation, so the card needs a query client.
-const render = (ui: ReactElement) =>
-  renderUi(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
 
@@ -27,6 +23,9 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   pressure: 'pass',
   host_pressure: null,
   max_host_pressure: null,
+  ordering_latency: 'not_applicable',
+  ordering_latency_6h_ms: null,
+  max_ordering_latency_6h_ms: null,
   uptime: 'pass',
   uptime_comparison: null,
   ...overrides
@@ -48,6 +47,7 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not checked in this deployment.')).toBeTruthy();
     // No published minimum is said as such, not as a check that is off.
     expect(screen.getByText('No minimum set.')).toBeTruthy();
+    expect(screen.getByText(describeOutcome('ordering_latency', 'not_applicable'))).toBeTruthy();
     expect(screen.getByText(/Last checked 2026-10-01 12:34 UTC/)).toBeTruthy();
   });
 
@@ -197,6 +197,91 @@ describe('SeatReadinessCard', () => {
     );
 
     expect(screen.queryByText(labels.pressure)).toBeNull();
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
+  });
+
+  it('should show the consensus speed against its maximum and explain a slow host', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({
+            ordering_latency: 'ordering_latency_high',
+            ordering_latency_6h_ms: 6200,
+            max_ordering_latency_6h_ms: 5000
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText(orderingLatencyGuidance, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(pressureGuidance, { exact: false })).toBeNull();
+    const meter = screen.getByRole('meter');
+    expect(meter.getAttribute('aria-label')).toBe('Ordering time, 6-hour average');
+    expect(meter.getAttribute('aria-valuenow')).toBe('6.2');
+    expect(screen.getByText('6.2 s')).toBeTruthy();
+    expect(screen.getByText('/ 5.0 s maximum')).toBeTruthy();
+    expect(screen.getByText(/once the average is within its maximum/)).toBeTruthy();
+    // The bar replaces the one-line check.
+    expect(screen.queryByText(outcomes.ordering_latency_high)).toBeNull();
+  });
+
+  it('should show a passing consensus speed without a not-ready banner', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: true,
+          report: report({
+            ordering_latency: 'pass',
+            ordering_latency_6h_ms: 1400,
+            max_ordering_latency_6h_ms: 5000
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
+    expect(screen.getByText('1.4 s')).toBeTruthy();
+    expect(screen.getByText('The average is within its maximum.')).toBeTruthy();
+    expect(screen.queryByText(orderingLatencyGuidance, { exact: false })).toBeNull();
+  });
+
+  it('should say the consensus speed has no figure yet, without closing the host', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: true,
+          report: report({
+            ordering_latency: 'not_applicable',
+            ordering_latency_6h_ms: null,
+            max_ordering_latency_6h_ms: 5000
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
+    expect(screen.getByText(labels.ordering_latency)).toBeTruthy();
+    expect(screen.getByText(describeOutcome('ordering_latency', 'not_applicable'))).toBeTruthy();
+    expect(screen.queryByText(orderingLatencyGuidance, { exact: false })).toBeNull();
+    expect(screen.queryAllByRole('meter')).toHaveLength(0);
+  });
+
+  it('should leave out the consensus speed check for a daemon that predates it', () => {
+    const {
+      ordering_latency: _,
+      ordering_latency_6h_ms: __,
+      max_ordering_latency_6h_ms: ___,
+      ...older
+    } = report();
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}
+      />
+    );
+
+    expect(screen.queryByText(labels.ordering_latency)).toBeNull();
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
   });
 

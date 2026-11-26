@@ -59,11 +59,6 @@ pub enum AdminRequest {
     ShowCapacity,
     /// The latest new-seat readiness report, absent before the first run.
     ShowSeatReadiness,
-    /// Forget this MG's uptime history, so it restarts at 95% as on a new MG,
-    /// and rerun the readiness checks now. For an outage the MG's badge issuer
-    /// agrees was not the host's fault; uptime is self-reported, and the
-    /// issuer may revoke the badge of an MG that resets it otherwise.
-    ResetUptime,
     /// Replace the operator's admission ceiling without moving it below
     /// active seats. `null` is automatic: the memory and policy limits decide.
     SetCapacity {
@@ -509,10 +504,6 @@ pub(crate) async fn dispatch(
             fleet.ready_for_new_seats().await,
             fleet.seat_readiness(),
         )),
-        AdminRequest::ResetUptime => {
-            fleet.reset_uptime().await?;
-            Ok(reset_uptime_json())
-        }
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
             Ok(capacity_json(&fleet.availability_snapshot().await))
@@ -784,12 +775,6 @@ pub fn seat_status_json(summary: SeatSummary, report: SeatReport, guardian_fee: 
 /// decommissioned and whether this call is what did it.
 pub fn decommission_seat_json(newly_decommissioned: bool) -> Value {
     json!({ "decommissioned": true, "already_decommissioned": !newly_decommissioned })
-}
-
-/// The readiness checks rerun on their own; `ShowSeatReadiness` shows the
-/// verdict once they finish.
-pub fn reset_uptime_json() -> Value {
-    json!({ "uptime_reset": "rechecking" })
 }
 
 /// The rotated bearer is deliberately absent from the operator response.

@@ -87,6 +87,9 @@ const READY: MockState['seatReadiness'] = {
     memory: { '6h': 63, '3.5d': 47 }
   },
   max_host_pressure: DEFAULT_MAX_PRESSURE,
+  ordering_latency: 'pass',
+  ordering_latency_6h_ms: 1400,
+  max_ordering_latency_6h_ms: 5000,
   uptime: 'pass',
   uptime_comparison: {
     scores: { '1d': 1000, '7d': 998, '30d': 991 },
@@ -632,6 +635,26 @@ const builders = {
       }
     }
   }),
+  // Other software on this host keeps its disk busy, so its guardians take 6.2 seconds on average
+  // to get their own consensus items ordered, while the MG's own pressure looks calm.
+  'ordering-latency-high': () => ({
+    ...base(),
+    seats: [
+      runningSeat(
+        'seat-running-01',
+        'fed1running0000000000000000000000000000000000000000000000000000'
+      )
+    ],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      ordering_latency: 'ordering_latency_high',
+      ordering_latency_6h_ms: 6200
+    }
+  }),
   'cpu-limited': () => ({
     ...base(),
     maxSeats: null,
@@ -975,6 +998,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'disk-limited': {
     desc: "This host's data disk holds 6 seats at the setup-payment policy's disk per seat (a 512 GB drive at the default 80 GB), below memory's 9. The operator limit is automatic.",
     affects: ['offer']
+  },
+  'ordering-latency-high': {
+    desc: "Every prerequisite passes, but this host's guardians have taken 6.2 seconds on average over the last 6 hours to get their own consensus items ordered, above the 5-second maximum, so the daemon has stopped advertising and quoting new seats. Running seats and uptime are not affected.",
+    affects: ['overview', 'health']
   },
   'uptime-low': {
     desc: 'Every prerequisite passes, but this host was online less than 90% of the past week (the 7-day uptime minimum), so the daemon has stopped advertising and quoting new seats.',

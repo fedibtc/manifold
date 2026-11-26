@@ -204,6 +204,23 @@ pub enum LockedPaymentPrepareError {
     Internal(#[from] anyhow::Error),
 }
 
+/// A failed [`EcashWallet::join`], split by whether the same process may
+/// attempt that federation again.
+#[derive(Debug, thiserror::Error)]
+pub enum JoinError {
+    /// The attempt stopped before the wallet started opening a client
+    /// database, for example while downloading the federation config.
+    /// Nothing the attempt started can still write, so another attempt in
+    /// this process is safe.
+    #[error(transparent)]
+    Retryable(anyhow::Error),
+    /// A client open for this federation started in this process without
+    /// producing a client. A task it left behind may still own the database,
+    /// so the wallet refuses every further open until the process restarts.
+    #[error(transparent)]
+    RestartRequired(anyhow::Error),
+}
+
 /// An offline-verified locked payment, as the fleet holds it: typed
 /// accepted-claim evidence and a lazy claw-back builder, and nothing else.
 ///
@@ -360,8 +377,9 @@ pub trait EcashWallet: Send + Sync + 'static {
     // protocol errors.
 
     /// Join a payment federation by invite code; idempotent. Returns the
-    /// joined federation's id.
-    async fn join(&self, invite_code: &str) -> anyhow::Result<FederationId>;
+    /// joined federation's id. The error says whether this process may try
+    /// again.
+    async fn join(&self, invite_code: &str) -> Result<FederationId, JoinError>;
 
     /// Guardian-fee collection, when this wallet can also act as the
     /// recipient side of federation usage fees — it needs an ordinary
@@ -432,8 +450,10 @@ impl EcashWallet for NoWallet {
         Vec::new()
     }
 
-    async fn join(&self, _invite_code: &str) -> anyhow::Result<FederationId> {
-        anyhow::bail!("no wallet is configured")
+    async fn join(&self, _invite_code: &str) -> Result<FederationId, JoinError> {
+        Err(JoinError::Retryable(anyhow::anyhow!(
+            "no wallet is configured"
+        )))
     }
 }
 

@@ -328,8 +328,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
-    // Measured once: the disk seat limit divides it, and the resource sample
-    // reports it.
+    // Measured once: the disk seat limit divides the size by the kind's
+    // per-seat figure, and the resource sample reports both.
+    let data_filesystem_kind = mg_core::seat_capacity::FilesystemKind::of(&args.data_dir);
     let data_filesystem_bytes = mg_core::seat_capacity::data_filesystem_bytes(&args.data_dir)
         .inspect_err(|error| {
             tracing::warn!(%error, "cannot measure the data filesystem; no disk seat limit");
@@ -337,7 +338,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .ok();
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon {
-        data_filesystem: resource_report::DataFilesystem::of(&args.data_dir),
+        data_filesystem: data_filesystem_kind,
         data_filesystem_bytes,
     });
     tracing::info!(
@@ -483,7 +484,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // E2E starts many MGs on one host's filesystem, often a small temporary
     // one, so it skips the disk seat limit as it skips the CPU one. A failed
     // measurement is no disk limit, not a failed start.
-    let disk_seat_limit_bytes = data_filesystem_bytes.filter(|_| !local_e2e);
+    let disk_seat_limit_filesystem = data_filesystem_bytes.filter(|_| !local_e2e).map(|bytes| {
+        mg_core::seat_capacity::DataFilesystem {
+            kind: data_filesystem_kind,
+            bytes,
+        }
+    });
 
     // Reuse the one service endpoint for outbound transfer pulls. It is bound
     // only after the duplicate-instance veto and before fleet workers start.
@@ -665,7 +671,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet.clone(),
         nostr.subscribe_features(),
         cpu_capacity,
-        disk_seat_limit_bytes,
+        disk_seat_limit_filesystem,
     );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),

@@ -67,16 +67,6 @@
   .uActionOutcome {
     @apply uStack1 text-sm text-ink;
   }
-  /* A confirmation dialog over the page: the dimmed backdrop and its card. */
-  .uConfirmBackdrop {
-    @apply fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4;
-  }
-  .uConfirmBody {
-    @apply uIntro uStack2;
-  }
-  .uConfirmCard {
-    @apply uModalCard uStack4 bg-surface;
-  }
   .uTableIntro {
     @apply border-b border-muted px-4 py-3;
   }

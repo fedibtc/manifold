@@ -8,7 +8,7 @@ shared funding-withdrawal path, so this wallet supplies its principal.
 For the target federation, FLIP generates and stores a mnemonic in its managed
 target-client database and builds the client from that root secret. The
 stability submission uses `deposit_to_provide_with_operation_id`, and the same
-client derives `our_account(AccountType::Provider)`. The supported setup,
+client derives `own_account(OwnAccount::Provider)`. The supported setup,
 request, and schema carry no separate stability-provider funding credential,
 provider-account key, beneficiary, or delegation binding.
 

@@ -499,35 +499,3 @@ describe('guardian link', () => {
     expect(getState().guardianLink.offer).toBeNull();
   });
 });
-
-describe('ResetUptime', () => {
-  it('should reopen an MG that only its uptime closed', () => {
-    resetState('uptime-low');
-    expect(dispatch('ShowSeatReadiness')).toMatchObject({ Ok: { ready_for_new_seats: false } });
-
-    expect(dispatch('ResetUptime')).toEqual({ Ok: { uptime_reset: 'rechecking' } });
-
-    expect(dispatch('ShowSeatReadiness')).toMatchObject({
-      Ok: {
-        ready_for_new_seats: true,
-        report: {
-          uptime: 'pass',
-          uptime_comparison: { scores: { '1d': 950, '7d': 950, '30d': 950 } }
-        }
-      }
-    });
-  });
-
-  it('should keep an MG closed while another check fails', () => {
-    resetState('uptime-low');
-    const report = getState().seatReadiness;
-    if (!report) throw new Error('the scenario has a report');
-    getState().seatReadiness = { ...report, bitcoin: 'bitcoin_syncing' };
-
-    dispatch('ResetUptime');
-
-    expect(dispatch('ShowSeatReadiness')).toMatchObject({
-      Ok: { ready_for_new_seats: false, report: { uptime: 'pass', bitcoin: 'bitcoin_syncing' } }
-    });
-  });
-});

@@ -291,7 +291,7 @@ async fn enforce_auth_source_budget(
         peer,
         headers,
         limits.trusted_proxy_cidrs.as_ref(),
-    );
+    )?;
     if state
         .rate_limiters()
         .check(

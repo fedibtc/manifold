@@ -198,7 +198,10 @@ with joined wallet state for selection/refill UI. Ids alone describe only the
 members a consumer has already joined, because an id cannot be turned back
 into an invite; a consumer that offers joining an unjoined member needs the
 join material the publication already carries. Operations that need a payer
-reject the empty set before consulting the wallet.
+check its policy membership, which rejects the empty set, before consulting the
+wallet: a payer the policy removed requires reauthorization even while the
+wallet cannot answer, and a wallet failure for an admitted payer stays a
+retryable payment error.
 `pay_and_create` separately requires the explicit payer to be admitted and
 Ready before persisting the formation or requesting the first quote.
 `create_without_payer` bypasses that paid capability only by failing closed on
@@ -431,6 +434,14 @@ guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
+Formation `last_error` carries a runtime-only error code and retry disposition.
+Manifold classifies the cause; consumers must not infer retry policy from the
+coarse code. `Terminal` stops automatic resume until an explicit command or a
+fresh launch. It neither permits abandonment nor means funds are unrecoverable.
+Reopen clears the verdict and rechecks durable facts once; no error verdict is
+stored in the database or backup. Concrete user actions still come from the
+durable formation state.
+
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
 `DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
@@ -438,7 +449,15 @@ with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
 submission; its confirmation in consensus ends the formation and publishes
-`FaStatus::Formed`. Reopening preserves these phases. A formation record that an
+`FaStatus::Formed`. Saving that target needs every MG running and attesting; a
+seat that answers `SeatUnavailable` while its guardian restarts is retried
+until the run deadline. Once the target is saved, resume reads consensus
+first and submits the target through each seat it can reach, without waiting
+for every MG. Unreachable, timed-out and restarting seats are retried until
+the deadline. After a consensus threshold of seats acknowledged the current
+base, the run dials no more seats and only reads consensus until the target
+appears or the deadline passes. Before that, a guardian-verification fee
+account refusal ends the run at once. Reopening preserves these phases. A formation record that an
 older build marked formed converts to the formed record when it loads.
 Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is

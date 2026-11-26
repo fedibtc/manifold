@@ -31,6 +31,7 @@ use crate::host_pressure::{
     ResourceAverages,
 };
 use crate::identity::RootMnemonic;
+use crate::ordering_latency::{OrderingLatencyAverage, OrderingLatencyState};
 use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
@@ -836,14 +837,6 @@ impl Db {
         Ok(next)
     }
 
-    /// Forget the uptime history: it restarts at the next up slot.
-    pub(crate) async fn reset_uptime(&self) -> Result<(), DbError> {
-        let mut tx = self.begin_write().await?;
-        sqlx::query("DELETE FROM uptime").execute(&mut *tx).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// The stored CPU measurement, or `None` before the first.
     pub(crate) async fn cpu_capacity(&self) -> Result<Option<CpuCapacity>, DbError> {
         let mut conn = self.pool.acquire().await?;
@@ -932,6 +925,54 @@ impl Db {
         .await?;
         tx.commit().await?;
         Ok(Some(next))
+    }
+
+    /// Account for a run that read its running seats at `at`, with the median
+    /// of their interval means ([`OrderingLatencyState::record`]), and return
+    /// the history after it.
+    pub(crate) async fn record_ordering_latency(
+        &self,
+        at: SystemTime,
+        median_secs: Option<f64>,
+    ) -> Result<OrderingLatencyState, DbError> {
+        let mut tx = self.begin_write().await?;
+        let row: Option<(i64, Option<f64>, Option<f64>)> = sqlx::query_as(
+            "SELECT sampled_at_ms, average_6h_secs, weight_6h FROM ordering_latency WHERE id = 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let previous = row.map(|(at, average, weight)| OrderingLatencyState {
+            sampled_at: from_millis(at),
+            average: match (average, weight) {
+                (Some(six_hours_secs), Some(weight)) => Some(OrderingLatencyAverage {
+                    six_hours_secs,
+                    weight,
+                }),
+                (None, None) => None,
+                _ => unreachable!("average and weight or neither by schema CHECK"),
+            },
+        });
+        let next = OrderingLatencyState::record(previous, at, median_secs);
+        let millis = i64::try_from(
+            next.sampled_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX);
+        sqlx::query(
+            "INSERT INTO ordering_latency (id, sampled_at_ms, average_6h_secs, weight_6h) \
+             VALUES (1, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+             average_6h_secs = excluded.average_6h_secs, weight_6h = excluded.weight_6h",
+        )
+        .bind(millis)
+        .bind(next.average.map(|average| average.six_hours_secs))
+        .bind(next.average.map(|average| average.weight))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(next)
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
