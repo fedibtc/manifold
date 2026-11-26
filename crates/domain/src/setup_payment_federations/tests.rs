@@ -64,6 +64,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             max_pressure_percent: None,
             guardian_transfer_v2: None,
             guardian_link: None,
+            aleph_idle_round_delay_ms: None,
             min_mg_version: None,
             recommended_min_mg_version: None,
         },
@@ -261,6 +262,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
                 max_pressure_percent: None,
                 guardian_transfer_v2: None,
                 guardian_link: None,
+                aleph_idle_round_delay_ms: None,
                 min_mg_version: None,
                 recommended_min_mg_version: None,
             },
@@ -877,6 +879,39 @@ fn guardian_transfer_v2_is_absent_unless_the_policy_sets_it() {
         admitted(r#","guardian_transfer_v2":"yes""#),
         Err(SetupPaymentFederationsContentError::MalformedContent)
     );
+}
+
+#[test]
+fn aleph_idle_rounds_are_off_unless_the_policy_sets_an_admitted_delay() {
+    let raw = |field: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+        )
+    };
+    let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
+    let delay = |field: &str| {
+        admitted(field)
+            .unwrap()
+            .features()
+            .aleph_idle_round_delay_ms()
+    };
+    assert_eq!(delay(""), None);
+    assert_eq!(delay(r#","aleph_idle_round_delay_ms":1"#), Some(1));
+    assert_eq!(delay(r#","aleph_idle_round_delay_ms":900"#), Some(900));
+    for out_of_range in ["0", "901", "3000"] {
+        assert_eq!(
+            admitted(&format!(r#","aleph_idle_round_delay_ms":{out_of_range}"#)),
+            Err(SetupPaymentFederationsContentError::AlephIdleRoundDelayOutOfRange),
+            "{out_of_range} ms"
+        );
+    }
+    for malformed in ["true", r#""900""#, "-1", "0.5"] {
+        assert_eq!(
+            admitted(&format!(r#","aleph_idle_round_delay_ms":{malformed}"#)),
+            Err(SetupPaymentFederationsContentError::MalformedContent),
+            "{malformed}"
+        );
+    }
 }
 
 #[test]

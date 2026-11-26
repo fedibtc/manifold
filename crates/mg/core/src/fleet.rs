@@ -380,6 +380,9 @@ pub struct Fleet {
     /// The operator's linked phone: offer and evaluator memory
     /// ([`crate::guardian_link`]).
     pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
+    /// The runtime switches seats set on their fedimintd
+    /// ([`crate::fedimintd_features`]); every seat loop watches them.
+    pub(crate) fedimintd_features: tokio::sync::watch::Sender<crate::fedimintd_features::Features>,
     /// This daemon's Iroh endpoint id, bound once the router exists; the link
     /// offer names it so the phone can dial back.
     iroh_endpoint_id: std::sync::OnceLock<String>,
@@ -526,6 +529,7 @@ impl Fleet {
                 .await
                 .context("bind native Fedimint API connectors")?;
         let transfer_wake = crate::transfer_worker::TransferWake::default();
+        let (fedimintd_features, _) = tokio::sync::watch::channel(Default::default());
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {
@@ -558,6 +562,7 @@ impl Fleet {
                     completion_hooks: completion_hooks.wake_handle(),
                     transfer_wake: transfer_wake.clone(),
                     process_spawner: config.process_spawner.clone(),
+                    fedimintd_features: fedimintd_features.subscribe(),
                 },
             );
             map.insert(seat.facts().seat_id.clone(), seat);
@@ -591,6 +596,7 @@ impl Fleet {
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
             guardian_link: Default::default(),
+            fedimintd_features,
             iroh_endpoint_id: std::sync::OnceLock::new(),
         };
         Ok(fleet)
@@ -1147,6 +1153,7 @@ impl Fleet {
                 completion_hooks: self.completion_hooks.wake_handle(),
                 transfer_wake: self.transfers.wake_handle(),
                 process_spawner: self.config.process_spawner.clone(),
+                fedimintd_features: self.fedimintd_features.subscribe(),
             },
         );
         seats.insert(seat.facts().seat_id.clone(), seat.clone());

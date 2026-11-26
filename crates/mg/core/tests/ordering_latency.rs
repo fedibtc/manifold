@@ -20,12 +20,12 @@ fn totals(sum_secs: f64, count: f64) -> OrderingTotals {
 /// fedimintd's own exposition: no labels, buckets beside the totals.
 #[test]
 fn parses_the_raw_histogram_totals() {
-    let exposition = "# HELP fm_consensus_ordering_latency_seconds Duration of ordering a batch of consensus items\n\
-        # TYPE fm_consensus_ordering_latency_seconds histogram\n\
-        fm_consensus_ordering_latency_seconds_bucket{le=\"1\"} 40\n\
-        fm_consensus_ordering_latency_seconds_bucket{le=\"+Inf\"} 52\n\
-        fm_consensus_ordering_latency_seconds_sum 93.5\n\
-        fm_consensus_ordering_latency_seconds_count 52\n\
+    let exposition = "# HELP fm_consensus_transaction_ordering_latency_seconds Duration of ordering a batch of consensus items that carries a transaction\n\
+        # TYPE fm_consensus_transaction_ordering_latency_seconds histogram\n\
+        fm_consensus_transaction_ordering_latency_seconds_bucket{le=\"1\"} 40\n\
+        fm_consensus_transaction_ordering_latency_seconds_bucket{le=\"+Inf\"} 52\n\
+        fm_consensus_transaction_ordering_latency_seconds_sum 93.5\n\
+        fm_consensus_transaction_ordering_latency_seconds_count 52\n\
         fm_consensus_session_count 7\n";
     assert_eq!(OrderingTotals::parse(exposition), Some(totals(93.5, 52.0)));
 }
@@ -34,13 +34,13 @@ fn parses_the_raw_histogram_totals() {
 /// timestamp, and families that only share a prefix do not count.
 #[test]
 fn adds_every_label_set() {
-    let exposition = "fm_consensus_ordering_latency_seconds_sum{peer=\"a b}\",x=\"q\\\"}\"} 10 1700000000000\n\
-        fm_consensus_ordering_latency_seconds_count{peer=\"a b}\",x=\"q\\\"}\"} 4 1700000000000\n\
-        fm_consensus_ordering_latency_seconds_sum{peer=\"c\"} 2.5\n\
-        fm_consensus_ordering_latency_seconds_count{peer=\"c\"} 1\n\
-        fm_consensus_ordering_latency_seconds_sum_total 1000\n\
-        fm_consensus_ordering_latency_seconds_counts 1000\n\
-        other_fm_consensus_ordering_latency_seconds_sum 1000\n";
+    let exposition = "fm_consensus_transaction_ordering_latency_seconds_sum{peer=\"a b}\",x=\"q\\\"}\"} 10 1700000000000\n\
+        fm_consensus_transaction_ordering_latency_seconds_count{peer=\"a b}\",x=\"q\\\"}\"} 4 1700000000000\n\
+        fm_consensus_transaction_ordering_latency_seconds_sum{peer=\"c\"} 2.5\n\
+        fm_consensus_transaction_ordering_latency_seconds_count{peer=\"c\"} 1\n\
+        fm_consensus_transaction_ordering_latency_seconds_sum_total 1000\n\
+        fm_consensus_transaction_ordering_latency_seconds_counts 1000\n\
+        other_fm_consensus_transaction_ordering_latency_seconds_sum 1000\n";
     assert_eq!(OrderingTotals::parse(exposition), Some(totals(12.5, 5.0)));
 }
 
@@ -49,23 +49,23 @@ fn a_missing_family_or_a_bad_value_reads_as_nothing() {
     assert_eq!(OrderingTotals::parse(""), None);
     assert_eq!(
         OrderingTotals::parse(
-            "fm_consensus_session_count 7\nfm_consensus_ordering_latency_seconds_bucket{le=\"+Inf\"} 3\n"
+            "fm_consensus_session_count 7\nfm_consensus_transaction_ordering_latency_seconds_bucket{le=\"+Inf\"} 3\n"
         ),
         None
     );
     // Both totals are needed.
     assert_eq!(
-        OrderingTotals::parse("fm_consensus_ordering_latency_seconds_sum 3\n"),
+        OrderingTotals::parse("fm_consensus_transaction_ordering_latency_seconds_sum 3\n"),
         None
     );
     assert_eq!(
-        OrderingTotals::parse("fm_consensus_ordering_latency_seconds_count 3\n"),
+        OrderingTotals::parse("fm_consensus_transaction_ordering_latency_seconds_count 3\n"),
         None
     );
     for value in ["NaN", "+Inf", "-1", "x"] {
         assert_eq!(
             OrderingTotals::parse(&format!(
-                "fm_consensus_ordering_latency_seconds_sum {value}\nfm_consensus_ordering_latency_seconds_count 3\n"
+                "fm_consensus_transaction_ordering_latency_seconds_sum {value}\nfm_consensus_transaction_ordering_latency_seconds_count 3\n"
             )),
             None,
             "{value}"

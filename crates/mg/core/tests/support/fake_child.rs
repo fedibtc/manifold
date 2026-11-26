@@ -6,11 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use fedimint_core::backup::BackupStatistics;
-use fedimint_core::endpoint_constants::{
-    AWAIT_SESSION_OUTCOME_ENDPOINT, BACKUP_STATISTICS_ENDPOINT, SESSION_COUNT_ENDPOINT,
-};
-use fedimint_core::module::SerdeModuleEncoding;
-use fedimint_core::session_outcome::SessionOutcome;
+use fedimint_core::endpoint_constants::BACKUP_STATISTICS_ENDPOINT;
 use jsonrpsee_server::types::{ErrorObjectOwned, Params};
 use jsonrpsee_server::{RpcModule, Server, ServerHandle};
 use serde_json::{Value, json};
@@ -52,8 +48,8 @@ pub(crate) struct FakeApiState {
     pub probe_calls: usize,
     /// Number of final-config reads received by the fake child.
     pub client_config_calls: usize,
-    /// Optional backup and session endpoints for wallet sampling tests.
-    pub wallet_sampling: Option<FakeWalletSampling>,
+    /// Backup statistics served for wallet sampling tests.
+    pub wallet_backups: Option<BackupStatistics>,
     /// Number of meta-consensus reads received by the fake child.
     pub meta_consensus_calls: usize,
     /// Every value submitted to the meta module, in order.
@@ -84,20 +80,11 @@ pub(crate) struct FakeApiState {
     pub invite_gate: Option<Arc<Notify>>,
     /// The `auth` of each `shutdown_after_current_session` request.
     pub shutdown_after_current_session: Vec<Option<String>>,
+    /// Each features frame the parent sent after consensus started, in order.
+    pub features: Vec<fedimint_server::config::driven::Features>,
     /// Fail every local API request at the transport, as if the connection
     /// between the MG and its child were cut while consensus continues.
     pub api_cut: bool,
-}
-
-/// Responses used to drive sampling across the first consensus session.
-#[derive(Clone, Debug)]
-pub(crate) struct FakeWalletSampling {
-    /// Sample returned even while the first session is in progress.
-    pub backups: BackupStatistics,
-    /// Switch from a pending first session to its completed outcome.
-    pub session_zero: watch::Receiver<Option<SessionOutcome>>,
-    /// Signal when the API reads a count of zero completed sessions.
-    pub pending_read: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -166,47 +153,11 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
         .register_method(BACKUP_STATISTICS_ENDPOINT, |_params, state, _ext| {
             let state = state.lock().unwrap();
             state
-                .wallet_sampling
-                .as_ref()
+                .wallet_backups
+                .clone()
                 .filter(|_| state.consensus_running)
-                .map(|sampling| sampling.backups.clone())
                 .ok_or_else(method_not_found)
         })
-        .unwrap();
-    module
-        .register_method(SESSION_COUNT_ENDPOINT, |_params, state, _ext| {
-            let state = state.lock().unwrap();
-            let sampling = state
-                .wallet_sampling
-                .as_ref()
-                .filter(|_| state.consensus_running)
-                .ok_or_else(method_not_found)?;
-            let complete = sampling.session_zero.borrow().is_some();
-            if !complete {
-                sampling.pending_read.notify_one();
-            }
-            Ok::<_, ErrorObjectOwned>(u64::from(complete))
-        })
-        .unwrap();
-    module
-        .register_async_method(
-            AWAIT_SESSION_OUTCOME_ENDPOINT,
-            |params, state, _ext| async move {
-                assert_eq!(request_params(params)?, json!(0));
-                let mut session_zero = {
-                    let state = state.lock().unwrap();
-                    state
-                        .wallet_sampling
-                        .as_ref()
-                        .filter(|_| state.consensus_running)
-                        .ok_or_else(method_not_found)?
-                        .session_zero
-                        .clone()
-                };
-                let outcome = session_zero.wait_for(Option::is_some).await.unwrap();
-                Ok::<_, ErrorObjectOwned>(SerdeModuleEncoding::from(outcome.as_ref().unwrap()))
-            },
-        )
         .unwrap();
     module
         .register_async_method("status", |_params, state, _ext| async move {
@@ -676,6 +627,19 @@ impl FakeSeatProcessSpawner {
     }
 }
 
+/// Record the features frames the parent sends once consensus started, as
+/// the bundled child applies them; runs for the rest of the child's life.
+#[cfg(test)]
+async fn follow_features(
+    mut control: tokio::net::UnixStream,
+    api_state: &Mutex<FakeApiState>,
+) -> ! {
+    while let Ok(features) = read_frame(&mut control).await {
+        api_state.lock().unwrap().features.push(features);
+    }
+    std::future::pending().await
+}
+
 #[cfg(test)]
 async fn run_fake_child(
     mut control: tokio::net::UnixStream,
@@ -755,8 +719,7 @@ async fn run_fake_child(
             .await;
         }
         let _ = write_frame(&mut control, &ChildMessage::ConsensusStarted {}).await;
-        let _ = control.shutdown().await;
-        std::future::pending::<()>().await;
+        follow_features(control, &api_state).await;
     }
 
     for step in steps {
@@ -784,8 +747,7 @@ async fn run_fake_child(
                     return;
                 }
                 if consensus {
-                    let _ = control.shutdown().await;
-                    std::future::pending::<()>().await;
+                    follow_features(control, &api_state).await;
                 }
             }
             FakeDkgStep::Crash => {

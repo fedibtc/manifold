@@ -16,7 +16,7 @@ use crate::fedimint_api::FedimintApi;
 use crate::seat::SeatPhase;
 use crate::seat_process::fake::{
     FAKE_LNV2_INSTANCE_ID, FAKE_META_INSTANCE_ID, FakeApiState, FakeDkgStep, FakeSeatChildHandle,
-    FakeSeatProcessSpawner, FakeWalletSampling, block_forever, write_fake_fedimintd,
+    FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
 use crate::seat_readiness::{
@@ -517,86 +517,49 @@ fn running_federation(peer: u16, meta_consensus: Option<Vec<u8>>) -> FakeApiStat
     }
 }
 
+/// A seat's guardian samples its active wallets as soon as it serves, without
+/// waiting for its federation's first session, and the sample counts as
+/// complete however the guardian arrived.
 #[tokio::test]
-async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
+async fn healthy_seat_samples_wallets_as_soon_as_it_serves() {
     use fedimint_core::backup::BackupStatistics;
-    use fedimint_core::core::DynModuleConsensusItem;
-    use fedimint_core::epoch::ConsensusItem;
-    use fedimint_core::session_outcome::{AcceptedItem, SessionOutcome};
-    use fedimint_lnv2_common::LightningConsensusItem;
 
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 31_280).await;
     let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     let (_, seat_id) = create_free_seat(&fleet, 142).await;
-    let (finish_session, session_zero) = tokio::sync::watch::channel(None);
-    let pending_read = Arc::new(Notify::new());
     fleet
         .form_fake_child(
             &seat_id,
             FakeApiState {
-                wallet_sampling: Some(FakeWalletSampling {
-                    backups: BackupStatistics {
-                        refreshed_1m: 7,
-                        ..Default::default()
-                    },
-                    session_zero,
-                    pending_read: pending_read.clone(),
+                wallet_backups: Some(BackupStatistics {
+                    refreshed_1m: 7,
+                    ..Default::default()
                 }),
                 ..running_federation(0, None)
             },
         )
         .await;
-    let seat = fleet.seat_by_id(&seat_id).unwrap();
-    assert!(matches!(
-        seat.cached_report_for_test(),
-        SeatReport::Active {
-            phase: SeatPhase::Running { .. },
-            health: SeatHealth::Healthy,
-        }
-    ));
-    tokio::time::timeout(Duration::from_secs(15), pending_read.notified())
-        .await
-        .expect("sampler sees a serving guardian with session zero pending");
-    tokio::time::timeout(Duration::from_secs(20), pending_read.notified())
-        .await
-        .expect("sampler rechecks session zero without waiting for the 300s error backoff");
     // The worker dates the observation, so look for the first row even if
     // midnight UTC passes before the test reads it.
-    let read_sample = || async {
-        sqlx::query_as::<_, (i64, bool)>(
-            "SELECT wallet_count, complete FROM active_wallet_samples
-             WHERE quote_id = ? ORDER BY utc_day LIMIT 1",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(fleet.db.pool())
-        .await
-        .unwrap()
-    };
-    assert_eq!(
-        read_sample().await,
-        None,
-        "no sample before provenance is known"
-    );
-    finish_session.send_replace(Some(SessionOutcome {
-        items: vec![AcceptedItem {
-            peer: fedimint_core::PeerId::from(0),
-            item: ConsensusItem::Module(DynModuleConsensusItem::from_typed(
-                FAKE_LNV2_INSTANCE_ID,
-                LightningConsensusItem::UnixTimeVote((crate::db::now_ms() / 1000) as u64),
-            )),
-        }],
-    }));
     let sample = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            if let Some(sample) = read_sample().await {
+            if let Some(sample) = sqlx::query_as::<_, (i64, bool)>(
+                "SELECT wallet_count, complete FROM active_wallet_samples
+                 WHERE quote_id = ? ORDER BY utc_day LIMIT 1",
+            )
+            .bind(seat_id.as_bytes().as_slice())
+            .fetch_optional(fleet.db.pool())
+            .await
+            .unwrap()
+            {
                 break sample;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .expect("background sampling retries without waiting for the 300s error backoff");
+    .expect("a serving seat samples without waiting for a session");
     assert_eq!(sample, (7, true));
     fleet.shutdown().await;
 }
@@ -5854,3 +5817,118 @@ async fn a_later_publication_never_drops_a_seats_payment() {
 }
 #[path = "fleet/callback.rs"]
 mod callback;
+
+/// A feature policy with this Aleph idle round delay.
+fn idle_round_policy(delay_ms: Option<u64>) -> fedi_decentralized_domain::AdmittedFeaturePolicy {
+    let mut content = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    if let Some(delay_ms) = delay_ms {
+        content["aleph_idle_round_delay_ms"] = delay_ms.into();
+    }
+    fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
+        content.to_string().as_bytes(),
+    )
+    .expect("test policy parses")
+    .features()
+    .clone()
+}
+
+/// The Aleph idle round delay of each features frame `fake` received, once
+/// there are `count`.
+async fn idle_round_frames_reach(fake: &FakeSeatChildHandle, count: usize) -> Vec<Option<u64>> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frames = fake.state().features;
+            if frames.len() >= count {
+                return frames
+                    .into_iter()
+                    .map(|features| features.aleph_idle_round_delay_ms)
+                    .collect();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the seat sends the switches")
+}
+
+#[tokio::test]
+async fn seats_follow_the_published_aleph_idle_round_delay_across_restarts() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_290).await;
+    config.respawn.initial_backoff = Duration::from_millis(10);
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::Hello {
+            proto: PROTOCOL_VERSION,
+            code_version: "fake-fedimintd".to_owned(),
+            state: ChildState::AlreadyConfigured {
+                invite_code: invite,
+            },
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (policy, policy_rx) = tokio::sync::watch::channel(None);
+    fleet.bind_fedimintd_features_policy(policy_rx);
+    let (_, seat_id) = create_free_seat(&fleet, 133).await;
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+
+    // Without a policy the child gets the normal pace once its consensus
+    // starts.
+    assert_eq!(idle_round_frames_reach(&fake, 1).await, vec![None]);
+
+    // A policy without a delay changes nothing, so nothing more is sent.
+    policy.send_replace(Some(idle_round_policy(None)));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fake.state().features.len(), 1);
+
+    // Each change, including one between two delays, reaches the running
+    // child.
+    policy.send_replace(Some(idle_round_policy(Some(700))));
+    assert_eq!(
+        idle_round_frames_reach(&fake, 2).await,
+        vec![None, Some(700)]
+    );
+    policy.send_replace(Some(idle_round_policy(Some(900))));
+    assert_eq!(
+        idle_round_frames_reach(&fake, 3).await,
+        vec![None, Some(700), Some(900)]
+    );
+    policy.send_replace(Some(idle_round_policy(None)));
+    assert_eq!(
+        idle_round_frames_reach(&fake, 4).await,
+        vec![None, Some(700), Some(900), None]
+    );
+
+    // A replacement child gets the current delay when its consensus starts.
+    policy.send_replace(Some(idle_round_policy(Some(900))));
+    assert_eq!(
+        idle_round_frames_reach(&fake, 5).await,
+        vec![None, Some(700), Some(900), None, Some(900)]
+    );
+    let spawns = spawner.spawn_count();
+    fake.exit(1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while spawner.spawn_count() == spawns {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the exited child is replaced");
+    let replacement = fleet
+        .configure_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    assert_eq!(
+        idle_round_frames_reach(&replacement, 1).await,
+        vec![Some(900)]
+    );
+    fleet.shutdown().await;
+}

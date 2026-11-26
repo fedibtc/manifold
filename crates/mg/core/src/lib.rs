@@ -26,6 +26,7 @@ pub mod directory;
 pub mod facts;
 pub mod fedimint_api;
 mod fedimint_stats;
+pub mod fedimintd_features;
 pub mod fleet;
 pub mod guardian_fee;
 pub mod guardian_link;

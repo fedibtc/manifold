@@ -442,8 +442,8 @@ mod tests {
     #[tokio::test]
     async fn a_seat_s_ordering_latency_is_read_from_its_metrics_port() {
         let http = metrics_client();
-        let exposition = "fm_consensus_ordering_latency_seconds_sum 12.5\n\
-            fm_consensus_ordering_latency_seconds_count 5\n";
+        let exposition = "fm_consensus_transaction_ordering_latency_seconds_sum 12.5\n\
+            fm_consensus_transaction_ordering_latency_seconds_count 5\n";
         let port = serve_metrics(StatusCode::OK, exposition.to_owned()).await;
         assert_eq!(
             read_ordering_totals(&http, port).await,

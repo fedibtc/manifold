@@ -205,16 +205,20 @@ all share one busy test host's cgroup, skips the pressure check as it skips
 the relay and discovery checks.
 
 Each run also requires the time this MG's seats take to order their own
-consensus items to average at most 5 seconds over 6 hours, a fixed bound
-that healthy MGs, at 1-2 seconds, stay well under. Pressure counts only the
-waits of this MG's tasks, so it misses a disk made slow by other software on
-the host; ordering latency measures what a slow host costs its federations,
-whose consensus goes ahead without a guardian whose items arrive late. Each
-run reads `fedimintd`'s `fm_consensus_ordering_latency_seconds` histogram,
-its `_sum` and `_count` added over label sets, from the loopback metrics
+consensus items that carry a transaction to average at most 5 seconds over
+6 hours, a fixed bound that healthy MGs, at 1-2 seconds, stay well under.
+Pressure counts only the waits of this MG's tasks, so it misses a disk made
+slow by other software on the host; ordering latency measures what a slow
+host costs its federations, whose consensus goes ahead without a guardian
+whose items arrive late. Only transactions count because clients submit
+each one to every guardian at once, so its latency is this guardian's lag
+behind its peers, while with slow idle rounds a vote that only this
+guardian proposes waits for its idle peers' next units, whatever the host. Each
+run reads `fedimintd`'s `fm_consensus_transaction_ordering_latency_seconds`
+histogram, its `_sum` and `_count` added over label sets, from the loopback metrics
 port of every seat whose child is running. A seat's mean is the sum added
 over the count added since its previous reading by this daemon process; a
-seat that ordered nothing, could not be read, or whose counters went
+seat that ordered no transaction, could not be read, or whose counters went
 backwards, as a restarted child's do, gives none and its reading becomes its
 new baseline. The run's value is the median of the seats' means, the lower
 middle one for an even count, so one seat in a slow federation does not
@@ -227,7 +231,7 @@ its weight and the last reading time are durable, so a restart keeps the
 average while each seat's baseline, held only in memory, starts again. The
 check applies only to an average: it does not apply while no seat is
 running, before running seats have measured an interval, or when the history
-cannot be stored. A seat whose federation orders nothing never measures one,
+cannot be stored. A seat whose federation orders no transaction never measures one,
 so failing without an average could close an MG for good; an MG that starts
 selling before its first average can sell for one interval longer than it
 should.

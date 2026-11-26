@@ -28,10 +28,10 @@ the optimized image is first built in the trusted publish workflow.
 
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
-[`flake.nix`](../../flake.nix), at the immutable Fedi fork source tag
-[`v0.12.0-fedi30`](https://github.com/fedibtc/fedimint/releases/tag/v0.12.0-fedi30).
-This tag has no binary release. `flake.lock` records its exact source revision.
-The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi30`, while the typed DKG
+[`flake.nix`](../../flake.nix), at the Fedi fork source branch
+[`roboman/quiescence-slow-idle-rounds`](https://github.com/fedibtc/fedimint/tree/roboman/quiescence-slow-idle-rounds)
+while the release is under test. This ref has no binary release. `flake.lock` records its exact source revision.
+The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi30-idle`, while the typed DKG
 identity in `FEDIMINTD_VERSION_0_1` is `0.12.0+fedi`. To update the source pin, change
 the `fedimint` flake input and `flake.lock`, not this package. The
 `fleet-manager-cli-contract` / OCI-image checks fail if the source pin, DKG constant,
