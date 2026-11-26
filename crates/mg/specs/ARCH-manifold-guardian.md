@@ -418,11 +418,11 @@ Six kinds of state, six owners:
   and the reclaim a cancel starts is a further operation found by its
   note-derived id; MG derives every ecash state from these rather than storing
   it. MG
-  reconciles a missing SQLite link by enumerating the immutable stored wallet
-  scope. The two databases are separate commits and must be backed up and
-  restored as one consistent data root. A mismatched restore is unsupported;
-  native destination binding makes detectable skew fail closed rather than
-  misassociate an old operation with a retargeted job.
+  reconciles a missing SQLite link by looking up the one operation id the
+  ledger names: derived from the request id for ecash, and from the recorded
+  attempt's invoice for Lightning. The two databases are separate commits and
+  must be backed up and restored as one consistent data root. A mismatched
+  restore is unsupported.
 - **fedimintd-owned runtime state** (setup conversation, formed health):
   never persisted by MG; validated inputs are stored separately. Setup
   observations arrive through the driven-child stream, while formed health is
