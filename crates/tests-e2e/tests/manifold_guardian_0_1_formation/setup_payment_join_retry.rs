@@ -202,6 +202,7 @@ async fn run_join_retry() -> anyhow::Result<()> {
         bin: &fedimint_cli_bin,
         data_dir: temp.join("reachability-probe"),
         iroh_overrides: &overrides,
+        esplora_url: None,
     };
     tokio::time::timeout(Duration::from_secs(120), async {
         while probe

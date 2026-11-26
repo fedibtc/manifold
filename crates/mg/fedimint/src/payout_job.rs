@@ -91,10 +91,12 @@ impl LightningAttempt {
                 fedimint_lnv2_client::LightningClientModule::send_operation_id(&self.invoice)
             }
             // A new invoice's payment is its first attempt.
-            OutgoingRail::Lnv1 => fedimint_ln_client::LightningClientModule::get_payment_operation_id(
-                self.invoice.payment_hash(),
-                1,
-            ),
+            OutgoingRail::Lnv1 => {
+                fedimint_ln_client::LightningClientModule::get_payment_operation_id(
+                    self.invoice.payment_hash(),
+                    1,
+                )
+            }
         })
     }
 

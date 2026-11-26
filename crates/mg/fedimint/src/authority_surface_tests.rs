@@ -52,7 +52,11 @@ fn known_value_moving_client_calls_stay_explicit() {
         ("guardian_fee.rs", ".withdraw(OwnAccount::FeeRemittance", 1),
         ("payout_native.rs", ".send(attempt.invoice", 1),
         ("payout_native.rs", ".pay_bolt11_invoice(", 1),
-        ("payout_ecash.rs", ".spend_notes_with_selector_and_operation_id(", 1),
+        (
+            "payout_ecash.rs",
+            ".spend_notes_with_selector_and_operation_id(",
+            1,
+        ),
         ("payout_ecash.rs", "mint.send_with_operation_id(", 1),
         ("payout_ecash.rs", ".reissue_external_notes(", 1),
         ("payout_ecash.rs", ".receive(", 1),

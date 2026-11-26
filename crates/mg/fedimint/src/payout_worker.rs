@@ -1119,9 +1119,7 @@ impl PayoutWorker {
             return Ok(job);
         }
         let payout = self.native.start(&job).await?;
-        if matches!(job.scope, PayoutScope::GuardianFee { .. }) {
-            pause_after_guardian_fee_payout_start_for_e2e().await?;
-        }
+        pause_after_payout_start_for_e2e().await?;
         crate::payout_store::commit(&self.db, request_id, &payout).await
     }
 
@@ -1389,11 +1387,11 @@ impl PayoutNative for WalletPayoutNative {
     }
 }
 
-async fn pause_after_guardian_fee_payout_start_for_e2e() -> anyhow::Result<()> {
+async fn pause_after_payout_start_for_e2e() -> anyhow::Result<()> {
     if std::env::var_os("MG_E2E_LOCAL_IROH").is_none() {
         return Ok(());
     }
-    let Some(path) = std::env::var_os("MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START") else {
+    let Some(path) = std::env::var_os("MG_E2E_PAUSE_AFTER_PAYOUT_START") else {
         return Ok(());
     };
     tokio::fs::write(&path, b"native payout committed\n").await?;

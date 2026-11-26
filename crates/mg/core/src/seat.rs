@@ -2512,16 +2512,11 @@ impl SeatLoop {
                 Some(name.0.clone()),
                 Some(u32::from(self.facts.federation_size.0)),
                 Some(
-                    [
-                        "lnv2",
-                        "meta",
-                        "mintv2",
-                        "multi_sig_stability_pool",
-                        "walletv2",
-                    ]
-                    .into_iter()
-                    .map(ModuleKind::clone_from_str)
-                    .collect::<BTreeSet<_>>(),
+                    formation_module_kinds()
+                        .iter()
+                        .copied()
+                        .map(ModuleKind::clone_from_str)
+                        .collect::<BTreeSet<_>>(),
                 ),
             ),
             None => (None, None, None),
@@ -2553,6 +2548,27 @@ impl SeatLoop {
             FEDIMINT_PREFIX,
             &setup,
         )))
+    }
+}
+
+/// The module kinds a federation this MG leads is formed with: the Manifold
+/// v2 set. The local formation harness can instead form one with Fedimint's
+/// v1 mint, Lightning, and wallet modules, as a payment federation the MG
+/// joins may have, while the file `MG_E2E_LEGACY_MODULES` names exists.
+fn formation_module_kinds() -> &'static [&'static str] {
+    let legacy = std::env::var_os("MG_E2E_LOCAL_IROH").is_some()
+        && std::env::var_os("MG_E2E_LEGACY_MODULES")
+            .is_some_and(|marker| std::path::Path::new(&marker).is_file());
+    if legacy {
+        &["ln", "meta", "mint", "multi_sig_stability_pool", "wallet"]
+    } else {
+        &[
+            "lnv2",
+            "meta",
+            "mintv2",
+            "multi_sig_stability_pool",
+            "walletv2",
+        ]
     }
 }
 

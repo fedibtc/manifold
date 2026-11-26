@@ -56,6 +56,7 @@ const MG_CLI_BIN_ENV: &str = "MG_E2E_MG_CLI_BIN";
 const FA_CLI_BIN_ENV: &str = "MG_E2E_FA_CLI_BIN";
 const FEDIMINT_CLI_BIN_ENV: &str = "MG_E2E_FEDIMINT_CLI_BIN";
 const BITCOIN_CLI_BIN_ENV: &str = "MG_E2E_BITCOIN_CLI_BIN";
+const ESPLORA_BIN_ENV: &str = "MG_E2E_ESPLORA_BIN";
 const REPLAY_INVITE_ENV: &str = "MG_E2E_REPLAY_INVITE";
 const REPLAY_TOKEN_FILE_ENV: &str = "MG_E2E_REPLAY_TOKEN_FILE";
 const REPLAY_WALLET_DIR_ENV: &str = "MG_E2E_REPLAY_WALLET_DIR";
@@ -65,6 +66,9 @@ const GATEWAY_CLI_BIN_ENV: &str = "FLIP_E2E_GATEWAY_CLI_BIN";
 const MG_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
 const PAYOUT_CRASH_SEAM_ENABLE: &str = "enable-payout-crash-seam";
 const PAYOUT_CRASH_SEAM_REACHED: &str = "payout-crash-seam-reached";
+/// While this file is in an MG's data dir, federations it leads form with
+/// Fedimint's v1 modules.
+const LEGACY_MODULES_ENABLE: &str = "enable-legacy-modules";
 const GUARDIAN_COUNT: usize = 7;
 /// Ports between consecutive MGs of one test's port grid: room for an MG's
 /// seat blocks and, in the transfer tests, its pinned endpoint.
@@ -255,6 +259,7 @@ async fn run_manifold_guardian_formation() -> anyhow::Result<()> {
         bin: &fedimint_cli_bin,
         data_dir: temp.join("fedimint-cli-client"),
         iroh_overrides: &iroh_overrides,
+        esplora_url: None,
     };
     fedimint_cli
         .run(
@@ -1222,13 +1227,26 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
     // The binary an upgrade starts from predates ecash payouts.
     #[cfg(target_os = "linux")]
     if upgrade_to.is_none() {
-        exercise_guardian_fee_ecash_payout(
+        let seats = manifold_guardian_admin(
+            manifold_guardian_bin,
+            &temp.join("mg-0"),
+            &["seats", "list"],
+        )
+        .await?;
+        let seat_id = seats["seats"][0]["seat_id"]
+            .as_str()
+            .context("formed seat listing carries its id")?
+            .to_owned();
+        exercise_ecash_payout(
             manifold_guardian_bin,
             bitcoind,
             &temp,
             port_base,
             &iroh_overrides,
+            None,
             &invite,
+            &EcashPayoutSource::GuardianFee { seat_id },
+            MintGeneration::V2,
             &mut daemons,
         )
         .await?;
@@ -1886,105 +1904,115 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     Ok(())
 }
 
-/// Start the first MG again in its data directory and put it back at the
-/// front of `daemons`.
-#[cfg(target_os = "linux")]
-async fn respawn_first_manifold_guardian(
-    manifold_guardian_bin: &Path,
-    bitcoind: &defe_api::BitcoindInfo,
-    mg0_dir: &Path,
-    port_base: u16,
-    iroh_overrides: &str,
-    daemons: &mut Vec<Child>,
-) -> anyhow::Result<()> {
-    let mut restarted = spawn_manifold_guardian(
-        manifold_guardian_bin,
-        mg0_dir,
-        &bitcoind.rpc_url,
-        &bitcoind.rpc_username,
-        &bitcoind.rpc_password,
-        port_base,
-        Some(iroh_overrides),
-        None,
-        None,
-    )?;
-    read_locator(&mut restarted, 0).await?;
-    daemons.insert(0, restarted);
-    Ok(())
+/// Which module generation a federation's ecash uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MintGeneration {
+    V1,
+    V2,
 }
 
-/// Pay the guardian-fee ecash left after the Lightning payout out as a bearer
-/// token through real mint-v2 modules: a crash between the native spend and
-/// its ledger link, retries under the same request id, a cancel before
+/// The wallet an ecash payout E2E pays out of on MG 0.
+enum EcashPayoutSource<'a> {
+    GuardianFee { seat_id: String },
+    PaymentFederation { federation_id: &'a str },
+}
+
+impl EcashPayoutSource<'_> {
+    fn sweep_args(&self, request_id: &str) -> Vec<String> {
+        let mut args = match self {
+            Self::GuardianFee { seat_id } => vec!["guardian-fees", "sweep", seat_id],
+            Self::PaymentFederation { federation_id } => {
+                vec!["payment-federations", "sweep", federation_id]
+            }
+        };
+        args.extend(["--request-id", request_id, "--method", "ecash"]);
+        args.into_iter().map(str::to_owned).collect()
+    }
+
+    async fn available(&self, bin: &Path, data_dir: &Path) -> anyhow::Result<Option<u64>> {
+        Ok(match self {
+            Self::GuardianFee { seat_id } => manifold_guardian_admin(
+                bin,
+                data_dir,
+                &["guardian-fees", "show", seat_id, "--limit", "1"],
+            )
+            .await?["wallet"]["available_ecash_msat"]
+                .as_u64(),
+            Self::PaymentFederation { federation_id } => {
+                let listed =
+                    manifold_guardian_admin(bin, data_dir, &["payment-federations", "list"])
+                        .await?;
+                listed["federations"]
+                    .as_array()
+                    .context("payment-federations list returns a list")?
+                    .iter()
+                    .find(|federation| federation["federation_id"] == *federation_id)
+                    .context("payment-federations list names the swept federation")?["wallet"]
+                    ["available_ecash_msat"]
+                    .as_u64()
+            }
+        })
+    }
+}
+
+/// Pay a wallet's ecash left after a Lightning payout out of MG 0 as a bearer
+/// token through real mint modules: a crash between the native spend and its
+/// ledger link, retries under the same request id, a cancel before
 /// redemption, and a cancel that loses to the operator's own redemption.
 #[cfg(target_os = "linux")]
-async fn exercise_guardian_fee_ecash_payout(
+#[expect(clippy::too_many_arguments)]
+async fn exercise_ecash_payout(
     manifold_guardian_bin: &Path,
     bitcoind: &defe_api::BitcoindInfo,
     temp: &Path,
     port_base: u16,
     iroh_overrides: &str,
+    nostr: Option<NostrEnv<'_>>,
     invite: &str,
+    source: &EcashPayoutSource<'_>,
+    mint: MintGeneration,
     daemons: &mut Vec<Child>,
 ) -> anyhow::Result<()> {
     let mg0_dir = temp.join("mg-0");
-    let seats =
-        manifold_guardian_admin(manifold_guardian_bin, &mg0_dir, &["seats", "list"]).await?;
-    let seat_id = seats["seats"][0]["seat_id"]
-        .as_str()
-        .context("formed seat listing carries its id")?
-        .to_owned();
-    let available = |status: &serde_json::Value| status["wallet"]["available_ecash_msat"].as_u64();
-    let fees = |bin: &Path| {
-        let (bin, dir, seat) = (bin.to_owned(), mg0_dir.clone(), seat_id.clone());
-        async move {
-            manifold_guardian_admin(
-                &bin,
-                &dir,
-                &["guardian-fees", "show", &seat, "--limit", "1"],
-            )
-            .await
-        }
-    };
-    let before = available(&fees(manifold_guardian_bin).await?)
+    let available = || source.available(manifold_guardian_bin, &mg0_dir);
+    let before = available()
+        .await?
         .filter(|amount| *amount > 0)
-        .context("the capped Lightning payout leaves collected ecash behind")?;
+        .context("the capped Lightning payout leaves ecash behind")?;
+    let respawn = |daemons: &mut Vec<Child>| -> anyhow::Result<()> {
+        daemons.insert(
+            0,
+            spawn_manifold_guardian(
+                manifold_guardian_bin,
+                &mg0_dir,
+                &bitcoind.rpc_url,
+                &bitcoind.rpc_username,
+                &bitcoind.rpc_password,
+                port_base,
+                Some(iroh_overrides),
+                nostr,
+                None,
+            )?,
+        );
+        Ok(())
+    };
 
     // Crash after the spend committed in the wallet and before the ledger
     // links it: the start must not answer, and the retry must find that spend.
-    let crashed_request = "guardian-fee-ecash-crash-e2e";
+    let crashed_request = "ecash-payout-crash-e2e";
     shutdown_daemons(vec![daemons.remove(0)]).await?;
     std::fs::write(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE), b"enabled\n")?;
-    respawn_first_manifold_guardian(
-        manifold_guardian_bin,
-        bitcoind,
-        &mg0_dir,
-        port_base,
-        iroh_overrides,
-        daemons,
-    )
-    .await?;
+    respawn(daemons)?;
+    read_locator(&mut daemons[0], 0).await?;
     let start = {
-        let (bin, dir, seat) = (
+        let (bin, dir, args) = (
             manifold_guardian_bin.to_owned(),
             mg0_dir.clone(),
-            seat_id.clone(),
+            source.sweep_args(crashed_request),
         );
         tokio::spawn(async move {
-            manifold_guardian_admin(
-                &bin,
-                &dir,
-                &[
-                    "guardian-fees",
-                    "sweep",
-                    &seat,
-                    "--request-id",
-                    crashed_request,
-                    "--method",
-                    "ecash",
-                ],
-            )
-            .await
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            manifold_guardian_admin(&bin, &dir, &args).await
         })
     };
     let crash_seam = mg0_dir.join(PAYOUT_CRASH_SEAM_REACHED);
@@ -2016,40 +2044,21 @@ async fn exercise_guardian_fee_ecash_payout(
     );
     std::fs::remove_file(mg0_dir.join(PAYOUT_CRASH_SEAM_ENABLE))?;
     std::fs::remove_file(&crash_seam)?;
-    respawn_first_manifold_guardian(
-        manifold_guardian_bin,
-        bitcoind,
-        &mg0_dir,
-        port_base,
-        iroh_overrides,
-        daemons,
-    )
-    .await?;
+    respawn(daemons)?;
+    read_locator(&mut daemons[0], 0).await?;
 
     // An ecash sweep answers the job, as a Lightning sweep does; the token
     // comes from `payout status`.
     let ecash_payout = |request_id: &'static str| {
-        let (bin, dir, seat) = (
+        let (bin, dir, args) = (
             manifold_guardian_bin.to_owned(),
             mg0_dir.clone(),
-            seat_id.clone(),
+            source.sweep_args(request_id),
         );
         async move {
-            manifold_guardian_admin_with_timeout(
-                &bin,
-                &dir,
-                &[
-                    "guardian-fees",
-                    "sweep",
-                    &seat,
-                    "--request-id",
-                    request_id,
-                    "--method",
-                    "ecash",
-                ],
-                Duration::from_secs(90),
-            )
-            .await?;
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            manifold_guardian_admin_with_timeout(&bin, &dir, &args, Duration::from_secs(90))
+                .await?;
             manifold_guardian_admin(&bin, &dir, &["payout", "status", request_id]).await
         }
     };
@@ -2062,7 +2071,7 @@ async fn exercise_guardian_fee_ecash_payout(
         recovered["ecash"]["state"] == "issued"
             && recovered["job"]["method"] == "ecash"
             && recovered["job"]["operation"]["amount_msat"].as_u64() == Some(before),
-        "the recovered ecash payout must be the whole collected balance: {recovered}"
+        "the recovered ecash payout must be the whole balance of {before} msat: {recovered}"
     );
     let replay = ecash_payout(crashed_request).await?;
     anyhow::ensure!(
@@ -2071,7 +2080,7 @@ async fn exercise_guardian_fee_ecash_payout(
         "replaying the ecash request must return the original spend"
     );
     anyhow::ensure!(
-        available(&fees(manifold_guardian_bin).await?) == Some(0),
+        available().await? == Some(0),
         "one ecash payout must spend the balance once"
     );
     let listed =
@@ -2112,13 +2121,13 @@ async fn exercise_guardian_fee_ecash_payout(
     );
     // `reclaimed` means the notes are back: the balance shows them at once,
     // so a dashboard that rereads it on the answer is not left at zero.
-    let reclaimed = available(&fees(manifold_guardian_bin).await?).unwrap_or_default();
+    let reclaimed = available().await?.unwrap_or_default();
     anyhow::ensure!(
         0 < reclaimed && reclaimed <= before,
         "the reclaim must return the notes, less reissue fees: {reclaimed} of {before}"
     );
     // Cancel after the operator redeemed the token loses the race.
-    let redeemed_request = "guardian-fee-ecash-redeemed-e2e";
+    let redeemed_request = "ecash-payout-redeemed-e2e";
     let issued = ecash_payout(redeemed_request).await?;
     let token = issued["ecash"]["token"]
         .as_str()
@@ -2128,6 +2137,7 @@ async fn exercise_guardian_fee_ecash_payout(
         bin: &fedimint_cli_bin,
         data_dir: temp.join("ecash-payout-redeemer"),
         iroh_overrides,
+        esplora_url: None,
     };
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
@@ -2144,16 +2154,30 @@ async fn exercise_guardian_fee_ecash_payout(
     })
     .await
     .context("the redeeming wallet did not join the federation")?;
-    let received = redeemer
-        .run_json(
-            &["module", "mintv2", "receive", token],
-            Duration::from_secs(60),
-        )
-        .await?;
-    anyhow::ensure!(
-        received == "Success",
-        "the operator's own wallet must redeem the token: {received}"
-    );
+    match mint {
+        MintGeneration::V2 => {
+            let received = redeemer
+                .run_json(
+                    &["module", "mintv2", "receive", token],
+                    Duration::from_secs(60),
+                )
+                .await?;
+            anyhow::ensure!(
+                received == "Success",
+                "the operator's own wallet must redeem the token: {received}"
+            );
+        }
+        MintGeneration::V1 => {
+            // `reissue` waits for the reissue to finish and fails if it does not.
+            let received = redeemer
+                .run_json(&["reissue", token], Duration::from_secs(60))
+                .await?;
+            anyhow::ensure!(
+                received.as_u64().is_some_and(|msat| msat > 0),
+                "the operator's own wallet must redeem the token: {received}"
+            );
+        }
+    }
     // The operator marks it redeemed, then cancels anyway: the reclaim finds
     // the notes spent, and nothing returns.
     let confirmed = manifold_guardian_admin(
@@ -2851,6 +2875,7 @@ async fn register_local_gateway_for_lnv2(
         bin: &fedimint_cli_bin,
         data_dir: temp.join("guardian-payout-admin"),
         iroh_overrides,
+        esplora_url: None,
     };
     fedimint_cli
         .run(&["join-federation", invite], FEDIMINT_CLI_JOIN_TIMEOUT)
@@ -2952,8 +2977,10 @@ async fn fund_gateway_federation_wallet(
     bitcoin_cli
         .run(Some(MINER_WALLET), &["sendtoaddress", address, "0.001"])
         .await?;
+    // The containing block plus the v1 wallet's ten-block regtest finality
+    // delay, which also covers the v2 wallet's six.
     bitcoin_cli
-        .run(None, &["generatetoaddress", "7", miner_address])
+        .run(None, &["generatetoaddress", "11", miner_address])
         .await?;
 
     tokio::time::timeout(Duration::from_secs(120), async {
@@ -3869,14 +3896,26 @@ async fn wait_for_callbacks_pending_after_attempt(
 /// Check the artifact DKG made immutable, rather than merely the environment
 /// and registry the composition root intended to pass to `fedimintd`.
 fn assert_formation_has_v2_module_set(temp: &Path, guardian_count: usize) -> anyhow::Result<()> {
-    let stability_pool = stability_pool_common::KIND;
-    let expected = BTreeSet::from([
-        "lnv2",
-        "meta",
-        "mintv2",
-        stability_pool.as_str(),
-        "walletv2",
-    ]);
+    assert_formation_module_set(
+        temp,
+        guardian_count,
+        &[
+            "lnv2",
+            "meta",
+            "mintv2",
+            stability_pool_common::KIND.as_str(),
+            "walletv2",
+        ],
+    )
+}
+
+/// Every guardian's first seat committed exactly the `expected` module kinds.
+fn assert_formation_module_set(
+    temp: &Path,
+    guardian_count: usize,
+    expected: &[&str],
+) -> anyhow::Result<()> {
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
     for index in 0..guardian_count {
         let path = temp
             .join(format!("mg-{index}"))
@@ -3906,8 +3945,8 @@ fn assert_formation_has_v2_module_set(temp: &Path, guardian_count: usize) -> any
 /// whole money path at product-valid scale: wallet join, on-chain
 /// deposit, quote-bound foreign mint outputs, MG claim, and refund. The
 /// payment federation carries a mintv2 module, so the (never negotiated)
-/// generation both sides derive from it is mintv2; the mintv1 path keeps
-/// its coverage in the fleet-manager unit and wallet tests.
+/// generation both sides derive from it is mintv2; the v1 test below runs
+/// the same path through a payment federation on v1 modules.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn manifold_guardian_0_1_paid_formation_settles_real_ecash_under_defe() {
     if env::var_os(OPT_IN_ENV).is_none() {
@@ -3915,13 +3954,36 @@ async fn manifold_guardian_0_1_paid_formation_settles_real_ecash_under_defe() {
         return;
     }
 
-    tokio::time::timeout(PAID_FORMATION_TIMEOUT, run_paid_formation())
-        .await
-        .expect("Manifold Guardian 0.1 paid E2E timed out")
-        .expect("Manifold Guardian 0.1 paid E2E failed");
+    tokio::time::timeout(
+        PAID_FORMATION_TIMEOUT,
+        run_paid_formation(MintGeneration::V2),
+    )
+    .await
+    .expect("Manifold Guardian 0.1 paid E2E timed out")
+    .expect("Manifold Guardian 0.1 paid E2E failed");
 }
 
-async fn run_paid_formation() -> anyhow::Result<()> {
+/// The paid formation with a payment federation on Fedimint's v1 mint,
+/// Lightning, and wallet modules, as the payment federations an MG joins may
+/// have: v1 setup payments, then Lightning v1 and mint-v1 ecash payouts out
+/// of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manifold_guardian_0_1_paid_formation_through_a_v1_payment_federation_under_defe() {
+    if env::var_os(OPT_IN_ENV).is_none() {
+        eprintln!("skipping Manifold Guardian 0.1 v1 paid E2E; set {OPT_IN_ENV}=1 to run");
+        return;
+    }
+
+    tokio::time::timeout(
+        PAID_FORMATION_TIMEOUT,
+        run_paid_formation(MintGeneration::V1),
+    )
+    .await
+    .expect("Manifold Guardian 0.1 v1 paid E2E timed out")
+    .expect("Manifold Guardian 0.1 v1 paid E2E failed");
+}
+
+async fn run_paid_formation(payment_mint: MintGeneration) -> anyhow::Result<()> {
     let manifold_guardian_bin = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")
         .unwrap_or_else(|err| panic!("{err}"));
     let fa_cli_bin = locate_binary(FA_CLI_BIN_ENV, "fa-cli").unwrap_or_else(|err| panic!("{err}"));
@@ -3991,7 +4053,15 @@ async fn run_paid_formation() -> anyhow::Result<()> {
 
     offer_free_seats(&manifold_guardian_bin, &temp, PAID_GUARDIAN_COUNT).await?;
 
-    eprintln!("forming the payment federation (given away)");
+    eprintln!("forming the payment federation (given away) on {payment_mint:?} modules");
+    if payment_mint == MintGeneration::V1 {
+        for index in 0..PAID_GUARDIAN_COUNT {
+            std::fs::write(
+                temp.join(format!("mg-{index}")).join(LEGACY_MODULES_ENABLE),
+                b"enabled\n",
+            )?;
+        }
+    }
     let mg_endpoints = mg_endpoint_addrs(&locators);
     let payment_invite = run_fa_cli(
         &fa_cli_bin,
@@ -4010,6 +4080,22 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     )
     .await?;
     let payment_invite = payment_invite.trim().to_owned();
+    if payment_mint == MintGeneration::V1 {
+        for index in 0..PAID_GUARDIAN_COUNT {
+            std::fs::remove_file(temp.join(format!("mg-{index}")).join(LEGACY_MODULES_ENABLE))?;
+        }
+        assert_formation_module_set(
+            &temp,
+            PAID_GUARDIAN_COUNT,
+            &[
+                "ln",
+                "meta",
+                "mint",
+                stability_pool_common::KIND.as_str(),
+                "wallet",
+            ],
+        )?;
+    }
 
     // Publish the common setup-payment set naming the freshly formed
     // federation; every MG admits it from the relay and joins in its
@@ -4073,10 +4159,15 @@ async fn run_paid_formation() -> anyhow::Result<()> {
 
     // FA-side money: peg in regtest coin, then move one real OOB token into
     // the same in-process wallet that fa-cli uses for quote-bound payments.
+    let esplora = match payment_mint {
+        MintGeneration::V1 => Some(Esplora::start(bitcoind, &temp).await?),
+        MintGeneration::V2 => None,
+    };
     let fedimint_cli = FedimintCli {
         bin: &fedimint_cli_bin,
         data_dir: temp.join("fa-wallet"),
         iroh_overrides: &iroh_overrides,
+        esplora_url: esplora.as_ref().map(|esplora| esplora.url.as_str()),
     };
     fedimint_cli
         .run(
@@ -4084,133 +4175,144 @@ async fn run_paid_formation() -> anyhow::Result<()> {
             FEDIMINT_CLI_JOIN_TIMEOUT,
         )
         .await?;
-    // The MG processes and their fedimintd children inherited these direct
-    // Iroh routes before forming the payment federation, so their wallets can
-    // use the bare-node-id invite without a restart.
-    // WalletV2 deliberately ignores blocks predating the federation. Wait for
-    // its first non-zero consensus height before creating an output that it
-    // must discover. Its consensus height intentionally trails Bitcoin's tip
-    // by the finality window, so waiting for the current tip cannot complete.
-    loop {
-        let block_count = fedimint_cli
-            .run_json(
-                &["module", "walletv2", "info", "block-count"],
-                FEDIMINT_CLI_WALLETV2_TIMEOUT,
-            )
-            .await?;
-        if block_count.as_u64().is_some_and(|count| count >= 1) {
-            break;
+    let (funding, funding_msat) = match payment_mint {
+        MintGeneration::V2 => {
+            // The MG processes and their fedimintd children inherited these direct
+            // Iroh routes before forming the payment federation, so their wallets can
+            // use the bare-node-id invite without a restart.
+            // WalletV2 deliberately ignores blocks predating the federation. Wait for
+            // its first non-zero consensus height before creating an output that it
+            // must discover. Its consensus height intentionally trails Bitcoin's tip
+            // by the finality window, so waiting for the current tip cannot complete.
+            loop {
+                let block_count = fedimint_cli
+                    .run_json(
+                        &["module", "walletv2", "info", "block-count"],
+                        FEDIMINT_CLI_WALLETV2_TIMEOUT,
+                    )
+                    .await?;
+                if block_count.as_u64().is_some_and(|count| count >= 1) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            // Read the event log position before creating the address, so the wait
+            // below sees the receive that this address produces.
+            let receive_position = fedimint_cli
+                .run_json(&["dev", "next-event-log-id"], FEDIMINT_CLI_WALLETV2_TIMEOUT)
+                .await?
+                .as_u64()
+                .context("next-event-log-id returns a number")?
+                .to_string();
+            let deposit_address = fedimint_cli
+                .run_json(
+                    &["module", "walletv2", "receive"],
+                    FEDIMINT_CLI_WALLETV2_TIMEOUT,
+                )
+                .await?
+                .as_str()
+                .context("walletv2 receive returns an address")?
+                .to_owned();
+            bitcoin_cli
+                .run(
+                    Some(MINER_WALLET),
+                    &["sendtoaddress", &deposit_address, "0.001"],
+                )
+                .await?;
+            // Match upstream's WalletV2 peg-in window: the containing block plus its
+            // six-block confirmation finality delay.
+            bitcoin_cli
+                .run(None, &["generatetoaddress", "7", &miner_address])
+                .await?;
+            eprintln!("waiting for the peg-in to confirm");
+            // Keep one client process alive while WalletV2 finds the next valid
+            // receive index and claims the output. Valid indices occur only about once
+            // per 65,536 candidates; restarting a short-lived client repeats that CPU
+            // search from the same persisted index forever. `await-receive` returns
+            // once the claim succeeds and its ecash is issued.
+            fedimint_cli
+                .run(
+                    &["module", "walletv2", "await-receive", &receive_position],
+                    FEDIMINT_CLI_WALLETV2_TIMEOUT,
+                )
+                .await?;
+            let info = fedimint_cli
+                .run_json(&["info"], Duration::from_secs(10))
+                .await?;
+            let balance = info["total_amount_msat"]
+                .as_u64()
+                .context("fedimint-cli info reports total_amount_msat")?;
+            anyhow::ensure!(
+                balance >= FA_FUNDING_MSAT,
+                "WalletV2 peg-in credited only {balance} msat"
+            );
+
+            let funding = fedimint_cli
+                .run_json(
+                    &["module", "mintv2", "send", &FA_FUNDING_MSAT.to_string()],
+                    Duration::from_secs(10),
+                )
+                .await?;
+            let funding = funding
+                .as_str()
+                .context("mint-v2 send returns encoded ecash")?;
+            let funding_ecash: fedimint_mintv2_client::ECash =
+                fedimint_core::base32::decode_prefixed(
+                    fedimint_core::base32::FEDIMINT_PREFIX,
+                    funding,
+                )
+                .context("decode the FA's focused funding token")?;
+            anyhow::ensure!(
+                funding_ecash.amount().msats == FA_FUNDING_MSAT && funding_ecash.notes().len() == 1,
+                "focused payer funding must contain one {FA_FUNDING_MSAT} msat ecash note"
+            );
+
+            // Exercise the production wallet's lost-response recovery against the real
+            // mint-v2 operation log before handing the FA its separate funding token.
+            let replay_token = fedimint_cli
+                .run_json(
+                    &["module", "mintv2", "send", "1024"],
+                    Duration::from_secs(10),
+                )
+                .await?;
+            let replay_token = replay_token
+                .as_str()
+                .context("mint-v2 send returns replay-test ecash")?;
+            let replay_token_file = temp.join("mint-v2-replay-token");
+            write_sensitive_file(&replay_token_file, replay_token)?;
+            let mut replay_command = Command::new(env::current_exe()?);
+            replay_command
+                .args([
+                    "--exact",
+                    "mint_v2_receive_replay_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
+                .env(REPLAY_INVITE_ENV, &payment_invite)
+                .env(REPLAY_TOKEN_FILE_ENV, &replay_token_file)
+                .env(
+                    REPLAY_WALLET_DIR_ENV,
+                    temp.join("fman-mint-v2-replay-wallet"),
+                );
+            replay_command.kill_on_drop(true);
+            let replay = tokio::time::timeout(MINT_V2_REPLAY_TIMEOUT, replay_command.output())
+                .await
+                .context("mint-v2 lost-response replay child timed out")??;
+            anyhow::ensure!(
+                replay.status.success(),
+                "mint-v2 lost-response replay child failed: {}",
+                String::from_utf8_lossy(&replay.stderr)
+            );
+            (funding.to_owned(), FA_FUNDING_MSAT)
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    // Read the event log position before creating the address, so the wait
-    // below sees the receive that this address produces.
-    let receive_position = fedimint_cli
-        .run_json(&["dev", "next-event-log-id"], FEDIMINT_CLI_WALLETV2_TIMEOUT)
-        .await?
-        .as_u64()
-        .context("next-event-log-id returns a number")?
-        .to_string();
-    let deposit_address = fedimint_cli
-        .run_json(
-            &["module", "walletv2", "receive"],
-            FEDIMINT_CLI_WALLETV2_TIMEOUT,
-        )
-        .await?
-        .as_str()
-        .context("walletv2 receive returns an address")?
-        .to_owned();
-    bitcoin_cli
-        .run(
-            Some(MINER_WALLET),
-            &["sendtoaddress", &deposit_address, "0.001"],
-        )
-        .await?;
-    // Match upstream's WalletV2 peg-in window: the containing block plus its
-    // six-block confirmation finality delay.
-    bitcoin_cli
-        .run(None, &["generatetoaddress", "7", &miner_address])
-        .await?;
-    eprintln!("waiting for the peg-in to confirm");
-    // Keep one client process alive while WalletV2 finds the next valid
-    // receive index and claims the output. Valid indices occur only about once
-    // per 65,536 candidates; restarting a short-lived client repeats that CPU
-    // search from the same persisted index forever. `await-receive` returns
-    // once the claim succeeds and its ecash is issued.
-    fedimint_cli
-        .run(
-            &["module", "walletv2", "await-receive", &receive_position],
-            FEDIMINT_CLI_WALLETV2_TIMEOUT,
-        )
-        .await?;
-    let info = fedimint_cli
-        .run_json(&["info"], Duration::from_secs(10))
-        .await?;
-    let balance = info["total_amount_msat"]
-        .as_u64()
-        .context("fedimint-cli info reports total_amount_msat")?;
-    anyhow::ensure!(
-        balance >= FA_FUNDING_MSAT,
-        "WalletV2 peg-in credited only {balance} msat"
-    );
-
-    let funding = fedimint_cli
-        .run_json(
-            &["module", "mintv2", "send", &FA_FUNDING_MSAT.to_string()],
-            Duration::from_secs(10),
-        )
-        .await?;
-    let funding = funding
-        .as_str()
-        .context("mint-v2 send returns encoded ecash")?;
-    let funding_ecash: fedimint_mintv2_client::ECash =
-        fedimint_core::base32::decode_prefixed(fedimint_core::base32::FEDIMINT_PREFIX, funding)
-            .context("decode the FA's focused funding token")?;
-    anyhow::ensure!(
-        funding_ecash.amount().msats == FA_FUNDING_MSAT && funding_ecash.notes().len() == 1,
-        "focused payer funding must contain one {FA_FUNDING_MSAT} msat ecash note"
-    );
-
-    // Exercise the production wallet's lost-response recovery against the real
-    // mint-v2 operation log before handing the FA its separate funding token.
-    let replay_token = fedimint_cli
-        .run_json(
-            &["module", "mintv2", "send", "1024"],
-            Duration::from_secs(10),
-        )
-        .await?;
-    let replay_token = replay_token
-        .as_str()
-        .context("mint-v2 send returns replay-test ecash")?;
-    let replay_token_file = temp.join("mint-v2-replay-token");
-    write_sensitive_file(&replay_token_file, replay_token)?;
-    let mut replay_command = Command::new(env::current_exe()?);
-    replay_command
-        .args([
-            "--exact",
-            "mint_v2_receive_replay_child",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
-        .env(REPLAY_INVITE_ENV, &payment_invite)
-        .env(REPLAY_TOKEN_FILE_ENV, &replay_token_file)
-        .env(
-            REPLAY_WALLET_DIR_ENV,
-            temp.join("fman-mint-v2-replay-wallet"),
-        );
-    replay_command.kill_on_drop(true);
-    let replay = tokio::time::timeout(MINT_V2_REPLAY_TIMEOUT, replay_command.output())
-        .await
-        .context("mint-v2 lost-response replay child timed out")??;
-    anyhow::ensure!(
-        replay.status.success(),
-        "mint-v2 lost-response replay child failed: {}",
-        String::from_utf8_lossy(&replay.stderr)
-    );
+        MintGeneration::V1 => {
+            fund_from_v1_payment_federation(&fedimint_cli, &bitcoin_cli, &miner_address).await?
+        }
+    };
     let fa_wallet_dir = temp.join("fa-locked-payment-wallet");
     let funding_token_file = temp.join("fi-funding-token");
-    write_sensitive_file(&funding_token_file, funding)?;
+    write_sensitive_file(&funding_token_file, &funding)?;
 
     let fa_wallet_secret = hex::encode(FA_WALLET_SECRET);
     let setup_payment_event = EventBuilder::new(
@@ -4311,10 +4413,31 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     let setup_payments_msat = SEAT_PRICE_MSAT
         .checked_mul(u64::try_from(PAID_GUARDIAN_COUNT)?)
         .context("setup payment total overflow")?;
-    anyhow::ensure!(
-        received_input_msat == FA_FUNDING_MSAT,
-        "reopened operation log did not recover the exact one-note funding input"
-    );
+    // fa-cli's accounting reads mint-v2 receives only, so a v1 funding
+    // receive leaves its input and fee unobserved; the receive fee is then
+    // whatever the funding lost besides the setup payments.
+    let receive_fee_msat = match payment_mint {
+        MintGeneration::V2 => {
+            anyhow::ensure!(
+                received_input_msat == funding_msat,
+                "reopened operation log did not recover the exact funding input: \
+                 {received_input_msat} of {funding_msat} msat"
+            );
+            receive_fee_msat
+        }
+        MintGeneration::V1 => {
+            anyhow::ensure!(
+                received_input_msat == 0 && receive_fee_msat == 0,
+                "fa-cli now accounts v1 receives: compare them exactly"
+            );
+            funding_msat
+                .checked_sub(final_balance_msat)
+                .and_then(|rest| rest.checked_sub(observed_setup_payments_msat))
+                .and_then(|rest| rest.checked_sub(setup_fee_msat))
+                .context("the v1 payer spent more than its funding")?
+        }
+    };
+    let received_input_msat = funding_msat;
     anyhow::ensure!(
         observed_setup_payments_msat == setup_payments_msat
             && setup_transaction_count == u64::try_from(PAID_GUARDIAN_COUNT)?,
@@ -4345,6 +4468,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         bin: &fedimint_cli_bin,
         data_dir: temp.join("paid-federation-client"),
         iroh_overrides: &iroh_overrides,
+        esplora_url: None,
     };
     joiner
         .run(
@@ -4379,6 +4503,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         &setup_payment_keys,
         &payment_invite,
         &payment_federation_id,
+        payment_mint,
         paid_invite.trim(),
         &mut daemons,
     )
@@ -4403,23 +4528,21 @@ async fn run_paid_formation() -> anyhow::Result<()> {
 /// mnemonic restore onto a fresh data root, which must rejoin it from the
 /// backed-up claim evidence rather than from the current set.
 #[expect(clippy::too_many_arguments)]
-async fn exercise_removed_payment_federation_sweeps(
+/// Connect and fund a real gateway for the payment federation, and join a
+/// recipient wallet the former-member Lightning sweeps pay into. Returns the
+/// gateway lease to release.
+#[expect(clippy::too_many_arguments)]
+async fn prepare_lightning_sweeps<'a>(
     defe: &mut AsyncDefeClient,
     bitcoind: &defe_api::BitcoindInfo,
-    manifold_guardian_bin: &Path,
-    fa_cli_bin: &Path,
+    fa_cli_bin: &'a Path,
     bitcoin_cli: &BitcoinCli<'_>,
     miner_address: &str,
     temp: &Path,
-    port_base: u16,
-    iroh_overrides: &str,
-    nostr: NostrEnv<'_>,
-    setup_payment_keys: &NostrKeys,
+    iroh_overrides: &'a str,
     payment_invite: &str,
-    payment_federation_id: &str,
-    replacement_invite: &str,
-    daemons: &mut Vec<Child>,
-) -> anyhow::Result<()> {
+    payment_federation_id: &'a str,
+) -> anyhow::Result<(defe_api::ResourceHandleId, SweepRecipient<'a>)> {
     let gateway_cli_bin = locate_binary(GATEWAY_CLI_BIN_ENV, "gateway-cli")?;
     let gateway_lease = defe
         .request_gatewayd(GatewaydRequest {
@@ -4462,6 +4585,47 @@ async fn exercise_removed_payment_federation_sweeps(
         Duration::from_secs(60),
     )
     .await?;
+    Ok((gateway_lease.handle_id, recipient))
+}
+
+async fn exercise_removed_payment_federation_sweeps(
+    defe: &mut AsyncDefeClient,
+    bitcoind: &defe_api::BitcoindInfo,
+    manifold_guardian_bin: &Path,
+    fa_cli_bin: &Path,
+    bitcoin_cli: &BitcoinCli<'_>,
+    miner_address: &str,
+    temp: &Path,
+    port_base: u16,
+    iroh_overrides: &str,
+    nostr: NostrEnv<'_>,
+    setup_payment_keys: &NostrKeys,
+    payment_invite: &str,
+    payment_federation_id: &str,
+    payment_mint: MintGeneration,
+    replacement_invite: &str,
+    daemons: &mut Vec<Child>,
+) -> anyhow::Result<()> {
+    // The gateway defe runs is LDK-backed, and Fedimint's gateway announces
+    // itself to Lightning v1 modules only when LND-backed: a v1 payment
+    // federation lists no gateway here, so its sweeps pay out as ecash.
+    let lightning = match payment_mint {
+        MintGeneration::V2 => Some(
+            prepare_lightning_sweeps(
+                defe,
+                bitcoind,
+                fa_cli_bin,
+                bitcoin_cli,
+                miner_address,
+                temp,
+                iroh_overrides,
+                payment_invite,
+                payment_federation_id,
+            )
+            .await?,
+        ),
+        MintGeneration::V1 => None,
+    };
 
     // Replace the common set with one that no longer names the payment
     // federation every MG was paid in.
@@ -4491,8 +4655,13 @@ async fn exercise_removed_payment_federation_sweeps(
     let mg0_dir = temp.join("mg-0");
     let mg1_dir = temp.join("mg-1");
     for dir in [&mg0_dir, &mg1_dir] {
-        wait_for_former_payment_federation(manifold_guardian_bin, dir, payment_federation_id)
-            .await?;
+        wait_for_former_payment_federation(
+            manifold_guardian_bin,
+            dir,
+            payment_federation_id,
+            payment_mint,
+        )
+        .await?;
     }
 
     // Restart MG 0 on its own data root. The removed member is no longer
@@ -4513,13 +4682,37 @@ async fn exercise_removed_payment_federation_sweeps(
     )?;
     read_locator(&mut restarted, 0).await?;
     daemons.insert(0, restarted);
-    wait_for_former_payment_federation(manifold_guardian_bin, &mg0_dir, payment_federation_id)
-        .await?;
-    sweep_former_payment_federation(
+    wait_for_former_payment_federation(
         manifold_guardian_bin,
         &mg0_dir,
-        &recipient,
-        "former-payment-sweep-after-restart",
+        payment_federation_id,
+        payment_mint,
+    )
+    .await?;
+    if let Some((_, recipient)) = &lightning {
+        sweep_former_payment_federation(
+            manifold_guardian_bin,
+            &mg0_dir,
+            recipient,
+            "former-payment-sweep-after-restart",
+        )
+        .await?;
+        sweep_capped_lnurl_concurrently(manifold_guardian_bin, &mg0_dir, recipient).await?;
+    }
+    #[cfg(target_os = "linux")]
+    exercise_ecash_payout(
+        manifold_guardian_bin,
+        bitcoind,
+        temp,
+        port_base,
+        iroh_overrides,
+        Some(nostr),
+        payment_invite,
+        &EcashPayoutSource::PaymentFederation {
+            federation_id: payment_federation_id,
+        },
+        payment_mint,
+        daemons,
     )
     .await?;
 
@@ -4568,17 +4761,87 @@ async fn exercise_removed_payment_federation_sweeps(
     complete_onboarding_stages(manifold_guardian_bin, &restored_dir, 2, nostr).await?;
     read_locator(&mut restored, 1).await?;
     daemons.insert(1, restored);
-    wait_for_former_payment_federation(manifold_guardian_bin, &restored_dir, payment_federation_id)
-        .await?;
-    sweep_former_payment_federation(
+    wait_for_former_payment_federation(
         manifold_guardian_bin,
         &restored_dir,
-        &recipient,
-        "former-payment-sweep-after-restore",
+        payment_federation_id,
+        payment_mint,
     )
     .await?;
-
-    defe.release(gateway_lease.handle_id).await?;
+    match &lightning {
+        Some((gateway, recipient)) => {
+            sweep_former_payment_federation(
+                manifold_guardian_bin,
+                &restored_dir,
+                recipient,
+                "former-payment-sweep-after-restore",
+            )
+            .await?;
+            defe.release(*gateway).await?;
+        }
+        None => {
+            // The restored wallet pays its recovered balance out as one token.
+            let available = |listed: &serde_json::Value| {
+                listed["federations"]
+                    .as_array()
+                    .and_then(|federations| {
+                        federations
+                            .iter()
+                            .find(|federation| federation["federation_id"] == payment_federation_id)
+                    })
+                    .and_then(|federation| federation["wallet"]["available_ecash_msat"].as_u64())
+            };
+            let before = available(
+                &manifold_guardian_admin(
+                    manifold_guardian_bin,
+                    &restored_dir,
+                    &["payment-federations", "list"],
+                )
+                .await?,
+            )
+            .context("the restored wallet lists its balance")?;
+            let request_id = "former-payment-ecash-after-restore";
+            manifold_guardian_admin_with_timeout(
+                manifold_guardian_bin,
+                &restored_dir,
+                &[
+                    "payment-federations",
+                    "sweep",
+                    payment_federation_id,
+                    "--request-id",
+                    request_id,
+                    "--method",
+                    "ecash",
+                ],
+                Duration::from_secs(90),
+            )
+            .await?;
+            let issued = manifold_guardian_admin(
+                manifold_guardian_bin,
+                &restored_dir,
+                &["payout", "status", request_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                issued["ecash"]["state"] == "issued"
+                    && issued["ecash"]["token"].is_string()
+                    && issued["job"]["operation"]["amount_msat"].as_u64() == Some(before),
+                "the restored MG must pay its whole {before} msat out as a token: {issued}"
+            );
+            let after = available(
+                &manifold_guardian_admin(
+                    manifold_guardian_bin,
+                    &restored_dir,
+                    &["payment-federations", "list"],
+                )
+                .await?,
+            );
+            anyhow::ensure!(
+                after == Some(0),
+                "the token must spend the balance: {after:?}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -4592,12 +4855,18 @@ struct SweepRecipient<'a> {
 }
 
 /// Wait until `data_dir` lists `federation_id` as a former (no longer
-/// accepted) member whose wallet can fund [`FORMER_PAYMENT_SWEEP_MSAT`].
+/// accepted) member whose wallet can fund [`FORMER_PAYMENT_SWEEP_MSAT`]: over
+/// Lightning on v2, as ecash on v1, which has no gateway in this harness.
 async fn wait_for_former_payment_federation(
     manifold_guardian_bin: &Path,
     data_dir: &Path,
     federation_id: &str,
+    mint: MintGeneration,
 ) -> anyhow::Result<()> {
+    let fundable = match mint {
+        MintGeneration::V2 => "economically_sweepable_recipient_msat",
+        MintGeneration::V1 => "available_ecash_msat",
+    };
     let mut last = serde_json::Value::Null;
     let waited = tokio::time::timeout(Duration::from_secs(240), async {
         loop {
@@ -4614,7 +4883,7 @@ async fn wait_for_former_payment_federation(
             });
             if let Some(former) = former
                 && former["accepted"] == serde_json::Value::Bool(false)
-                && former["wallet"]["economically_sweepable_recipient_msat"]
+                && former["wallet"][fundable]
                     .as_u64()
                     .is_some_and(|msat| msat >= FORMER_PAYMENT_SWEEP_MSAT)
             {
@@ -4642,43 +4911,7 @@ async fn sweep_former_payment_federation(
     recipient: &SweepRecipient<'_>,
     request_id: &str,
 ) -> anyhow::Result<()> {
-    // Invoice creation fails before any operation while the gateway's LNv2
-    // routing converges, so retrying cannot duplicate a receive.
-    let amount_sats = (FORMER_PAYMENT_SWEEP_MSAT / 1_000).to_string();
-    let invoice_args = [
-        "invoice",
-        "--payment-federation-id",
-        recipient.federation_id,
-        "--amount-sats",
-        &amount_sats,
-    ];
-    let invoice = tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            if let Ok(invoice) = run_fa_payment_wallet(
-                recipient.fa_cli_bin,
-                &recipient.wallet_dir,
-                &recipient.wallet_secret_file,
-                &invoice_args,
-                recipient.iroh_overrides,
-                Duration::from_secs(15),
-            )
-            .await
-            {
-                return invoice;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("LNv2 gateway did not become ready for invoice creation"))?;
-    let invoice_operation = invoice["operationId"]
-        .as_str()
-        .context("payment-wallet invoice returns operation id")?
-        .to_owned();
-    let invoice = invoice["invoice"]
-        .as_str()
-        .context("payment-wallet invoice returns BOLT11")?
-        .to_owned();
+    let (invoice, invoice_operation) = recipient.invoice().await?;
     let lnurl = LnurlPayServer::start(invoice, FORMER_PAYMENT_SWEEP_MSAT).await?;
     manifold_guardian_admin(
         manifold_guardian_bin,
@@ -4689,15 +4922,93 @@ async fn sweep_former_payment_federation(
     manifold_guardian_admin(
         manifold_guardian_bin,
         data_dir,
-        &[
-            "payment-federations",
-            "sweep",
-            recipient.federation_id,
-            "--request-id",
-            request_id,
-        ],
+        &recipient.sweep_args(request_id),
     )
     .await?;
+    await_capped_sweep(manifold_guardian_bin, data_dir, request_id).await?;
+    recipient.await_claimed(&invoice_operation).await
+}
+
+/// Sweep the former payment federation to an LNURL capped below its balance
+/// from concurrent callers, each invoice a fresh one: two calls with one
+/// request id pay once, a call with another id pays the next invoice, and a
+/// request answered with an invoice this wallet already paid pays nothing.
+async fn sweep_capped_lnurl_concurrently(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    recipient: &SweepRecipient<'_>,
+) -> anyhow::Result<()> {
+    let (first, first_operation) = recipient.invoice().await?;
+    let (second, second_operation) = recipient.invoice().await?;
+    let lnurl =
+        LnurlPayServer::start_with_invoices(vec![first, second], FORMER_PAYMENT_SWEEP_MSAT).await?;
+    manifold_guardian_admin(
+        manifold_guardian_bin,
+        data_dir,
+        &["payout", "set", lnurl.destination()],
+    )
+    .await?;
+    let sweep = |request_id: &'static str| {
+        let args = recipient.sweep_args(request_id);
+        async move { manifold_guardian_admin(manifold_guardian_bin, data_dir, &args).await }
+    };
+    let (same_a, same_b, other) = tokio::join!(
+        sweep("capped-concurrent-same"),
+        sweep("capped-concurrent-same"),
+        sweep("capped-concurrent-other"),
+    );
+    let (same_a, same_b, other) = (same_a?, same_b?, other?);
+    let operation = |job: &serde_json::Value| job["operation"]["operation_id"].clone();
+    anyhow::ensure!(
+        operation(&same_a).is_string()
+            && operation(&same_a) == operation(&same_b)
+            && operation(&other).is_string()
+            && operation(&other) != operation(&same_a),
+        "concurrent calls must start one payout per request id: {same_a} {same_b} {other}"
+    );
+    anyhow::ensure!(
+        lnurl.callback_count() == 2,
+        "two requests must fetch two invoices, got {} callbacks",
+        lnurl.callback_count()
+    );
+    for request_id in ["capped-concurrent-same", "capped-concurrent-other"] {
+        await_capped_sweep(manifold_guardian_bin, data_dir, request_id).await?;
+    }
+    recipient.await_claimed(&first_operation).await?;
+    recipient.await_claimed(&second_operation).await?;
+
+    // The endpoint now answers with the second invoice again.
+    // The refusal's reason goes to the CLI's stderr, which the test inherits.
+    let reused = sweep("capped-reused-invoice").await;
+    anyhow::ensure!(
+        reused.is_err(),
+        "an already-paid invoice must not be paid again: {reused:?}"
+    );
+    anyhow::ensure!(
+        lnurl.callback_count() == 3,
+        "the refused request fetches exactly one invoice, got {} callbacks",
+        lnurl.callback_count()
+    );
+    let status = manifold_guardian_admin(
+        manifold_guardian_bin,
+        data_dir,
+        &["payout", "status", "capped-reused-invoice"],
+    )
+    .await?;
+    anyhow::ensure!(
+        status["job"]["operation"].is_null(),
+        "the refused request must start no payout: {status}"
+    );
+    Ok(())
+}
+
+/// Await a sweep to a [`FORMER_PAYMENT_SWEEP_MSAT`]-capped LNURL and check it
+/// paid exactly the cap.
+async fn await_capped_sweep(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    request_id: &str,
+) -> anyhow::Result<()> {
     let terminal = manifold_guardian_admin_with_timeout(
         manifold_guardian_bin,
         data_dir,
@@ -4712,26 +5023,85 @@ async fn sweep_former_payment_federation(
         "{} must sweep the former payment federation: {terminal}",
         data_dir.display()
     );
-    let received = run_fa_payment_wallet(
-        recipient.fa_cli_bin,
-        &recipient.wallet_dir,
-        &recipient.wallet_secret_file,
-        &[
-            "await-invoice",
-            "--payment-federation-id",
-            recipient.federation_id,
-            "--operation-id",
-            &invoice_operation,
-        ],
-        recipient.iroh_overrides,
-        Duration::from_secs(60),
-    )
-    .await?;
-    anyhow::ensure!(
-        received["state"] == "claimed",
-        "the sweep recipient must claim the invoice: {received}"
-    );
     Ok(())
+}
+
+impl SweepRecipient<'_> {
+    fn sweep_args<'a>(&'a self, request_id: &'a str) -> [&'a str; 5] {
+        [
+            "payment-federations",
+            "sweep",
+            self.federation_id,
+            "--request-id",
+            request_id,
+        ]
+    }
+
+    /// A fresh [`FORMER_PAYMENT_SWEEP_MSAT`] invoice and its receive
+    /// operation id.
+    async fn invoice(&self) -> anyhow::Result<(String, String)> {
+        // Invoice creation fails before any operation while the gateway's
+        // routing converges, so retrying cannot duplicate a receive.
+        let amount_sats = (FORMER_PAYMENT_SWEEP_MSAT / 1_000).to_string();
+        let invoice_args = [
+            "invoice",
+            "--payment-federation-id",
+            self.federation_id,
+            "--amount-sats",
+            &amount_sats,
+        ];
+        let invoice = tokio::time::timeout(Duration::from_secs(90), async {
+            loop {
+                if let Ok(invoice) = run_fa_payment_wallet(
+                    self.fa_cli_bin,
+                    &self.wallet_dir,
+                    &self.wallet_secret_file,
+                    &invoice_args,
+                    self.iroh_overrides,
+                    Duration::from_secs(15),
+                )
+                .await
+                {
+                    return invoice;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("the gateway did not become ready for invoice creation"))?;
+        let operation = invoice["operationId"]
+            .as_str()
+            .context("payment-wallet invoice returns operation id")?
+            .to_owned();
+        let invoice = invoice["invoice"]
+            .as_str()
+            .context("payment-wallet invoice returns BOLT11")?
+            .to_owned();
+        Ok((invoice, operation))
+    }
+
+    async fn await_claimed(&self, operation: &str) -> anyhow::Result<()> {
+        let received = run_fa_payment_wallet(
+            self.fa_cli_bin,
+            &self.wallet_dir,
+            &self.wallet_secret_file,
+            &[
+                "await-invoice",
+                "--payment-federation-id",
+                self.federation_id,
+                "--operation-id",
+                operation,
+            ],
+            self.iroh_overrides,
+            Duration::from_secs(60),
+        )
+        .await?;
+        anyhow::ensure!(
+            received["state"] == "claimed",
+            "the sweep recipient must claim the invoice: {received}"
+        );
+        Ok(())
+    }
 }
 
 // review: nothing in tests is sensitive, a stupid agent wrote this
@@ -4954,6 +5324,14 @@ struct LnurlPayServer {
 
 impl LnurlPayServer {
     async fn start(invoice: String, amount_msat: u64) -> anyhow::Result<Self> {
+        Self::start_with_invoices(vec![invoice], amount_msat).await
+    }
+
+    /// Answer the n-th callback with the n-th invoice, and every callback
+    /// past the last with the last again, as an endpoint reusing an invoice.
+    async fn start_with_invoices(invoices: Vec<String>, amount_msat: u64) -> anyhow::Result<Self> {
+        anyhow::ensure!(!invoices.is_empty(), "an LNURL server needs an invoice");
+        let invoices = Arc::new(invoices);
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let address = listener.local_addr()?;
         let origin = format!("http://{address}");
@@ -4967,7 +5345,7 @@ impl LnurlPayServer {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     return;
                 };
-                let invoice = invoice.clone();
+                let invoices = invoices.clone();
                 let callback = callback.clone();
                 let callbacks = task_callbacks.clone();
                 tokio::spawn(async move {
@@ -4990,7 +5368,8 @@ impl LnurlPayServer {
                             "tag": "payRequest",
                         })
                     } else if target == format!("/callback?amount={amount_msat}") {
-                        callbacks.fetch_add(1, Ordering::SeqCst);
+                        let n = callbacks.fetch_add(1, Ordering::SeqCst);
+                        let invoice = &invoices[n.min(invoices.len() - 1)];
                         serde_json::json!({ "pr": invoice, "routes": [] })
                     } else {
                         serde_json::json!({ "status": "ERROR", "reason": "unexpected request" })
@@ -5269,10 +5648,16 @@ fn spawn_routed_manifold_guardian(
             origin,
         );
     }
+    // Inert unless the test creates the file before a formation.
+    command.env(
+        "MG_E2E_LEGACY_MODULES",
+        data_dir.join(LEGACY_MODULES_ENABLE),
+    );
     if data_dir.join(PAYOUT_CRASH_SEAM_ENABLE).is_file() {
-        // The upgrade qualification runs pre-rename executables, which read
-        // the FMAN_* name of this seam.
+        // The upgrade qualification runs older executables, which read the
+        // guardian-fee-only and FMAN_* names of this seam.
         for name in [
+            "MG_E2E_PAUSE_AFTER_PAYOUT_START",
             "MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
             "FMAN_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
         ] {
@@ -5833,6 +6218,8 @@ struct FedimintCli<'a> {
     bin: &'a Path,
     data_dir: PathBuf,
     iroh_overrides: &'a str,
+    /// The esplora a v1 wallet module watches the chain through.
+    esplora_url: Option<&'a str>,
 }
 
 impl FedimintCli<'_> {
@@ -5844,6 +6231,11 @@ impl FedimintCli<'_> {
             .args(args)
             .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", self.iroh_overrides)
             .stderr(Stdio::piped());
+        if let Some(url) = self.esplora_url {
+            command
+                .env("FM_FORCE_BITCOIN_RPC_KIND", "esplora")
+                .env("FM_FORCE_BITCOIN_RPC_URL", url);
+        }
         if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
             command.env("FM_IN_DEVIMINT", "1");
         }
@@ -5861,6 +6253,130 @@ impl FedimintCli<'_> {
         timeout: Duration,
     ) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::from_str(&self.run(args, timeout).await?)?)
+    }
+}
+
+/// Peg regtest coin into the v1 payment federation through the joined
+/// `fedimint-cli` wallet and spend a funding token for the FA out of it.
+/// Returns the OOB notes and their amount.
+async fn fund_from_v1_payment_federation(
+    fedimint_cli: &FedimintCli<'_>,
+    bitcoin_cli: &BitcoinCli<'_>,
+    miner_address: &str,
+) -> anyhow::Result<(String, u64)> {
+    let deposit = fedimint_cli
+        .run_json(&["deposit-address"], Duration::from_secs(30))
+        .await?;
+    let address = deposit["address"]
+        .as_str()
+        .context("deposit-address returns an address")?
+        .to_owned();
+    let operation_id = deposit["operation_id"]
+        .as_str()
+        .context("deposit-address returns an operation id")?
+        .to_owned();
+    bitcoin_cli
+        .run(Some(MINER_WALLET), &["sendtoaddress", &address, "0.001"])
+        .await?;
+    // The v1 wallet's regtest finality delay is ten blocks past the
+    // containing one.
+    bitcoin_cli
+        .run(None, &["generatetoaddress", "11", miner_address])
+        .await?;
+    eprintln!("waiting for the v1 peg-in to confirm");
+    fedimint_cli
+        .run(&["await-deposit", &operation_id], Duration::from_secs(180))
+        .await?;
+    let available = fedimint_cli
+        .run_json(&["info"], Duration::from_secs(10))
+        .await?["total_amount_msat"]
+        .as_u64()
+        .context("fedimint-cli info reports total_amount_msat")?;
+    anyhow::ensure!(
+        available >= FA_FUNDING_MSAT,
+        "the v1 peg-in credited only {available} msat"
+    );
+    let spent = fedimint_cli
+        .run_json(
+            &["spend", &FA_FUNDING_MSAT.to_string(), "--allow-overpay"],
+            Duration::from_secs(30),
+        )
+        .await?;
+    let notes = spent["notes"]
+        .as_str()
+        .context("spend returns encoded OOB notes")?
+        .to_owned();
+    let amount = fedimint_cli
+        .run_json(
+            &["module", "mint", "validate", &notes],
+            Duration::from_secs(10),
+        )
+        .await?["amount_msat"]
+        .as_u64()
+        .context("validate reports the notes' amount")?;
+    anyhow::ensure!(
+        amount >= FA_FUNDING_MSAT,
+        "the funding token carries only {amount} msat"
+    );
+    Ok((notes, amount))
+}
+
+/// An esplora indexer over the leased regtest bitcoind: Fedimint's v1 wallet
+/// client watches the chain only through esplora, so a v1 peg-in never
+/// confirms without one.
+struct Esplora {
+    url: String,
+    _process: Child,
+}
+
+impl Esplora {
+    async fn start(bitcoind: &defe_api::BitcoindInfo, data_root: &Path) -> anyhow::Result<Self> {
+        let http_port = defe_portalloc::port_alloc(3)?;
+        let db_dir = data_root.join("esplora-db");
+        std::fs::create_dir_all(&db_dir)?;
+        let log = std::fs::File::create(data_root.join("esplora.log"))?;
+        let mut command = Command::new(locate_binary(ESPLORA_BIN_ENV, "esplora")?);
+        command
+            .arg(format!("--daemon-dir={}", bitcoind.data_dir.display()))
+            .arg(format!("--db-dir={}", db_dir.display()))
+            .arg(format!(
+                "--cookie={}:{}",
+                bitcoind.rpc_username, bitcoind.rpc_password
+            ))
+            .arg("--network=regtest")
+            .arg(format!(
+                "--daemon-rpc-addr={}:{}",
+                bitcoind.rpc_host, bitcoind.rpc_port
+            ))
+            .arg(format!("--http-addr=127.0.0.1:{http_port}"))
+            .arg(format!("--monitoring-addr=127.0.0.1:{}", http_port + 1))
+            // Unset, electrs binds a fixed Electrum port shared by every run.
+            .arg(format!("--electrum-rpc-addr=127.0.0.1:{}", http_port + 2))
+            // Index over RPC rather than reading defe's on-disk block files.
+            .arg("--jsonrpc-import")
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .kill_on_drop(true);
+        let mut process = command.spawn().context("spawn esplora")?;
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", http_port))
+                .await
+                .is_err()
+            {
+                if let Some(status) = process.try_wait()? {
+                    anyhow::bail!("esplora exited with {status}");
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("esplora HTTP did not come up"))??;
+        Ok(Self {
+            // Fedimint's esplora client expects the trailing slash.
+            url: format!("http://127.0.0.1:{http_port}/"),
+            _process: process,
+        })
     }
 }
 
