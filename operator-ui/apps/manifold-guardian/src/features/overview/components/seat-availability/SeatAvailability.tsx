@@ -24,6 +24,7 @@ export const SeatAvailability = ({
     <div className={styles.row}>
       <div className={styles.text}>
         <span className={styles.name}>Guardian codes</span>
+
         <span className={styles.detail}>
           Federation Ambassadors you share a code with add this guardian directly.
         </span>
@@ -37,6 +38,7 @@ export const SeatAvailability = ({
     <div className={styles.row}>
       <div className={styles.text}>
         <span className={styles.name}>Fedi-verified selection</span>
+
         <span className={styles.detail}>
           Needs a Trusted badge from a Fedi signer. Then Federation Ambassadors can find and select
           this guardian, and you set a seat price.
@@ -53,6 +55,7 @@ export const SeatAvailability = ({
     <div className={styles.row}>
       <div className={styles.text}>
         <span className={styles.name}>Fedi-verified selection</span>
+
         <span className={styles.detail}>
           Federation Ambassadors find and select this guardian through your Trusted badge.
         </span>
