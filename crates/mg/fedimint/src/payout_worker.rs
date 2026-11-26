@@ -250,8 +250,8 @@ async fn stored_guardian_job(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use tokio::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
 
     use crate::payout_ecash::{EcashPayoutState, EcashToken};
     use crate::wallet_drain::OutgoingOperation;
@@ -276,6 +276,8 @@ mod tests {
         notes: Mutex<HashMap<PayoutOperationId, FakeNotes>>,
         lose_next_response: AtomicBool,
         refuse_next_start: AtomicBool,
+        /// A job whose wallet cannot be read.
+        unreadable: Mutex<Option<PayoutRequestId>>,
         starts: AtomicUsize,
         statuses: AtomicUsize,
         awaits: AtomicUsize,
@@ -337,6 +339,9 @@ mod tests {
                 self.awaits.fetch_add(1, Ordering::SeqCst);
             } else {
                 self.statuses.fetch_add(1, Ordering::SeqCst);
+            }
+            if self.unreadable.lock().await.as_ref() == Some(&job.request_id) {
+                anyhow::bail!("simulated wallet open failure");
             }
             if job.method == PayoutMethod::Ecash {
                 let notes = self.notes.lock().await;
@@ -888,6 +893,57 @@ mod tests {
         );
     }
 
+    /// A job whose wallet cannot be read is left out of the list, and the
+    /// others, an older open token among them, are still listed.
+    #[tokio::test]
+    async fn list_leaves_out_an_unreadable_job_and_keeps_the_others() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Db::open(temp.path()).await.unwrap();
+        set_destination(&db, "operator@example.com").await;
+        let native = Arc::new(FakeNative::default());
+        let worker = worker(db.clone(), native.clone());
+        let mut started = Vec::new();
+        for (name, rail) in [
+            ("a-open-token", PayoutRail::Ecash),
+            ("b-unreadable", PayoutRail::Lightning),
+            ("c-lightning", PayoutRail::Lightning),
+        ] {
+            let (request_id, scope) = ecash_request(name);
+            worker.start_job(&request_id, scope, rail).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+            started.push(request_id);
+        }
+        let ids = |listed: &[PayoutJobStatus]| {
+            listed
+                .iter()
+                .map(|s| s.job.request_id.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        *native.unreadable.lock().await = Some(started[1].clone());
+        assert_eq!(
+            ids(&worker.list().await.unwrap()),
+            ["c-lightning", "a-open-token"]
+        );
+        // An unreadable open token past the recent window is left out too,
+        // and comes back once its wallet can be read.
+        for n in 0..RECENT_PAYOUTS {
+            let (request_id, scope) = ecash_request(&format!("d-newer-{n:02}"));
+            worker
+                .start_job(&request_id, scope, PayoutRail::Lightning)
+                .await
+                .unwrap();
+        }
+        *native.unreadable.lock().await = Some(started[0].clone());
+        let listed = ids(&worker.list().await.unwrap());
+        assert_eq!(listed.len(), RECENT_PAYOUTS as usize);
+        assert!(!listed.contains(&"a-open-token".to_owned()), "{listed:?}");
+        *native.unreadable.lock().await = None;
+        assert_eq!(
+            ids(&worker.list().await.unwrap()).last().unwrap(),
+            "a-open-token"
+        );
+    }
+
     /// The list holds both methods and closed jobs, newest first, keeps an
     /// older open token past the limit, and never carries a token.
     #[tokio::test]
@@ -1146,12 +1202,25 @@ impl PayoutWorker {
         self.status(request_id, true).await
     }
 
+    /// One listed job, or `None` when its wallet cannot be read now. One
+    /// unreadable federation must not hide every other payout.
+    async fn project_listed(&self, job: PayoutJob) -> Option<PayoutJobStatus> {
+        let request_id = job.request_id.clone();
+        self.project(job, false)
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(%request_id, error = %format!("{error:#}"), "payout left out of the list: its wallet is unreadable");
+            })
+            .ok()
+    }
+
     /// The newest [`RECENT_PAYOUTS`] jobs of both methods, plus every older
     /// ecash job still in progress, newest first. An issued token or a running reclaim
     /// is never pushed out of the list by newer payouts. A job left without a
     /// link by a crash is reconciled first, so a committed token is never
     /// hidden. A job that still has no operation after that is a start that
-    /// never happened, not a payout, and is left out.
+    /// never happened, not a payout, and is left out, as is a job whose wallet
+    /// cannot be read now.
     async fn list(&self) -> anyhow::Result<Vec<PayoutJobStatus>> {
         let recent = crate::payout_store::recent(&self.db, RECENT_PAYOUTS).await?;
         let mut listed = Vec::with_capacity(recent.len());
@@ -1159,13 +1228,17 @@ impl PayoutWorker {
             if recent.iter().any(|r| r.request_id == job.request_id) {
                 continue;
             }
-            let status = self.project(job, false).await?;
+            let Some(status) = self.project_listed(job).await else {
+                continue;
+            };
             if matches!(&status.native, PayoutNativeStatus::Ecash(Some(state)) if state.is_open()) {
                 listed.push(status);
             }
         }
         for job in recent {
-            let status = self.project(job, false).await?;
+            let Some(status) = self.project_listed(job).await else {
+                continue;
+            };
             if status.job.operation.is_some() {
                 listed.push(status);
             }
