@@ -94,7 +94,11 @@ pub enum OnboardVerb {
         #[arg(long)]
         acknowledge_original_host_is_gone: bool,
     },
-    /// Finish setup after Holder authorization is observed.
+    /// Run this host without a badge: leave the Holder-authorization stage
+    /// without one. It publishes no advertisement until
+    /// `refresh-holder-authorizations` enrolls an authorization.
+    SkipHolderAuthorization,
+    /// Finish setup once Holder authorization is observed or skipped.
     Offer {
         #[arg(long)]
         max_seats: MaxSeatsArg,
@@ -396,6 +400,9 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
                 .map_err(|err| anyhow::anyhow!("read the mnemonic file: {err}"))?,
             acknowledge_original_host_is_gone,
         },
+        AdminVerb::Onboard {
+            verb: OnboardVerb::SkipHolderAuthorization,
+        } => AdminRequest::SkipHolderAuthorization,
         AdminVerb::Onboard {
             verb:
                 OnboardVerb::Offer {

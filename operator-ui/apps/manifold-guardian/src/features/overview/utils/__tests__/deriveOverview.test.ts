@@ -116,16 +116,30 @@ it('should state plainly that the fleet is not approved', () => {
   const model = deriveOverview({ nostrState: 'not_observed' });
 
   const item = model.attention.find((entry) => entry.key === 'authorization-not-observed');
-  expect(item?.detail).toMatch(/Open Authorization/i);
+  expect(item?.detail).toMatch(/Open Guardian badge/i);
   expect(item?.detail).not.toMatch(/still be reading/i);
 });
 
-// `checking` clears on its own within one relay read of daemon start. An item
-// the operator cannot act on is noise.
-it('should raise nothing while the first relay read is still outstanding', () => {
+// `checking` means nothing is stored and no read has run since startup. The
+// daemon reads only when asked, so a host set up without a badge stays here; it
+// is not advertised, and saying "Advertised and healthy" would be false.
+it('should report a host with no stored approval and no read as not approved', () => {
   const model = deriveOverview({ nostrState: 'checking' });
 
-  expect(model.attention.map((entry) => entry.key)).not.toContain('authorization-not-observed');
+  expect(model.attention.map((entry) => entry.key)).toContain('authorization-not-observed');
+  expect(model.headline).toBe('Needs your attention');
+});
+
+// A host set up without a badge stays without an authorization for good: that
+// is its normal state, and it takes seats through guardian codes.
+it('should not ask a host set up without a badge to get approved', () => {
+  for (const nostrState of ['checking', 'not_observed'] as const) {
+    const model = deriveOverview({ nostrState, badgeless: true });
+
+    expect(model.attention).toEqual([]);
+    expect(model.tone).toBe('success');
+    expect(model.headline).toBe('Healthy · taking seats through guardian codes');
+  }
 });
 
 // A failed read and an absent authorization are different facts. Folding them

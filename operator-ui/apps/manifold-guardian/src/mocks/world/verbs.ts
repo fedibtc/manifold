@@ -285,8 +285,8 @@ const onboarding: Verb<'Onboarding'> = () => {
 const REFRESH_READ_AT = 1_786_000_000;
 
 /** One bounded relay read, as the daemon performs it: what the relay holds is
- *  retained, and retaining at least one authorization is what advances the
- *  wizard stage past `holder_authorization` — there is no skip. */
+ *  retained, and retaining at least one authorization advances the wizard
+ *  stage past `holder_authorization`, as the operator's skip also does. */
 const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
   const state = getState();
   if (state.relayAuthorization === 'present') {
@@ -597,6 +597,22 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
   return { onboarded: 'restored', seats, formed };
 };
 
+/** The operator runs this host without a badge. Nothing is retained, so the
+ *  host stays unauthorized; a repeat at `initial_offer` finds the stage settled,
+ *  as the daemon's does. */
+const skipHolderAuthorization: Verb<'SkipHolderAuthorization'> = () => {
+  const state = getState();
+  if (!state.onboarding.badgeless_mg) {
+    throw new Error(
+      'this network does not support setting up a Manifold Fedimint Guardian without a badge yet'
+    );
+  }
+  if (state.onboarding.stage === 'holder_authorization') {
+    state.onboarding = { ...state.onboarding, stage: 'initial_offer' };
+  }
+  return state.onboarding;
+};
+
 const onboardingHandlers: VerbTable<OnboardingVerbName> = {
   OnboardAsNew: onboardAsNew,
   OnboardFromBackup: onboardFromBackup
@@ -631,6 +647,7 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SweepGuardianFees: sweepGuardianFees,
   Onboarding: onboarding,
   RefreshHolderAuthorizations: refreshHolderAuthorizations,
+  SkipHolderAuthorization: skipHolderAuthorization,
   ConfigureInitialOffer: configureInitialOffer,
   ShowMnemonic: showMnemonic
 };
@@ -649,6 +666,7 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardAsNew',
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
+  'SkipHolderAuthorization',
   'ConfigureInitialOffer',
   'SetCapacity',
   'SetDataBudget',
@@ -696,12 +714,14 @@ const STAGE_VERBS: Record<'holder_authorization' | 'initial_offer', ReadonlySet<
   holder_authorization: new Set([
     'Onboarding',
     'RefreshHolderAuthorizations',
+    'SkipHolderAuthorization',
     'ShowMnemonic',
     'OnboardAsNew',
     'OnboardFromBackup'
   ]),
   initial_offer: new Set([
     'Onboarding',
+    'SkipHolderAuthorization',
     'ShowMnemonic',
     'ConfigureInitialOffer',
     'OnboardAsNew',
@@ -744,7 +764,7 @@ const stageRefusal = (method: AdminRequestName): AdminResult<unknown> | null => 
     return startingRefusal();
   }
   // Initial offer setup is settled; authorization can be refreshed again.
-  if (method === 'ConfigureInitialOffer') {
+  if (method === 'ConfigureInitialOffer' || method === 'SkipHolderAuthorization') {
     return {
       Err: {
         kind: 'already_onboarded',

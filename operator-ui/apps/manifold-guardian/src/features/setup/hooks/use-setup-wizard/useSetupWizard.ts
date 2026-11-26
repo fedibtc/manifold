@@ -4,6 +4,16 @@ export type SetupStep = 'doors' | 'phrase' | 'restore' | 'authorization' | 'term
 
 export const SETUP_STEP_LABELS = ['Start', 'Recovery phrase', 'Authorization', 'Terms', 'Price'];
 
+/** A host set up without a badge sets no price (REQ-bring-your-own-guardians):
+ *  its last step asks only the monthly data question the daemon requires. */
+export const BADGELESS_SETUP_STEP_LABELS = [
+  'Start',
+  'Recovery phrase',
+  'Authorization',
+  'Terms',
+  'Monthly data'
+];
+
 // Which labelled step each screen sits under. The restore fork shares step 1 with
 // the new-fleet phrase screen: both are "the phrase", read one way or written the
 // other.

@@ -59,6 +59,8 @@ const onboarding = (
   service_pubkey: '02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
   nostr,
+  // As in development and staging; the production scenario turns it off.
+  badgeless_mg: true,
   fman_version
 });
 
@@ -165,6 +167,8 @@ const runningSeat = (seat_id: string, invite: string) =>
     seat_id,
     report: { state: 'active', health: 'healthy', phase: 'running', invite_code: invite }
   });
+
+const noAuthorization: MockState['onboarding']['nostr'] = { state: 'checking' };
 
 const base = (): Pick<
   MockState,
@@ -293,13 +297,14 @@ const builders = {
     // so there is no latest release to compare against yet.
     onboarding: onboarding({ state: 'checking' }, version({ latest: null }))
   }),
+  // Production: no badgeless path, so a missing approval is a problem to report.
   'awaiting-authorization': () => ({
     ...base(),
     relayAuthorization: 'absent',
     seats: [],
     paymentFederations: [],
     price: null,
-    onboarding: onboarding()
+    onboarding: { ...onboarding(), badgeless_mg: false }
   }),
   'setup-awaiting-authorization': () => ({
     ...base(),
@@ -311,6 +316,20 @@ const builders = {
       stage: 'holder_authorization',
       runtime: 'starting',
       minimum_max_seats: 0
+    }
+  }),
+  // Production, before bring-your-own guardians ships: no badgeless path.
+  'setup-awaiting-authorization-production': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: {
+      ...onboarding(),
+      stage: 'holder_authorization',
+      runtime: 'starting',
+      minimum_max_seats: 0,
+      badgeless_mg: false
     }
   }),
   'setup-initial-offer': () => ({
@@ -325,15 +344,16 @@ const builders = {
       minimum_max_seats: 0
     }
   }),
-  // The window between daemon start and its first relay read. Nothing is known
-  // yet, and the Overview deliberately raises no attention item for it.
+  // No stored authorization and no relay read since startup, in production: an
+  // operator who has not asked for a read yet. It is not advertised, and the
+  // Overview says so. The badgeless counterpart is 'badgeless-ready'.
   'authorization-checking': () => ({
     ...base(),
     relayAuthorization: 'absent',
     seats: [],
     paymentFederations: [],
     price: null,
-    onboarding: onboarding({ state: 'checking' })
+    onboarding: { ...onboarding({ state: 'checking' }), badgeless_mg: false }
   }),
   // The relay refused the read. Distinct from an absent authorization: the fleet
   // may or may not be authorized, and the operator is the one who can act.
@@ -355,6 +375,15 @@ const builders = {
     price: null,
     onboarding: authorized
   }),
+  // Production with a badge: the host is approved, and the network offers no
+  // guardian codes.
+  'authorization-observed-production': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: { ...authorized, badgeless_mg: false }
+  }),
   'authorization-read-error': () => ({
     ...base(),
     seats: [],
@@ -375,6 +404,16 @@ const builders = {
       authorizationObserved,
       version({ latest: '0.2.0', update_required: true })
     )
+  }),
+  // Set up without a badge: no stored authorization and no price; seats come
+  // only through guardian codes.
+  'badgeless-ready': () => ({
+    ...base(),
+    relayAuthorization: 'absent',
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: onboarding(noAuthorization)
   }),
   'seats-empty': () => ({
     ...base(),
@@ -846,12 +885,16 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     desc: 'Onboarded and waiting in setup at the authorization step. Nothing is observed yet; the relay holds an authorization, so Check status approves the host.',
     affects: ['setup']
   },
+  'setup-awaiting-authorization-production': {
+    desc: 'Production network at the authorization step. Setup offers no way to continue without a badge.',
+    affects: ['setup']
+  },
   'setup-initial-offer': {
     desc: 'Authorized and back in setup at the initial-offer stage. Setup reopens on the terms step.',
     affects: ['setup']
   },
   'authorization-checking': {
-    desc: 'The daemon has not finished its first relay read. Nothing is known yet, and the Overview raises no item for it.',
+    desc: 'No stored authorization and no relay read since startup, as on a host set up without a badge. The Overview raises the not-approved item.',
     affects: ['setup', 'authorization', 'overview']
   },
   'authorization-relay-error': {
@@ -861,6 +904,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'authorization-observed': {
     desc: 'A holder authorization is on the relay. The Authorization page lists the holder and the full service Nostr public key.',
     affects: ['setup', 'authorization', 'backup', 'overview']
+  },
+  'authorization-observed-production': {
+    desc: 'Production network, host approved. Nothing mentions guardian codes, which production does not offer.',
+    affects: ['authorization', 'overview']
   },
   'authorization-read-error': {
     desc: 'The Onboarding read fails. The authorization state is unknown, and the app shell stays available.',
@@ -881,6 +928,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
       'backup',
       'support'
     ]
+  },
+  'badgeless-ready': {
+    desc: 'Set up without a badge: no authorization and no price.',
+    affects: ['overview', 'authorization']
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',

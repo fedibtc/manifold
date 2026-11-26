@@ -16,3 +16,19 @@ export const buildAuthorizationRequest = (onboarding: OnboardingResponse): strin
 
 export const isAuthorized = (onboarding: OnboardingResponse | undefined): boolean =>
   onboarding?.nostr.state === 'authorization_observed';
+
+/**
+ * Whether this network offers guardian codes, and with them badgeless setup.
+ * This is about the network, not the host: a badged host in production has a
+ * badge and still no guardian codes.
+ */
+export const guardianCodesAvailable = (onboarding: OnboardingResponse | undefined): boolean =>
+  onboarding?.badgeless_mg === true;
+
+/**
+ * Whether this host runs without a badge. An MG is badgeless exactly while it
+ * retains no authorization (SPEC-admin-socket), and only where the network
+ * offers badgeless setup; elsewhere a missing authorization is a problem to fix.
+ */
+export const isBadgeless = (onboarding: OnboardingResponse | undefined): boolean =>
+  guardianCodesAvailable(onboarding) && !isAuthorized(onboarding);

@@ -1,7 +1,7 @@
 import { Banner, StatCard } from '@operator-ui/common-ui';
 import { AttentionList } from '@/features/overview/components/attention-list/AttentionList';
 import { EarningsTimeline } from '@/features/overview/components/earnings-timeline/EarningsTimeline';
-import { OfferSummary } from '@/features/overview/components/offer-summary/OfferSummary';
+import { SeatAvailability } from '@/features/overview/components/seat-availability/SeatAvailability';
 import { useOverviewEarnings } from '@/features/overview/hooks/use-overview-earnings/useOverviewEarnings';
 import { deriveOverview, WALLET_RECOVERING } from '@/features/overview/utils/deriveOverview';
 import { useMobileNotificationsNews } from '@/features/phone-link/hooks/use-mobile-notifications-news/useMobileNotificationsNews';
@@ -13,6 +13,7 @@ import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { WhatsNew } from '@/shared/components/whats-new/WhatsNew';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
+import { guardianCodesAvailable, isAuthorized, isBadgeless } from '@/shared/utils/authorization';
 import { formatSats } from '@/shared/utils/format';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
 import styles from './OverviewPage.module.css';
@@ -40,7 +41,9 @@ export const OverviewPage = () => {
   const { disposition, retry } = useQueryDisposition([seats, paymentFederations, offer]);
 
   const plans = offer.data?.plans ?? [];
+  const badgeless = isBadgeless(onboarding.data);
   const model = deriveOverview({
+    badgeless,
     paymentFederations: paymentFederations.data?.federations,
     plans,
     nostrState: onboarding.data?.nostr.state,
@@ -83,7 +86,11 @@ export const OverviewPage = () => {
           <StatCard label="Guardian fees, all time" value={formatSats(earnings.guardianFeesMsat)} />
         </div>
 
-        <OfferSummary priceMsat={readOfferPriceMsat(plans)} />
+        <SeatAvailability
+          priceMsat={readOfferPriceMsat(plans)}
+          guardianCodes={guardianCodesAvailable(onboarding.data)}
+          authorized={isAuthorized(onboarding.data)}
+        />
 
         <AttentionList items={model.attention} />
 

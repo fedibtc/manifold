@@ -25,6 +25,9 @@
   .uActionsRow {
     @apply flex gap-3;
   }
+  .uActionsWrap {
+    @apply flex flex-wrap gap-3;
+  }
   .uMonoHeading {
     @apply uPageHeading font-mono;
   }

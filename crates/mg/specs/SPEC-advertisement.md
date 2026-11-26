@@ -4,8 +4,7 @@
 
 Advertisement availability depends only on a configured offer, physical
 capacity, and the daemon's readiness checks. Setup-payment membership is
-enforced when a priced quote is requested. The fleet still waits for a Holder
-authorization before it starts; running without one is not implemented.
+enforced when a priced quote is requested.
 
 The MG publishes the kind-37701 advertisement and the kind-37709 v2
 advertisement from each snapshot

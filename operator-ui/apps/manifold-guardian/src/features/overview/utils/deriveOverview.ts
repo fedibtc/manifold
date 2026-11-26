@@ -30,6 +30,9 @@ export interface OverviewInputs {
   nostrState?: OnboardingNostrStatus['state'];
   /** Absent while ShowSeatReadiness has not answered. */
   seatReadiness?: ShowSeatReadinessResponse;
+  /** The host runs without a badge: it takes seats only through guardian
+   *  codes, so having no authorization is its normal state, not a problem. */
+  badgeless?: boolean;
 }
 
 // ListSeats returns SeatSummary only — no health/phase (that's SeatStatus, a
@@ -39,7 +42,8 @@ export const deriveOverview = ({
   paymentFederations = [],
   plans = [],
   nostrState,
-  seatReadiness
+  seatReadiness,
+  badgeless = false
 }: OverviewInputs): OverviewModel => {
   const priceMsat = readOfferPriceMsat(plans);
   const isSellingForMoney = priceMsat !== null && priceMsat > 0;
@@ -80,15 +84,16 @@ export const deriveOverview = ({
   // one whose relay it had not read, so this could only report what was *not*
   // known. It reports the four states separately instead.
   //
-  // `checking` raises nothing. It is the state between daemon start and the
-  // first relay read, it clears on its own, and an attention item the operator
-  // cannot act on is noise.
-  if (nostrState === 'not_observed') {
+  // `checking` is not approved either: it reports no stored authorization and
+  // no relay read since startup. The daemon reads only when the operator asks,
+  // so it does not clear on its own, and a host set up without a badge stays
+  // in it (SPEC-advertisement).
+  if (!badgeless && (nostrState === 'checking' || nostrState === 'not_observed')) {
     attention.push({
       key: 'authorization-not-observed',
       title: 'This host is not approved yet',
       detail:
-        'Until it is approved it is not advertised and cannot sell seats. Open Authorization to check.',
+        'Until it is approved it is not advertised and cannot sell seats. Open Guardian badge to check.',
       path: '/authorization'
     });
   }
@@ -101,7 +106,7 @@ export const deriveOverview = ({
     attention.push({
       key: 'authorization-relay-error',
       title: 'Approval could not be checked',
-      detail: 'This host may or may not be approved. Open Authorization for the failure.',
+      detail: 'This host may or may not be approved. Open Guardian badge for the failure.',
       path: '/authorization'
     });
   }
@@ -123,7 +128,12 @@ export const deriveOverview = ({
 
   return {
     tone: attention.length === 0 ? 'success' : 'warn',
-    headline: attention.length === 0 ? 'Advertised and healthy' : 'Needs your attention',
+    headline:
+      attention.length > 0
+        ? 'Needs your attention'
+        : badgeless
+          ? 'Healthy · taking seats through guardian codes'
+          : 'Advertised and healthy',
     attention
   };
 };

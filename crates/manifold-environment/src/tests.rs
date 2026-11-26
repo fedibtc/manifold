@@ -536,6 +536,13 @@ fn a_published_guardian_link_flag_wins_over_the_environment_default() {
 }
 
 #[test]
+fn badgeless_setup_is_off_only_in_production() {
+    assert!(ManifoldEnvironment::Development.badgeless_mg());
+    assert!(ManifoldEnvironment::Staging.badgeless_mg());
+    assert!(!ManifoldEnvironment::Production.badgeless_mg());
+}
+
+#[test]
 fn each_environment_names_its_push_gateway_and_only_development_overrides_it() {
     let origin = |environment: ManifoldEnvironment| {
         environment

@@ -19,6 +19,7 @@ const data: OnboardingResponse = {
   fman_name: 'mutual-hamster',
   service_pubkey: '02abc',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+  badgeless_mg: true,
   nostr: { state: 'not_observed', checked_at: 1_760_000_000 },
   fman_version: { current: '0.1.0', latest: '0.1.0', update_required: false }
 };

@@ -954,6 +954,30 @@ async fn the_policy_support_key_overrides_the_profile_key() {
     assert_eq!(service.inner.support(), Some(rotated));
 }
 
+/// An MG run without a badge advertises nothing, however ready its offer;
+/// one enrolled authorization makes the same snapshot advertisable, with that
+/// authorization embedded.
+#[test]
+fn only_an_enrolled_authorization_makes_the_offer_advertisable() {
+    let keys = Keys::generate();
+    assert!(advertisement_payload(test_snapshot(), Vec::new()).is_none());
+
+    let envelope = verified_holder_authorization_event(
+        authorization_event(&Keys::generate(), keys.public_key()),
+        &keys.public_key(),
+        now_secs(),
+    )
+    .unwrap()
+    .authorization;
+    let payload = advertisement_payload(test_snapshot(), vec![envelope.clone()])
+        .expect("an enrolled MG advertises");
+    assert_eq!(
+        serde_json::to_value(&payload.holder_authorizations).unwrap(),
+        serde_json::to_value([envelope]).unwrap()
+    );
+    assert_eq!(payload.plans, test_snapshot().plans);
+}
+
 /// Scores outside 0..=1000 cannot be advertised; the payload reports none
 /// instead of panicking or failing the cycle.
 #[test]

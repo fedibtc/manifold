@@ -5,21 +5,46 @@ import { formatCheckedAt } from '@/shared/utils/format';
 
 interface AuthorizationStatusBannerProps {
   nostr: OnboardingNostrStatus;
+  /** The host runs without a badge, so no stored approval is its normal
+   *  state rather than something it lacks. */
+  badgeless?: boolean;
 }
 
 // One banner per daemon state, because the four states are four different facts
-// and the operator acts differently on each. "Not read yet" is transient and
-// needs no action; "read, nothing found" is the state a fleet waits in for a
-// holder to sign; a relay error is the operator's to chase. Folding any of them
-// together would produce a sentence that is true of one and false of another.
-export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerProps) => {
-  if (nostr.state === 'checking') {
-    return <Banner variant="info">Checking whether this host has been approved…</Banner>;
+// and the operator acts differently on each. "Not read yet" means nothing is
+// stored and the relays have not been asked since startup — the daemon reads
+// them only when the operator asks, so it does not clear on its own, and a host
+// set up without a badge stays in it; "read, nothing found" is the state a
+// fleet waits in for a holder to sign; a relay error is the operator's to
+// chase. Folding any of them together would produce a sentence that is true of
+// one and false of another.
+export const AuthorizationStatusBanner = ({
+  nostr,
+  badgeless = false
+}: AuthorizationStatusBannerProps) => {
+  if (badgeless && (nostr.state === 'checking' || nostr.state === 'not_observed')) {
+    return (
+      <Banner variant="info" title="No badge connected">
+        Guardian codes work without one. After you approve this host in the PeerBadge app, check for
+        your badge here.
+        {nostr.state === 'not_observed'
+          ? ` Last checked ${formatCheckedAt(nostr.checked_at)}.`
+          : ''}
+      </Banner>
+    );
   }
 
-  // What an unapproved fleet loses is the operator's first question, and it is
-  // not cosmetic: the daemon blocks on onboarding before it opens the seat
-  // runtime, the iroh endpoint or the advertiser (crates/mg/bin/src/main.rs).
+  // What an unapproved host loses is the operator's first question: the daemon
+  // advertises only with a stored approval (SPEC-advertisement).
+  if (nostr.state === 'checking') {
+    return (
+      <Banner variant="info" title="Not approved">
+        This host has no stored approval, so it is not advertised and cannot sell seats. Approval
+        has not been checked since the app started.
+      </Banner>
+    );
+  }
+
   if (nostr.state === 'not_observed') {
     return (
       <Banner variant="info" title="Not approved yet">
