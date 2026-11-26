@@ -55,10 +55,12 @@ pub use fedi_decentralized_services::domain::{
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use guardian_link::{
-    DEVICE_LABEL_MAX_CHARS, GUARDIAN_LINK_ALPN, GuardianLinkError, GuardianLinkInvite,
-    GuardianLinkResult, GuardianLinkService, GuardianLinkServiceClient, GuardianLinkServiceServer,
-    HOST_UI_ALPN, HostUiRefusal, HostUiStreamError, InvalidGuardianLinkInvite, LinkDeviceRequest,
-    LinkDeviceResponse, LinkSecret,
+    AnnouncedForwardTarget, DEVICE_LABEL_MAX_CHARS, ForwardRefusal, ForwardStreamError,
+    ForwardTarget, ForwardTargets, GUARDIAN_LINK_ALPN, GUARDIAN_LINK_FORWARD_ALPN,
+    GuardianLinkError, GuardianLinkInvite, GuardianLinkResult, GuardianLinkService,
+    GuardianLinkServiceClient, GuardianLinkServiceServer, InvalidGuardianLinkInvite,
+    LinkDeviceRequest, LinkDeviceResponse, LinkSecret, MAX_FORWARD_STREAMS,
+    MAX_FORWARD_TARGETS_BYTES, UnknownForwardTarget,
 };
 pub use locator::{
     InvalidEndpointAddrPair, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,

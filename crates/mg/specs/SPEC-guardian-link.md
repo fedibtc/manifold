@@ -7,15 +7,15 @@ The link is a contract between three code bases: the MG daemon
 `crates/service-manifold-guardian/src/guardian_link.rs`), the Fedi push gateway
 ([SPEC-hook-invocation](../../push-gateway/specs/SPEC-hook-invocation.md)),
 the Fedi app (repository `fedibtc/fedi`), which creates the hook, parses the
-link URI, and shows the host's web UI, and the platform packages, which set
-the host-UI address. No local artifact can own what the app and the daemon
+link URI, and shows web UIs on the host, and the platform packages, which set
+the forward targets. No local artifact can own what the app and the daemon
 must agree on.
 
 ## Contract
 
 An MG operator links one Fedi app installation to their MG so the daemon
 can push a notification when the fleet needs the operator's attention, and so
-the app can open the host's own web UI through the MG. The
+the app can open web UIs on the host through the MG. The
 daemon never contacts the phone itself: it invokes a push-gateway hook the
 app created, exactly as it invokes an FI's DKG completion hook.
 
@@ -35,7 +35,7 @@ app created, exactly as it invokes an FI's DKG completion hook.
   is the app's only call on this ALPN. It carries no device key: the MG
   records the Iroh endpoint id the call arrived from, which Iroh's handshake
   authenticates, as the linked device's
-  ([The host's web UI](#the-hosts-web-ui)). The app therefore dials from a
+  ([Web UIs on the host](#web-uis-on-the-host)). The app therefore dials from a
   stable endpoint key of its own for this MG, derived from its wallet seed
   and this MG's `node`, so the id names one installation's wallet to one MG
   and links nothing across MGs. One device is linked at a time:
@@ -110,39 +110,63 @@ app created, exactly as it invokes an FI's DKG completion hook.
   unlink of its own; when it links to another MG it revokes its previous
   hook at the gateway.
 
-## The host's web UI
+## Web UIs on the host
 
-The linked device may open the web UI of the host the MG runs on (the
-umbrelOS or StartOS dashboard), to update the MG app or anything else the host
-offers there, from anywhere, over the same Iroh endpoint.
+The linked device may open web UIs on the host the MG runs on, from anywhere,
+over the same Iroh endpoint: the host's own dashboard (the umbrelOS or StartOS
+web UI), to update the MG app or anything else the host offers there, and the
+MG's own dashboard through the host's app proxy.
 
-- **Target.** The daemon is started with one host-UI address
-  (`--host-ui-addr`), set by the platform package to where that platform
-  serves its dashboard as seen from the MG's container: `10.21.0.1:80` on
-  umbrelOS (the app network's gateway) and `10.0.3.1:80` on StartOS (the
-  container bridge). The caller never names a target. Without the option there
-  is nothing to forward.
-- **Wire.** ALPN `fedi/fman/guardian-link-host-ui/1`. Each bidirectional
-  stream is one new TCP connection to the host-UI address, and bytes pass
-  through unchanged both ways until each side finishes. The MG parses nothing:
-  the app speaks HTTP/1.1 on the stream, and a WebSocket upgrade continues on
-  it. The host's own login is the only authentication of what is said there;
-  the MG adds and strips nothing.
+- **Targets.** The daemon holds a map from target to address, given by the
+  platform package (`--forward-target NAME=ADDRESS`, repeated, or
+  `FLEET_MANAGER_FORWARD_TARGETS` with commas) as seen from the MG's
+  container. The caller names a target and never an address or a port.
+  Without any target there is nothing to forward. The targets, in the order
+  they are announced:
+
+  | Target | What it is | umbrelOS | StartOS |
+  | --- | --- | --- | --- |
+  | `host-ui` | The host's dashboard | `10.21.0.1:80`, the app network's gateway | `10.0.3.1:80`, the container bridge |
+  | `host-app-login` | The page where the host signs a browser in to one app | `10.21.0.1:2000` (umbrelOS 2.x) | none |
+  | `mg-dashboard` | The MG's dashboard through the host's app proxy, behind the host's login | `10.21.0.1:<port>`, the MG app's `port` in its `umbrel-app.yml`: `8483` for `manifold-fedimint-guardian` | none |
+
+  The MG dashboard is reached only through the host's app proxy, never on the
+  MG's own listener, so the host's login guards it. umbrelOS sends a browser
+  without a session for the app to `host-app-login`, which takes the umbrelOS
+  password and hands the session back to the app's port; the app follows
+  that round trip by the ports the MG announces. StartOS has no equivalent: it
+  publishes a package's UI without a login of its own, and the MG guards that
+  listener with its own generated password. A StartOS package therefore sets
+  only `host-ui`. Adding a target is a new name here and in
+  `ForwardTarget`.
+- **Wire.** ALPN `fedi/fman/guardian-link-forward/1`. Once a connection passes
+  the gate, the MG opens one unidirectional stream with its targets as JSON,
+  `{"targets":[{"name":"host-ui","port":80},...]}`, at most 4 KiB, and
+  finishes it. `port` is the target's port on the host, so the app can tell
+  which target a page's link to another port of the host means; a caller
+  skips names it does not know. Each bidirectional stream the caller opens
+  starts with a header: the target name's length as one byte (1 to 32), then
+  the name. After it the stream is one new TCP connection to that target, and
+  bytes pass through unchanged both ways until each side finishes. The MG
+  parses nothing past the header: the app speaks HTTP/1.1 on the stream, and a
+  WebSocket upgrade continues on it. The host's own logins are the only
+  authentication of what is said there; the MG adds and strips nothing.
 - **Gate.** The MG serves a connection only from the endpoint id recorded at
   the current link, and only while the guardian link is
   [on](#enabling-mobile-notifications). It closes any other connection with an
   application code before serving a stream: `1` not linked (also when nothing
   is linked, or the link predates recorded endpoints, so a stranger learns
-  nothing else), `2` the guardian link is off, `3` no host-UI address. A
-  connection already open is closed the same way when a relink, a revoke, or
-  the policy makes it fail the gate.
+  nothing else), `2` the guardian link is off, `3` no target. A connection
+  already open is closed the same way when a relink, a revoke, or the policy
+  makes it fail the gate.
 - **Bounds.** At most 32 streams are open at once across all connections,
-  which covers a browser's connections to one origin plus its WebSockets; a
-  stream beyond that is reset with code `2`. A stream whose TCP connection
-  fails, or is not accepted within five seconds, is reset with code `1`. The
-  MG does not bound bytes per stream: it does not parse requests, the only
-  caller is the operator's own linked device, and the host's UI is the
-  operator's anyway.
+  which covers a browser's connections to a few origins plus its WebSockets;
+  a stream beyond that is reset with code `2`. A stream whose header is
+  malformed, names a target the MG does not serve, or does not arrive within
+  five seconds is reset with code `3`. A stream whose TCP connection fails, or
+  is not accepted within five seconds, is reset with code `1`. The MG does not
+  bound bytes per stream: it does not parse requests, the only caller is the
+  operator's own linked device, and the host's UIs are the operator's anyway.
 
 ## Enabling mobile notifications
 
@@ -160,7 +184,7 @@ While it is off, `GuardianLink` reports `availability: "disabled"` and the
 dashboard shows neither the Mobile notifications page nor its navigation item, so a
 host does not learn the feature exists. `CreateGuardianLinkOffer` and
 `TestGuardianLinkNotification` fail, `link_device` answers `InvalidInvite`
-even for an offer made while it was on, the host-UI forward refuses the
+even for an offer made while it was on, the forward refuses the
 linked device, and the notifier sends nothing and records nothing as told. A link stored while it was on is kept; when the flag
 turns it on again, the next notifier pass tells the reasons current then.
 `RevokeGuardianLink` works either way. When on, `availability` is

@@ -41,12 +41,13 @@ elif [ -n "${FLEET_MANAGER_ADMIN_HTTP_AUTH:-}" ] || [ -n "${FLEET_MANAGER_ADMIN_
   exit 1
 fi
 
-# The host's own web UI (the umbrelOS or StartOS dashboard) as reached from
-# this container, which the linked phone may open over Guardian Link. The
-# platform package sets it; without it there is nothing to forward.
-host_ui=()
-if [ -n "${FLEET_MANAGER_HOST_UI_ADDR:-}" ]; then
-  host_ui+=(--host-ui-addr "$FLEET_MANAGER_HOST_UI_ADDR")
+# Web UIs on the host the linked phone may open over Guardian Link, as
+# comma-separated NAME=ADDRESS entries reached from this container, such as
+# host-ui=10.21.0.1:80. The platform package sets them; without any there is
+# nothing to forward.
+forward_targets=()
+if [ -n "${FLEET_MANAGER_FORWARD_TARGETS:-}" ]; then
+  forward_targets+=(--forward-target "$FLEET_MANAGER_FORWARD_TARGETS")
 fi
 
 exec fleet-manager serve \
@@ -57,4 +58,4 @@ exec fleet-manager serve \
   --bitcoind-password="${FLEET_MANAGER_BITCOIND_PASSWORD}" \
   ${esplora[@]+"${esplora[@]}"} \
   ${operator_http[@]+"${operator_http[@]}"} \
-  ${host_ui[@]+"${host_ui[@]}"}
+  ${forward_targets[@]+"${forward_targets[@]}"}
