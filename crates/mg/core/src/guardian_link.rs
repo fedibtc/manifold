@@ -9,7 +9,7 @@
 //!   dials the [`GUARDIAN_LINK_ALPN`] service with that secret and its
 //!   push-gateway hook; [`GuardianLinkRpc`] consumes the secret and stores
 //!   the link, with the endpoint id the call came from. That endpoint alone
-//!   may then open the host's web UI ([`crate::guardian_link_host_ui`]).
+//!   may then open web UIs on the host ([`crate::guardian_link_forward`]).
 //! - **Attention.** [`Fleet::attention_reasons`] derives the coarse set of
 //!   reasons the operator should look from what the daemon already holds:
 //!   the latest readiness report (the Health page's checks), the
@@ -29,9 +29,9 @@ use std::time::Duration;
 
 use fedi_decentralized_domain::{AdmittedFeaturePolicy, ProtocolV1};
 use fedi_decentralized_service_manifold_guardian::{
-    DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, GuardianLinkError,
-    GuardianLinkInvite, GuardianLinkResult, GuardianLinkService, HostUiRefusal, LinkDeviceRequest,
-    LinkDeviceResponse, LinkSecret,
+    DEVICE_LABEL_MAX_CHARS, DkgCompletionCallback, DkgCompletionCallbackInput, ForwardRefusal,
+    GuardianLinkError, GuardianLinkInvite, GuardianLinkResult, GuardianLinkService,
+    LinkDeviceRequest, LinkDeviceResponse, LinkSecret,
 };
 use fedi_iroh_rpc::RpcConnectionContext;
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ pub(crate) struct GuardianLinkState {
     policy: OnceLock<watch::Receiver<Option<AdmittedFeaturePolicy>>>,
     /// Wakes the notifier after a link, a revoke, or a new readiness report.
     pub(crate) changed: tokio::sync::Notify,
-    /// Ticks on every link and revoke, so an open host-UI connection checks
+    /// Ticks on every link and revoke, so an open forward connection checks
     /// whether its device is still the linked one.
     pub(crate) linked_device: watch::Sender<()>,
 }
@@ -252,30 +252,33 @@ impl Fleet {
         Ok(removed)
     }
 
-    /// Whether `caller` may use the host-UI forward now: it is the endpoint
-    /// the linked device linked from, and the feature is on. The device is
-    /// checked first, so anyone else gets [`HostUiRefusal::NotLinked`]
+    /// Whether `caller` may use the forward now: it is the endpoint the
+    /// linked device linked from, and the feature is on. The device is
+    /// checked first, so anyone else gets [`ForwardRefusal::NotLinked`]
     /// whatever the policy says.
-    pub(crate) async fn host_ui_refusal(&self, caller: &iroh::EndpointId) -> Option<HostUiRefusal> {
+    pub(crate) async fn forward_refusal(
+        &self,
+        caller: &iroh::EndpointId,
+    ) -> Option<ForwardRefusal> {
         let linked = match self.db().guardian_link().await {
             Ok(link) => link.and_then(|link| link.device_endpoint_id),
             Err(error) => {
-                tracing::warn!(%error, "host UI forward could not read the guardian link");
+                tracing::warn!(%error, "guardian link forward could not read the link");
                 None
             }
         };
         if linked.as_ref() != Some(caller) {
-            return Some(HostUiRefusal::NotLinked);
+            return Some(ForwardRefusal::NotLinked);
         }
         if !self.guardian_link_enabled() {
-            return Some(HostUiRefusal::Disabled);
+            return Some(ForwardRefusal::Disabled);
         }
         None
     }
 
-    /// Changes that can revoke an open host-UI connection: a link or revoke,
+    /// Changes that can revoke an open forward connection: a link or revoke,
     /// and the feature policy.
-    pub(crate) fn host_ui_gate_changes(
+    pub(crate) fn forward_gate_changes(
         &self,
     ) -> (
         watch::Receiver<()>,

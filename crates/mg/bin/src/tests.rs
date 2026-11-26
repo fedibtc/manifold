@@ -173,3 +173,58 @@ fn manifold_profile_generates_expected_spv2_consensus_config() {
         assert_eq!(client.min_allowed_cancellation_bps, 100);
     }
 }
+
+#[test]
+fn forward_targets_come_from_repeated_or_comma_separated_entries() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/mg",
+        "--manifold-environment",
+        "development",
+        "--forward-target",
+        "mg-dashboard=10.21.0.1:8483,host-ui=10.21.0.1:80",
+        "--forward-target",
+        "host-app-login=10.21.0.1:2000",
+    ])
+    .expect("forward targets parse");
+    let Args::Serve(args) = args;
+    let targets = forward_targets(&args.forward_targets).unwrap();
+    let address = |value: &str| value.parse::<SocketAddr>().unwrap();
+    assert_eq!(
+        targets.into_iter().collect::<Vec<_>>(),
+        [
+            (ForwardTarget::HostUi, address("10.21.0.1:80")),
+            (ForwardTarget::HostAppLogin, address("10.21.0.1:2000")),
+            (ForwardTarget::MgDashboard, address("10.21.0.1:8483")),
+        ]
+    );
+
+    for bad in [
+        "mg-dashboard",
+        "ssh=10.21.0.1:22",
+        "host-ui=10.21.0.1",
+        "host-ui=umbrel.local:80",
+    ] {
+        assert!(
+            Args::try_parse_from([
+                "fleet-manager",
+                "serve",
+                "--data-dir",
+                "/tmp/mg",
+                "--manifold-environment",
+                "development",
+                "--forward-target",
+                bad,
+            ])
+            .is_err(),
+            "{bad}"
+        );
+    }
+    let twice = [
+        (ForwardTarget::HostUi, address("10.21.0.1:80")),
+        (ForwardTarget::HostUi, address("10.21.0.1:81")),
+    ];
+    assert!(forward_targets(&twice).is_err());
+}

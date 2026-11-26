@@ -7,7 +7,7 @@
 //! grants seat authority. The phone makes one call, `link_device`, authorized
 //! by the one-time secret the dashboard shows as a QR code. The MG records
 //! the Iroh endpoint id the call came from: only that endpoint may then open
-//! the host's own web UI over [`HOST_UI_ALPN`].
+//! web UIs on its host over [`GUARDIAN_LINK_FORWARD_ALPN`].
 
 use fedi_decentralized_services::domain::ProtocolV1;
 use fedi_iroh_rpc::{RpcConnectionContext, service};
@@ -18,34 +18,133 @@ use crate::DkgCompletionCallback;
 /// Dedicated Iroh ALPN for the operator's app to reach its own MG.
 pub const GUARDIAN_LINK_ALPN: &[u8] = b"fedi/fman/guardian-link/1";
 
-/// Iroh ALPN on which the linked device reaches the web UI of the host the MG
-/// runs on (the umbrelOS or StartOS dashboard). Each bidirectional stream is
-/// one TCP connection to the one host-UI address the MG was started with:
-/// bytes pass through unchanged both ways, so HTTP/1.1 requests and WebSocket
-/// upgrades work as they would over TCP. The caller never names a target.
+/// Iroh ALPN on which the linked device reaches web UIs on the host the MG
+/// runs on, such as the umbrelOS or StartOS dashboard. The MG holds a map from
+/// [`ForwardTarget`] to an address, configured by the platform package; the
+/// caller names a target and never an address or a port.
 ///
 /// A connection from anything but the linked device is closed with a
-/// [`HostUiRefusal`] code before any stream is served, and an open one is
+/// [`ForwardRefusal`] code before any stream is served, and an open one is
 /// closed the same way once the link is revoked or replaced or the policy
-/// turns the feature off. A stream the MG cannot serve is reset with a
-/// [`HostUiStreamError`] code.
-pub const HOST_UI_ALPN: &[u8] = b"fedi/fman/guardian-link-host-ui/1";
+/// turns the feature off. Otherwise the MG first opens one unidirectional
+/// stream carrying its [`ForwardTargets`] as JSON, then finishes it.
+///
+/// Each bidirectional stream the caller opens starts with a
+/// [`ForwardTarget::encode_header`] header naming its target. After it, the
+/// stream is one TCP connection to that target: bytes pass through unchanged
+/// both ways, so HTTP/1.1 requests and WebSocket upgrades work as they would
+/// over TCP. A stream the MG cannot serve is reset with a
+/// [`ForwardStreamError`] code.
+pub const GUARDIAN_LINK_FORWARD_ALPN: &[u8] = b"fedi/fman/guardian-link-forward/1";
 
-/// Why the MG closed a [`HOST_UI_ALPN`] connection, as its QUIC application
-/// close code.
+/// Streams open at once across every forward connection. A browser keeps
+/// about six HTTP connections and a few WebSockets to one origin; a caller
+/// keeps under this to avoid [`ForwardStreamError::TooManyStreams`].
+pub const MAX_FORWARD_STREAMS: usize = 32;
+
+/// Largest [`ForwardTargets`] announcement, in bytes.
+pub const MAX_FORWARD_TARGETS_BYTES: usize = 4096;
+
+/// A web UI on the MG's host the linked device may open. The platform package
+/// gives each the address it has as seen from the MG; a target without one is
+/// not offered. Adding a target is a new variant here and a line in
+/// SPEC-guardian-link.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ForwardTarget {
+    /// The host's own dashboard: umbrelOS's or StartOS's web UI.
+    HostUi,
+    /// The page where the host signs a browser in to one of its apps. umbrelOS
+    /// sends an app's visitor here (its port 2000) and back to the app with a
+    /// session for it.
+    HostAppLogin,
+    /// This MG's own dashboard, through the host's app proxy, so the host's
+    /// login guards it.
+    MgDashboard,
+}
+
+/// A target name that is not one of [`ForwardTarget`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("unknown forward target")]
+pub struct UnknownForwardTarget;
+
+impl ForwardTarget {
+    /// Every target, in the order the MG announces them.
+    pub const ALL: [Self; 3] = [Self::HostUi, Self::HostAppLogin, Self::MgDashboard];
+
+    /// Longest target name on the wire, in bytes.
+    pub const MAX_NAME_BYTES: usize = 32;
+
+    /// The target's wire name.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HostUi => "host-ui",
+            Self::HostAppLogin => "host-app-login",
+            Self::MgDashboard => "mg-dashboard",
+        }
+    }
+
+    /// The header that starts a stream to this target: the name's length as
+    /// one byte, then the name.
+    #[must_use]
+    pub fn encode_header(self) -> Vec<u8> {
+        let name = self.name().as_bytes();
+        let mut header = Vec::with_capacity(1 + name.len());
+        header.push(u8::try_from(name.len()).expect("names are short"));
+        header.extend_from_slice(name);
+        header
+    }
+}
+
+impl core::fmt::Display for ForwardTarget {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+impl core::str::FromStr for ForwardTarget {
+    type Err = UnknownForwardTarget;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|target| target.name() == name)
+            .ok_or(UnknownForwardTarget)
+    }
+}
+
+/// The targets an MG serves, as it announces them on each forward connection.
+/// Names stay strings, so a caller skips a target it does not know rather
+/// than failing to read the list.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ForwardTargets {
+    pub targets: Vec<AnnouncedForwardTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct AnnouncedForwardTarget {
+    /// A [`ForwardTarget`] name.
+    pub name: String,
+    /// The host port the target's web UI is on, so a caller can tell which
+    /// target a page's link to that port on the host means.
+    pub port: u16,
+}
+
+/// Why the MG closed a [`GUARDIAN_LINK_FORWARD_ALPN`] connection, as its QUIC
+/// application close code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HostUiRefusal {
+pub enum ForwardRefusal {
     /// The caller is not the endpoint that linked to this MG, or no device
     /// is linked. The same answer for both, so it tells a stranger nothing.
     NotLinked,
     /// The feature policy has the guardian link switched off.
     Disabled,
-    /// This MG was started without a host-UI address: the host has no web
-    /// UI it can forward.
+    /// This MG was started without any target: the host has nothing it can
+    /// forward.
     Unavailable,
 }
 
-impl HostUiRefusal {
+impl ForwardRefusal {
     const ALL: [Self; 3] = [Self::NotLinked, Self::Disabled, Self::Unavailable];
 
     #[must_use]
@@ -75,23 +174,32 @@ impl HostUiRefusal {
     }
 }
 
-/// Why the MG reset one [`HOST_UI_ALPN`] stream, as its QUIC reset code.
+/// Why the MG reset one [`GUARDIAN_LINK_FORWARD_ALPN`] stream, as its QUIC
+/// reset code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HostUiStreamError {
-    /// The MG could not open a TCP connection to the host UI.
-    HostUnreachable,
-    /// The connection already has as many streams open as the MG serves.
+pub enum ForwardStreamError {
+    /// The MG could not open a TCP connection to the target.
+    TargetUnreachable,
+    /// [`MAX_FORWARD_STREAMS`] streams are open already.
     TooManyStreams,
+    /// The stream's header is malformed, or names a target this MG does not
+    /// serve.
+    UnknownTarget,
 }
 
-impl HostUiStreamError {
-    const ALL: [Self; 2] = [Self::HostUnreachable, Self::TooManyStreams];
+impl ForwardStreamError {
+    const ALL: [Self; 3] = [
+        Self::TargetUnreachable,
+        Self::TooManyStreams,
+        Self::UnknownTarget,
+    ];
 
     #[must_use]
     pub fn code(self) -> u32 {
         match self {
-            Self::HostUnreachable => 1,
+            Self::TargetUnreachable => 1,
             Self::TooManyStreams => 2,
+            Self::UnknownTarget => 3,
         }
     }
 
@@ -298,7 +406,7 @@ pub type GuardianLinkResult<T> = Result<T, GuardianLinkError>;
 pub trait GuardianLinkService {
     /// Link the calling device with the dashboard's one-time secret. A new
     /// link replaces the previous device. The MG keeps the caller's endpoint
-    /// id, which alone may then use [`HOST_UI_ALPN`], so the device dials
+    /// id, which alone may then use [`GUARDIAN_LINK_FORWARD_ALPN`], so the device dials
     /// from the stable key it will use for that.
     async fn link_device(
         &self,
@@ -343,24 +451,48 @@ mod tests {
     }
 
     #[test]
-    fn host_ui_codes_are_distinct_and_round_trip() {
-        let refusals = HostUiRefusal::ALL.map(HostUiRefusal::code);
-        assert_eq!(refusals, [1, 2, 3]);
-        for refusal in HostUiRefusal::ALL {
+    fn forward_codes_are_distinct_and_round_trip() {
+        assert_eq!(ForwardRefusal::ALL.map(ForwardRefusal::code), [1, 2, 3]);
+        for refusal in ForwardRefusal::ALL {
             assert_eq!(
-                HostUiRefusal::from_code(refusal.code().into()),
+                ForwardRefusal::from_code(refusal.code().into()),
                 Some(refusal)
             );
         }
-        assert_eq!(HostUiRefusal::from_code(0), None);
-        assert_eq!(HostUiRefusal::from_code(4), None);
-        for error in HostUiStreamError::ALL {
+        assert_eq!(ForwardRefusal::from_code(0), None);
+        assert_eq!(ForwardRefusal::from_code(4), None);
+        assert_eq!(
+            ForwardStreamError::ALL.map(ForwardStreamError::code),
+            [1, 2, 3]
+        );
+        for error in ForwardStreamError::ALL {
             assert_eq!(
-                HostUiStreamError::from_code(error.code().into()),
+                ForwardStreamError::from_code(error.code().into()),
                 Some(error)
             );
         }
-        assert_eq!(HostUiStreamError::from_code(0), None);
+        assert_eq!(ForwardStreamError::from_code(0), None);
+        assert_eq!(ForwardStreamError::from_code(4), None);
+    }
+
+    #[test]
+    fn forward_target_names_are_the_wire_contract() {
+        assert_eq!(
+            ForwardTarget::ALL.map(ForwardTarget::name),
+            ["host-ui", "host-app-login", "mg-dashboard"]
+        );
+        for target in ForwardTarget::ALL {
+            assert_eq!(target.name().parse::<ForwardTarget>(), Ok(target));
+            assert!(target.name().len() <= ForwardTarget::MAX_NAME_BYTES);
+        }
+        assert_eq!(
+            "Host-UI".parse::<ForwardTarget>(),
+            Err(UnknownForwardTarget)
+        );
+        assert_eq!(ForwardTarget::HostUi.encode_header(), b"\x07host-ui");
+        let announced: ForwardTargets =
+            serde_json::from_str(r#"{"targets":[{"name":"later","port":9}]}"#).unwrap();
+        assert_eq!(announced.targets[0].name, "later");
     }
 
     #[test]

@@ -234,8 +234,8 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   the Iroh service that records the linking device's endpoint, the attention
   evaluator over fleet state, and the edge-triggered notifier that invokes the
   app's push-gateway hook through the same origin-pinned
-  `CompletionCallbackInvoker`; beside it, `guardian_link_host_ui` forwards
-  that one endpoint's streams to the host's web UI
+  `CompletionCallbackInvoker`; beside it, `guardian_link_forward` forwards
+  that one endpoint's streams to web UIs on the host
   ([SPEC-guardian-link](./SPEC-guardian-link.md)).
 - `admin_http` — optional browser adapter over the same operations; the binary
   may compose its dashboard assets through the shared `operator-ui-static`
@@ -440,12 +440,13 @@ Six kinds of state, six owners:
   journals. The child is not contacted until the secret passes constant-time
   comparison
   ([SPEC-guardian-telemetry-proxy](./SPEC-guardian-telemetry-proxy.md)).
-- Host-UI forward requests arrive on their own Iroh ALPN and are served only
-  to the endpoint id that made the current guardian link, while the feature
-  is on. Each stream becomes a TCP connection to the one host-UI address the
-  platform package configured; the caller chooses no target, and the host's
-  own login authenticates what the operator does there
-  ([SPEC-guardian-link](./SPEC-guardian-link.md#the-hosts-web-ui)).
+- Guardian-link forward requests arrive on their own Iroh ALPN and are served
+  only to the endpoint id that made the current guardian link, while the
+  feature is on. Each stream names a target and becomes a TCP connection to
+  the address the platform package configured for it; the caller never names
+  an address or a port, and the host's own login authenticates what the
+  operator does there
+  ([SPEC-guardian-link](./SPEC-guardian-link.md#web-uis-on-the-host)).
 - Safe-event authorization precedes journal enumeration and path selection;
   callers can select only the global journal or a seat id already mapped by the
   fleet.

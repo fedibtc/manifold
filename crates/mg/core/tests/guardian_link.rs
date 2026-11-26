@@ -755,37 +755,46 @@ fn device_labels_are_short_and_printable() {
     assert!(validate_device_label(&"x".repeat(DEVICE_LABEL_MAX_CHARS + 1)).is_err());
 }
 
-// The host-UI forward (`crate::guardian_link_host_ui`), end to end over Iroh
-// against a fake host UI that serves HTTP and a WebSocket.
-mod host_ui {
+// The guardian-link forward (`crate::guardian_link_forward`), end to end
+// over Iroh against fake web UIs that serve HTTP and a WebSocket.
+mod forward {
+    use std::collections::BTreeMap;
     use std::net::SocketAddr;
 
     use axum::extract::ws::{Message as ServerMessage, WebSocketUpgrade};
     use fedi_decentralized_service_manifold_guardian::{
-        HOST_UI_ALPN, HostUiRefusal, HostUiStreamError,
+        AnnouncedForwardTarget, ForwardRefusal, ForwardStreamError, ForwardTarget, ForwardTargets,
+        GUARDIAN_LINK_FORWARD_ALPN, MAX_FORWARD_STREAMS,
     };
     use futures::{SinkExt as _, StreamExt as _};
-    use iroh::endpoint::{Connection, ConnectionError, ReadError, ReadToEndError, presets};
+    use iroh::endpoint::{
+        Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream, presets,
+    };
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode};
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
-    use crate::guardian_link_host_ui::{HostUiForward, MAX_HOST_UI_STREAMS};
+    use crate::guardian_link_forward::GuardianLinkForward;
 
-    /// A stand-in for the umbrelOS dashboard: echoes POST bodies, and on its
+    use ForwardTarget::{HostUi, MgDashboard};
+
+    /// A stand-in for a web UI such as the umbrelOS dashboard: answers POSTs
+    /// with its `name`, the caller's authorization and the body, and on its
     /// WebSocket pushes one message unasked, then echoes what it gets.
-    async fn fake_host_ui() -> SocketAddr {
+    async fn fake_ui(name: &'static str) -> SocketAddr {
         let app = axum::Router::new()
             .route(
                 "/trpc",
-                axum::routing::post(|headers: axum::http::HeaderMap, body: String| async move {
-                    let auth = headers
-                        .get("authorization")
-                        .map(|value| value.to_str().unwrap().to_owned())
-                        .unwrap_or_default();
-                    format!("{auth}|{body}")
-                }),
+                axum::routing::post(
+                    move |headers: axum::http::HeaderMap, body: String| async move {
+                        let auth = headers
+                            .get("authorization")
+                            .map(|value| value.to_str().unwrap().to_owned())
+                            .unwrap_or_default();
+                        format!("{name}|{auth}|{body}")
+                    },
+                ),
             )
             .route(
                 "/ws",
@@ -813,6 +822,10 @@ mod host_ui {
         addr
     }
 
+    async fn host_ui_only() -> BTreeMap<ForwardTarget, SocketAddr> {
+        BTreeMap::from([(HostUi, fake_ui("host-ui").await)])
+    }
+
     async fn endpoint(key: Option<iroh::SecretKey>) -> Endpoint {
         let builder = Endpoint::builder(presets::N0).relay_mode(RelayMode::Disabled);
         match key {
@@ -824,10 +837,13 @@ mod host_ui {
         .unwrap()
     }
 
-    /// The MG's router serving only the host-UI forward to `host_ui`.
-    async fn mg(fleet: &Arc<Fleet>, host_ui: Option<SocketAddr>) -> Router {
+    /// The MG's router serving only the forward, to `targets`.
+    async fn mg(fleet: &Arc<Fleet>, targets: BTreeMap<ForwardTarget, SocketAddr>) -> Router {
         Router::builder(endpoint(None).await)
-            .accept(HOST_UI_ALPN, HostUiForward::new(fleet.clone(), host_ui))
+            .accept(
+                GUARDIAN_LINK_FORWARD_ALPN,
+                GuardianLinkForward::new(fleet.clone(), targets),
+            )
             .spawn()
     }
 
@@ -835,16 +851,39 @@ mod host_ui {
     async fn dial(router: &Router, seed: u8) -> (Endpoint, Connection) {
         let phone = endpoint(Some(device_key(seed))).await;
         let connection = phone
-            .connect(router.endpoint().addr(), HOST_UI_ALPN)
+            .connect(router.endpoint().addr(), GUARDIAN_LINK_FORWARD_ALPN)
             .await
             .unwrap();
         (phone, connection)
     }
 
-    /// One HTTP/1.1 exchange on a fresh stream; the response as text.
-    async fn http(connection: &Connection, request: &str) -> Result<String, ReadError> {
-        let (mut send, mut recv) = connection.open_bi().await?;
-        // The MG may already have reset the stream; the read reports it.
+    /// A stream that starts with `header`.
+    async fn open_raw(
+        connection: &Connection,
+        header: &[u8],
+    ) -> Result<(SendStream, RecvStream), ConnectionError> {
+        let (mut send, recv) = connection.open_bi().await?;
+        // The MG may already have reset the stream; a read reports it.
+        let _ = send.write_all(header).await;
+        Ok((send, recv))
+    }
+
+    /// One HTTP/1.1 exchange on a fresh stream to `target`; the response as
+    /// text.
+    async fn http(
+        connection: &Connection,
+        target: ForwardTarget,
+        request: &str,
+    ) -> Result<String, ReadError> {
+        exchange(connection, &target.encode_header(), request).await
+    }
+
+    async fn exchange(
+        connection: &Connection,
+        header: &[u8],
+        request: &str,
+    ) -> Result<String, ReadError> {
+        let (mut send, mut recv) = open_raw(connection, header).await?;
         let _ = send.write_all(request.as_bytes()).await;
         match recv.read_to_end(1 << 20).await {
             Ok(response) => Ok(String::from_utf8(response).unwrap()),
@@ -853,23 +892,47 @@ mod host_ui {
         }
     }
 
+    async fn websocket(
+        connection: &Connection,
+        target: ForwardTarget,
+    ) -> tokio_tungstenite::WebSocketStream<tokio::io::Join<RecvStream, SendStream>> {
+        let (send, recv) = open_raw(connection, &target.encode_header()).await.unwrap();
+        tokio_tungstenite::client_async("ws://host/ws", tokio::io::join(recv, send))
+            .await
+            .unwrap()
+            .0
+    }
+
     fn post(body: &str) -> String {
         format!(
-            "POST /trpc HTTP/1.1\r\nHost: host-ui\r\nAuthorization: Bearer t0k\r\n\
+            "POST /trpc HTTP/1.1\r\nHost: host\r\nAuthorization: Bearer t0k\r\n\
              Content-Type: application/json\r\nContent-Length: {}\r\n\
              Connection: close\r\n\r\n{body}",
             body.len()
         )
     }
 
+    fn reset_code(result: Result<String, ReadError>) -> Option<ForwardStreamError> {
+        match result {
+            Err(ReadError::Reset(code)) => ForwardStreamError::from_code(code.into_inner()),
+            other => panic!("expected a reset, got {other:?}"),
+        }
+    }
+
     /// The refusal the MG closed `connection` with.
-    async fn refusal(connection: &Connection) -> Option<HostUiRefusal> {
+    async fn refusal(connection: &Connection) -> Option<ForwardRefusal> {
         match tokio::time::timeout(Duration::from_secs(10), connection.closed()).await {
             Ok(ConnectionError::ApplicationClosed(close)) => {
-                HostUiRefusal::from_code(close.error_code.into_inner())
+                ForwardRefusal::from_code(close.error_code.into_inner())
             }
             _ => None,
         }
+    }
+
+    /// The targets the MG announced on `connection`.
+    async fn announced(connection: &Connection) -> ForwardTargets {
+        let mut recv = connection.accept_uni().await.unwrap();
+        serde_json::from_slice(&recv.read_to_end(4096).await.unwrap()).unwrap()
     }
 
     /// Link the phone with key `seed` through the RPC.
@@ -890,22 +953,49 @@ mod host_ui {
     }
 
     #[tokio::test]
-    async fn the_linked_phone_reaches_the_host_ui_over_http_and_websocket() {
+    async fn each_stream_reaches_the_target_it_names_over_http_and_websocket() {
         let h = harness(Some(ORIGIN)).await;
         link_as(&h, 1).await;
-        let router = mg(&h.fleet, Some(fake_host_ui().await)).await;
+        let host_ui = fake_ui("host-ui").await;
+        let mg_dashboard = fake_ui("mg-dashboard").await;
+        let router = mg(
+            &h.fleet,
+            BTreeMap::from([(MgDashboard, mg_dashboard), (HostUi, host_ui)]),
+        )
+        .await;
         let (_phone, connection) = dial(&router, 1).await;
 
-        let response = http(&connection, &post(r#"{"x":1}"#)).await.unwrap();
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        assert!(response.ends_with(r#"Bearer t0k|{"x":1}"#), "{response}");
+        // The MG says what it serves, host UI first, with each one's port.
+        assert_eq!(
+            announced(&connection).await.targets,
+            [
+                AnnouncedForwardTarget {
+                    name: "host-ui".into(),
+                    port: host_ui.port()
+                },
+                AnnouncedForwardTarget {
+                    name: "mg-dashboard".into(),
+                    port: mg_dashboard.port()
+                },
+            ]
+        );
 
-        let (send, recv) = connection.open_bi().await.unwrap();
-        let (mut socket, _) =
-            tokio_tungstenite::client_async("ws://host-ui/ws", tokio::io::join(recv, send))
-                .await
-                .unwrap();
-        // The host speaks first: a live update, not an answer.
+        let response = http(&connection, HostUi, &post(r#"{"x":1}"#))
+            .await
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            response.ends_with(r#"host-ui|Bearer t0k|{"x":1}"#),
+            "{response}"
+        );
+        let response = http(&connection, MgDashboard, &post("y")).await.unwrap();
+        assert!(
+            response.ends_with("mg-dashboard|Bearer t0k|y"),
+            "{response}"
+        );
+
+        let mut socket = websocket(&connection, MgDashboard).await;
+        // The UI speaks first: a live update, not an answer.
         assert_eq!(
             socket.next().await.unwrap().unwrap(),
             Message::Text("pushed".into())
@@ -916,9 +1006,53 @@ mod host_ui {
             Message::Text("echo:hi".into())
         );
         // HTTP keeps working beside the open socket.
-        let response = http(&connection, &post("again")).await.unwrap();
-        assert!(response.ends_with("Bearer t0k|again"), "{response}");
+        let response = http(&connection, HostUi, &post("again")).await.unwrap();
+        assert!(response.ends_with("host-ui|Bearer t0k|again"), "{response}");
 
+        router.shutdown().await.unwrap();
+        h.fleet.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_stream_naming_no_served_target_is_reset_and_the_connection_lives() {
+        let h = harness(Some(ORIGIN)).await;
+        link_as(&h, 1).await;
+        let router = mg(&h.fleet, host_ui_only().await).await;
+        let (_phone, connection) = dial(&router, 1).await;
+        // A known target this MG was not given, unknown names, and
+        // malformed headers.
+        let mut headers = vec![
+            MgDashboard.encode_header(),
+            b"\x07HOST-UI".to_vec(),
+            b"\x0410.0".to_vec(),
+            b"\x00".to_vec(),
+        ];
+        let mut long = vec![33u8];
+        long.extend_from_slice(&[b'a'; 33]);
+        headers.push(long);
+        for header in headers {
+            assert_eq!(
+                reset_code(exchange(&connection, &header, &post("x")).await),
+                Some(ForwardStreamError::UnknownTarget),
+                "{header:?}"
+            );
+        }
+        // A stream that stops partway through its header is reset too.
+        let (_send, mut recv) = open_raw(&connection, b"\x07host").await.unwrap();
+        match tokio::time::timeout(Duration::from_secs(15), recv.read_to_end(16)).await {
+            Ok(Err(ReadToEndError::Read(ReadError::Reset(code)))) => assert_eq!(
+                ForwardStreamError::from_code(code.into_inner()),
+                Some(ForwardStreamError::UnknownTarget)
+            ),
+            other => panic!("expected a reset, got {other:?}"),
+        }
+        assert!(connection.close_reason().is_none());
+        assert!(
+            http(&connection, HostUi, &post("x"))
+                .await
+                .unwrap()
+                .ends_with("|x")
+        );
         router.shutdown().await.unwrap();
         h.fleet.shutdown().await;
     }
@@ -926,15 +1060,15 @@ mod host_ui {
     #[tokio::test]
     async fn any_other_endpoint_is_refused_before_a_stream_is_served() {
         let h = harness(Some(ORIGIN)).await;
-        let router = mg(&h.fleet, Some(fake_host_ui().await)).await;
+        let router = mg(&h.fleet, host_ui_only().await).await;
         // Nothing linked yet: even the phone is a stranger.
         let (_phone, connection) = dial(&router, 1).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::NotLinked));
+        assert_eq!(refusal(&connection).await, Some(ForwardRefusal::NotLinked));
 
         link_as(&h, 1).await;
         let (_stranger, connection) = dial(&router, 2).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::NotLinked));
-        assert!(http(&connection, &post("x")).await.is_err());
+        assert_eq!(refusal(&connection).await, Some(ForwardRefusal::NotLinked));
+        assert!(http(&connection, HostUi, &post("x")).await.is_err());
 
         // A link made before the MG recorded endpoints forwards to nobody.
         sqlx::query("UPDATE guardian_link SET device_endpoint_id = NULL")
@@ -942,7 +1076,7 @@ mod host_ui {
             .await
             .unwrap();
         let (_phone, connection) = dial(&router, 1).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::NotLinked));
+        assert_eq!(refusal(&connection).await, Some(ForwardRefusal::NotLinked));
 
         router.shutdown().await.unwrap();
         h.fleet.shutdown().await;
@@ -952,17 +1086,22 @@ mod host_ui {
     async fn relinking_another_phone_closes_the_old_phones_connection() {
         let h = harness(Some(ORIGIN)).await;
         link_as(&h, 1).await;
-        let router = mg(&h.fleet, Some(fake_host_ui().await)).await;
+        let router = mg(&h.fleet, host_ui_only().await).await;
         let (_old, old) = dial(&router, 1).await;
-        assert!(http(&old, &post("x")).await.is_ok());
+        assert!(http(&old, HostUi, &post("x")).await.is_ok());
 
         link_as(&h, 2).await;
-        assert_eq!(refusal(&old).await, Some(HostUiRefusal::NotLinked));
+        assert_eq!(refusal(&old).await, Some(ForwardRefusal::NotLinked));
         let (_new, new) = dial(&router, 2).await;
-        assert!(http(&new, &post("x")).await.unwrap().ends_with("|x"));
+        assert!(
+            http(&new, HostUi, &post("x"))
+                .await
+                .unwrap()
+                .ends_with("|x")
+        );
 
         h.fleet.revoke_guardian_link().await.unwrap();
-        assert_eq!(refusal(&new).await, Some(HostUiRefusal::NotLinked));
+        assert_eq!(refusal(&new).await, Some(ForwardRefusal::NotLinked));
 
         router.shutdown().await.unwrap();
         h.fleet.shutdown().await;
@@ -974,49 +1113,49 @@ mod host_ui {
         let (publish, policies) = watch::channel(None);
         h.fleet.bind_guardian_link_policy(policies);
         link_as(&h, 1).await;
-        let router = mg(&h.fleet, Some(fake_host_ui().await)).await;
+        let router = mg(&h.fleet, host_ui_only().await).await;
         let (_phone, open) = dial(&router, 1).await;
-        assert!(http(&open, &post("x")).await.is_ok());
+        assert!(http(&open, HostUi, &post("x")).await.is_ok());
 
         // Turning it off closes the open connection and refuses new ones.
         publish.send_replace(Some(flagged(false)));
-        assert_eq!(refusal(&open).await, Some(HostUiRefusal::Disabled));
+        assert_eq!(refusal(&open).await, Some(ForwardRefusal::Disabled));
         let (_phone, connection) = dial(&router, 1).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::Disabled));
+        assert_eq!(refusal(&connection).await, Some(ForwardRefusal::Disabled));
         // Off, a stranger still learns only that it is not linked.
         let (_stranger, connection) = dial(&router, 2).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::NotLinked));
+        assert_eq!(refusal(&connection).await, Some(ForwardRefusal::NotLinked));
 
         publish.send_replace(Some(flagged(true)));
         let (_phone, connection) = dial(&router, 1).await;
-        assert!(http(&connection, &post("x")).await.is_ok());
+        assert!(http(&connection, HostUi, &post("x")).await.is_ok());
 
         router.shutdown().await.unwrap();
         h.fleet.shutdown().await;
     }
 
     #[tokio::test]
-    async fn without_a_host_ui_or_a_reachable_one_the_phone_is_told_so() {
+    async fn without_a_target_or_a_reachable_one_the_phone_is_told_so() {
         let h = harness(Some(ORIGIN)).await;
         link_as(&h, 1).await;
-        let router = mg(&h.fleet, None).await;
+        let router = mg(&h.fleet, BTreeMap::new()).await;
         let (_phone, connection) = dial(&router, 1).await;
-        assert_eq!(refusal(&connection).await, Some(HostUiRefusal::Unavailable));
+        assert_eq!(
+            refusal(&connection).await,
+            Some(ForwardRefusal::Unavailable)
+        );
         router.shutdown().await.unwrap();
 
         // A port nothing listens on: the stream is reset, the connection lives.
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let nowhere = closed.local_addr().unwrap();
         drop(closed);
-        let router = mg(&h.fleet, Some(nowhere)).await;
+        let router = mg(&h.fleet, BTreeMap::from([(HostUi, nowhere)])).await;
         let (_phone, connection) = dial(&router, 1).await;
-        match http(&connection, &post("x")).await {
-            Err(ReadError::Reset(code)) => assert_eq!(
-                HostUiStreamError::from_code(code.into_inner()),
-                Some(HostUiStreamError::HostUnreachable)
-            ),
-            other => panic!("expected a reset, got {other:?}"),
-        }
+        assert_eq!(
+            reset_code(http(&connection, HostUi, &post("x")).await),
+            Some(ForwardStreamError::TargetUnreachable)
+        );
         assert!(connection.close_reason().is_none());
         router.shutdown().await.unwrap();
         h.fleet.shutdown().await;
@@ -1026,26 +1165,19 @@ mod host_ui {
     async fn streams_beyond_the_cap_are_reset_and_freed_ones_reused() {
         let h = harness(Some(ORIGIN)).await;
         link_as(&h, 1).await;
-        let router = mg(&h.fleet, Some(fake_host_ui().await)).await;
+        let router = mg(&h.fleet, host_ui_only().await).await;
         let (_phone, connection) = dial(&router, 1).await;
         // Hold every permit with an open WebSocket.
         let mut sockets = Vec::new();
-        for _ in 0..MAX_HOST_UI_STREAMS {
-            let (send, recv) = connection.open_bi().await.unwrap();
-            let (mut socket, _) =
-                tokio_tungstenite::client_async("ws://host-ui/ws", tokio::io::join(recv, send))
-                    .await
-                    .unwrap();
+        for _ in 0..MAX_FORWARD_STREAMS {
+            let mut socket = websocket(&connection, HostUi).await;
             socket.next().await.unwrap().unwrap();
             sockets.push(socket);
         }
-        match http(&connection, &post("x")).await {
-            Err(ReadError::Reset(code)) => assert_eq!(
-                HostUiStreamError::from_code(code.into_inner()),
-                Some(HostUiStreamError::TooManyStreams)
-            ),
-            other => panic!("expected a reset, got {other:?}"),
-        }
+        assert_eq!(
+            reset_code(http(&connection, HostUi, &post("x")).await),
+            Some(ForwardStreamError::TooManyStreams)
+        );
         let mut socket = sockets.pop().unwrap();
         socket.close(None).await.unwrap();
         while socket.next().await.is_some() {}
@@ -1053,7 +1185,7 @@ mod host_ui {
         // The freed permit serves the next stream.
         let mut served = false;
         for _ in 0..50 {
-            if let Ok(response) = http(&connection, &post("x")).await {
+            if let Ok(response) = http(&connection, HostUi, &post("x")).await {
                 served = response.ends_with("|x");
                 break;
             }
