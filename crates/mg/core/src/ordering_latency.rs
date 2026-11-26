@@ -2,12 +2,17 @@
 //! latency check compares it ([`crate::seat_readiness`],
 //! `crates/mg/specs/SPEC-advertisement.md`).
 //!
-//! fedimintd observes, for each batch of its own consensus items, how long
-//! AlephBFT took to order it, in the `fm_consensus_ordering_latency_seconds`
-//! histogram on its loopback metrics port. A guardian on a slow disk orders
-//! its items late, whatever the cause of the slowness, so its federations go
-//! ahead without it. Each run takes, per running seat, the mean latency of
-//! the items ordered since that seat's previous reading in this process, and
+//! fedimintd observes, for each batch of its own consensus items that carries
+//! a transaction, how long AlephBFT took to order it, in the
+//! `fm_consensus_transaction_ordering_latency_seconds` histogram on its
+//! loopback metrics port. A guardian on a slow disk orders its items late,
+//! whatever the cause of the slowness, so its federations go ahead without
+//! it. Clients submit a transaction to every guardian at once, so this
+//! latency is the guardian's own lag. Batches of votes do not count: with
+//! slow idle rounds, a vote that only this guardian proposes is ordered at
+//! the pace of its idle peers, which says nothing about this host. Each run
+//! takes, per running seat, the mean latency of the items ordered since that
+//! seat's previous reading in this process, and
 //! the median over seats, the lower middle one for an even count: one seat in
 //! a slow federation does not close the MG, while a slow host is slow in all
 //! of them. It folds that median into a
@@ -22,8 +27,9 @@ use fedi_decentralized_service_manifold_guardian::SeatId;
 use crate::host_pressure::{MAX_INTERVAL, SIX_HOURS_TAU};
 use crate::seat_readiness::ReadinessOutcome;
 
-/// The histogram fedimintd observes each ordered batch of its own items in.
-const FAMILY: &str = "fm_consensus_ordering_latency_seconds";
+/// The histogram fedimintd observes each ordered batch of its own items that
+/// carries a transaction in.
+const FAMILY: &str = "fm_consensus_transaction_ordering_latency_seconds";
 
 /// The highest 6-hour average ordering latency at which an MG sells seats.
 /// Healthy MGs order their items in 1-2 s; MGs on contended disks take 5 s

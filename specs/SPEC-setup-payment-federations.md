@@ -279,7 +279,14 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
   ([SPEC-guardian-link](../crates/mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
   Optional: absent means the Manifold environment's default, on in
   development and staging and off in production. Older MGs and FAs that
-  admit unknown fields ignore it; and
+  admit unknown fields ignore it;
+- `aleph_idle_round_delay_ms`, the delay in milliseconds between the
+  consensus units of an MG seat's fedimintd while it has nothing to order,
+  from 1 to 900: a federation formed by MGs orders 3600 rounds per session,
+  and fedimintd exits when a session lasts over an hour. Optional: absent
+  means off, every unit at the normal pace, in every environment. MGs apply
+  a change to their running seats without restarting them, so omitting it
+  is the rollback. Older MGs and FAs that admit unknown fields ignore it; and
 - `guardian_transfer_v2`, a boolean that lets MGs start new direct-proof
   guardian transfers
   ([SPEC-guardian-transfer](../crates/mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).

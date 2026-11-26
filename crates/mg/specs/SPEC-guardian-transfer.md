@@ -263,7 +263,12 @@ between sessions:
   destination's next `TransferSeat` asks the new process.
 
 The wait costs up to one session plus the minute fedimintd waits after its
-last session for peers to finish it. In Fedimint's test environment, where
+last session for peers to finish it. With slow idle rounds an idle session
+lasts the session's rounds times the idle round delay, since a round needs
+units from 2f+1 guardians. A guardian with a shutdown due therefore asks its
+peers every 5 seconds to drain the session, and a peer on the pinned
+fedimintd returns to the normal pace for it; on devimint an idle session
+then ended about 3 minutes after the request. In Fedimint's test environment, where
 sessions last seconds, the patched fedimintd waits 5s instead. A source whose guardian is down when
 `TransferSeat` arrives asks nothing; the guardian restarts as usual and a
 later retry asks it. While the federation cannot end the session, for

@@ -13,19 +13,17 @@ use fedimint_core::backup::BackupStatistics;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::endpoint_constants::{
-    AUDIT_ENDPOINT, AWAIT_SESSION_OUTCOME_ENDPOINT, BACKUP_STATISTICS_ENDPOINT,
-    CLIENT_CONFIG_ENDPOINT, SESSION_COUNT_ENDPOINT, SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
+    AUDIT_ENDPOINT, BACKUP_STATISTICS_ENDPOINT, CLIENT_CONFIG_ENDPOINT,
+    SHUTDOWN_AFTER_CURRENT_SESSION_ENDPOINT,
 };
-use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::module::audit::AuditSummary;
-use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fedimint_core::module::{ApiAuth, ApiRequestErased, CommonModuleInit as _};
+use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::peer_availability::ResetPeerAvailabilityRequest;
 use fedimint_core::util::SafeUrl;
+use fedimint_lnv2_common::LightningVolumeStats;
 use fedimint_lnv2_common::endpoint_constants::{
     ADD_GATEWAY_ENDPOINT, VOLUME_STATS_ENDPOINT as LNV2_VOLUME_STATS_ENDPOINT,
 };
-use fedimint_lnv2_common::{LightningCommonInit, LightningConsensusItem, LightningVolumeStats};
 use fedimint_meta_client::api::MetaFederationApi as _;
 use fedimint_meta_common::{MetaConsensusValue, MetaKey, MetaValue};
 use fedimint_walletv2_common::WalletVolumeStats;
@@ -208,55 +206,6 @@ impl FedimintApi {
             ),
         )
         .await
-    }
-
-    /// Read the number of completed consensus sessions without waiting for one.
-    pub async fn session_count(&self) -> Result<u64, FedimintApiError> {
-        self.request(SESSION_COUNT_ENDPOINT, self.api.session_count())
-            .await
-    }
-
-    /// When the federation formed: the earliest lnv2 unix time vote in its
-    /// first consensus session.
-    pub async fn federation_start_unix_time(
-        &self,
-        lnv2_id: ModuleInstanceId,
-    ) -> Result<u64, FedimintApiError> {
-        let decoders = ModuleDecoderRegistry::new([(
-            lnv2_id,
-            fedimint_lnv2_common::KIND,
-            LightningCommonInit::decoder(),
-        )])
-        .with_fallback();
-        let first_session =
-            tokio::time::timeout(REQUEST_TIMEOUT, self.api.clone().await_block(0, &decoders))
-                .await
-                .map_err(|_| {
-                    FedimintApiError::Unreachable(format!(
-                        "{AWAIT_SESSION_OUTCOME_ENDPOINT} request timed out"
-                    ))
-                })?
-                .map_err(|error| FedimintApiError::InvalidResponse {
-                    method: AWAIT_SESSION_OUTCOME_ENDPOINT.to_owned(),
-                    detail: format!("{error:#}"),
-                })?;
-        first_session
-            .items
-            .iter()
-            .filter_map(|accepted| match &accepted.item {
-                ConsensusItem::Module(item) if item.module_instance_id() == lnv2_id => {
-                    match item.as_any().downcast_ref::<LightningConsensusItem>() {
-                        Some(LightningConsensusItem::UnixTimeVote(time)) => Some(*time),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            })
-            .min()
-            .ok_or_else(|| FedimintApiError::InvalidResponse {
-                method: AWAIT_SESSION_OUTCOME_ENDPOINT.to_owned(),
-                detail: "the first session carries no lnv2 unix time vote".to_owned(),
-            })
     }
 
     pub async fn add_gateway(&self, gateway_api: SafeUrl) -> Result<bool, FedimintApiError> {

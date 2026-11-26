@@ -67,6 +67,13 @@ pub const DEFAULT_SEAT_MONTHLY_DATA_GB: u32 = 65;
 /// the figure gets [`DEFAULT_SEAT_MONTHLY_DATA_GB`].
 pub const SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE: std::ops::RangeInclusive<u32> = 1..=10_000;
 
+/// Smallest and largest Aleph idle round delay a publication may set, in
+/// milliseconds. A federation formed by MGs orders 3600 rounds per session
+/// and a seat's fedimintd exits when a session lasts over an hour, so an
+/// idle session, at one round per delay, must stay under one second per
+/// round with room for the network.
+pub const SETUP_PAYMENT_ALEPH_IDLE_ROUND_DELAY_MS_RANGE: std::ops::RangeInclusive<u64> = 1..=900;
+
 const DEFAULT_SEAT_MONTHLY_DATA: NonZeroU32 =
     NonZeroU32::new(DEFAULT_SEAT_MONTHLY_DATA_GB).expect("the default is nonzero");
 
@@ -446,6 +453,14 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_link: Option<bool>,
 
+    /// The delay, in milliseconds, between the consensus units of an MG
+    /// seat's fedimintd while it has nothing to order: slow idle rounds
+    /// ([`mg_core::fedimintd_features`](../../mg/core/src/fedimintd_features.rs)).
+    /// Optional on the wire: absent means off, every unit at the normal
+    /// pace. A change reaches every running seat without a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aleph_idle_round_delay_ms: Option<u64>,
+
     /// Oldest Manifold Guardian release that may advertise new seats.
     /// Optional on the wire: absent means no minimum. An MG below it keeps
     /// running its seats but stops selling new ones until it is updated.
@@ -489,6 +504,7 @@ pub struct AdmittedFeaturePolicy {
     max_pressure_percent: MaxPressurePercent,
     guardian_transfer_v2: Option<bool>,
     guardian_link: Option<bool>,
+    aleph_idle_round_delay_ms: Option<u64>,
     min_mg_version: Option<MgVersion>,
     recommended_min_mg_version: Option<MgVersion>,
 }
@@ -659,6 +675,13 @@ impl FeaturePolicy {
         {
             return Err(SetupPaymentFederationsContentError::InvalidMaxPressure);
         }
+        if content
+            .aleph_idle_round_delay_ms
+            .is_some_and(|delay| !SETUP_PAYMENT_ALEPH_IDLE_ROUND_DELAY_MS_RANGE.contains(&delay))
+        {
+            return Err(SetupPaymentFederationsContentError::AlephIdleRoundDelayOutOfRange);
+        }
+        let aleph_idle_round_delay_ms = content.aleph_idle_round_delay_ms;
         let max_guardian_offline_secs = content
             .max_guardian_offline_secs
             .unwrap_or(DEFAULT_MAX_GUARDIAN_OFFLINE_SECS);
@@ -710,6 +733,7 @@ impl FeaturePolicy {
             max_pressure_percent,
             guardian_transfer_v2: content.guardian_transfer_v2,
             guardian_link: content.guardian_link,
+            aleph_idle_round_delay_ms,
             min_mg_version: content.min_mg_version,
             recommended_min_mg_version: content.recommended_min_mg_version,
         })
@@ -810,6 +834,14 @@ impl AdmittedFeaturePolicy {
         self.guardian_link
     }
 
+    /// Return the delay, in milliseconds, between a seat's consensus units
+    /// while it has nothing to order; `None`, the normal pace, when the
+    /// event omits it.
+    #[must_use]
+    pub fn aleph_idle_round_delay_ms(&self) -> Option<u64> {
+        self.aleph_idle_round_delay_ms
+    }
+
     /// Return the oldest MG release that may advertise new seats, or `None`
     /// when the event sets no minimum.
     #[must_use]
@@ -869,6 +901,9 @@ pub enum PolicyContentError {
     /// The published per-seat disk figure is outside the admitted range.
     SeatDiskOutOfRange,
 
+    /// The published Aleph idle round delay is outside the admitted range.
+    AlephIdleRoundDelayOutOfRange,
+
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
 
@@ -921,6 +956,9 @@ impl core::fmt::Display for PolicyContentError {
             }
             Self::SeatDiskOutOfRange => {
                 "setup-payment federation set sets a per-seat disk figure outside the admitted range"
+            }
+            Self::AlephIdleRoundDelayOutOfRange => {
+                "setup-payment federation set sets an Aleph idle round delay outside the admitted range"
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"

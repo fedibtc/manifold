@@ -297,7 +297,7 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi30-idle.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -331,6 +331,7 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "consensus_peer_contribution_session_idx",
     "consensus_session_count",
     "consensus_sessions_completed_total",
+    "consensus_transaction_ordering_latency_seconds",
     "consensus_tx_processed_inputs",
     "consensus_tx_processed_outputs",
     "iroh_api_connection_duration_seconds",
@@ -534,6 +535,7 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("consensus_tx_processed_inputs", &[]),
         ("consensus_tx_processed_outputs", &[]),
         ("consensus_ordering_latency_seconds", &[]),
+        ("consensus_transaction_ordering_latency_seconds", &[]),
         ("consensus_item_processing_duration_seconds", &["peer_id"]),
         ("consensus_item_commit_duration_seconds", &[]),
         ("peer_send_duration_seconds", &["self_id", "peer_id"]),

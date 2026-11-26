@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795180262,
-        "narHash": "sha256-0XXd5dmqgTtVQLcmJZ4o3YeFZc6haipBU5WZFaw2mHo=",
+        "lastModified": 1795643810,
+        "narHash": "sha256-J1VcxQAT9bEM9aTz8eyByqxOfgMZHAPr0GH1vQwIERE=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "15671ec113a28273ccfca84c549a9dcfd03eb67d",
+        "rev": "852b005d817fdb641103b06aef0f1dd8b63845b9",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi30",
+        "ref": "roboman/quiescence-slow-idle-rounds",
         "repo": "fedimint",
         "type": "github"
       }
