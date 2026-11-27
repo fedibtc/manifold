@@ -3,12 +3,19 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
 import { useGuardianLink } from '@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink';
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
+import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { GUARDIAN_LINK_NAV_POLL_MS, SUPPORT_UNREAD_POLL_MS } from '@/shared/api/pollingIntervals';
 import { NavigationItems } from '../NavigationItems';
 import { NAV_ITEMS } from '../nav-config';
 
 vi.mock('@/features/support/api/hooks/use-support-chat/useSupportChat');
 vi.mock('@/features/phone-link/api/hooks/use-guardian-link/useGuardianLink');
+vi.mock('@/shared/api/hooks/use-onboarding/useOnboarding');
+
+const guardianCodesOffered = (badgelessMg: boolean | undefined) =>
+  vi.mocked(useOnboarding).mockReturnValue({
+    data: badgelessMg === undefined ? undefined : { badgeless_mg: badgelessMg }
+  } as ReturnType<typeof useOnboarding>);
 
 const phoneStatus = (data: unknown) =>
   vi.mocked(useGuardianLink).mockReturnValue({ data } as ReturnType<typeof useGuardianLink>);
@@ -27,6 +34,7 @@ const renderItems = () => {
 beforeEach(() => {
   unread(undefined);
   phoneStatus({ availability: 'ready', link: activePhone, offer: null });
+  guardianCodesOffered(true);
 });
 
 it('should render a link for every configured nav item', () => {
@@ -110,4 +118,25 @@ it.each([
 
   expect(screen.queryByRole('link', { name: /Mobile notifications/ })).toBeNull();
   expect(screen.getByRole('link', { name: 'Support' })).toBeInTheDocument();
+});
+
+it('should show Guardian codes where the network offers badgeless setup', () => {
+  renderItems();
+
+  expect(screen.getByRole('link', { name: 'Guardian codes' }).getAttribute('href')).toBe(
+    '/guardian-codes'
+  );
+});
+
+// Production keeps guardian codes off until the whole path ships, like the
+// Overview's Seat availability card does.
+it.each([
+  ['the network does not offer them', false],
+  ['onboarding has not loaded', undefined]
+])('should hide Guardian codes when %s', (_name, badgelessMg) => {
+  guardianCodesOffered(badgelessMg);
+  renderItems();
+
+  expect(screen.queryByRole('link', { name: 'Guardian codes' })).toBeNull();
+  expect(screen.getByRole('link', { name: 'Seats' })).toBeInTheDocument();
 });

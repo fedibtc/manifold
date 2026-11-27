@@ -7,8 +7,9 @@ grants over its admin socket
 ([SPEC-admin-socket](./SPEC-admin-socket.md#operations)), redeems them at
 `GetQuote` and `CreateSeat`, and backs up their used and revoked nonces
 ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md#seatgrant-extension-version-4)).
-The operator dashboard page, and formation from grants in `fa-client` and the
-Fedi app, do not exist yet.
+The MG dashboard's Guardian codes page drives those verbs where badgeless
+setup is on, so not in production yet. Formation from grants in `fa-client`
+and the Fedi app does not exist yet.
 
 ## Record justification
 

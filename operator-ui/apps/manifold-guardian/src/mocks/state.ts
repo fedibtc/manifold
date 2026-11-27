@@ -7,6 +7,7 @@ import type {
   PaymentFederation,
   ReadinessReport,
   Remittance,
+  SeatGrantEntry,
   SeatGuardianFee,
   SeatReport,
   SeatSummary,
@@ -104,6 +105,8 @@ export interface MockState {
    *  messages the operator has read. */
   supportMessages: Omit<SupportMessage, 'unread'>[];
   supportReadIds: string[];
+  /** The guardian codes this MG issued, oldest first (SPEC-seat-grant). */
+  seatGrants: SeatGrantEntry[];
   /** How many `Onboarding` status reads still answer `runtime: starting` after
    *  the final stage is durable. The daemon reports `starting` until its fleet
    *  opens; the mock has no fleet to open, so completion arms a fixed number of

@@ -202,3 +202,22 @@ it('should sum several remittances on the same day into one bucket', () => {
   expect(model.days[0].totalMsat).toBe(3_000);
   expect(model.days[0].events).toHaveLength(2);
 });
+
+// A guardian code gives its seat away: the MG never takes a payment for it, so
+// it is no sale, not a "Seat sold · 0 sats" row (SPEC-seat-grant).
+it('should not count a seat from a guardian code as a sale', () => {
+  const model = deriveEarnings({
+    seats: [
+      seat({ seat_id: 'sold' }),
+      seat({
+        seat_id: 'from-code',
+        plan: { InfiniteBestEffort: { price_msats: 0 } },
+        payment_claim: { state: 'not_paid' },
+        seat_grant: { grant_nonce: 'ab'.repeat(32), label: 'Lisbon meetup' }
+      })
+    ]
+  });
+
+  expect(model.seatSalesMsat).toBe(50_000_000);
+  expect(model.days.flatMap((day) => day.events.map((event) => event.detail))).toEqual(['sold']);
+});

@@ -1,4 +1,5 @@
 import { Banner, StatCard } from '@operator-ui/common-ui';
+import { useSeatGrants } from '@/features/guardian-codes/api/hooks/use-seat-grants/useSeatGrants';
 import { AttentionList } from '@/features/overview/components/attention-list/AttentionList';
 import { EarningsTimeline } from '@/features/overview/components/earnings-timeline/EarningsTimeline';
 import { SeatAvailability } from '@/features/overview/components/seat-availability/SeatAvailability';
@@ -42,6 +43,13 @@ export const OverviewPage = () => {
 
   const plans = offer.data?.plans ?? [];
   const badgeless = isBadgeless(onboarding.data);
+  const guardianCodes = guardianCodesAvailable(onboarding.data);
+  // Outside the disposition too: the count is one line of the availability
+  // card, not a figure the page cannot render without.
+  const seatGrants = useSeatGrants(guardianCodes);
+  const unusedCodes = seatGrants.data?.grants.filter(
+    (grant) => grant.status.state === 'unused'
+  ).length;
   const model = deriveOverview({
     badgeless,
     paymentFederations: paymentFederations.data?.federations,
@@ -88,8 +96,9 @@ export const OverviewPage = () => {
 
         <SeatAvailability
           priceMsat={readOfferPriceMsat(plans)}
-          guardianCodes={guardianCodesAvailable(onboarding.data)}
+          guardianCodes={guardianCodes}
           authorized={isAuthorized(onboarding.data)}
+          unusedCodes={unusedCodes}
         />
 
         <AttentionList items={model.attention} />

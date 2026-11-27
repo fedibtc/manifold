@@ -1,0 +1,15 @@
+.root {
+  @apply uStack4;
+}
+
+.intro {
+  @apply uMutedText;
+}
+
+.label {
+  @apply max-w-md;
+}
+
+.actions {
+  @apply uActionsWrap;
+}

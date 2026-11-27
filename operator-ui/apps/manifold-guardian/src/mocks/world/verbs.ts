@@ -7,9 +7,10 @@ import type {
   AdminResult,
   MonthlyDataBudget,
   PayoutJob,
-  Plan
+  Plan,
+  SeatGrantEntry
 } from '@operator-ui/types';
-import { mockGuardianLinkOffer } from '@/mocks/scenarios';
+import { mockGuardianLinkOffer, mockSeatGrantUri } from '@/mocks/scenarios';
 import { getState, type MockSeat, RESTORE_COUNTS } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY } from '@/mocks/world/keys';
@@ -71,16 +72,6 @@ const listSeats: Verb<'ListSeats'> = () => ({
 const seatStatus: Verb<'SeatStatus'> = ({ seat_id }) => {
   const { fees: _fees, ...seat } = seatById(seat_id);
   return seat;
-};
-
-// Guardian codes (SPEC-seat-grant) are not modelled by this world yet: it has
-// issued none, and issuing or revoking one is refused rather than invented.
-const listSeatGrants: Verb<'ListSeatGrants'> = () => ({ grants: [] });
-const createSeatGrant: Verb<'CreateSeatGrant'> = () => {
-  throw new Error('guardian codes are not modelled by the mock yet');
-};
-const revokeSeatGrant: Verb<'RevokeSeatGrant'> = () => {
-  throw new Error('this Manifold Guardian issued no guardian code with that nonce');
 };
 
 const decommissionSeat: Verb<'DecommissionSeat'> = ({ seat_id }) => {
@@ -623,6 +614,49 @@ const skipHolderAuthorization: Verb<'SkipHolderAuthorization'> = () => {
   return state.onboarding;
 };
 
+/** Guardian codes (SPEC-seat-grant). Issuing makes no decision about who
+ *  redeems the code; the list records each one for display and revocation. */
+const listSeatGrants: Verb<'ListSeatGrants'> = () => ({ grants: getState().seatGrants });
+
+// Like the daemon: the label is taken as sent, 1 to 32 Unicode scalars.
+const createSeatGrant: Verb<'CreateSeatGrant'> = ({ label }) => {
+  if (label !== null) {
+    const chars = [...label].length;
+    if (chars === 0 || chars > 32) {
+      throw new Error('a seat grant label is 1 to 32 characters');
+    }
+  }
+  const state = getState();
+  const grant_nonce = Array.from({ length: 64 }, () =>
+    '0123456789abcdef'.charAt(Math.floor(Math.random() * 16))
+  ).join('');
+  const grant: SeatGrantEntry = {
+    grant_nonce,
+    label,
+    issued_at: Math.floor(Date.now() / 1000),
+    status: { state: 'unused', uri: mockSeatGrantUri(grant_nonce) }
+  };
+  state.seatGrants = [...state.seatGrants, grant];
+  return grant;
+};
+
+/** Only an unused code can be revoked, and revoking a revoked one again
+ *  succeeds: a used one already created its seat, which revoking would not
+ *  remove. */
+const revokeSeatGrant: Verb<'RevokeSeatGrant'> = ({ grant_nonce }) => {
+  const state = getState();
+  const grant = state.seatGrants.find((candidate) => candidate.grant_nonce === grant_nonce);
+  if (!grant) throw new Error(`no seat grant ${grant_nonce}`);
+  if (grant.status.state === 'used') {
+    throw new Error('this seat grant is used; its seat stays until you decommission it');
+  }
+  const revoked: SeatGrantEntry = { ...grant, status: { state: 'revoked' } };
+  state.seatGrants = state.seatGrants.map((candidate) =>
+    candidate.grant_nonce === grant_nonce ? revoked : candidate
+  );
+  return revoked;
+};
+
 const onboardingHandlers: VerbTable<OnboardingVerbName> = {
   OnboardAsNew: onboardAsNew,
   OnboardFromBackup: onboardFromBackup
@@ -680,6 +714,8 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
   'SkipHolderAuthorization',
+  'CreateSeatGrant',
+  'RevokeSeatGrant',
   'ConfigureInitialOffer',
   'SetCapacity',
   'SetDataBudget',

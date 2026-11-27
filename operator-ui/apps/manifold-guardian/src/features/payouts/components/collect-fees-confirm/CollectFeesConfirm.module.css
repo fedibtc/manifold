@@ -1,9 +1,9 @@
 .root {
-  @apply fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4;
+  @apply uConfirmBackdrop;
 }
 
 .card {
-  @apply uModalCard uStack4 bg-surface;
+  @apply uConfirmCard;
 }
 
 .heading {

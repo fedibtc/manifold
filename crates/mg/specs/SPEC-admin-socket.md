@@ -4,9 +4,9 @@
 
 Payment-federation acceptance is the authenticated common setup-payment set; the
 admin surface only observes it. Removed payment scopes stay durable and lazily
-reopen on the first wallet query or payout after restart. The SeatGrant verbs
-exist; the dashboard page that drives them does not yet, and production still
-refuses the `holder_authorization` skip.
+reopen on the first wallet query or payout after restart. Production still
+refuses the `holder_authorization` skip, and the dashboard offers guardian
+codes only where badgeless setup is on.
 
 ## Record justification
 

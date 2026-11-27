@@ -20,7 +20,12 @@ const rowNames = () =>
 
 describe('SeatAvailability', () => {
   it('should lead with the priced, Fedi-verified path on a badged host', () => {
-    renderCard({ priceMsat: 50_000_000, guardianCodes: true, authorized: true });
+    renderCard({
+      priceMsat: 50_000_000,
+      guardianCodes: true,
+      authorized: true,
+      unusedCodes: undefined
+    });
 
     expect(rowNames()).toEqual(['Fedi-verified selection', 'Guardian codes']);
     expect(screen.getByText('50,000 sats per seat')).toBeTruthy();
@@ -29,7 +34,7 @@ describe('SeatAvailability', () => {
 
   // Without a badge there is no price: codes lead, and selection is off.
   it('should lead with guardian codes and show no price without a badge', () => {
-    renderCard({ priceMsat: null, guardianCodes: true, authorized: false });
+    renderCard({ priceMsat: null, guardianCodes: true, authorized: false, unusedCodes: undefined });
 
     expect(rowNames()).toEqual(['Guardian codes', 'Fedi-verified selection']);
     expect(screen.getByText('Off')).toBeTruthy();
@@ -43,7 +48,12 @@ describe('SeatAvailability', () => {
   // Production, badge connected: the network offers no guardian codes, so the
   // card must not claim them just because the host has a badge.
   it('should not mention guardian codes where the network does not offer them', () => {
-    renderCard({ priceMsat: 50_000_000, guardianCodes: false, authorized: true });
+    renderCard({
+      priceMsat: 50_000_000,
+      guardianCodes: false,
+      authorized: true,
+      unusedCodes: undefined
+    });
 
     expect(screen.getByText('Fedi-verified selection')).toBeTruthy();
     expect(screen.getByText('50,000 sats per seat')).toBeTruthy();
@@ -53,10 +63,35 @@ describe('SeatAvailability', () => {
 
   // Production, no badge yet: still the priced path, never the badgeless one.
   it('should keep the priced path for an unapproved host where codes are unavailable', () => {
-    renderCard({ priceMsat: 50_000_000, guardianCodes: false, authorized: false });
+    renderCard({
+      priceMsat: 50_000_000,
+      guardianCodes: false,
+      authorized: false,
+      unusedCodes: undefined
+    });
 
     expect(screen.getByRole('link', { name: 'Change price and seats' })).toBeTruthy();
     expect(screen.queryByText('Off')).toBeNull();
     expect(screen.queryByText('Guardian codes')).toBeNull();
+  });
+
+  it('should count unused codes and invite a first one when there are none', () => {
+    const { unmount } = renderCard({
+      priceMsat: null,
+      guardianCodes: true,
+      authorized: false,
+      unusedCodes: 1
+    });
+    expect(screen.getByText('Free setup · 1 unused code')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Manage guardian codes' }).getAttribute('href')).toBe(
+      '/guardian-codes'
+    );
+    unmount();
+
+    renderCard({ priceMsat: 50_000_000, guardianCodes: true, authorized: true, unusedCodes: 0 });
+    expect(screen.getByText('Free setup · 0 unused codes')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Create a guardian code' }).getAttribute('href')).toBe(
+      '/guardian-codes'
+    );
   });
 });

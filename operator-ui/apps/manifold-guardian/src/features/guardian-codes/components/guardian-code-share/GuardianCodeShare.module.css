@@ -1,0 +1,43 @@
+.root {
+  @apply uStack4;
+}
+
+.body {
+  @apply flex flex-wrap items-start gap-8;
+}
+
+.details {
+  @apply uStack3 min-w-0 flex-1 items-start;
+}
+
+.facts {
+  @apply uStack2 w-full;
+}
+
+.fact {
+  @apply flex justify-between gap-4 border-b border-muted pb-2 text-sm;
+}
+
+.term {
+  @apply uMutedSm;
+}
+
+.value {
+  @apply font-medium text-ink;
+}
+
+.code {
+  @apply w-full rounded-card border border-muted bg-gray-50 p-3;
+}
+
+.codeText {
+  @apply uLongIdText;
+}
+
+.note {
+  @apply uMutedText;
+}
+
+.actions {
+  @apply uActionsWrap;
+}
