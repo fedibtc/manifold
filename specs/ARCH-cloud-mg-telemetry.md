@@ -58,9 +58,9 @@ target cap, so a flood of targets can degrade only unbadged telemetry; its
 store is bound to the mode, so neither mode opens the other's database. It
 also bounds what one target can take: a byte budget per target in the
 archive, which refuses that target's appends once full and never evicts;
-a cap on the targets one source network prefix creates in an hour-long
-window, which starts at that prefix's first committed creation and resets
-when the hour ends, so a registration the store refuses costs nothing; and a cap on the targets created in any trailing hour. Renewing
+a cap on the targets one source network prefix creates in any trailing
+hour, which the store counts from the committed targets that prefix created,
+inside the admission transaction; and a cap on the targets created in any trailing hour. Renewing
 an existing target costs none of these. A target whose lease lapsed more
 than the archive retention ago, and whose archive retention has emptied,
 gives its slot back, so abandoned keys cannot fill the store for good. It

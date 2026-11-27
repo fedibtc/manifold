@@ -100,9 +100,7 @@ pub(crate) struct ArchiveFrame {
 /// Result of atomically admitting a verified registration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AdmissionOutcome {
-    /// A new target was stored.
-    Created,
-    /// A newer generation or endpoint replaced the prior secret.
+    /// A new target or newer generation replaced the prior secret.
     Updated,
     /// The same generation and same signed request were already current.
     Idempotent,
@@ -134,6 +132,8 @@ pub(crate) struct TargetMaterial<'a> {
 struct NewTargetLimit {
     max_targets: i64,
     per_hour: i64,
+    /// Targets one client network prefix may create in any trailing hour.
+    source_per_hour: i64,
     /// A target whose lease lapsed longer ago than this, and whose archive
     /// retention has emptied, gives its slot back.
     free_after_seconds: i64,
@@ -187,8 +187,9 @@ impl Store {
         self.max_journals_per_target
     }
 
-    /// Refuse a new target once `max_targets` are stored or `per_hour` were
-    /// created in the trailing hour. Existing targets keep renewing. Before a
+    /// Refuse a new target once `max_targets` are stored, `per_hour` were
+    /// created in the trailing hour, or its source prefix created
+    /// `source_per_hour` in the trailing hour. Existing targets keep renewing. Before a
     /// creation counts the stored targets, it deletes every target whose
     /// lease lapsed more than `free_after` ago and whose archive frames
     /// retention has already pruned, so abandoned keys do not fill the store.
@@ -196,11 +197,13 @@ impl Store {
         mut self,
         max_targets: std::num::NonZeroU16,
         per_hour: std::num::NonZeroU16,
+        source_per_hour: std::num::NonZeroU8,
         free_after: std::time::Duration,
     ) -> Self {
         self.new_target_limit = Some(NewTargetLimit {
             max_targets: i64::from(max_targets.get()).min(MAX_TARGETS),
             per_hour: i64::from(per_hour.get()),
+            source_per_hour: i64::from(source_per_hour.get()),
             free_after_seconds: i64::try_from(free_after.as_secs()).unwrap_or(i64::MAX),
         });
         self
@@ -408,25 +411,29 @@ impl Store {
         finish_immediate(transaction, result).await
     }
 
-    /// Atomically enforce replay, time, and generation ordering before replacing a secret.
+    /// [`Self::admit_from`] one fixed documentation prefix.
+    #[cfg(test)]
     pub(crate) async fn admit(
         &self,
         auth: &VerifiedHttpAuth,
         target: TargetMaterial<'_>,
         now: i64,
     ) -> Result<AdmissionOutcome, StoreError> {
-        self.admit_unless_new(auth, target, now, false).await
+        self.admit_from(auth, target, "192.0.2.0/24", now).await
     }
 
-    /// [`Self::admit`], refusing as saturated when `refuse_new` is set and
-    /// no target is stored for this MG. The decision and the write share one
-    /// transaction, so a creation the caller did not allow never commits.
-    pub(crate) async fn admit_unless_new(
+    /// Atomically enforce replay, time, and generation ordering before
+    /// replacing a secret, for a registration from the client network prefix
+    /// `source`. A store
+    /// with new-target limits records `source` on the target it creates and
+    /// counts it in the same transaction, so the per-source limit derives
+    /// from committed targets alone.
+    pub(crate) async fn admit_from(
         &self,
         auth: &VerifiedHttpAuth,
         target: TargetMaterial<'_>,
+        source: &str,
         now: i64,
-        refuse_new: bool,
     ) -> Result<AdmissionOutcome, StoreError> {
         let generation = i64::try_from(target.generation).map_err(|_| StoreError::Refused)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -497,9 +504,6 @@ impl Store {
                 AdmissionOutcome::Updated
             }
         } else {
-            if refuse_new {
-                return Err(StoreError::Saturated);
-            }
             if let Some(limit) = self.new_target_limit {
                 free_lapsed_targets(
                     &mut transaction,
@@ -528,7 +532,20 @@ impl Store {
             {
                 return Err(StoreError::Saturated);
             }
-            AdmissionOutcome::Created
+            if let Some(limit) = self.new_target_limit
+                && sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM targets
+                     WHERE created_source_prefix = ? AND created_at > ?",
+                )
+                .bind(source)
+                .bind(now.saturating_sub(3600))
+                .fetch_one(&mut *transaction)
+                .await?
+                    >= limit.source_per_hour
+            {
+                return Err(StoreError::Saturated);
+            }
+            AdmissionOutcome::Updated
         };
 
         let aad = target_secret_aad(
@@ -549,8 +566,9 @@ impl Store {
         sqlx::query(
             "INSERT INTO targets (
                 fman_pubkey,target_id,fman_name,key_id,secret_nonce,secret_ciphertext,
-                generation,auth_created_at,lease_until,registration_revision,status,created_at,updated_at
-             ) VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)
+                generation,auth_created_at,lease_until,registration_revision,status,created_at,updated_at,
+                created_source_prefix
+             ) VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?,?)
              ON CONFLICT(fman_pubkey) DO UPDATE SET
                 fman_name=excluded.fman_name,key_id=excluded.key_id,
                 secret_nonce=excluded.secret_nonce,secret_ciphertext=excluded.secret_ciphertext,
@@ -562,7 +580,8 @@ impl Store {
         )
         .bind(target.mg_pubkey).bind(target_id).bind(target.mg_name).bind(&self.key_id)
         .bind(nonce).bind(ciphertext).bind(generation).bind(auth.created_at).bind(lease_until)
-        .bind(now).bind(now).bind(revision_bump).execute(&mut *transaction).await?;
+        .bind(now).bind(now).bind(self.new_target_limit.map(|_| source)).bind(revision_bump)
+        .execute(&mut *transaction).await?;
         if expired {
             sqlx::query(
                 "DELETE FROM metric_snapshots WHERE target_id =
@@ -586,7 +605,7 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         }
-        if expired || outcome != AdmissionOutcome::Idempotent {
+        if expired || outcome == AdmissionOutcome::Updated {
             sqlx::query(
                 "UPDATE metric_exposition_revision SET revision=revision+1 WHERE singleton=1",
             )
@@ -2437,6 +2456,7 @@ mod tests {
         let store = store(&dir).await.limit_new_targets(
             std::num::NonZeroU16::new(3).unwrap(),
             std::num::NonZeroU16::new(2).unwrap(),
+            std::num::NonZeroU8::MAX,
             std::time::Duration::from_secs(86_400),
         );
         let admit = |mg: &'static str, event: &'static str, now: i64| {
@@ -2473,12 +2493,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_source_prefix_creation_limit_counts_committed_targets_in_a_trailing_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let limited = |store: Store| {
+            store.limit_new_targets(
+                std::num::NonZeroU16::new(10).unwrap(),
+                std::num::NonZeroU16::new(10).unwrap(),
+                std::num::NonZeroU8::new(1).unwrap(),
+                std::time::Duration::from_secs(86_400),
+            )
+        };
+        let first = limited(store(&dir).await);
+        let admit = |store: &Store,
+                     mg: &'static str,
+                     source: &'static str,
+                     event: &'static str,
+                     now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit_from(
+                        &auth(event, now),
+                        target_for(mg, "endpoint", 1),
+                        source,
+                        now,
+                    )
+                    .await
+            }
+        };
+        admit(&first, "a1", "192.0.2.0/24", "1", 10_000)
+            .await
+            .unwrap();
+        // The limit is read from the committed target, not from process
+        // memory, so a reopened store still counts it.
+        drop(first);
+        let reopened = limited(store(&dir).await);
+        assert!(matches!(
+            admit(&reopened, "b2", "192.0.2.0/24", "2", 13_599).await,
+            Err(StoreError::Saturated)
+        ));
+        // Renewing the source's target costs nothing; another prefix has its own limit.
+        admit(&reopened, "a1", "192.0.2.0/24", "3", 13_599)
+            .await
+            .unwrap();
+        admit(&reopened, "c3", "198.51.100.0/24", "4", 13_599)
+            .await
+            .unwrap();
+        // The creation leaves the trailing hour at exactly 3,600 s.
+        admit(&reopened, "b2", "192.0.2.0/24", "5", 13_600)
+            .await
+            .unwrap();
+        assert!(!reopened.target_exists("d4").await.unwrap());
+    }
+
+    #[tokio::test]
     async fn a_long_lapsed_target_with_an_empty_archive_frees_its_slot() {
         let dir = tempfile::tempdir().unwrap();
         // Lease 120 s; a slot frees 1,000 s after its lease ends.
         let store = store(&dir).await.limit_new_targets(
             std::num::NonZeroU16::new(2).unwrap(),
             std::num::NonZeroU16::new(100).unwrap(),
+            std::num::NonZeroU8::MAX,
             std::time::Duration::from_secs(1_000),
         );
         let admit = |mg: &'static str, event: &'static str, now: i64| {
@@ -2638,7 +2713,7 @@ mod tests {
         first.reserve_auth(&auth("a", 100), 100).await.unwrap();
         assert_eq!(
             first.admit(&auth("a", 100), target(4), 100).await.unwrap(),
-            AdmissionOutcome::Created
+            AdmissionOutcome::Updated
         );
         assert!(matches!(
             first.reserve_auth(&auth("a", 100), 100).await,

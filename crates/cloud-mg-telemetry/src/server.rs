@@ -38,7 +38,7 @@ use crate::{
     metrics_poller::MetricsPoller,
     metrics_snapshot::{MgVerification, render_metrics},
     mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
-    store::{AdmissionOutcome, ExportedFederation, MetricExpositionView, Store, TargetMaterial},
+    store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
     store_binding::store_binding_label,
 };
 
@@ -111,14 +111,8 @@ struct AppState {
 enum Registrants {
     /// MGs whose Holder authorization verifies for the NIP-98 signer.
     Badged(PeerBadgeVerifier),
-    /// Any NIP-98 signer. Each source network prefix creates at most
-    /// `per_hour` targets in an hour-long window that starts at its first
-    /// committed creation and resets when the hour ends; the store bounds
-    /// the rest. Refused registrations and renewals are not charged.
-    Unbadged {
-        per_hour: std::num::NonZeroU8,
-        created: Arc<tokio::sync::Mutex<HashMap<String, (i64, u8)>>>,
-    },
+    /// Any NIP-98 signer; the store bounds the targets they create.
+    Unbadged,
 }
 
 impl Registrants {
@@ -189,6 +183,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
         Admission::Unbadged(limits) => store.limit_new_targets(
             limits.max_targets,
             limits.new_targets_per_hour,
+            limits.source_new_targets_per_hour,
             std::time::Duration::from_secs(u64::from(log_retention_days.get()) * 86_400),
         ),
     };
@@ -239,10 +234,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
             Some(verifier) => verifier,
             None => PeerBadgeVerifier::try_from_profile(&environment.profile()?)?,
         }),
-        Admission::Unbadged(limits) => Registrants::Unbadged {
-            per_hour: limits.source_new_targets_per_hour,
-            created: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        },
+        Admission::Unbadged(_) => Registrants::Unbadged,
     };
     let state = AppState {
         _data_lock: data_lock,
@@ -565,14 +557,7 @@ async fn register_inner(
         .iroh_endpoint_id
         .parse::<EndpointId>()
         .map_err(|_| RegisterError::Refused)?;
-    enforce_source_budget(
-        &state.source_budget,
-        source,
-        now,
-        60,
-        state.source_budget_per_minute,
-    )
-    .await?;
+    enforce_source_budget(state, source, now).await?;
     let _permit = state
         .admission
         .clone()
@@ -583,36 +568,24 @@ async fn register_inner(
         .reserve_auth(&auth, now)
         .await
         .map_err(map_store_error)?;
-    // An unbadged collector holds its source creation windows across the
-    // admission transaction, so concurrent registrations from one prefix see
-    // each other's creations and only a committed creation is charged.
-    let mut creations = match &state.registrants {
-        Registrants::Badged(verifier) => {
-            let badge = verifier
-                .verify(
-                    registration
-                        .holder_authorization
-                        .as_ref()
-                        .ok_or(RegisterError::Refused)?,
-                )
-                .await
-                .map_err(|_| RegisterError::Refused)?;
-            if badge.subject().0.to_string() != auth.signer {
-                return Err(RegisterError::Refused);
-            }
-            None
+    if let Registrants::Badged(verifier) = &state.registrants {
+        let badge = verifier
+            .verify(
+                registration
+                    .holder_authorization
+                    .as_ref()
+                    .ok_or(RegisterError::Refused)?,
+            )
+            .await
+            .map_err(|_| RegisterError::Refused)?;
+        if badge.subject().0.to_string() != auth.signer {
+            return Err(RegisterError::Refused);
         }
-        Registrants::Unbadged { per_hour, created } => {
-            Some((created.lock().await, source_prefix(source), per_hour.get()))
-        }
-    };
-    let refuse_new = creations
-        .as_ref()
-        .is_some_and(|(created, prefix, limit)| !source_may_create(created, prefix, now, *limit));
+    }
     let mg_name = display_name(&auth.signer).map_err(|_| RegisterError::Refused)?;
-    let outcome = state
+    state
         .store
-        .admit_unless_new(
+        .admit_from(
             &auth,
             TargetMaterial {
                 mg_pubkey: &auth.signer,
@@ -621,68 +594,34 @@ async fn register_inner(
                 capability: registration.capability.as_bytes(),
                 generation: registration.generation,
             },
+            &source_prefix(source),
             now,
-            refuse_new,
         )
         .await
         .map_err(map_store_error)?;
-    if let Some((created, prefix, _)) = creations.as_mut()
-        && outcome == AdmissionOutcome::Created
-    {
-        charge_source_creation(created, std::mem::take(prefix), now);
-    }
     Ok(())
 }
 
-/// Spend one of `limit` uses that a source network prefix has in each
-/// `window_seconds` window.
 async fn enforce_source_budget(
-    budget: &tokio::sync::Mutex<HashMap<String, (i64, u8)>>,
+    state: &AppState,
     source: IpAddr,
     now: i64,
-    window_seconds: i64,
-    limit: u8,
 ) -> Result<(), RegisterError> {
-    let mut budget = budget.lock().await;
-    budget.retain(|_, (window, _)| *window > now - window_seconds);
+    let mut budget = state.source_budget.lock().await;
+    budget.retain(|_, (window, _)| *window > now - 60);
     let source = source_prefix(source);
     if !budget.contains_key(&source) && budget.len() >= 4096 {
         return Err(RegisterError::Unavailable);
     }
     let entry = budget.entry(source).or_insert((now, 0));
-    if entry.0 <= now - window_seconds {
+    if entry.0 <= now - 60 {
         *entry = (now, 0);
     }
-    if entry.1 >= limit {
+    if entry.1 >= state.source_budget_per_minute {
         return Err(RegisterError::Unavailable);
     }
     entry.1 += 1;
     Ok(())
-}
-
-/// Hour-long window of a source prefix's unbadged target creations.
-const SOURCE_CREATION_WINDOW_SECONDS: i64 = 3600;
-
-/// Whether `prefix` may create another target: it created fewer than `limit`
-/// in the window that its first creation started.
-fn source_may_create(
-    created: &HashMap<String, (i64, u8)>,
-    prefix: &str,
-    now: i64,
-    limit: u8,
-) -> bool {
-    created.get(prefix).is_none_or(|(start, count)| {
-        *start <= now - SOURCE_CREATION_WINDOW_SECONDS || *count < limit
-    })
-}
-
-/// Count a committed creation. A prefix enters the map only by creating a
-/// target and leaves once its window ends, so the store's hourly creation cap
-/// bounds the map.
-fn charge_source_creation(created: &mut HashMap<String, (i64, u8)>, prefix: String, now: i64) {
-    created.retain(|_, (start, _)| *start > now - SOURCE_CREATION_WINDOW_SECONDS);
-    let entry = created.entry(prefix).or_insert((now, 0));
-    entry.1 = entry.1.saturating_add(1);
 }
 
 fn source_prefix(source: IpAddr) -> String {
@@ -1095,11 +1034,18 @@ mod tests {
         );
     }
 
-    fn unbadged(mut state: AppState, per_hour: u8) -> AppState {
-        state.registrants = Registrants::Unbadged {
-            per_hour: std::num::NonZeroU8::new(per_hour).unwrap(),
-            created: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        };
+    fn unbadged(state: AppState, source_per_hour: u8) -> AppState {
+        unbadged_with_cap(state, source_per_hour, 4096)
+    }
+
+    fn unbadged_with_cap(mut state: AppState, source_per_hour: u8, max_targets: u16) -> AppState {
+        state.registrants = Registrants::Unbadged;
+        state.store = state.store.limit_new_targets(
+            std::num::NonZeroU16::new(max_targets).unwrap(),
+            std::num::NonZeroU16::new(60).unwrap(),
+            std::num::NonZeroU8::new(source_per_hour).unwrap(),
+            std::time::Duration::from_secs(86_400),
+        );
         state
     }
 
@@ -1222,15 +1168,7 @@ mod tests {
     #[tokio::test]
     async fn a_creation_the_store_refuses_does_not_spend_the_source_budget() {
         let directory = tempfile::tempdir().unwrap();
-        let mut state = unbadged(state(&directory).await, 1);
-        let limited = |state: &AppState, max_targets: u16| {
-            state.store.clone().limit_new_targets(
-                std::num::NonZeroU16::new(max_targets).unwrap(),
-                std::num::NonZeroU16::new(60).unwrap(),
-                std::time::Duration::from_secs(86_400),
-            )
-        };
-        state.store = limited(&state, 1);
+        let mut state = unbadged_with_cap(state(&directory).await, 1, 1);
         let (other, first, second) = (Keys::generate(), Keys::generate(), Keys::generate());
         assert_eq!(
             register_from(&state, "198.51.100.1:1", &other).await,
@@ -1242,7 +1180,7 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
         // Capacity returns within the hour: the refused attempt cost nothing.
-        state.store = limited(&state, 3);
+        state = unbadged_with_cap(state, 1, 3);
         assert_eq!(
             register_from(&state, "192.0.2.1:1", &first).await,
             StatusCode::OK
@@ -1259,19 +1197,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-    }
-
-    #[test]
-    fn a_source_creation_window_starts_at_its_first_creation_and_resets_after_an_hour() {
-        let mut created = HashMap::new();
-        let prefix = "192.0.2.0/24";
-        assert!(source_may_create(&created, prefix, 1_000, 1));
-        charge_source_creation(&mut created, prefix.into(), 1_000);
-        assert!(!source_may_create(&created, prefix, 4_599, 1));
-        assert!(source_may_create(&created, prefix, 4_600, 1));
-        charge_source_creation(&mut created, prefix.into(), 4_600);
-        assert_eq!(created.get(prefix), Some(&(4_600, 1)));
-        assert!(!source_may_create(&created, prefix, 8_199, 1));
     }
 
     #[tokio::test]
@@ -1832,25 +1757,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let state = state(&directory).await;
         for host in 1..=4 {
-            enforce_source_budget(
-                &state.source_budget,
-                format!("192.0.2.{host}").parse().unwrap(),
-                100,
-                60,
-                state.source_budget_per_minute,
-            )
-            .await
-            .unwrap();
+            enforce_source_budget(&state, format!("192.0.2.{host}").parse().unwrap(), 100)
+                .await
+                .unwrap();
         }
         assert!(matches!(
-            enforce_source_budget(
-                &state.source_budget,
-                "192.0.2.99".parse().unwrap(),
-                100,
-                60,
-                state.source_budget_per_minute
-            )
-            .await,
+            enforce_source_budget(&state, "192.0.2.99".parse().unwrap(), 100).await,
             Err(RegisterError::Unavailable)
         ));
         assert_eq!(state.source_budget.lock().await.len(), 1);
@@ -1863,25 +1775,12 @@ mod tests {
         state.source_budget_per_minute = 12;
         // One egress address, a whole fleet reconciling in the same second.
         for _ in 0..12 {
-            enforce_source_budget(
-                &state.source_budget,
-                "192.0.2.7".parse().unwrap(),
-                100,
-                60,
-                state.source_budget_per_minute,
-            )
-            .await
-            .unwrap();
+            enforce_source_budget(&state, "192.0.2.7".parse().unwrap(), 100)
+                .await
+                .unwrap();
         }
         assert!(matches!(
-            enforce_source_budget(
-                &state.source_budget,
-                "192.0.2.7".parse().unwrap(),
-                100,
-                60,
-                state.source_budget_per_minute
-            )
-            .await,
+            enforce_source_budget(&state, "192.0.2.7".parse().unwrap(), 100).await,
             Err(RegisterError::Unavailable)
         ));
     }
