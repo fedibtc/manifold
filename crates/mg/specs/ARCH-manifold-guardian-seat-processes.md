@@ -27,8 +27,10 @@ The current release hosts exactly one bundled fedimintd version
 Children run under a scrubbed environment the daemon builds, never an
 inherited shell ([ARCH-manifold-guardian](./ARCH-manifold-guardian.md) *Trust
 boundaries*). The bundled `fedimintd` composition root is the module-set
-availability point: it registers the upstream modules plus the fixed Manifold
-SPv2 initializer. The formation leader makes the policy decision by sending
+availability point: it registers the upstream modules, the fixed Manifold
+SPv2 initializer, and Fedi's `fedi-social` module. `fedi-social` is available
+but outside fedimintd's default module set, so a federation commits it only
+when its leader's setup code names it. The formation leader makes the policy decision by sending
 `mintv2`, `walletv2`, `lnv2`, `meta`, and SPv2 in
 the leader-carried module set encoded in its setup code, so every newly formed federation
 commits exactly those five modules. Mintv2 is also the generation advertised

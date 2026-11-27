@@ -1,5 +1,6 @@
 [workspace]
 exclude = [
+  ".nix-deps/fedi",
   ".nix-deps/fedimint",
   ".nix-deps/peerbadge-sdk",
   ".nix-deps/stability-pool",
@@ -227,6 +228,8 @@ fedimint-wallet-client = { version = ">=0.11.2, <0.13", default-features = false
 fedimint-wallet-common = { version = "0.12.0", default-features = false }
 fedimint-walletv2-client = { version = "0.12.0", default-features = false }
 fedimint-walletv2-common = { version = ">=0.11.2, <0.13", default-features = false }
+# Fedi's social backup server module, bundled into the MG binary's fedimintd.
+fedi-social-server = { git = "https://github.com/fedixyz/fedi", rev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6" }
 # Bundled into the MG binary. Not on crates.io, so it is a path into the same
 # Nix-provided source the patches above point at.
 fedimintd = { path = ".nix-deps/fedimint/fedimintd", default-features = false }
@@ -318,3 +321,16 @@ iroh-relay-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7
 fedi-stability-pool-client = { path = ".nix-deps/stability-pool/crates/client" }
 fedi-stability-pool-common = { path = ".nix-deps/stability-pool/crates/common" }
 fedi-stability-pool-server = { path = ".nix-deps/stability-pool/crates/server" }
+
+# Route the pinned fedi-social modules to the Nix-provided `.nix-deps/fedi` source.
+[patch."https://github.com/fedixyz/fedi"]
+fedi-social-common = { path = ".nix-deps/fedi/crates/modules/fedi-social/common" }
+fedi-social-server = { path = ".nix-deps/fedi/crates/modules/fedi-social/server" }
+
+# The fedi-social crates inherit Fedimint from the Fedi workspace's
+# fedibtc/fedimint git source; route those to the same pinned
+# `.nix-deps/fedimint` source as `[patch.crates-io]`.
+[patch."https://github.com/fedibtc/fedimint"]
+fedimint-aead = { path = ".nix-deps/fedimint/crypto/aead" }
+fedimint-core = { path = ".nix-deps/fedimint/fedimint-core" }
+fedimint-server = { path = ".nix-deps/fedimint/fedimint-server" }

@@ -39,14 +39,17 @@ AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metr
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
-`fedibtc/stability-pool@212c29d7e09f1fd7eee44e0132ca2092d41efa8d`. Re-run the inventory against the
-exact combined integration tip whenever either pin or the attached module set
-changes.
+`fedibtc/stability-pool@212c29d7e09f1fd7eee44e0132ca2092d41efa8d` and the
+fedi-social server source at
+`fedixyz/fedi@59e406974ccf7d0cd1d719a78e6cc46fd51870e6`. Re-run the inventory
+against the exact combined integration tip whenever any pin or the attached
+module set changes.
 
-The Fedi SPv2 and legacy stability-pool server modules currently register no
-Prometheus metric families of their own. "Including SPv2" therefore means this
-absence is checked from the exact Cargo-selected `fedibtc/stability-pool` server
-source, not that it can be omitted from future review.
+The Fedi SPv2, legacy stability-pool and fedi-social server modules currently
+register no Prometheus metric families of their own. "Including SPv2" and
+"including fedi-social" therefore mean this absence is checked from the exact
+Cargo-selected `fedibtc/stability-pool` and `fedixyz/fedi` server sources, not
+that they can be omitted from future review.
 
 The bundled Fedimint release label is `0.12.0-fedi30`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That

@@ -30,6 +30,7 @@
       url = "github:fedibtc/stability-pool/212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
       flake = false;
     };
+    # Source of the fedi-social server module that MG bundles, and the
     # SP-enabled fedimintd for the live stability-pool E2E. The fedixyz/fedi
     # monorepo's `fedi-fedimintd` package bundles the stability-pool server module (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
     # `fedimint-pkgs` follows our `fedimint` input for Fedi's Nix dependencies.
@@ -248,6 +249,7 @@
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
           link_dependency stability-pool ${stabilityPoolPatched}
+          link_dependency fedi ${fedi}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
         '';
 
@@ -1026,6 +1028,7 @@
         fedimintdMetricVersion = "0.12.0";
         fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
         stabilityPoolSourceRev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
+        fediSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI
@@ -1240,6 +1243,7 @@
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${stabilityPoolPatched}
+              fedi_social_source=${fedi}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
@@ -1270,6 +1274,15 @@
                 exit 1
               fi
               test -d "$stability_pool_source/crates/server"
+              grep -q -- "\"rev\": \"${fediSourceRev}\"" ${./flake.lock}
+              grep -q -- "fedixyz/fedi/${fediSourceRev}" ${./flake.nix}
+              grep -q -- $'producer\tfedi_social\tfedixyz/fedi\t${fediSourceRev}\t${fediSourceRev}' "$manifest"
+              grep -Fq -- "fedi-social-server = { git = \"https://github.com/fedixyz/fedi\", rev = \"${fediSourceRev}\"" ${./Cargo.toml}
+              if ${pkgs.ripgrep}/bin/rg -n 'github\.com/fedixyz/fedi' ${./crates} --glob Cargo.toml; then
+                echo "crate manifests must inherit fedi-social dependencies from the workspace" >&2
+                exit 1
+              fi
+              test -d "$fedi_social_source/crates/modules/fedi-social/server"
               source_metric_version=$(
                 ${pkgs.gawk}/bin/awk '
                   /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
@@ -1287,12 +1300,9 @@
                   exit 1
                 }
 
-              stability_pool_closure="$TMPDIR/stability-pool-closure"
-              ${pkgs.python3}/bin/python3 - \
-                "$stability_pool_source" \
-                ${./Cargo.lock} \
-                "${stabilityPoolSourceRev}" \
-                > "$stability_pool_closure" <<'PY'
+              # Prints the normal and target-specific runtime closure of one
+              # bundled module's root package within its pinned source.
+              cat > "$TMPDIR/runtime-closure.py" <<'PY'
               import pathlib
               import sys
               import tomllib
@@ -1303,7 +1313,7 @@
               revision = sys.argv[3]
               expected_source = None  # Nix-patched, pinned path packages
               expected_dependency_source = (
-                  f"git+https://github.com/fedibtc/stability-pool?rev={revision}"
+                  f"git+{sys.argv[4]}?rev={revision}"
               )
               with open(source_root / "Cargo.toml", "rb") as manifest_file:
                   workspace_manifest = tomllib.load(manifest_file)
@@ -1358,7 +1368,7 @@
                   packages[name] = (path, manifest)
 
               closure = set()
-              pending = ["fedi-stability-pool-server"]
+              pending = [sys.argv[5]]
               while pending:
                   name = pending.pop()
                   if name in closure:
@@ -1432,13 +1442,36 @@
                   path, _ = packages[name]
                   print(f"{name}\t{path.parent.relative_to(source_root)}")
               PY
-              ${pkgs.gawk}/bin/awk -F '\t' \
-                '$1 == "package" && $2 == "stability_pool" { print $3 "\t" $4 }' \
-                "$manifest" \
-                | sort -u > "$TMPDIR/expected-stability-pool-closure"
-              ${pkgs.diffutils}/bin/diff -u \
-                "$TMPDIR/expected-stability-pool-closure" \
-                "$stability_pool_closure"
+              # Requires a producer's manifest package rows to equal the
+              # Cargo-selected runtime closure of its root package.
+              check_runtime_closure() {
+                producer="$1"
+                source_root="$2"
+                git_url="$3"
+                revision="$4"
+                root_package="$5"
+
+                ${pkgs.python3}/bin/python3 "$TMPDIR/runtime-closure.py" \
+                  "$source_root" \
+                  ${./Cargo.lock} \
+                  "$revision" \
+                  "$git_url" \
+                  "$root_package" \
+                  > "$TMPDIR/$producer-closure"
+                ${pkgs.gawk}/bin/awk -F '\t' -v producer="$producer" \
+                  '$1 == "package" && $2 == producer { print $3 "\t" $4 }' \
+                  "$manifest" \
+                  | sort -u > "$TMPDIR/expected-$producer-closure"
+                ${pkgs.diffutils}/bin/diff -u \
+                  "$TMPDIR/expected-$producer-closure" \
+                  "$TMPDIR/$producer-closure"
+              }
+              check_runtime_closure stability_pool "$stability_pool_source" \
+                https://github.com/fedibtc/stability-pool "${stabilityPoolSourceRev}" \
+                fedi-stability-pool-server
+              check_runtime_closure fedi_social "$fedi_social_source" \
+                https://github.com/fedixyz/fedi "${fediSourceRev}" \
+                fedi-social-server
 
               actual="$TMPDIR/actual"
               expected="$TMPDIR/expected"
@@ -1498,7 +1531,10 @@
                 extract_metrics fedimint "$source"
                 while IFS=$'\t' read -r _ path; do
                   extract_metrics stability_pool "$stability_pool_source/$path"
-                done < "$stability_pool_closure"
+                done < "$TMPDIR/stability_pool-closure"
+                while IFS=$'\t' read -r _ path; do
+                  extract_metrics fedi_social "$fedi_social_source/$path"
+                done < "$TMPDIR/fedi_social-closure"
               } | sort -u > "$actual"
               ${pkgs.gawk}/bin/awk -F '\t' '$1 == "metric" { print $3 "\t" $4 }' "$manifest" \
                 | sort -u > "$expected"
