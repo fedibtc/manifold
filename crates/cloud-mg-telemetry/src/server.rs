@@ -184,9 +184,11 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     .await?;
     let store = match admission {
         Admission::Badged => store,
-        Admission::Unbadged(limits) => {
-            store.limit_new_targets(limits.max_targets, limits.new_targets_per_hour)
-        }
+        Admission::Unbadged(limits) => store.limit_new_targets(
+            limits.max_targets,
+            limits.new_targets_per_hour,
+            std::time::Duration::from_secs(u64::from(log_retention_days.get()) * 86_400),
+        ),
     };
     let target_quota_bytes = match admission {
         Admission::Badged => None,

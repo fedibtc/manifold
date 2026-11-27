@@ -60,7 +60,9 @@ also bounds what one target can take: a byte budget per target in the
 archive, which refuses that target's appends once full and never evicts;
 a cap on the targets one source network prefix creates per hour; and a cap
 on the targets created per hour. Renewing an existing target costs none of
-these. It dials an MG only through its own relays, never at the addresses or
+these. A target whose lease lapsed more than the archive retention ago, and
+whose archive retention has emptied, gives its slot back, so abandoned keys
+cannot fill the store for good. It dials an MG only through its own relays, never at the addresses or
 relays the endpoint's owner publishes, so a registrant cannot point it at
 other hosts. Its MG series carry `fman_verified="false"`. It does not serve
 the federation export, because any key could make it hand attacker-chosen

@@ -286,7 +286,7 @@ Unbadged mode requires four limits, and badged mode refuses them:
 
 | Variable | Meaning | Starting value |
 | --- | --- | --- |
-| `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. Stored targets keep their slot after their lease ends. | `1024` |
+| `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. A target frees its slot once its lease has lapsed for more than `LOG_RETENTION_DAYS` and retention has emptied its archive. | `1024` |
 | `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
 | `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates per hour. | `4` |
 | `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |

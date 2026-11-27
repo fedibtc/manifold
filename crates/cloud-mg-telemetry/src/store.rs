@@ -132,6 +132,9 @@ pub(crate) struct TargetMaterial<'a> {
 struct NewTargetLimit {
     max_targets: i64,
     per_hour: i64,
+    /// A target whose lease lapsed longer ago than this, and whose archive
+    /// retention has emptied, gives its slot back.
+    free_after_seconds: i64,
 }
 
 /// Durable collector state backed by one WAL-mode SQLite database.
@@ -183,15 +186,20 @@ impl Store {
     }
 
     /// Refuse a new target once `max_targets` are stored or `per_hour` were
-    /// created in the trailing hour. Existing targets keep renewing.
+    /// created in the trailing hour. Existing targets keep renewing. Before a
+    /// creation counts the stored targets, it deletes every target whose
+    /// lease lapsed more than `free_after` ago and whose archive frames
+    /// retention has already pruned, so abandoned keys do not fill the store.
     pub(crate) fn limit_new_targets(
         mut self,
         max_targets: std::num::NonZeroU16,
         per_hour: std::num::NonZeroU16,
+        free_after: std::time::Duration,
     ) -> Self {
         self.new_target_limit = Some(NewTargetLimit {
             max_targets: i64::from(max_targets.get()).min(MAX_TARGETS),
             per_hour: i64::from(per_hour.get()),
+            free_after_seconds: i64::try_from(free_after.as_secs()).unwrap_or(i64::MAX),
         });
         self
     }
@@ -473,6 +481,13 @@ impl Store {
                 AdmissionOutcome::Updated
             }
         } else {
+            if let Some(limit) = self.new_target_limit {
+                free_lapsed_targets(
+                    &mut transaction,
+                    now.saturating_sub(limit.free_after_seconds),
+                )
+                .await?;
+            }
             let max_targets = self
                 .new_target_limit
                 .map_or(MAX_TARGETS, |limit| limit.max_targets);
@@ -1990,6 +2005,35 @@ impl Store {
     }
 }
 
+/// Delete every target whose lease ended before `lapsed_before` and that has
+/// no archive frame left, with the rows that belong to it.
+async fn free_lapsed_targets(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    lapsed_before: i64,
+) -> Result<(), StoreError> {
+    const FREED: &str = "SELECT t.target_id FROM targets t
+         WHERE t.lease_until < ?1 AND NOT EXISTS (
+             SELECT 1 FROM archive_frames f JOIN journal_streams s ON s.stream_id = f.stream_id
+             WHERE s.target_id = t.target_id)";
+    for table in [
+        "metric_poll_state",
+        "metric_snapshots",
+        "metric_listed_seats",
+        "mg_reports",
+        "journal_streams",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE target_id IN ({FREED})"))
+            .bind(lapsed_before)
+            .execute(&mut **transaction)
+            .await?;
+    }
+    sqlx::query(&format!("DELETE FROM targets WHERE target_id IN ({FREED})"))
+        .bind(lapsed_before)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 /// Replace the target's report of kind `T` with `stated`, unless the stored
 /// one was observed later.
 async fn store_mg_report<T: MgReport>(
@@ -2374,6 +2418,7 @@ mod tests {
         let store = store(&dir).await.limit_new_targets(
             std::num::NonZeroU16::new(3).unwrap(),
             std::num::NonZeroU16::new(2).unwrap(),
+            std::time::Duration::from_secs(86_400),
         );
         let admit = |mg: &'static str, event: &'static str, now: i64| {
             let store = store.clone();
@@ -2406,6 +2451,94 @@ mod tests {
         admit("b2", "7", 20_000).await.unwrap();
         assert!(store.target_exists("a1").await.unwrap());
         assert!(!store.target_exists("d4").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_long_lapsed_target_with_an_empty_archive_frees_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        // Lease 120 s; a slot frees 1,000 s after its lease ends.
+        let store = store(&dir).await.limit_new_targets(
+            std::num::NonZeroU16::new(2).unwrap(),
+            std::num::NonZeroU16::new(100).unwrap(),
+            std::time::Duration::from_secs(1_000),
+        );
+        let admit = |mg: &'static str, event: &'static str, now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit(&auth(event, now), target_for(mg, "endpoint", 1), now)
+                    .await
+            }
+        };
+        admit("a1", "1", 10_000).await.unwrap();
+        admit("b2", "2", 10_000).await.unwrap();
+        let target_id = |mg: &'static str| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT target_id FROM targets WHERE fman_pubkey=?")
+                    .bind(mg)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        // b2 still has an archived frame, and a1 has rows in every child table.
+        let (first, second) = (target_id("a1").await, target_id("b2").await);
+        for (stream, target) in [("s1", &first), ("s2", &second)] {
+            sqlx::query(
+                "INSERT INTO journal_streams(stream_id,target_id,journal_selector) VALUES(?,?,?)",
+            )
+            .bind(stream)
+            .bind(target)
+            .bind(b"mg".as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO archive_frames(
+                stream_id,reception_day,start_offset,end_offset,frame_hash,
+                observed_generation,continuity_gap
+             ) VALUES('s2','2024-01-02',0,10,?,0,0)",
+        )
+        .bind([0_u8; 32].as_slice())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metric_snapshots(
+                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
+             ) VALUES (?,'seat',?,1,'[]',0)",
+        )
+        .bind(&first)
+        .bind("0".repeat(64))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        // Leases end at 10,120. One second before the slot frees, the store is full.
+        assert!(matches!(
+            admit("c3", "3", 11_120).await,
+            Err(StoreError::Saturated)
+        ));
+        assert!(store.target_exists("a1").await.unwrap());
+        // Then a1's slot goes to the new key; b2 keeps its slot while its
+        // archive still holds a frame.
+        admit("c3", "4", 11_121).await.unwrap();
+        assert!(!store.target_exists("a1").await.unwrap());
+        assert!(store.target_exists("b2").await.unwrap());
+        assert!(matches!(
+            admit("d4", "5", 11_200).await,
+            Err(StoreError::Saturated)
+        ));
+        for table in ["journal_streams", "metric_snapshots"] {
+            let left: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE target_id = ?"))
+                    .bind(&first)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(left, 0, "{table}");
+        }
     }
 
     #[tokio::test]
