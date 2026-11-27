@@ -200,7 +200,10 @@ the fleet.
   operation is active or has an unresolved outcome, and the known
   fee-aware recipient amount is zero. It is otherwise `sweepable`,
   `pending_wallet_work`, or `unknown`. A cached Lightning success does not
-  override active mint change/refund state machines.
+  override active mint change/refund state machines. An ecash payout of the
+  wallet that is `issued` and not marked redeemed, or `reclaiming`, makes a
+  wallet that would read `drained` or `sweepable` read `pending_wallet_work`:
+  its token exists only in this wallet's database.
 - `PayoutDestination` returns the one LNURL-pay or Lightning Address used for
   all payment and guardian-fee sweeps, or null when none is configured.
   `SetPayoutDestination` replaces or clears it.
@@ -263,7 +266,11 @@ the fleet.
   `PayoutStatus` looks that operation up and links it to the job before doing
   anything else. `PayoutStatus` never starts work; it reports a pending job when
   no native commit exists. `AwaitPayout` also links, then requires and
-  awaits the exact committed operation. Both verbs use `request_id`, so a lost
+  awaits the exact committed operation. Fedimint caches a payment's outcome
+  only when something drains its updates, so `PayoutStatus` drains them, for at
+  most 10 seconds, for a Lightning payout whose state machines have stopped
+  with no cached outcome; a payout nobody awaited otherwise reads `unknown`
+  forever. Both verbs use `request_id`, so a lost
   response is recovered without another invoice or outgoing payment. A job left
   started but unlinked by a release before ledger-named operation ids is
   treated as never started.
@@ -376,7 +383,10 @@ the fleet.
   the only place the token leaves the wallet.
   `ListPayouts` takes no arguments and returns jobs of both methods, newest
   first, in the `PayoutStatus` shape: the 20 newest jobs (a daemon constant,
-  because every listed job opens its wallet to read its state) plus every
+  because every listed job opens its wallet to read its state; a read that
+  does not await refuses a wallet another task is still opening and never
+  joins a guardian-fee wallet, so one such job is left out rather than holding
+  up the list) plus every
   older unmarked ecash job whose state is `issued` or `reclaiming`, so newer
   payouts never push an issued token out of the list. A job is listed only
   once it has a native operation, after the same lookup

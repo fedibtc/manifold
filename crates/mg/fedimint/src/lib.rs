@@ -231,6 +231,13 @@ pub(crate) enum OpenWait {
     Refuse,
 }
 
+impl OpenWait {
+    /// `Wait` for a caller that waits for its answer, `Refuse` for a read.
+    pub(crate) fn when(wait: bool) -> Self {
+        if wait { Self::Wait } else { Self::Refuse }
+    }
+}
+
 /// One payment client and, for every guarded seat, one guardian-fee client per
 /// federation under one data directory and mnemonic-derived wallet secret.
 pub struct Wallet {
@@ -673,6 +680,18 @@ impl Wallet {
             .get(&scope)
             .cloned()
             .context("open guardian-fee client")
+    }
+
+    /// Whether `scope` has a client to open from its own database, so opening
+    /// it needs no config download.
+    pub(crate) async fn scope_initialized(&self, scope: &ClientScope) -> bool {
+        if self.federations.read().await.contains_key(scope) {
+            return true;
+        }
+        let Some(prefix) = self.prefixes.read().await.get(scope).copied() else {
+            return false;
+        };
+        Client::is_initialized(&self.database.with_prefix(prefix.consensus_encode_to_vec())).await
     }
 
     async fn join_exclusion(&self, scope: ClientScope) -> tokio::sync::OwnedMutexGuard<()> {

@@ -213,6 +213,29 @@ impl WalletDrainStatus {
         }
     }
 
+    /// Account for an ecash payout token this wallet may still hold, which the
+    /// wallet's own operations do not show as unsettled: a wallet that would
+    /// otherwise read drained or sweepable has pending work, and one whose
+    /// payouts could not be read is unknown.
+    pub(crate) fn with_open_ecash_payout(mut self, open: anyhow::Result<bool>) -> Self {
+        match open {
+            Ok(false) => {}
+            Ok(true) => {
+                if matches!(
+                    self.drain_state,
+                    DrainState::Drained | DrainState::Sweepable
+                ) {
+                    self.drain_state = DrainState::PendingWalletWork;
+                }
+            }
+            Err(_) => {
+                self.query_errors.push(WalletDrainQuery::OutgoingOperations);
+                self.drain_state = DrainState::Unknown;
+            }
+        }
+        self
+    }
+
     /// Return a fail-closed status when no wallet client can be queried.
     pub fn unavailable() -> Self {
         Self::new(

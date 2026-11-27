@@ -60,11 +60,13 @@ trait PayoutNative: Send + Sync {
     async fn start(&self, job: &PayoutJob) -> anyhow::Result<Payout>;
 
     /// Find the native payout the ledger names for the job, without starting
-    /// one.
-    async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>>;
+    /// one. Unless `wait`, a wallet that another task is opening, or that was
+    /// never joined, is an error rather than a wait.
+    async fn find(&self, job: &PayoutJob, wait: bool) -> anyhow::Result<Option<Payout>>;
 
     /// Read or await one already committed native payout. For an ecash payout,
-    /// awaiting means awaiting a submitted reclaim.
+    /// awaiting means awaiting a submitted reclaim. A read that does not wait
+    /// opens the wallet as `find` does.
     async fn observe(
         &self,
         job: &PayoutJob,
@@ -159,7 +161,13 @@ impl EcashPayoutWorker for PayoutWorker {
     async fn payment_drain_status(&self, federation_id: &FederationId) -> WalletDrainStatusWire {
         let status = match (self.wallet.as_ref(), federation_id.0.parse()) {
             (Some(wallet), Ok(id)) => match wallet.client_with(id, OpenWait::Refuse).await {
-                Ok(c) => crate::drain_status::wallet_drain_status(&c).await,
+                Ok(c) => {
+                    let scope = payment_scope(federation_id);
+                    let open = self.holds_open_token(&c, &scope).await;
+                    crate::drain_status::wallet_drain_status(&c)
+                        .await
+                        .with_open_ecash_payout(open)
+                }
                 Err(crate::WalletError::ClientOpening {
                     recovering: true, ..
                 }) => return WalletDrainStatusWire::recovering(),
@@ -187,7 +195,13 @@ impl EcashPayoutWorker for PayoutWorker {
             .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Refuse)
             .await
         {
-            Ok(c) => Ok(crate::drain_status::wallet_drain_status(&c).await.to_wire()),
+            Ok(c) => {
+                let open = self.holds_open_token(&c, &scope).await;
+                Ok(crate::drain_status::wallet_drain_status(&c)
+                    .await
+                    .with_open_ecash_payout(open)
+                    .to_wire())
+            }
             Err(error)
                 if matches!(
                     error.downcast_ref(),
@@ -201,6 +215,66 @@ impl EcashPayoutWorker for PayoutWorker {
             }
             Err(_) => Ok(WalletDrainStatus::unavailable().to_wire()),
         }
+    }
+}
+
+impl PayoutWorker {
+    /// Whether the scope's wallet holds an ecash payout whose token may still
+    /// be unredeemed: issued and not marked redeemed, or being reclaimed. That
+    /// token exists only in this wallet's database, so the wallet is not
+    /// drained while it is open.
+    async fn holds_open_token(
+        &self,
+        client: &ClientHandleArc,
+        scope: &PayoutScope,
+    ) -> anyhow::Result<bool> {
+        for job in crate::payout_store::unconfirmed_ecash(&self.db).await? {
+            if !same_wallet(&job.scope, scope) {
+                continue;
+            }
+            let id = match &job.operation {
+                Some(operation) => operation.operation_id.clone(),
+                None => PayoutOperationId::ecash(&job.request_id),
+            };
+            if job.operation.is_none()
+                && crate::payout_ecash::find_ecash_payout(client, &id)
+                    .await?
+                    .is_none()
+            {
+                continue;
+            }
+            if crate::payout_ecash::ecash_payout_state(client, &id, false)
+                .await?
+                .is_open()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Whether two scopes name the same wallet. A guardian-fee scope's invite can
+/// be written differently for one federation, so it is not compared.
+fn same_wallet(left: &PayoutScope, right: &PayoutScope) -> bool {
+    match (left, right) {
+        (
+            PayoutScope::PaymentFederation { federation_id: a },
+            PayoutScope::PaymentFederation { federation_id: b },
+        ) => a == b,
+        (
+            PayoutScope::GuardianFee {
+                federation_id: a,
+                seat_id: sa,
+                ..
+            },
+            PayoutScope::GuardianFee {
+                federation_id: b,
+                seat_id: sb,
+                ..
+            },
+        ) => a == b && sa == sb,
+        _ => false,
     }
 }
 
@@ -325,7 +399,7 @@ mod tests {
             Ok(payout)
         }
 
-        async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>> {
+        async fn find(&self, job: &PayoutJob, _wait: bool) -> anyhow::Result<Option<Payout>> {
             Ok(self.payouts.lock().await.get(&job.request_id).cloned())
         }
 
@@ -1125,12 +1199,12 @@ impl PayoutWorker {
         crate::payout_store::commit(&self.db, request_id, &payout).await
     }
 
-    async fn reconcile(&self, job: PayoutJob) -> anyhow::Result<PayoutJob> {
+    async fn reconcile(&self, job: PayoutJob, wait: bool) -> anyhow::Result<PayoutJob> {
         validate_scope(&job.scope)?;
         if job.operation.is_some() {
             return Ok(job);
         }
-        let payout = self.native.find(&job).await?;
+        let payout = self.native.find(&job, wait).await?;
         match payout {
             Some(p) => crate::payout_store::commit(&self.db, &job.request_id, &p).await,
             None => Ok(job),
@@ -1149,7 +1223,7 @@ impl PayoutWorker {
 
     /// One job with its native state, read from the wallet.
     async fn project(&self, job: PayoutJob, wait: bool) -> anyhow::Result<PayoutJobStatus> {
-        let job = self.reconcile(job).await?;
+        let job = self.reconcile(job, wait).await?;
         let native = match (&job.method, &job.operation) {
             (_, None) if wait => {
                 anyhow::bail!("payout request has no committed native operation")
@@ -1182,7 +1256,7 @@ impl PayoutWorker {
             job.method == PayoutMethod::Ecash,
             "payout request is not an ecash payout"
         );
-        let job = self.reconcile(job).await?;
+        let job = self.reconcile(job, true).await?;
         let id = job
             .operation
             .as_ref()
@@ -1288,20 +1362,33 @@ impl WalletPayoutNative {
         })
     }
 
-    /// Open the ordinary client of one payout scope.
-    async fn client(&self, scope: &PayoutScope) -> anyhow::Result<ClientHandleArc> {
+    /// Open the ordinary client of one payout scope. A caller that does not
+    /// `Wait` is refused while another task opens the wallet, and never joins a
+    /// guardian-fee wallet that was not joined yet: a join downloads the
+    /// federation's config, which can take as long as its timeout.
+    async fn client(&self, scope: &PayoutScope, wait: OpenWait) -> anyhow::Result<ClientHandleArc> {
         Ok(match scope {
             PayoutScope::PaymentFederation { federation_id } => {
-                self.wallet.client(federation_id.0.parse()?).await?
+                self.wallet
+                    .client_with(federation_id.0.parse()?, wait)
+                    .await?
             }
             PayoutScope::GuardianFee {
                 invite_code,
                 seat_id,
                 ..
             } => {
+                anyhow::ensure!(
+                    wait == OpenWait::Wait
+                        || self
+                            .wallet
+                            .scope_initialized(&Self::client_scope(scope)?)
+                            .await,
+                    "guardian-fee wallet is not joined yet"
+                );
                 let key = (self.guardian_key)(seat_id);
                 self.wallet
-                    .guardian_fee_client(invite_code, seat_id, &key, OpenWait::Wait)
+                    .guardian_fee_client(invite_code, seat_id, &key, wait)
                     .await?
             }
         })
@@ -1315,7 +1402,7 @@ impl PayoutNative for WalletPayoutNative {
             .wallet
             .payout_exclusion(Self::client_scope(&job.scope)?)
             .await;
-        let client = self.client(&job.scope).await?;
+        let client = self.client(&job.scope, OpenWait::Wait).await?;
         let PayoutMethod::Lightning { destination } = &job.method else {
             return crate::payout_ecash::start_ecash_payout(&client, &job.request_id).await;
         };
@@ -1340,8 +1427,8 @@ impl PayoutNative for WalletPayoutNative {
         crate::payout_native::pay_payout(&client, &job.request_id, destination, prepared).await
     }
 
-    async fn find(&self, job: &PayoutJob) -> anyhow::Result<Option<Payout>> {
-        let client = self.client(&job.scope).await?;
+    async fn find(&self, job: &PayoutJob, wait: bool) -> anyhow::Result<Option<Payout>> {
+        let client = self.client(&job.scope, OpenWait::when(wait)).await?;
         Ok(match &job.method {
             PayoutMethod::Lightning { .. } => {
                 crate::payout_native::attempted_payout(&client, job).await
@@ -1362,12 +1449,12 @@ impl PayoutNative for WalletPayoutNative {
         id: PayoutOperationId,
         wait: bool,
     ) -> anyhow::Result<PayoutNativeStatus> {
-        let client = self.client(&job.scope).await?;
+        let client = self.client(&job.scope, OpenWait::when(wait)).await?;
         Ok(match &job.method {
             PayoutMethod::Lightning { .. } => PayoutNativeStatus::Lightning(Some(if wait {
                 crate::await_payout(&client, &id).await?
             } else {
-                crate::payout_status(&client, &id).await?
+                settled_status(&client, &id).await?
             })),
             PayoutMethod::Ecash => PayoutNativeStatus::Ecash(Some(
                 crate::payout_ecash::ecash_payout_state(&client, &id, wait).await?,
@@ -1384,8 +1471,36 @@ impl PayoutNative for WalletPayoutNative {
             .wallet
             .payout_exclusion(Self::client_scope(&job.scope)?)
             .await;
-        let client = self.client(&job.scope).await?;
+        let client = self.client(&job.scope, OpenWait::Wait).await?;
         crate::payout_ecash::start_ecash_reclaim(&client, &job.request_id, &id).await
+    }
+}
+
+/// How long a status read may take to replay a finished payment's updates.
+const SETTLED_REPLAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The Lightning payout's state without waiting for it to finish. Fedimint
+/// caches an operation's outcome only when a subscriber drains its updates,
+/// so a payment nobody awaited reads `unknown` once its state machines stop.
+/// Its updates then replay from the database at once, so draining them here
+/// caches and reports the real outcome.
+async fn settled_status(
+    client: &ClientHandleArc,
+    id: &PayoutOperationId,
+) -> anyhow::Result<crate::wallet_drain::OutgoingOperation> {
+    let status = crate::payout_status(client, id).await?;
+    if status.state() != crate::wallet_drain::OutgoingState::Unknown
+        || status.has_active_state_machines()
+    {
+        return Ok(status);
+    }
+    match tokio::time::timeout(SETTLED_REPLAY_TIMEOUT, crate::await_payout(client, id)).await {
+        Ok(Ok(settled)) => Ok(settled),
+        Ok(Err(error)) => {
+            tracing::warn!(error = %format!("{error:#}"), "could not replay a finished payout's outcome");
+            Ok(status)
+        }
+        Err(_) => Ok(status),
     }
 }
 
