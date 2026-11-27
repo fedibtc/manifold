@@ -112,7 +112,8 @@ enum Registrants {
     /// MGs whose Holder authorization verifies for the NIP-98 signer.
     Badged(PeerBadgeVerifier),
     /// Any NIP-98 signer. Each source network prefix creates at most
-    /// `per_hour` targets in an hour; the store bounds the rest.
+    /// `per_hour` targets in an hour-long window that starts at its first
+    /// creation and resets when the hour ends; the store bounds the rest.
     Unbadged {
         per_hour: std::num::NonZeroU8,
         created: Arc<tokio::sync::Mutex<HashMap<String, (i64, u8)>>>,

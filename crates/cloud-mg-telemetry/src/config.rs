@@ -32,7 +32,8 @@ pub(crate) struct UnbadgedLimits {
     pub(crate) max_targets: std::num::NonZeroU16,
     /// Targets created in any trailing hour.
     pub(crate) new_targets_per_hour: std::num::NonZeroU16,
-    /// Targets created from one source network prefix in any trailing hour.
+    /// Targets created from one source network prefix in an hour-long window
+    /// that starts at its first creation and resets when the hour ends.
     pub(crate) source_new_targets_per_hour: std::num::NonZeroU8,
     /// Compressed archive bytes one target may hold within retention.
     pub(crate) log_target_quota_bytes: std::num::NonZeroU64,
@@ -192,7 +193,8 @@ pub struct Args {
     #[arg(long, env = "CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR")]
     pub new_targets_per_hour: Option<u16>,
     /// Unbadged only: most targets created from one source network prefix in
-    /// any trailing hour.
+    /// an hour-long window that starts at its first creation and resets when
+    /// the hour ends.
     #[arg(long, env = "CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR")]
     pub source_new_targets_per_hour: Option<u8>,
     /// Unbadged only: compressed archive bytes one target may hold.

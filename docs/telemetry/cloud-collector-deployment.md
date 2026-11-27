@@ -288,7 +288,7 @@ Unbadged mode requires four limits, and badged mode refuses them:
 | --- | --- | --- |
 | `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. A target frees its slot once its lease has lapsed for more than `LOG_RETENTION_DAYS` and retention has emptied its archive. | `1024` |
 | `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
-| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates per hour. | `4` |
+| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in an hour-long window. The window starts at that source's first creation and resets when the hour ends, so it is not a trailing hour. | `4` |
 | `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |
 
 Renewing an existing target counts against none of them. A refused creation
@@ -297,8 +297,10 @@ per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes.
 
 The unbadged collector has no direct UDP transport. It reaches MGs only
 through the default n0 relays and resolves endpoints through n0 DNS and
-pkarr, so allow egress to those. It does not serve `GET /v1/federations`;
-connect no invite consumer to it. Its MG series carry
+pkarr, so allow egress to those. For now it does not serve
+`GET /v1/federations`, so connect no invite consumer to it. It still stores
+each seat's invite as the badged collector does, so an export can be added
+later. Its metrics still cover federation-level guardian monitoring. Its MG series carry
 `fman_verified="false"`. Scrape it as its own Prometheus job.
 
 Publish its registration URL, `<origin>/v1/telemetry/registrations`, as
