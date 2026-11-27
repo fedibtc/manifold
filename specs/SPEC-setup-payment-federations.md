@@ -166,7 +166,9 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
   publication carries it; the feature signer cannot redirect enrollment.
   The field is new in 0.1.21. Consumers that admit unknown fields but
   predate it, which includes every MG and FA release from 0.1.1 to 0.1.20,
-  ignore it, so their MGs without a badge do not register;
+  ignore it, so their MGs without a badge do not register. The publisher
+  refuses content fields it does not know, so publishing it needs a
+  publisher from 0.1.21 or later;
 - `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already

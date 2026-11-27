@@ -59,8 +59,8 @@ store is bound to the mode, so neither mode opens the other's database. It
 also bounds what one target can take: a byte budget per target in the
 archive, which refuses that target's appends once full and never evicts;
 a cap on the targets one source network prefix creates in an hour-long
-window, which starts at that prefix's first creation and resets when the
-hour ends; and a cap on the targets created in any trailing hour. Renewing
+window, which starts at that prefix's first committed creation and resets
+when the hour ends, so a registration the store refuses costs nothing; and a cap on the targets created in any trailing hour. Renewing
 an existing target costs none of these. A target whose lease lapsed more
 than the archive retention ago, and whose archive retention has emptied,
 gives its slot back, so abandoned keys cannot fill the store for good. It
@@ -71,7 +71,8 @@ serve the federation export, because any key could make it hand
 attacker-chosen invites to a downstream consumer. It still stores each
 seat's invite under the same snapshot lifecycle as the badged collector,
 so an export can be added later; federation-level guardian monitoring
-stays available through its metrics.
+stays available through its metrics. Its seat-capacity and seat-readiness
+exports keep their shape but report unverified MGs.
 
 ## Metrics ownership and identity
 

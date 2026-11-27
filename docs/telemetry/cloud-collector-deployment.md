@@ -288,25 +288,43 @@ Unbadged mode requires four limits, and badged mode refuses them:
 | --- | --- | --- |
 | `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. A target frees its slot once its lease has lapsed for more than `LOG_RETENTION_DAYS` and retention has emptied its archive. | `1024` |
 | `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
-| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in an hour-long window. The window starts at that source's first creation and resets when the hour ends, so it is not a trailing hour. | `4` |
+| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in an hour-long window. The window starts at that source's first committed creation and resets when the hour ends, so it is not a trailing hour. A registration the store refuses, or a renewal, costs nothing. | `4` |
 | `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |
 
 Renewing an existing target counts against none of them. A refused creation
 answers 503, and the MG retries at its next reconcile. The existing
-per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes.
+per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes and
+counts renewals too.
+
+Both source limits key on the client network prefix, so before opening the
+instance, check through its intended ingress that registrations from distinct
+client networks reach it as distinct prefixes. List every immediate proxy in
+`CLOUD_FMAN_TELEMETRY_TRUSTED_PROXY`. Without that, every MG shares the
+proxy's prefix and its budgets.
 
 The unbadged collector has no direct UDP transport. It reaches MGs only
 through the default n0 relays and resolves endpoints through n0 DNS and
 pkarr, so allow egress to those. For now it does not serve
 `GET /v1/federations`, so connect no invite consumer to it. It still stores
 each seat's invite as the badged collector does, so an export can be added
-later. Its metrics still cover federation-level guardian monitoring. Its MG series carry
-`fman_verified="false"`. Scrape it as its own Prometheus job.
+later. Its metrics still cover federation-level guardian monitoring. Its MG
+series carry `fman_verified="false"`. Scrape it as its own Prometheus job.
 
-Publish its registration URL, `<origin>/v1/telemetry/registrations`, as
-`unbadged_telemetry_registration_url` in the setup-payment publication
-([SPEC-setup-payment-federations](../../specs/SPEC-setup-payment-federations.md)).
-MGs older than the release that reads it ignore the field.
+Its `GET /v1/seat-capacity` and `GET /v1/seat-readiness` keep the badged
+response shape, but every entry comes from an unverified MG. Keep them away
+from consumers that expect badged data.
+
+Roll it out in this order:
+
+1. Deploy the unbadged collector.
+2. Upgrade the setup-payment publisher to a build that knows
+   `unbadged_telemetry_registration_url`. The publisher refuses content
+   fields it does not recognize, so an older one rejects the policy, even
+   though older policy readers ignore the field.
+3. Wait for an MG release that reads the field, planned as 0.1.21.
+4. Publish its registration URL, `<origin>/v1/telemetry/registrations`, as
+   `unbadged_telemetry_registration_url` in the setup-payment publication
+   ([SPEC-setup-payment-federations](../../specs/SPEC-setup-payment-federations.md)).
 
 ## Read-only staging comparison
 

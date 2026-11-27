@@ -38,7 +38,7 @@ use crate::{
     metrics_poller::MetricsPoller,
     metrics_snapshot::{MgVerification, render_metrics},
     mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
-    store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
+    store::{AdmissionOutcome, ExportedFederation, MetricExpositionView, Store, TargetMaterial},
     store_binding::store_binding_label,
 };
 
@@ -113,7 +113,8 @@ enum Registrants {
     Badged(PeerBadgeVerifier),
     /// Any NIP-98 signer. Each source network prefix creates at most
     /// `per_hour` targets in an hour-long window that starts at its first
-    /// creation and resets when the hour ends; the store bounds the rest.
+    /// committed creation and resets when the hour ends; the store bounds
+    /// the rest. Refused registrations and renewals are not charged.
     Unbadged {
         per_hour: std::num::NonZeroU8,
         created: Arc<tokio::sync::Mutex<HashMap<String, (i64, u8)>>>,
@@ -582,7 +583,10 @@ async fn register_inner(
         .reserve_auth(&auth, now)
         .await
         .map_err(map_store_error)?;
-    match &state.registrants {
+    // An unbadged collector holds its source creation windows across the
+    // admission transaction, so concurrent registrations from one prefix see
+    // each other's creations and only a committed creation is charged.
+    let mut creations = match &state.registrants {
         Registrants::Badged(verifier) => {
             let badge = verifier
                 .verify(
@@ -596,23 +600,19 @@ async fn register_inner(
             if badge.subject().0.to_string() != auth.signer {
                 return Err(RegisterError::Refused);
             }
+            None
         }
         Registrants::Unbadged { per_hour, created } => {
-            // Renewals are free; only a new target spends its source's budget.
-            if !state
-                .store
-                .target_exists(&auth.signer)
-                .await
-                .map_err(map_store_error)?
-            {
-                enforce_source_budget(created, source, now, 3600, per_hour.get()).await?;
-            }
+            Some((created.lock().await, source_prefix(source), per_hour.get()))
         }
-    }
+    };
+    let refuse_new = creations
+        .as_ref()
+        .is_some_and(|(created, prefix, limit)| !source_may_create(created, prefix, now, *limit));
     let mg_name = display_name(&auth.signer).map_err(|_| RegisterError::Refused)?;
-    state
+    let outcome = state
         .store
-        .admit(
+        .admit_unless_new(
             &auth,
             TargetMaterial {
                 mg_pubkey: &auth.signer,
@@ -622,9 +622,15 @@ async fn register_inner(
                 generation: registration.generation,
             },
             now,
+            refuse_new,
         )
         .await
         .map_err(map_store_error)?;
+    if let Some((created, prefix, _)) = creations.as_mut()
+        && outcome == AdmissionOutcome::Created
+    {
+        charge_source_creation(created, std::mem::take(prefix), now);
+    }
     Ok(())
 }
 
@@ -652,6 +658,31 @@ async fn enforce_source_budget(
     }
     entry.1 += 1;
     Ok(())
+}
+
+/// Hour-long window of a source prefix's unbadged target creations.
+const SOURCE_CREATION_WINDOW_SECONDS: i64 = 3600;
+
+/// Whether `prefix` may create another target: it created fewer than `limit`
+/// in the window that its first creation started.
+fn source_may_create(
+    created: &HashMap<String, (i64, u8)>,
+    prefix: &str,
+    now: i64,
+    limit: u8,
+) -> bool {
+    created.get(prefix).is_none_or(|(start, count)| {
+        *start <= now - SOURCE_CREATION_WINDOW_SECONDS || *count < limit
+    })
+}
+
+/// Count a committed creation. A prefix enters the map only by creating a
+/// target and leaves once its window ends, so the store's hourly creation cap
+/// bounds the map.
+fn charge_source_creation(created: &mut HashMap<String, (i64, u8)>, prefix: String, now: i64) {
+    created.retain(|_, (start, _)| *start > now - SOURCE_CREATION_WINDOW_SECONDS);
+    let entry = created.entry(prefix).or_insert((now, 0));
+    entry.1 = entry.1.saturating_add(1);
 }
 
 fn source_prefix(source: IpAddr) -> String {
@@ -1186,6 +1217,61 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn a_creation_the_store_refuses_does_not_spend_the_source_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = unbadged(state(&directory).await, 1);
+        let limited = |state: &AppState, max_targets: u16| {
+            state.store.clone().limit_new_targets(
+                std::num::NonZeroU16::new(max_targets).unwrap(),
+                std::num::NonZeroU16::new(60).unwrap(),
+                std::time::Duration::from_secs(86_400),
+            )
+        };
+        state.store = limited(&state, 1);
+        let (other, first, second) = (Keys::generate(), Keys::generate(), Keys::generate());
+        assert_eq!(
+            register_from(&state, "198.51.100.1:1", &other).await,
+            StatusCode::OK
+        );
+        // The store is full, so this source's first creation is refused.
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Capacity returns within the hour: the refused attempt cost nothing.
+        state.store = limited(&state, 3);
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::OK
+        );
+        // That committed creation used the source's one creation this hour.
+        assert_eq!(
+            register_from(&state, "192.0.2.2:1", &second).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            !state
+                .store
+                .target_exists(&second.public_key().to_string())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_source_creation_window_starts_at_its_first_creation_and_resets_after_an_hour() {
+        let mut created = HashMap::new();
+        let prefix = "192.0.2.0/24";
+        assert!(source_may_create(&created, prefix, 1_000, 1));
+        charge_source_creation(&mut created, prefix.into(), 1_000);
+        assert!(!source_may_create(&created, prefix, 4_599, 1));
+        assert!(source_may_create(&created, prefix, 4_600, 1));
+        charge_source_creation(&mut created, prefix.into(), 4_600);
+        assert_eq!(created.get(prefix), Some(&(4_600, 1)));
+        assert!(!source_may_create(&created, prefix, 8_199, 1));
     }
 
     #[tokio::test]
