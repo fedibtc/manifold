@@ -4,8 +4,8 @@
 
 MVP contract. The provider-side Public Liquidity API and the Manifold-owned FA
 producer/recovery projection are implemented. Fedi owns launch supervision and
-its RPC projection. Custom gateway attachment and its exclusion with FLIP
-liquidity are not implemented.
+its RPC projection. Custom gateway registration through the Fedi consumer is
+not released yet.
 
 ## Product boundary
 
@@ -69,18 +69,20 @@ stability-only or combined request remains available through the same backend
 for a later, administratively approved operation. MVP exposes no operation that
 detaches a successfully attached Fedi-verified provider.
 
-Instead of FLIP liquidity, the FA may attach a custom gateway that a provider
-runs and funds separately
+The FA may also register a custom gateway that a provider runs and funds
+separately, beside FLIP liquidity or without it
 ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
-The FA supplies the `GatewayApiUrl`, and the attachment uses the same signed
-`RegisterGateway` fan-out and threshold readback as a FLIP gateway; the FA
-records it durably so it resumes after a crash. In v1 a federation gets one
-gateway source: a custom attachment is refused while a liquidity operation for
-the federation is live or after one completed, and `start` is refused while a
-custom attachment is in progress or after one completed. An unfinished
-attachment of either kind is resumed, not replaced. Nothing detaches or adds
-to a completed attachment. This is a v1 limit, not an incompatibility between
-the two.
+The consumer first checks that the gateway answers and serves the federation,
+then calls `register_gateway` with its `GatewayApiUrl`, which uses the same
+signed `RegisterGateway` fan-out and threshold readback as a FLIP gateway.
+`fa-client` keeps no record of a custom gateway: the federation's LNv2 gateway
+list, read with `read_lnv2_gateways`, is the record, so a restore loses
+nothing, and an interrupted registration is retried by the FA. Custom gateways
+and FLIP liquidity do not exclude each other: `start` ignores registered
+gateways, and a consumer tells the FLIP gateway apart by the `gateway_api` of
+the operation's completion evidence. LNv2 clients spread payments over every
+registered gateway, so a custom gateway that answers but lacks liquidity fails
+the payments routed to it. Nothing removes a registered gateway.
 
 ## Provider discovery and disclosure gate
 

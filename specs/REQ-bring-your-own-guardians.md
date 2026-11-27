@@ -48,15 +48,20 @@ unchanged.
   Telemetry from MGs without a badge must not be able to degrade telemetry
   from badged MGs
   ([ARCH-cloud-mg-telemetry](./ARCH-cloud-mg-telemetry.md)).
-- **Lightning.** The FA can attach a custom gateway that a provider runs and
-  funds separately, by entering its URL; a guide stays available as help.
-  After a Fedi-verified formation, the FA can choose FLIP liquidity, a custom
-  gateway, or "Skip for now". After a code-based formation, the FA is offered
-  only a custom gateway, and can defer it and return later. An attachment in
-  progress is finished or recovered before another starts. In v1, a
-  successful attachment of either kind is final: no switching, removal or
-  additional gateway. That is a v1 limitation, not a permanent incompatibility
-  between custom gateways and FLIP
+- **Lightning.** The FA can register a custom gateway that a provider runs
+  and funds separately, by entering its URL; a guide stays available as help.
+  A Fedi-verified formation keeps its FLIP liquidity step, with "Skip for now",
+  and FLIP stays the primary source: the FA can later add a custom gateway
+  from the federation's settings, beside FLIP liquidity or without it, and is
+  not prompted to. After a code-based formation, the FA is offered only a
+  custom gateway, and can defer it and return later. A federation may have
+  both: LNv2 clients spread payments over every registered gateway and skip
+  one that does not answer, so the two do not conflict, and a FLIP request
+  that the app reported as failed but that completes later simply adds its
+  gateway. The cost is that a custom gateway that answers but lacks liquidity
+  fails the payments routed to it. The gateway is checked to answer and to
+  serve the federation before it is registered. In v1 a registered gateway is
+  final: there is no switching or removal
   ([SPEC-fa-post-formation-liquidity](../crates/fa-client/specs/SPEC-fa-post-formation-liquidity.md)).
   FLIP itself serves any federation whose operators are distinct trusted badge
   holders, however it was formed
