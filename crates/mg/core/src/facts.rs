@@ -5,7 +5,7 @@
 //! upward import.
 
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, GuardianCode, Plan, SeatId,
+    FaId, FederationSize, GuardianCode, Plan, SeatGrantLabel, SeatGrantNonce, SeatId,
 };
 
 /// The immutable creation-time facts of a seat. They are inserted together
@@ -29,6 +29,17 @@ pub struct SeatFacts {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SeatNo(pub u32);
+
+/// The grant a seat was redeemed from
+/// ([SPEC-seat-grant](../../specs/SPEC-seat-grant.md)): its nonce, which no
+/// other seat may redeem, and the operator's label. Recorded when the seat is
+/// admitted and carried in the seat's backup document, so a restore rebuilds
+/// the used nonces with their seats.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SeatGrantRedemption {
+    pub grant_nonce: SeatGrantNonce,
+    pub label: Option<SeatGrantLabel>,
+}
 
 impl SeatNo {
     /// The only conversion from a durable ordinal to its four-port block.

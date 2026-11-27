@@ -41,7 +41,8 @@ use chacha20poly1305::aead::{Aead as _, AeadCore as _, KeyInit as _, OsRng, Payl
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 use mg_core::backup::{
-    GuardianArchive, RecoverError, RecoveredFleet, SeatBackupDocument, SeatPublication, sha256_hex,
+    GuardianArchive, RecoverError, RecoveredFleet, SeatBackupDocument,
+    SeatGrantRevocationsDocument, SeatPublication, sha256_hex,
 };
 use mg_core::identity::RootMnemonic;
 use mg_core::legacy_layout::LegacyGuardianArchive;
@@ -62,6 +63,14 @@ const LEN_PREFIX: usize = 4;
 /// under exactly one domain, whatever its size.
 const AAD_DOCUMENT: &[u8] = b"fman-backup/document";
 const AAD_ARCHIVE: &[u8] = b"fman-backup/archive";
+/// The fleet-level SeatGrant revocation document's own domain: it is read by
+/// its coordinate, and a reader from before it existed must not open it as a
+/// seat document.
+const AAD_SEAT_GRANT_REVOCATIONS: &[u8] = b"fman-backup/seat-grant-revocations";
+
+/// Envelope version of the revocation document, independent of the seat
+/// document's: the two are read separately and change separately.
+const SEAT_GRANT_REVOCATIONS_VERSION: u32 = 1;
 
 /// Payload capacity of a seat document: one event's plaintext minus the
 /// frame's length prefix. The one constant both the seal-time check and its
@@ -127,9 +136,20 @@ pub(crate) const LEGACY_DOCUMENT_VERSION: u32 = 1;
 /// document, which republishes it regardless.
 pub(crate) const TRANSFER_DOCUMENT_VERSION: u32 = 3;
 
+/// The envelope version of a document that carries the SeatGrant its seat
+/// was redeemed from ([`SeatBackupDocument::seat_grant`]), with or without
+/// transfer facts. Same shape and archive as [`BACKUP_DOCUMENT_VERSION`], for
+/// the same reason [`TRANSFER_DOCUMENT_VERSION`] exists: a reader from before
+/// grants would ignore the field and restore the seat with its nonce
+/// forgotten, so a later build would let the grant create a second seat. It
+/// refuses the document instead.
+pub(crate) const SEAT_GRANT_DOCUMENT_VERSION: u32 = 4;
+
 /// The envelope version a document is sealed under.
 fn document_version(document: &SeatBackupDocument) -> u32 {
-    if document.transfer.is_some() {
+    if document.seat_grant.is_some() {
+        SEAT_GRANT_DOCUMENT_VERSION
+    } else if document.transfer.is_some() {
         TRANSFER_DOCUMENT_VERSION
     } else {
         BACKUP_DOCUMENT_VERSION
@@ -150,11 +170,13 @@ pub enum BackupError {
     #[error("parse backup document: {0}")]
     Parse(#[source] ciborium::de::Error<std::io::Error>),
     #[error(
-        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION}, {BACKUP_DOCUMENT_VERSION} or {TRANSFER_DOCUMENT_VERSION})"
+        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION}, {BACKUP_DOCUMENT_VERSION}, {TRANSFER_DOCUMENT_VERSION} or {SEAT_GRANT_DOCUMENT_VERSION})"
     )]
     UnsupportedVersion { found: u32 },
     #[error("backup document carries guardian-transfer facts under the wrong version")]
     TransferVersion,
+    #[error("backup document carries a seat grant under the wrong version")]
+    SeatGrantVersion,
     #[error("version 1 guardian archive: {0}")]
     LegacyArchive(#[source] anyhow::Error),
     #[error(
@@ -284,6 +306,7 @@ impl BackupIdentity {
             LEGACY_DOCUMENT_VERSION,
             BACKUP_DOCUMENT_VERSION,
             TRANSFER_DOCUMENT_VERSION,
+            SEAT_GRANT_DOCUMENT_VERSION,
         ]
         .contains(&version.version)
         {
@@ -304,7 +327,21 @@ impl BackupIdentity {
         // document carrying them would be read by a pre-transfer reader
         // without them, so this writer never produces one and this reader
         // refuses it.
+        // The same holds for a seat grant and its version, which also admits
+        // transfer facts beside it.
         let Envelope { version, document } = envelope;
+        match (version, document.seat_grant.is_some()) {
+            (SEAT_GRANT_DOCUMENT_VERSION, true) => {
+                return Ok(Envelope {
+                    version: BACKUP_DOCUMENT_VERSION,
+                    document,
+                });
+            }
+            (SEAT_GRANT_DOCUMENT_VERSION, false) | (_, true) => {
+                return Err(BackupError::SeatGrantVersion);
+            }
+            (_, false) => {}
+        }
         match (version, document.transfer.is_some()) {
             (TRANSFER_DOCUMENT_VERSION, true) => Ok(Envelope {
                 // The archive of a transfer-bearing document is the current
@@ -315,6 +352,65 @@ impl BackupIdentity {
             (TRANSFER_DOCUMENT_VERSION, false) | (_, true) => Err(BackupError::TransferVersion),
             (version, false) => Ok(Envelope { version, document }),
         }
+    }
+
+    /// The one event the fleet-level revocation document becomes, replacing
+    /// the last at its fixed coordinate.
+    pub fn seat_grant_revocations_event(
+        &self,
+        document: &SeatGrantRevocationsDocument,
+    ) -> Result<EventBuilder, BackupError> {
+        let mut payload = Vec::new();
+        ciborium::into_writer(
+            &Envelope {
+                version: SEAT_GRANT_REVOCATIONS_VERSION,
+                document,
+            },
+            &mut payload,
+        )
+        .map_err(BackupError::Serialize)?;
+        // One event, like a seat document: it is read whole by its
+        // coordinate, and a document spanning events could be caught half
+        // replaced.
+        if payload.len() > DOCUMENT_CAPACITY {
+            return Err(BackupError::TooLarge { len: payload.len() });
+        }
+        let mut slices = self.seal_padded(payload, AAD_SEAT_GRANT_REVOCATIONS);
+        debug_assert_eq!(
+            slices.len(),
+            1,
+            "the document fits one slice by the check above"
+        );
+        Ok(addressable_event(
+            slices.remove(0),
+            self.seat_grant_revocations_coordinate(),
+        ))
+    }
+
+    /// Open the revocation document sealed by
+    /// [`Self::seat_grant_revocations_event`], refusing a version this build
+    /// does not know and any spelling but the canonical one.
+    pub(crate) fn open_seat_grant_revocations(
+        &self,
+        content: &str,
+    ) -> Result<SeatGrantRevocationsDocument, BackupError> {
+        let blob = BASE64.decode(content).map_err(|_| BackupError::Decrypt)?;
+        let plaintext = self.open_blob(&blob, AAD_SEAT_GRANT_REVOCATIONS)?;
+        let payload = unframe(&plaintext)?;
+        let version: Envelope<serde::de::IgnoredAny> =
+            ciborium::from_reader(payload).map_err(BackupError::Parse)?;
+        if version.version != SEAT_GRANT_REVOCATIONS_VERSION {
+            return Err(BackupError::UnsupportedVersion {
+                found: version.version,
+            });
+        }
+        let mut cursor = std::io::Cursor::new(payload);
+        let envelope: Envelope<SeatGrantRevocationsDocument> =
+            ciborium::from_reader(&mut cursor).map_err(BackupError::Parse)?;
+        if cursor.position() as usize != payload.len() {
+            return Err(BackupError::Frame);
+        }
+        Ok(envelope.document)
     }
 
     /// The base64 event contents one seat's guardian archive is sealed into.
@@ -462,6 +558,14 @@ impl BackupIdentity {
         }
     }
 
+    /// The fixed blinded `d` tag of the fleet-level revocation document. It
+    /// names no seat, and its family string is inside the MAC like the
+    /// others, so it neither collides with a seat's coordinates nor
+    /// announces itself on the relay.
+    fn seat_grant_revocations_coordinate(&self) -> String {
+        self.coordinate(b"seat-grant-revocations", b"")
+    }
+
     fn coordinate(&self, family: &[u8], value: &[u8]) -> String {
         use hmac::Mac as _;
         let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(&self.tag_key)
@@ -545,7 +649,24 @@ pub fn recover_from_events(
     let mut seats = Vec::new();
     let mut claimed_seats = std::collections::HashSet::new();
     let mut slices: HashMap<String, Event> = HashMap::new();
+    let revocations_coordinate = backup.seat_grant_revocations_coordinate();
+    let mut revocations: Option<SeatGrantRevocationsDocument> = None;
     for event in events {
+        // The revocation document is found by its coordinate, and opens in
+        // its own domain only: one at that address that does not open is ours
+        // and unreadable, never a slice.
+        if event.tags.identifier() == Some(revocations_coordinate.as_str()) {
+            let document = backup
+                .open_seat_grant_revocations(&event.content)
+                .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))?;
+            if revocations.replace(document).is_some() {
+                return Err(anyhow::anyhow!(
+                    "the relay served two backup events at one coordinate"
+                )
+                .into());
+            }
+            continue;
+        }
         match backup.open_seat_document(&event.content) {
             Ok(Envelope {
                 version,
@@ -648,6 +769,9 @@ pub fn recover_from_events(
     Ok(RecoveredFleet {
         seats: seats.into_iter().map(|(_, seat)| seat).collect(),
         archives,
+        revoked_seat_grants: revocations
+            .map(|document| document.revoked)
+            .unwrap_or_default(),
     })
 }
 

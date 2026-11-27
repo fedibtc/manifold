@@ -23,17 +23,23 @@
 
 use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
 use fedi_decentralized_domain::MgVersion;
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, DkgCompletionCallbackInput, FaId, FederationId, GuardianLinkInvite,
     InviteCode, LinkSecret, Plan, QuoteId, SeatHealth, SeatId,
+};
+use fedi_decentralized_service_manifold_guardian::{
+    SeatGrant, SeatGrantCode, SeatGrantLabel, SeatGrantNonce, Timestamp,
 };
 use fedimint_core::Amount;
 use mg_core::admin::{self, AdminError, AdminErrorKind, AdminRequest};
 use mg_core::backup_worker::BackupScanOutcome;
 use mg_core::db::{GuardianLinkDelivery, GuardianLinkRecord};
 use mg_core::directory::{DirectoryPresence, OnboardingStatus};
+use mg_core::facts::SeatGrantRedemption;
 use mg_core::facts::{CompletionCallbackReason, CompletionCallbackStatus};
 use mg_core::fleet::PaymentFederationStatus;
+use mg_core::fleet::{IssuedSeatGrant, IssuedSeatGrantStatus};
 use mg_core::guardian_fee::{
     Collected, CollectionFailure, CollectionFailurePhase, FederationFeeStatus, FeePolicy,
     Remittance,
@@ -80,6 +86,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "mg_payout_job_capped",
     "mg_payout_job_status",
     "mg_seats",
+    "mg_seat_grants",
     "mg_seat_reports",
     "mg_seat_guardian_fees",
     "mg_seat_status",
@@ -182,6 +189,7 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("mg_payout_job_capped", payout_job_capped_fixture()),
         ("mg_payout_job_status", payout_job_status_fixture()),
         ("mg_seats", seats_fixture()),
+        ("mg_seat_grants", seat_grants_fixture()),
         ("mg_seat_reports", seat_reports_fixture()),
         ("mg_seat_guardian_fees", seat_guardian_fees_fixture()),
         ("mg_seat_status", seat_status_fixture()),
@@ -428,7 +436,14 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::SeatStatus { .. } => AdminRequest::DecommissionSeat {
             seat_id: seat_id.clone(),
         },
-        AdminRequest::DecommissionSeat { .. } => AdminRequest::ReenrollTelemetry,
+        AdminRequest::DecommissionSeat { .. } => AdminRequest::ListSeatGrants,
+        AdminRequest::ListSeatGrants => AdminRequest::CreateSeatGrant {
+            label: Some("Book club".to_owned()),
+        },
+        AdminRequest::CreateSeatGrant { .. } => AdminRequest::RevokeSeatGrant {
+            grant_nonce: unused_grant_nonce(),
+        },
+        AdminRequest::RevokeSeatGrant { .. } => AdminRequest::ReenrollTelemetry,
         AdminRequest::ReenrollTelemetry => AdminRequest::SupportChat,
         AdminRequest::SupportChat => AdminRequest::SendSupportMessage {
             body: "Seat 2 stopped after the update.".to_owned(),
@@ -489,6 +504,9 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::ListSeats => "ListSeats",
         AdminRequest::SeatStatus { .. } => "SeatStatus",
         AdminRequest::DecommissionSeat { .. } => "DecommissionSeat",
+        AdminRequest::ListSeatGrants => "ListSeatGrants",
+        AdminRequest::CreateSeatGrant { .. } => "CreateSeatGrant",
+        AdminRequest::RevokeSeatGrant { .. } => "RevokeSeatGrant",
         AdminRequest::ReenrollTelemetry => "ReenrollTelemetry",
         AdminRequest::SupportChat => "SupportChat",
         AdminRequest::SendSupportMessage { .. } => "SendSupportMessage",
@@ -645,12 +663,20 @@ pub fn payout_job_status_fixture() -> Value {
 pub fn seats_fixture() -> Value {
     admin::seats_json(
         vec![
-            seat_summary(
-                PaymentClaimStatus::NotPaid,
-                CompletionCallbackStatus::NotConfigured,
-                false,
-                None,
-            ),
+            // A seat given away by a SeatGrant.
+            SeatSummary {
+                plan: Plan::InfiniteBestEffort { price_msats: 0 },
+                seat_grant: Some(SeatGrantRedemption {
+                    grant_nonce: used_grant_nonce(),
+                    label: Some(SeatGrantLabel::new("Cedar family").unwrap()),
+                }),
+                ..seat_summary(
+                    PaymentClaimStatus::NotPaid,
+                    CompletionCallbackStatus::NotConfigured,
+                    false,
+                    None,
+                )
+            },
             seat_summary(
                 PaymentClaimStatus::Pending,
                 CompletionCallbackStatus::Pending {
@@ -729,8 +755,56 @@ fn seat_summary(
         decommissioned,
         completion_callback,
         backup,
+        seat_grant: None,
     }
 }
+
+fn unused_grant_nonce() -> SeatGrantNonce {
+    SeatGrantNonce::from_bytes([0x5a; 32])
+}
+
+fn used_grant_nonce() -> SeatGrantNonce {
+    SeatGrantNonce::from_bytes([0x3c; 32])
+}
+
+/// A grant in each state, oldest first as the list is: revoked, used by a
+/// seat, and unused with its code. The
+/// unused grant's code is a committed URI rather than a fresh signature,
+/// because BIP-340 signing draws auxiliary randomness and a fixture must not.
+pub fn seat_grants_fixture() -> Value {
+    let code = SeatGrantCode::parse(SEAT_GRANT_FIXTURE_URI, ManifoldEnvironment::Development)
+        .expect("the committed fixture code verifies");
+    assert_eq!(code.grant().grant_nonce, unused_grant_nonce());
+    admin::seat_grants_json(vec![
+        IssuedSeatGrant {
+            grant: SeatGrant {
+                grant_nonce: SeatGrantNonce::from_bytes([0x77; 32]),
+                issued_at: Timestamp(1_753_300_000),
+                label: None,
+            },
+            status: IssuedSeatGrantStatus::Revoked,
+        },
+        IssuedSeatGrant {
+            grant: SeatGrant {
+                grant_nonce: used_grant_nonce(),
+                issued_at: Timestamp(1_753_400_000),
+                label: Some(SeatGrantLabel::new("Cedar family").unwrap()),
+            },
+            status: IssuedSeatGrantStatus::Used { seat_id: seat_id() },
+        },
+        IssuedSeatGrant {
+            grant: code.grant().clone(),
+            status: IssuedSeatGrantStatus::Unused {
+                code: Box::new(code.clone()),
+            },
+        },
+    ])
+}
+
+/// An unused grant with nonce `5a…5a`, label "Book club", issued at
+/// 1_753_500_000, signed by the fixture MG key.
+const SEAT_GRANT_FIXTURE_URI: &str = "manifold:seat-grant?v=1&env=development&node=a09aa5f47a67598\
+    02ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0&key=4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa&grant=eyJncmFudF9ub25jZSI6IjVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWEiLCJpc3N1ZWRfYXQiOjE3NTM1MDAwMDAsImxhYmVsIjoiQm9vayBjbHViIn0&sig=accf9c7a48883ef21455aa9c734333635af05f86b8aa9441437e1247cb5aed28f2b30b51b699bce529b98955ff07e2cdcb948af8f3907763051b33133a07d723";
 
 /// Every `SeatReport` shape: the decommissioned terminal, and each `SeatPhase`
 /// an active seat passes through, across the three `SeatHealth` values.

@@ -3,7 +3,7 @@
 ## Status
 
 Paid quoting checks the authenticated common setup-payment membership and quotes a configured gross price; minimum-net-revenue pricing remains unimplemented.
-Quoting from a SeatGrant is not implemented.
+Quoting from a SeatGrant is implemented on the MG; no FA presents one yet.
 
 The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`,
 and `RemoveSeat` are implemented in normal daemon builds. The effective feature policy's `guardian_transfer_v2` flag controls whether an MG starts new
@@ -385,7 +385,10 @@ including `UnsupportedVersion`, `UnsupportedFederationSize`,
 `PlanNotOffered`, `PaymentFederationNotAccepted` (both at `GetQuote` only),
 and retryable `PaymentFederationUnavailable`,
 `InvalidPayment`, `UnknownSeat`, `WrongState`,
-`SeatUnavailable`, `InvalidDkgInput`, and `FederationIsRunning`.
+`SeatUnavailable`, `InvalidDkgInput`, `FederationIsRunning`, and
+`SeatGrantUnusable` (a used or revoked SeatGrant, at `GetQuote` and
+`CreateSeat`; [SPEC-seat-grant](./SPEC-seat-grant.md)). An old FA never
+presents a grant, so it never receives the last.
 A refusal of a paid presentation is not an error: it is a signed `CreateSeat`
 refusal carrying the refund transaction, and `OfferChanged` — a quote presented
 under a superseded offer epoch — is the only reason one is issued.

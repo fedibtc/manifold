@@ -2,12 +2,13 @@
 
 ## Status
 
-The wire format applies: the grant payload, its `seat_grant` signature label,
-the URI, and the optional grant on `GetQuoteRequest` exist in
-`service-manifold-guardian`. Nothing else does yet: the MG ignores a presented
-grant and quotes from its public offer, the operator surfaces cannot issue
-grants, and formation from grants in `fa-client` and the Fedi app does not
-exist.
+The wire format and the MG side apply: the MG issues, lists and revokes
+grants over its admin socket
+([SPEC-admin-socket](./SPEC-admin-socket.md#operations)), redeems them at
+`GetQuote` and `CreateSeat`, and backs up their used and revoked nonces
+([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md#seatgrant-extension-version-4)).
+The operator dashboard page, and formation from grants in `fa-client` and the
+Fedi app, do not exist yet.
 
 ## Record justification
 
@@ -51,7 +52,10 @@ decision about who redeems it. The MG keeps a list of issued grants (nonce,
 label, issue time, and whether each is unused, used or revoked) so the
 operator can see them and revoke one individually. That list grants nothing:
 authority comes from the signature, and refusal from the used and revoked
-nonces.
+nonces. The list keeps each grant's exact signed bytes, so an unused grant's
+code is shown again exactly as issued: the signature is randomized, and
+re-signing would show a different code each time. Only an unused grant can be
+revoked; revoking it again succeeds. `issued_at` is in Unix seconds.
 
 A restore must not make a used or revoked grant usable again
 ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)). Each seat
@@ -59,7 +63,10 @@ created from a grant carries its grant nonce and label in its seat document,
 which is backed up from the moment the seat exists, so restore rebuilds the used
 nonces with their seats. Revoked nonces are carried in a fleet-level backup
 document, republished on each revocation. An unused, unrevoked grant needs no
-backup, because its signature stays valid.
+backup, because its signature stays valid, so a restored MG starts with an
+empty list and its unused grants still redeem. The revocation document fits
+one backup event, which holds 400 nonces; the MG refuses a revocation past
+that rather than keep one its backup cannot carry.
 
 ## Redeeming
 
@@ -80,6 +87,8 @@ backup, because its signature stays valid.
 - skips the advertised federation-size list and setup-payment membership.
   The size must still be 4 through 20.
 
+A grant this MG did not sign is refused with `Unauthorized`.
+
 It returns an ordinary signed free quote bound to the FA, size, fedimintd
 version and current offer epoch. The quote's terms echo the request, so they
 carry the signed grant, and with it the `grant_nonce` and label, with no
@@ -88,12 +97,19 @@ separate copy to keep in agreement.
 often as it likes.
 
 `CreateSeat` is unchanged for the FA. For a quote that carries a grant,
-the MG refuses a revoked nonce and records the nonce as used in the same
+the MG verifies the grant's signature again rather than trust that quoting
+did, refuses a revoked nonce and records the nonce as used in the same
 transaction that admits the seat. Replaying the same quote returns the same
 seat. Any other quote for a used nonce is refused.
 
-A used and a revoked grant are refused with the same error code, at `GetQuote`
-and at `CreateSeat`. Telling them apart helps only someone who holds a leaked
+That a grant means the free plan is a rule of the quote terms themselves
+([SPEC-locked-payment](./SPEC-locked-payment.md#quote)): terms that carry a
+grant are coherent only as `InfiniteBestEffort` at price 0 with no payment.
+Both sides check coherence, so an FA never pays against a grant quote, and a
+signed grant quote with any other terms is refused at `CreateSeat`.
+
+A used and a revoked grant are refused with the same error code,
+`SeatGrantUnusable`, at `GetQuote` and at `CreateSeat`. Telling them apart helps only someone who holds a leaked
 code: it reveals whether the operator revoked it or another FA redeemed it
 first. Either way the FA does the same thing: it asks the operator for a new
 code. The operator sees each grant's state in its own list. The seat records

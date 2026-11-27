@@ -19,7 +19,8 @@ const seat = (id: string, decommissioned: boolean): SeatSummary => ({
   payment_claim: { state: 'success', at_ms: 0 },
   completion_callback: { state: 'not_configured' },
   decommissioned,
-  backup: null
+  backup: null,
+  seat_grant: null
 });
 
 const activeReport: SeatStatusResponse['report'] = {

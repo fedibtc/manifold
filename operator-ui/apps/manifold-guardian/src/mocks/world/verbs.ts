@@ -73,6 +73,16 @@ const seatStatus: Verb<'SeatStatus'> = ({ seat_id }) => {
   return seat;
 };
 
+// Guardian codes (SPEC-seat-grant) are not modelled by this world yet: it has
+// issued none, and issuing or revoking one is refused rather than invented.
+const listSeatGrants: Verb<'ListSeatGrants'> = () => ({ grants: [] });
+const createSeatGrant: Verb<'CreateSeatGrant'> = () => {
+  throw new Error('guardian codes are not modelled by the mock yet');
+};
+const revokeSeatGrant: Verb<'RevokeSeatGrant'> = () => {
+  throw new Error('this Manifold Guardian issued no guardian code with that nonce');
+};
+
 const decommissionSeat: Verb<'DecommissionSeat'> = ({ seat_id }) => {
   const seat = seatById(seat_id);
   if (seat.decommissioned) {
@@ -622,6 +632,9 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   ListSeats: listSeats,
   SeatStatus: seatStatus,
   DecommissionSeat: decommissionSeat,
+  ListSeatGrants: listSeatGrants,
+  CreateSeatGrant: createSeatGrant,
+  RevokeSeatGrant: revokeSeatGrant,
   ReenrollTelemetry: reenrollTelemetry,
   GuardianLink: guardianLink,
   CreateGuardianLinkOffer: createGuardianLinkOffer,

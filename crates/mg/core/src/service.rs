@@ -30,15 +30,16 @@ use fedi_decentralized_service_manifold_guardian::{
     ManifoldGuardianService, Plan, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
     PullSeatRequest, PullSeatResponse, QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse,
     RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse,
-    RestartDkgRequest, RestartDkgResponse, ServiceStatus, SetMetaFieldRequest,
-    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
-    StatusDetail, Timestamp, TransferSeatCall, TransferSeatResponse, VerifiedFaRequest,
+    RestartDkgRequest, RestartDkgResponse, SEAT_GRANT_FEDERATION_SIZES, ServiceStatus,
+    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse, StatusDetail, Timestamp, TransferSeatCall, TransferSeatResponse,
+    VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
 use stability_pool_client::common::Account;
 
-use crate::fleet::{Fleet, VerifiedCreateSeat, VerifiedPayment};
+use crate::fleet::{CreateSeatError, Fleet, VerifiedCreateSeat, VerifiedPayment};
 use crate::push_callback::ValidatedDkgCompletionCallback;
 use crate::seat::{SeatFederationBinding, SeatPhase, SeatReport, SeatVerbError};
 use crate::wallet::{LockedPaymentPrepareError, Msats};
@@ -183,6 +184,59 @@ impl ManifoldGuardianRpc {
         })
     }
 
+    /// Quote the seat a presented grant gives away
+    /// ([`SPEC-seat-grant`](../../specs/SPEC-seat-grant.md)): free whatever
+    /// this MG charges publicly, for 4 through 20 guardians, and without the
+    /// advertised size list, setup-payment membership or the readiness gate.
+    /// Capacity, the release's fedimintd version (checked by the caller) and
+    /// the offer epoch still apply. Like every quote it writes nothing, so an
+    /// FA previews a code with it as often as it likes.
+    async fn quote_seat_grant(
+        &self,
+        request: fedi_decentralized_service_manifold_guardian::GetQuoteRequest,
+    ) -> FmResult<SignedResponse<fedi_decentralized_service_manifold_guardian::GetQuoteResponse>>
+    {
+        let grant = request
+            .seat_grant
+            .as_ref()
+            .expect("the caller routes only requests carrying a grant here")
+            .verify(&self.signing_key.x_only_public_key().0)
+            .map_err(|err| {
+                tracing::warn!(verb = "get_quote", error = %err, "rejecting a seat grant this MG did not sign");
+                ManifoldGuardianError::Unauthorized
+            })?
+            .into_inner();
+        if !SEAT_GRANT_FEDERATION_SIZES.contains(&request.federation_size.0)
+            && !is_local_single_guardian_e2e(request.federation_size.0)
+        {
+            return Err(ManifoldGuardianError::UnsupportedFederationSize);
+        }
+        if request.plan != (Plan::InfiniteBestEffort { price_msats: 0 })
+            || request.payment_federation_id.is_some()
+            || request.refund_issuance.is_some()
+        {
+            return Err(ManifoldGuardianError::PlanNotOffered);
+        }
+        if self
+            .fleet
+            .is_seat_grant_refused(&grant.grant_nonce)
+            .await
+            .map_err(|err| internal_chain("get_quote", &err))?
+        {
+            return Err(ManifoldGuardianError::SeatGrantUnusable);
+        }
+        let offer_epoch = self
+            .fleet
+            .seat_grant_quote_epoch()
+            .await
+            .ok_or(ManifoldGuardianError::CapacityExhausted)?;
+        let terms = QuoteTerms::compose(request, offer_epoch, 0, rand::random(), None)
+            .map_err(|err| internal("get_quote", err))?;
+        let response = fedi_decentralized_service_manifold_guardian::GetQuoteResponse { terms };
+        SignedResponse::create(&response, &self.signing_key)
+            .map_err(|err| internal("get_quote", err))
+    }
+
     fn prepare_completion_callback(
         &self,
         callback: Option<&fedi_decentralized_service_manifold_guardian::DkgCompletionCallback>,
@@ -286,6 +340,7 @@ fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
         ManifoldGuardianError::InvalidGatewayApiUrl => "invalid_gateway_api_url",
         ManifoldGuardianError::SeatTransferGrantMismatch => "seat_transfer_grant_mismatch",
         ManifoldGuardianError::FederationAlreadyHosted => "federation_already_hosted",
+        ManifoldGuardianError::SeatGrantUnusable => "seat_grant_unusable",
         ManifoldGuardianError::UnsupportedVerb { .. } => "unsupported_verb",
         ManifoldGuardianError::Other(_) => "internal_or_other",
     }
@@ -409,6 +464,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             if request.fedimintd_version != supported_fedimintd_version() {
                 return Err(ManifoldGuardianError::UnsupportedVersion);
             }
+            if request.seat_grant.is_some() {
+                return self.quote_seat_grant(request).await;
+            }
             if !FEDERATION_SIZES_0_1.contains(&request.federation_size.0)
                 && !is_local_single_guardian_e2e(request.federation_size.0)
             {
@@ -520,6 +578,22 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             if quote.terms.request.fa_id != signer {
                 return Err(ManifoldGuardianError::InvalidPayment);
             }
+            // The quote's own signature covers the grant it echoes, but that
+            // says only that this MG quoted it, not that the grant is this
+            // MG's: verify the grant itself rather than trust that quoting
+            // did. Coherence above already holds its terms to the free plan.
+            let seat_grant = quote
+                .terms
+                .request
+                .seat_grant
+                .as_ref()
+                .map(|grant| {
+                    grant
+                        .verify(&self.signing_key.x_only_public_key().0)
+                        .map(|grant| grant.into_inner())
+                })
+                .transpose()
+                .map_err(|_| ManifoldGuardianError::InvalidPayment)?;
             let payment = match &quote.terms.payment {
                 None => {
                     // A free quote priced nothing, so signatures presented against
@@ -564,6 +638,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                         quote_id,
                         quote_terms: quote.terms,
                         payment,
+                        seat_grant,
                     },
                     |seat_id| {
                         let guardian_fee_account = GuardianFeeAccount::try_from(
@@ -593,7 +668,10 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                     },
                 )
                 .await
-                .map_err(|err| internal_chain("create_seat", &err))
+                .map_err(|err| match err {
+                    CreateSeatError::SeatGrantUnusable => ManifoldGuardianError::SeatGrantUnusable,
+                    CreateSeatError::Internal(err) => internal_chain("create_seat", &err),
+                })
         })
         .await
     }

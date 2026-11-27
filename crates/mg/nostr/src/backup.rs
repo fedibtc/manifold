@@ -9,7 +9,10 @@
 use std::time::Duration;
 
 use fedi_decentralized_nostr_clients::NostrRelayClient;
-use mg_core::backup::{BackupArchive, BackupSink, RecoverError, RecoveredFleet, SeatPublication};
+use mg_core::backup::{
+    BackupArchive, BackupSink, RecoverError, RecoveredFleet, SeatGrantRevocationsDocument,
+    SeatPublication,
+};
 use mg_core::identity::RootMnemonic;
 use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind};
 
@@ -47,7 +50,9 @@ pub(crate) const MAX_RESTORE_SLICES_PER_SEAT: u16 = 15;
 const RETAINED_ARCHIVE_GENERATIONS: u16 = 2;
 pub(crate) const MAX_RESTORE_EVENTS_PER_SEAT: u16 =
     1 + MAX_RESTORE_SLICES_PER_SEAT * RETAINED_ARCHIVE_GENERATIONS;
-const MAX_RESTORE_DOCUMENTS: u16 = MAX_RESTORE_SEATS * MAX_RESTORE_EVENTS_PER_SEAT;
+/// Every seat's events, plus the one fleet-level SeatGrant revocation
+/// document.
+const MAX_RESTORE_DOCUMENTS: u16 = MAX_RESTORE_SEATS * MAX_RESTORE_EVENTS_PER_SEAT + 1;
 
 /// A relay's worth of one MG's backup documents.
 ///
@@ -142,11 +147,10 @@ impl RelayBackupSink {
             relay: tokio::sync::Mutex::new(None),
         }
     }
-}
 
-#[async_trait::async_trait]
-impl BackupSink for RelayBackupSink {
-    async fn publish(&self, publication: &SeatPublication) -> anyhow::Result<()> {
+    /// Publish and confirm events in order on the one connection, opening
+    /// it first if needed.
+    async fn publish_all(&self, events: Vec<EventBuilder>) -> anyhow::Result<()> {
         // The publisher is one task, so serializing publications behind the
         // connection costs nothing and keeps a failed connect from being
         // retried by several callers at once.
@@ -156,10 +160,26 @@ impl BackupSink for RelayBackupSink {
             None => relay
                 .insert(BackupRelay::connect(self.identity.keys().clone(), &self.relay_url).await?),
         };
-        for event in self.identity.publication_events(publication)? {
+        for event in events {
             relay.publish_confirmed(event).await?;
         }
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl BackupSink for RelayBackupSink {
+    async fn publish(&self, publication: &SeatPublication) -> anyhow::Result<()> {
+        self.publish_all(self.identity.publication_events(publication)?)
+            .await
+    }
+
+    async fn publish_seat_grant_revocations(
+        &self,
+        document: &SeatGrantRevocationsDocument,
+    ) -> anyhow::Result<()> {
+        self.publish_all(vec![self.identity.seat_grant_revocations_event(document)?])
+            .await
     }
 
     fn format_version(&self) -> u32 {

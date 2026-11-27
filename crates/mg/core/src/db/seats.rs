@@ -15,7 +15,8 @@
 
 use super::{Db, DbError, IDENTITY_ID, now_ms};
 use crate::facts::{
-    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatNo,
+    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatGrantRedemption,
+    SeatNo,
 };
 use crate::identity::RootMnemonic;
 use crate::wallet::{ClaimOutcome, EcashClaimEvidence};
@@ -32,6 +33,7 @@ pub(crate) struct SeatRecoveryFacts {
     pub(crate) outgoing: Option<crate::transfer_state::OutgoingTransfer>,
     pub(crate) formed_invite: Option<InviteCode>,
     pub(crate) decommissioned_at_ms: Option<i64>,
+    pub(crate) seat_grant: Option<SeatGrantRedemption>,
 }
 
 async fn payment(
@@ -127,6 +129,10 @@ pub struct NewSeat {
     pub plan: Plan,
     pub federation_size: FederationSize,
     pub payment: Option<NewPayment>,
+    /// The verified grant a free seat is redeemed from. Admission refuses it
+    /// when the nonce is already used or revoked, and records it as used in
+    /// the same transaction that admits the seat.
+    pub seat_grant: Option<SeatGrantRedemption>,
 }
 
 /// Typed recovery material recorded for a paid seat.
@@ -140,6 +146,8 @@ pub struct RestoredSeat {
     /// the moment it is restored.
     pub guardian: Option<RestoredGuardianConfig>,
     pub decommissioned_at_ms: Option<i64>,
+    /// The grant the seat was redeemed from, which stays used.
+    pub seat_grant: Option<SeatGrantRedemption>,
     /// Validated transfer recovery state, rebuilt before the identity commits.
     pub(crate) incoming_transfer: Option<crate::transfer_state::IncomingTransfer>,
     pub(crate) outgoing_transfer: Option<crate::backup::OutgoingTransferBackup>,
@@ -181,6 +189,8 @@ pub(crate) enum SeatAdmissionResult {
     Inserted(SeatFacts),
     Existing(SeatFacts),
     OfferChanged,
+    /// The quote redeems a grant whose nonce is already used or revoked.
+    SeatGrantUnusable,
 }
 
 #[derive(sqlx::FromRow)]
@@ -556,6 +566,14 @@ impl Db {
             tx.commit().await?;
             return Ok(SeatAdmissionResult::OfferChanged);
         }
+        // A replay of the quote that used the grant returned its seat above,
+        // so a used nonce here is another quote for it.
+        if let Some(grant) = &new_seat.seat_grant
+            && super::seat_grants::seat_grant_refused(&mut tx, &grant.grant_nonce).await?
+        {
+            tx.commit().await?;
+            return Ok(SeatAdmissionResult::SeatGrantUnusable);
+        }
 
         let id = new_seat.seat_id.as_bytes().as_slice();
         let (active, next_no): (i64, i64) = sqlx::query_as(
@@ -590,6 +608,10 @@ impl Db {
                 .bind(id)
                 .bind(claim_evidence_cbor(&payment.evidence))
                 .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(grant) = &new_seat.seat_grant {
+            super::seat_grants::insert_seat_grant_redemption(&mut tx, &new_seat.seat_id, grant)
                 .await?;
         }
         if slots == 1 {
@@ -985,6 +1007,7 @@ impl Db {
             outgoing: super::transfers::outgoing(&mut snapshot, seat_id).await?,
             formed_invite: formed_federation_invite(&mut snapshot, seat_id).await?,
             decommissioned_at_ms: decommissioned_at_ms(&mut snapshot, seat_id).await?,
+            seat_grant: super::seat_grants::seat_grant_redemption(&mut snapshot, seat_id).await?,
         };
         snapshot.commit().await?;
         Ok(facts)
@@ -1015,6 +1038,7 @@ impl Db {
         &self,
         identity: &RootMnemonic,
         seats: &[RestoredSeat],
+        revoked_seat_grants: &[fedi_decentralized_service_manifold_guardian::SeatGrantNonce],
     ) -> Result<(), DbError> {
         let mut tx = self.begin_write().await?;
         let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
@@ -1095,7 +1119,14 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
             }
+            if let Some(grant) = &seat.seat_grant {
+                super::seat_grants::restore_seat_grant_redemption(&mut tx, &facts.seat_id, grant)
+                    .await?;
+            }
         }
+        // A used nonce restores with its seat and a revoked one from the
+        // revocation document, so neither becomes usable again.
+        super::seat_grants::insert_seat_grant_revocations(&mut tx, revoked_seat_grants).await?;
         sqlx::query(
             "INSERT INTO identity (id, mnemonic, wallet_origin, created_at_ms) \
              VALUES (?, ?, 'restored', ?)",

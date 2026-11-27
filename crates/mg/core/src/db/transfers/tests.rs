@@ -45,6 +45,7 @@ async fn insert(db: &Db, grant: &SeatTransferGrant, source: bool) {
             plan: Plan::InfiniteBestEffort { price_msats: 0 },
             federation_size: FederationSize(4),
             payment: None,
+            seat_grant: None,
         },
     )
     .await;

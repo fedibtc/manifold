@@ -25,6 +25,12 @@ const SEAT_GRANT_URI_PATH: &str = "seat-grant";
 /// Longest operator label a grant carries, in characters.
 pub const SEAT_GRANT_LABEL_MAX_CHARS: usize = 32;
 
+/// Federation sizes a seat redeemed from a grant may be bound to: 4 through
+/// 20, wider than the verified path's
+/// [`FEDERATION_SIZES_0_1`](crate::FEDERATION_SIZES_0_1). The operator gets no
+/// say: the size is delegated to the FA with the grant.
+pub const SEAT_GRANT_FEDERATION_SIZES: std::ops::RangeInclusive<u16> = 4..=20;
+
 /// Random identity of one grant. The MG refuses a nonce that is already
 /// used or revoked. Hex on the wire, which keeps the shared code short.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -43,20 +49,40 @@ impl SeatGrantNonce {
     }
 }
 
+impl std::fmt::Display for SeatGrantNonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&hex::encode(self.0))
+    }
+}
+
+/// A seat grant nonce that is not 32 hex-encoded bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("seat grant nonce is not 32 hex bytes")]
+pub struct InvalidSeatGrantNonce;
+
+impl std::str::FromStr for SeatGrantNonce {
+    type Err = InvalidSeatGrantNonce;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        hex::decode(value)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(Self)
+            .ok_or(InvalidSeatGrantNonce)
+    }
+}
+
 impl Serialize for SeatGrantNonce {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&hex::encode(self.0))
+        serializer.collect_str(self)
     }
 }
 
 impl<'de> Deserialize<'de> for SeatGrantNonce {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        hex::decode(&value)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(Self)
-            .ok_or_else(|| serde::de::Error::custom("seat grant nonce is not 32 hex bytes"))
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 

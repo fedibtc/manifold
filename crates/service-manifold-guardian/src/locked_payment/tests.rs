@@ -197,3 +197,59 @@ fn a_quoted_grant_round_trips_with_its_exact_signed_bytes() {
         grant
     );
 }
+
+fn granted_request(plan: Plan) -> GetQuoteRequest {
+    let key = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[8; 32]).unwrap();
+    let grant = SeatGrant {
+        grant_nonce: SeatGrantNonce::from_bytes([6; 32]),
+        issued_at: Timestamp(42),
+        label: None,
+    };
+    let mut request = paid_request();
+    request.plan = plan;
+    request.payment_federation_id = None;
+    request.refund_issuance = None;
+    request.seat_grant = Some(SignedResponse::create(&grant, &key).unwrap());
+    request
+}
+
+/// Terms redeeming a grant are the free plan, and nothing else is coherent:
+/// neither a paid quote nor free terms that name a priced plan.
+#[test]
+fn terms_redeeming_a_grant_are_exactly_the_free_plan() {
+    let free = Plan::InfiniteBestEffort { price_msats: 0 };
+    QuoteTerms::compose(
+        granted_request(free.clone()),
+        OfferEpoch::from_bytes([0; 32]),
+        0,
+        [1; 32],
+        None,
+    )
+    .unwrap();
+
+    // Free price and no payment, but the plan names the public price.
+    assert!(matches!(
+        QuoteTerms::compose(
+            granted_request(Plan::InfiniteBestEffort { price_msats: 5 }),
+            OfferEpoch::from_bytes([0; 32]),
+            0,
+            [1; 32],
+            None,
+        ),
+        Err(QuoteTermsError::SeatGrantNotFree)
+    ));
+
+    // An otherwise coherent paid quote that also carries a grant.
+    let mut paid = paid_request();
+    paid.seat_grant = granted_request(free).seat_grant;
+    assert!(matches!(
+        QuoteTerms::compose(
+            paid,
+            OfferEpoch::from_bytes([0; 32]),
+            5,
+            [1; 32],
+            Some(payment(&[4, 1])),
+        ),
+        Err(QuoteTermsError::SeatGrantNotFree)
+    ));
+}

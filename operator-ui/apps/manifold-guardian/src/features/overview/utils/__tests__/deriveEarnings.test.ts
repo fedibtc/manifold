@@ -13,6 +13,7 @@ const seat = (overrides: Partial<SeatSummary> & Pick<SeatSummary, 'seat_id'>): S
   completion_callback: { state: 'not_configured' },
   decommissioned: false,
   backup: null,
+  seat_grant: null,
   ...overrides
 });
 

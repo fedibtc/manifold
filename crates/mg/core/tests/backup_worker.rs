@@ -16,6 +16,7 @@ use crate::seat_process::BitcoindConfig;
 struct SwitchableSink {
     published: Mutex<Vec<SeatId>>,
     documents: Mutex<Vec<crate::backup::SeatBackupDocument>>,
+    revocations: Mutex<Vec<crate::backup::SeatGrantRevocationsDocument>>,
     archives: AtomicUsize,
     attempts: AtomicUsize,
     fails: AtomicBool,
@@ -27,6 +28,7 @@ impl SwitchableSink {
         Arc::new(Self {
             published: Mutex::new(Vec::new()),
             documents: Mutex::new(Vec::new()),
+            revocations: Mutex::new(Vec::new()),
             archives: AtomicUsize::new(0),
             attempts: AtomicUsize::new(0),
             fails: AtomicBool::new(false),
@@ -60,6 +62,17 @@ impl BackupSink for SwitchableSink {
             .lock()
             .unwrap()
             .push(publication.document.clone());
+        Ok(())
+    }
+
+    async fn publish_seat_grant_revocations(
+        &self,
+        document: &crate::backup::SeatGrantRevocationsDocument,
+    ) -> anyhow::Result<()> {
+        if self.fails.load(Ordering::SeqCst) {
+            anyhow::bail!("relay is down");
+        }
+        self.revocations.lock().unwrap().push(document.clone());
         Ok(())
     }
 
@@ -102,6 +115,7 @@ async fn create_seat(db: &Db, seat: u8) -> SeatFacts {
             plan: facts.plan.clone(),
             federation_size: facts.federation_size,
             payment: None,
+            seat_grant: None,
         },
     )
     .await
@@ -625,5 +639,65 @@ async fn a_publication_never_straddles_an_import_acceptance() {
         (native_publications, straddled),
         (0, 0),
         "every publication saw the acceptance whole or not at all"
+    );
+}
+
+/// SPEC-seat-grant: a grant-backed seat's document carries its used nonce and
+/// label, and each revocation republishes the fleet's revocation document,
+/// once per change. With nothing revoked there is no document to publish.
+#[tokio::test]
+async fn seat_grant_facts_reach_the_relay() {
+    use fedi_decentralized_service_manifold_guardian::{SeatGrantLabel, SeatGrantNonce};
+
+    let temp = TempDir::new().unwrap();
+    let sink = SwitchableSink::new();
+    let db = test_db(&temp).await;
+    let redemption = crate::facts::SeatGrantRedemption {
+        grant_nonce: SeatGrantNonce::from_bytes([0x3c; 32]),
+        label: Some(SeatGrantLabel::new("Cedar family").unwrap()),
+    };
+    let facts = test_facts(9);
+    crate::test_support::insert_test_seat(
+        &db,
+        NewSeat {
+            seat_id: facts.seat_id.clone(),
+            fa_id: facts.fa_id,
+            plan: facts.plan.clone(),
+            federation_size: facts.federation_size,
+            payment: None,
+            seat_grant: Some(redemption.clone()),
+        },
+    )
+    .await;
+    // Revoked nonces sort by value in the document, not by revocation order.
+    let first = SeatGrantNonce::from_bytes([0x77; 32]);
+    let second = SeatGrantNonce::from_bytes([0x11; 32]);
+    for nonce in [first, second] {
+        db.insert_seat_grant(&nonce, b"{}", &[0; 64]).await.unwrap();
+    }
+    let worker = BackupWorker::new(sink.clone() as _, FAST_SCAN);
+    worker.spawn(db.clone(), test_process(&temp));
+
+    eventually(|| sink.published() == vec![facts.seat_id.clone()]).await;
+    assert_eq!(
+        sink.documents.lock().unwrap()[0].seat_grant,
+        Some(redemption)
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(sink.revocations.lock().unwrap().is_empty());
+
+    let revocations = |nonces: Vec<SeatGrantNonce>| crate::backup::SeatGrantRevocationsDocument {
+        revoked: nonces,
+    };
+    db.revoke_seat_grant(&first, 10).await.unwrap();
+    worker.mark();
+    eventually(|| *sink.revocations.lock().unwrap() == vec![revocations(vec![first])]).await;
+    db.revoke_seat_grant(&second, 10).await.unwrap();
+    worker.mark();
+    eventually(|| sink.revocations.lock().unwrap().len() == 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        *sink.revocations.lock().unwrap(),
+        vec![revocations(vec![first]), revocations(vec![second, first])]
     );
 }

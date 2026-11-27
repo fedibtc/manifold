@@ -12,6 +12,7 @@ const runningSeat: SeatStatusResponse = {
   completion_callback: { state: 'delivered', attempts: 2, at_ms: 1_753_000_000_000 },
   decommissioned: false,
   backup: { published_at_ms: 1_753_000_100_000, archive_confirmed: true },
+  seat_grant: null,
   report: { state: 'active', health: 'healthy', phase: 'running', invite_code: 'fed1abc' },
   guardian_fee: {
     remittance_account: '{"id":"acct1"}',

@@ -16,7 +16,11 @@ export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | n
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ReenrollTelemetry" | "SupportChat" | { "SendSupportMessage": { body: string, } } | { "MarkSupportRead": { ids: Array<string>, } } | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
+request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ListSeatGrants" | { "CreateSeatGrant": { label: string | null, } } | { "RevokeSeatGrant": {
+/**
+ * The grant's nonce, 64 lowercase hex characters.
+ */
+grant_nonce: string, } } | "ReenrollTelemetry" | "SupportChat" | { "SendSupportMessage": { body: string, } } | { "MarkSupportRead": { ids: Array<string>, } } | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
 /**
  * Caller-generated idempotency identity.
  */

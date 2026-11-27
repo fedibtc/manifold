@@ -14,7 +14,8 @@ const rows: SeatRow[] = [
       payment_claim: { state: 'success', at_ms: 0 },
       completion_callback: { state: 'not_configured' },
       decommissioned: false,
-      backup: null
+      backup: null,
+      seat_grant: null
     },
     report: {
       state: 'active',
@@ -33,7 +34,8 @@ const rows: SeatRow[] = [
       payment_claim: { state: 'success', at_ms: 0 },
       completion_callback: { state: 'not_configured' },
       decommissioned: true,
-      backup: null
+      backup: null,
+      seat_grant: null
     },
     reportLoading: false
   }

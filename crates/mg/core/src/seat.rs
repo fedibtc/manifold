@@ -186,6 +186,9 @@ pub struct SeatSummary {
     /// nothing current for this seat — the absence an operator needs to see,
     /// not infer.
     pub backup: Option<SeatBackupStatus>,
+    /// The SeatGrant the seat was redeemed from, for a seat the operator
+    /// gave away rather than sold.
+    pub seat_grant: Option<crate::facts::SeatGrantRedemption>,
 }
 
 /// What the semi-trusted relay demonstrably serves for one seat
@@ -787,6 +790,7 @@ impl Seat {
         payment_claim: PaymentClaimStatus,
         completion_callback: CompletionCallbackStatus,
         backup: Option<SeatBackupStatus>,
+        seat_grant: Option<crate::facts::SeatGrantRedemption>,
     ) -> SeatSummary {
         SeatSummary {
             seat_id: self.facts.seat_id.clone(),
@@ -797,6 +801,7 @@ impl Seat {
             decommissioned: self.is_decommissioned(),
             completion_callback,
             backup,
+            seat_grant,
         }
     }
 

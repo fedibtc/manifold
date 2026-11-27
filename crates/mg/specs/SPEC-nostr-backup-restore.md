@@ -2,8 +2,9 @@
 
 ## Status
 
-SeatGrant state is not backed up yet: seat documents carry no grant nonce,
-and the fleet-level grant revocation document does not exist.
+SeatGrant state is backed up: a seat created from a grant carries its nonce
+and label under envelope version 4, and the fleet-level revocation document
+exists ([SeatGrant extension](#seatgrant-extension-version-4)).
 
 ## Record justification
 
@@ -338,6 +339,28 @@ index document to keep consistent with the events it would describe.
 
 The mnemonic itself is never published. A backup is inert without the phrase,
 and the phrase alone — with no backup — cannot reconstruct a guardian.
+
+### SeatGrant extension (version 4)
+
+A seat document that carries a SeatGrant (`seat_grant: {grant_nonce,
+label}`) is sealed under envelope version 4, with or without transfer facts
+beside it; every other document keeps its version. Older readers would
+restore such a document without its nonce and so revive a used grant, so they
+must refuse it instead, failing their whole restore. Like version 3, version 4
+names the version-2 archive generation at the same coordinates. A grant under
+any other version, or version 4 without a grant, is refused.
+
+The revoked nonces are one fleet-wide document, `{revoked: [nonce, ...]}`
+sorted by nonce, sealed in its own encryption domain
+(`fman-backup/seat-grant-revocations`, envelope version 1) into one event at
+a fixed blinded coordinate. The worker republishes it whenever the revoked
+set's digest differs from its last confirmed publication, recorded per
+schema version like a seat's; it publishes nothing while nothing has been
+revoked. The MG refuses a revocation past 400 nonces, which is what fits one
+event. A reader from before grants cannot open this event as a document and
+finds no seat that claims it, so its restore fails closed. A restore installs
+the used nonces with their seats and the revoked set from this document; the
+issued-grant list starts empty, since an unused grant needs no backup.
 
 ## Publication is reconciliation, and nothing waits for it
 

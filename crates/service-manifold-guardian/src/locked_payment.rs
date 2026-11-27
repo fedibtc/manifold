@@ -260,6 +260,8 @@ pub enum QuoteTermsError {
     PriceIssuanceMismatch,
     #[error("refund issuance presence or mint generation disagrees with payment terms")]
     RefundMismatch,
+    #[error("terms redeeming a seat grant are not the free plan")]
+    SeatGrantNotFree,
 }
 
 impl QuoteTerms {
@@ -290,8 +292,11 @@ impl QuoteTerms {
     /// a quote is paid iff it carries a price, its payment federation is
     /// exactly the requested one, and the price equals the issuance total
     /// (the FA funds the issuance set, so a mismatch would over- or
-    /// under-charge). The MG composes terms through this rule; the FA
-    /// re-checks a verified quote against it before paying.
+    /// under-charge). Terms that redeem a seat grant are exactly the free
+    /// plan: a grant is the operator's gift of a seat, so terms that charge
+    /// for it are incoherent whatever the MG offers publicly. The MG composes
+    /// terms through this rule and re-checks the quote it is handed back; the
+    /// FA re-checks a verified quote against it before paying.
     // review: check coherent must be only way to construct this struct! custom serde deserialize if needed
     // review: maybe CoherentQuoteTerms wrapper QuoteTerms? and we can even remove compose above, just make it yourself with struct fields
     pub fn check_coherent(&self) -> Result<(), QuoteTermsError> {
@@ -324,6 +329,12 @@ impl QuoteTerms {
         );
         if !refund_matches {
             return Err(QuoteTermsError::RefundMismatch);
+        }
+        if self.request.seat_grant.is_some()
+            && (self.request.plan != (Plan::InfiniteBestEffort { price_msats: 0 })
+                || self.payment.is_some())
+        {
+            return Err(QuoteTermsError::SeatGrantNotFree);
         }
         Ok(())
     }

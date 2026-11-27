@@ -109,6 +109,16 @@ export interface SeatSummary {
   // Last relay-confirmed publication of the seat's recovery document; null
   // means the relay holds nothing current for this seat.
   backup: SeatBackupStatus | null;
+  // The guardian code (SeatGrant) the seat was redeemed from: a seat the
+  // operator gave away, free whatever the public price. Null for a seat taken
+  // through the public offer.
+  seat_grant: SeatGrantRef | null;
+}
+
+// admin.rs::summary_json — the grant a seat came from.
+export interface SeatGrantRef {
+  grant_nonce: string;
+  label: string | null;
 }
 
 export interface SeatBackupStatus {
@@ -407,6 +417,27 @@ export interface DecommissionSeatResponse {
 export interface ReenrollTelemetryResponse {
   telemetry_reenrollment: 'scheduled';
 }
+// admin.rs::seat_grant_json — one guardian code this MG issued
+// (SPEC-seat-grant). The list grants nothing: authority comes from the
+// signature, refusal from the used and revoked nonces. Only an unused code
+// carries its shareable `manifold:seat-grant` URI.
+export type SeatGrantStatus =
+  | { state: 'unused'; uri: string }
+  | { state: 'used'; seat_id: SeatId }
+  | { state: 'revoked' };
+export interface SeatGrantEntry {
+  grant_nonce: string;
+  label: string | null;
+  // Unix seconds.
+  issued_at: number;
+  status: SeatGrantStatus;
+}
+// Oldest first; empty after a restore, which does not back up unused codes.
+export interface ListSeatGrantsResponse {
+  grants: SeatGrantEntry[];
+}
+export type CreateSeatGrantResponse = SeatGrantEntry;
+export type RevokeSeatGrantResponse = SeatGrantEntry;
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
 // The onboarding projection after the skip, at the `initial_offer` stage.
 export type SkipHolderAuthorizationResponse = OnboardingResponse;
@@ -553,6 +584,9 @@ export interface AdminResponseByName {
   ListSeats: ListSeatsResponse;
   SeatStatus: SeatStatusResponse;
   DecommissionSeat: DecommissionSeatResponse;
+  ListSeatGrants: ListSeatGrantsResponse;
+  CreateSeatGrant: CreateSeatGrantResponse;
+  RevokeSeatGrant: RevokeSeatGrantResponse;
   ReenrollTelemetry: ReenrollTelemetryResponse;
   GuardianLink: GuardianLinkResponse;
   CreateGuardianLinkOffer: GuardianLinkResponse;

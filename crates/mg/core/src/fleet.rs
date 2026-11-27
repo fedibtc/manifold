@@ -9,7 +9,10 @@
 //! [`Fleet::open`].
 
 mod payout;
+mod seat_grant;
 mod transfer;
+
+pub use seat_grant::{IssuedSeatGrant, IssuedSeatGrantStatus};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -105,6 +108,28 @@ pub struct VerifiedCreateSeat {
     /// correlation along with the payment itself, so the fleet never
     /// re-derives paid-ness from the price.
     pub payment: VerifiedPayment,
+    /// The grant the quote redeems, its signature verified by the boundary
+    /// from the quote's own terms. Admission decides whether its nonce is
+    /// still unused.
+    pub seat_grant: Option<fedi_decentralized_service_manifold_guardian::SeatGrant>,
+}
+
+/// Why [`Fleet::create_seat`] answered with an error rather than a signed
+/// acceptance or refusal.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateSeatError {
+    /// The quote redeems a grant whose nonce another seat already used, or
+    /// that the operator revoked.
+    #[error("seat grant already used or revoked")]
+    SeatGrantUnusable,
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+}
+
+impl From<crate::db::DbError> for CreateSeatError {
+    fn from(error: crate::db::DbError) -> Self {
+        Self::Internal(error.into())
+    }
 }
 
 /// The already-verified payment accompanying a creation: free, or an
@@ -1014,7 +1039,7 @@ impl Fleet {
             RefusalReason,
             Option<&RefundTransaction>,
         ) -> anyhow::Result<SignedResponse<CreateSeatResponse>>,
-    ) -> anyhow::Result<SignedResponse<CreateSeatResponse>> {
+    ) -> Result<SignedResponse<CreateSeatResponse>, CreateSeatError> {
         let seat_id = SeatId::from(input.quote_id);
         // Signing can fail and must do so before the durable acceptance. SQLite
         // then decides replay, epoch validity, capacity, allocation, payment
@@ -1033,6 +1058,12 @@ impl Fleet {
                     plan,
                     federation_size,
                     payment,
+                    seat_grant: input
+                        .seat_grant
+                        .map(|grant| crate::facts::SeatGrantRedemption {
+                            grant_nonce: grant.grant_nonce,
+                            label: grant.label,
+                        }),
                 },
                 input.quote_terms.offer_epoch,
                 self.config.first_port_base,
@@ -1042,7 +1073,10 @@ impl Fleet {
         let (durable, inserted) = match result {
             SeatAdmissionResult::OfferChanged => {
                 let refund = input.payment.into_refund().map(|(_, refund)| refund);
-                return sign_refusal(RefusalReason::OfferChanged, refund.as_ref());
+                return Ok(sign_refusal(RefusalReason::OfferChanged, refund.as_ref())?);
+            }
+            SeatAdmissionResult::SeatGrantUnusable => {
+                return Err(CreateSeatError::SeatGrantUnusable);
             }
             SeatAdmissionResult::Inserted(facts) => (
                 SeatDurableState {
@@ -1207,7 +1241,8 @@ impl Fleet {
             .completion_callback_status(&seat.facts().seat_id)
             .await?
             .unwrap_or(crate::facts::CompletionCallbackStatus::NotConfigured);
-        Ok(seat.summary(claim, completion_callback, backup))
+        let seat_grant = self.db.seat_grant_redemption(&seat.facts().seat_id).await?;
+        Ok(seat.summary(claim, completion_callback, backup, seat_grant))
     }
 
     /// The backup worker's last completed reconciliation pass, for the

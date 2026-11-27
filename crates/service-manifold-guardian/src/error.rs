@@ -126,6 +126,13 @@ pub enum ManifoldGuardianError {
     #[error("seat transfer grant does not match this seat")]
     SeatTransferGrantMismatch,
 
+    /// The presented [`SeatGrant`](crate::SeatGrant) was already redeemed or
+    /// was revoked by the operator. One code for both: either way the FA asks
+    /// the operator for a new code, and telling them apart would only tell the
+    /// holder of a leaked code what happened to it (SPEC-seat-grant).
+    #[error("seat grant already used or revoked")]
+    SeatGrantUnusable,
+
     /// The destination MG already hosts a guardian of the grant's federation.
     #[error("this Manifold Guardian already hosts a guardian of that federation")]
     FederationAlreadyHosted,

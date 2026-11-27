@@ -2,7 +2,8 @@
 
 ## Status
 
-Free quotes redeemed from a SeatGrant are not implemented.
+Free quotes redeemed from a SeatGrant are implemented on the MG; no FA
+requests one yet.
 
 ## Record justification
 
@@ -33,8 +34,10 @@ required.
 
 `GetQuote` is a pure function; the MG stores nothing. A `GetQuote` that
 presents a SeatGrant yields a free quote under
-[SPEC-seat-grant](./SPEC-seat-grant.md); everything below about payment applies
-only to paid quotes. The response is
+[SPEC-seat-grant](./SPEC-seat-grant.md): terms that carry a grant are coherent
+only as the free `InfiniteBestEffort` plan with no payment, a rule
+`QuoteTerms::check_coherent` holds for both sides. Everything below about
+payment applies only to paid quotes. The response is
 a signed quote: public terms (plan, price, offer epoch, a random quote
 nonce, and — for paid quotes — the payment terms: the payment
 federation and the issuance set of blinded nonces covering the price in

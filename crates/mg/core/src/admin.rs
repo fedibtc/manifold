@@ -114,6 +114,24 @@ pub enum AdminRequest {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
     },
+    /// The SeatGrants this MG issued (SPEC-seat-grant), oldest first, each
+    /// with its state and, while unused, its shareable code. The list grants
+    /// nothing; it starts empty after a restore.
+    ListSeatGrants,
+    /// Issue a SeatGrant: one free seat for whichever FA redeems its code.
+    /// `label` is the operator's own, 1 to 32 characters or `null`, and is
+    /// shown to the FA that redeems it.
+    CreateSeatGrant {
+        #[ts(type = "string | null")]
+        label: Option<String>,
+    },
+    /// Revoke one unused SeatGrant, so its code is refused. Repeating it
+    /// succeeds; a used grant is refused.
+    RevokeSeatGrant {
+        /// The grant's nonce, 64 lowercase hex characters.
+        #[ts(type = "string")]
+        grant_nonce: fedi_decentralized_service_manifold_guardian::SeatGrantNonce,
+    },
     /// Rotate the MG-wide telemetry capability and immediately schedule a
     /// fresh verified registration without returning the bearer.
     ReenrollTelemetry,
@@ -557,6 +575,16 @@ pub(crate) async fn dispatch(
         AdminRequest::DecommissionSeat { seat_id } => Ok(decommission_seat_json(
             fleet.decommission_seat(&seat_id).await?,
         )),
+        AdminRequest::ListSeatGrants => Ok(seat_grants_json(fleet.seat_grants().await?)),
+        AdminRequest::CreateSeatGrant { label } => {
+            let label = label
+                .map(fedi_decentralized_service_manifold_guardian::SeatGrantLabel::new)
+                .transpose()?;
+            Ok(seat_grant_json(fleet.create_seat_grant(label).await?))
+        }
+        AdminRequest::RevokeSeatGrant { grant_nonce } => Ok(seat_grant_json(
+            fleet.revoke_seat_grant(&grant_nonce).await?,
+        )),
         AdminRequest::ReenrollTelemetry => {
             fleet.reenroll_telemetry().await?;
             Ok(reenroll_telemetry_json())
@@ -775,6 +803,32 @@ pub fn seat_status_json(summary: SeatSummary, report: SeatReport, guardian_fee: 
 /// decommissioned and whether this call is what did it.
 pub fn decommission_seat_json(newly_decommissioned: bool) -> Value {
     json!({ "decommissioned": true, "already_decommissioned": !newly_decommissioned })
+}
+
+/// `ListSeatGrants`: every issued grant, as [`seat_grant_json`] states it.
+pub fn seat_grants_json(grants: Vec<crate::fleet::IssuedSeatGrant>) -> Value {
+    json!({ "grants": grants.into_iter().map(seat_grant_json).collect::<Vec<_>>() })
+}
+
+/// One issued grant, the answer of `CreateSeatGrant` and `RevokeSeatGrant`
+/// too. `issued_at` is the signed grant's, in Unix seconds. Only an unused
+/// grant carries its code (`uri`): a used or revoked one has nothing left to
+/// share.
+pub fn seat_grant_json(grant: crate::fleet::IssuedSeatGrant) -> Value {
+    use crate::fleet::IssuedSeatGrantStatus;
+    let status = match grant.status {
+        IssuedSeatGrantStatus::Unused { code } => {
+            json!({ "state": "unused", "uri": code.to_uri() })
+        }
+        IssuedSeatGrantStatus::Used { seat_id } => json!({ "state": "used", "seat_id": seat_id }),
+        IssuedSeatGrantStatus::Revoked => json!({ "state": "revoked" }),
+    };
+    json!({
+        "grant_nonce": grant.grant.grant_nonce,
+        "label": grant.grant.label,
+        "issued_at": grant.grant.issued_at.0,
+        "status": status,
+    })
 }
 
 /// The rotated bearer is deliberately absent from the operator response.
@@ -1044,6 +1098,11 @@ pub fn summary_json(summary: SeatSummary) -> Value {
         "decommissioned": summary.decommissioned,
         "completion_callback": completion_callback_json(summary.completion_callback),
         "backup": backup,
+        // A seat given away by a SeatGrant rather than sold.
+        "seat_grant": summary.seat_grant.map(|grant| json!({
+            "grant_nonce": grant.grant_nonce,
+            "label": grant.label,
+        })),
     })
 }
 
