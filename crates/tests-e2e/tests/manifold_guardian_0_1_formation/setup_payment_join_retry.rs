@@ -170,6 +170,7 @@ async fn run_join_retry() -> anyhow::Result<()> {
                 },
                 payment_federation_id: Some(WireFederationId(federation_id.clone())),
                 refund_issuance: None,
+                seat_grant: None,
             })
             .await
             .context("seller get_quote transport")?;
