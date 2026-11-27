@@ -2,8 +2,8 @@
 
 ## Status
 
-Formation and replacement from SeatGrants, and custom gateway attachment
-([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)),
+Formation and replacement from SeatGrants
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md))
 are not implemented: every seat and replacement destination still comes from a
 verified selection, and the size range is 7 through 20.
 
