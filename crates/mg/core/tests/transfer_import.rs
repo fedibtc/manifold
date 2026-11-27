@@ -201,6 +201,7 @@ async fn destination_in(
             plan: Plan::InfiniteBestEffort { price_msats: 0 },
             federation_size: FederationSize(1),
             payment: None,
+            seat_grant: None,
         },
     )
     .await;
@@ -538,6 +539,7 @@ async fn worker_bounds_outbound_attempts_and_cancels_permit_waiters() {
                 plan: Plan::InfiniteBestEffort { price_msats: 0 },
                 federation_size: FederationSize(1),
                 payment: None,
+                seat_grant: None,
             },
         )
         .await;

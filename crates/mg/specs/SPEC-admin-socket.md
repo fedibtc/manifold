@@ -5,8 +5,8 @@
 Payment-federation acceptance is the authenticated common setup-payment set; the
 admin surface only observes it. Removed payment scopes stay durable and lazily
 reopen on the first wallet query or payout after restart. The SeatGrant verbs
-are not implemented yet, so an MG that skipped the `holder_authorization` stage
-cannot take seats, and production refuses the skip.
+exist; the dashboard page that drives them does not yet, and production still
+refuses the `holder_authorization` skip.
 
 ## Record justification
 
@@ -270,7 +270,8 @@ the fleet.
   `{state:terminal, attempts, at_ms, reason}`.
   Reasons come only from the closed sanitized reason vocabulary.
   The callback URL, hook bearer, and idempotency key never appear in `ListSeats`
-  or `SeatStatus`.
+  or `SeatStatus`. A seat created from a SeatGrant carries
+  `seat_grant: {grant_nonce, label}`; every other seat carries `null`.
 - `SeatStatus` validates the textual seat id and returns its summary plus a live
   report. The report distinguishes active and decommissioned seats; active
   seats include health and their created, DKG-in-progress, running, or data-loss
@@ -288,6 +289,18 @@ the fleet.
   as terminal, stops its child, and frees capacity while retaining its lifetime
   port allocation. Repeating the operation succeeds and reports
   `already_decommissioned: true`.
+- `ListSeatGrants`, `CreateSeatGrant` and `RevokeSeatGrant` serve the
+  operator's guardian codes ([SPEC-seat-grant](./SPEC-seat-grant.md)). Each
+  answers in one grant shape, `{grant_nonce, label, issued_at, status}`, with
+  `status` one of `{state:unused, uri}`, `{state:used, seat_id}` or
+  `{state:revoked}`: only an unused grant has a code to share. `issued_at` is
+  the signed issue time in Unix seconds. `ListSeatGrants` returns
+  `{grants: [...]}` in issue order. `CreateSeatGrant` takes an optional label,
+  refused when empty or over 32 characters, and returns the new grant.
+  `RevokeSeatGrant` takes the hex `grant_nonce` and returns the grant as
+  revoked; repeating it succeeds, while an unknown or used grant, or one past
+  the 400 revocations the backup can carry, is refused. Grants are available
+  in every environment: a badged MG may give seats away too.
 - `ReenrollTelemetry` durably advances the one MG-wide telemetry capability
   generation and immediately schedules verified registration of the replacement.
   It returns no bearer. The previous capability stops authorizing discovery,

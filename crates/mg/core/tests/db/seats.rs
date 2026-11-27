@@ -28,6 +28,7 @@ fn new_seat(quote: u8) -> NewSeat {
         payment: Some(NewPayment {
             evidence: crate::wallet::EcashClaimEvidence::test(quote),
         }),
+        seat_grant: None,
     }
 }
 
@@ -479,7 +480,9 @@ async fn admission_and_offer_change_share_the_sqlite_writer_order() {
             assert_eq!(db.list_seats().await.unwrap().len(), 1)
         }
         SeatAdmissionResult::OfferChanged => assert!(db.list_seats().await.unwrap().is_empty()),
-        SeatAdmissionResult::Existing(_) => panic!("the quote was not previously accepted"),
+        SeatAdmissionResult::Existing(_) | SeatAdmissionResult::SeatGrantUnusable => {
+            panic!("the quote was not previously accepted and redeems no grant")
+        }
     }
 }
 
@@ -864,7 +867,9 @@ async fn memory_limit_and_admission_share_the_sqlite_writer_order() {
         // slot, which admission would hit as its capacity assertion.
         match admitted.unwrap() {
             SeatAdmissionResult::Inserted(_) | SeatAdmissionResult::OfferChanged => {}
-            SeatAdmissionResult::Existing(_) => panic!("no earlier acceptance exists"),
+            SeatAdmissionResult::Existing(_) | SeatAdmissionResult::SeatGrantUnusable => {
+                panic!("no earlier acceptance exists and no grant is redeemed")
+            }
         }
         assert_ne!(db.offer_epoch().await.unwrap(), epoch);
         assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 0);

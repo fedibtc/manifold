@@ -74,6 +74,7 @@ fn recovered(
     RecoveredFleet {
         seats,
         archives: archives.into_iter().collect(),
+        revoked_seat_grants: Vec::new(),
     }
 }
 
@@ -188,6 +189,7 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
                 plan: document.plan.clone(),
                 federation_size: document.federation_size,
                 payment: None,
+                seat_grant: None,
             },
         )
         .await;
@@ -475,6 +477,50 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
 
     // The money came back with them.
     assert!(db.payment(&formed.seat_id).await.unwrap().is_some());
+}
+
+/// SPEC-seat-grant: a restore must not revive a grant. The used nonces come
+/// back with their seats' documents, the revoked ones with the revocation
+/// document, and both stay refused; the issued list starts empty, since an
+/// unused grant needs no backup to stay redeemable.
+#[tokio::test]
+async fn a_restore_keeps_used_and_revoked_grants_refused() {
+    use fedi_decentralized_service_manifold_guardian::{SeatGrantLabel, SeatGrantNonce};
+
+    let identity = test_identity();
+    let used = SeatGrantNonce::from_bytes([0x3c; 32]);
+    let revoked = SeatGrantNonce::from_bytes([0x77; 32]);
+    let unknown = SeatGrantNonce::from_bytes([0x5a; 32]);
+    let mut granted = SeatBackupDocument::new(
+        &SeatFacts {
+            plan: Plan::InfiniteBestEffort { price_msats: 0 },
+            ..facts(1)
+        },
+        None,
+        None,
+        None,
+    );
+    granted.seat_grant = Some(crate::facts::SeatGrantRedemption {
+        grant_nonce: used,
+        label: Some(SeatGrantLabel::new("Cedar family").unwrap()),
+    });
+    let mut recovered = recovered(vec![granted.clone()], Vec::new());
+    recovered.revoked_seat_grants = vec![revoked];
+
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &identity, &recovered).await.unwrap();
+
+    assert!(db.is_seat_grant_refused(&used).await.unwrap());
+    assert!(db.is_seat_grant_refused(&revoked).await.unwrap());
+    assert!(!db.is_seat_grant_refused(&unknown).await.unwrap());
+    assert_eq!(
+        db.seat_grant_redemption(&granted.seat_id).await.unwrap(),
+        granted.seat_grant
+    );
+    assert_eq!(db.revoked_seat_grants().await.unwrap(), vec![revoked]);
+    assert!(db.seat_grants().await.unwrap().is_empty());
 }
 
 /// Two hosts that ran one mnemonic at once numbered their new seats

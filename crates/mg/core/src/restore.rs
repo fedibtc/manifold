@@ -312,6 +312,7 @@ pub(crate) async fn install(
                     federation_invite: guardian.federation_invite.clone(),
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
+            seat_grant: seat.seat_grant.clone(),
             incoming_transfer,
             outgoing_transfer: seat
                 .transfer
@@ -319,7 +320,8 @@ pub(crate) async fn install(
                 .and_then(|transfer| transfer.outgoing.clone()),
         });
     }
-    db.install_restored_fleet(identity, &restored).await?;
+    db.install_restored_fleet(identity, &restored, &fleet.revoked_seat_grants)
+        .await?;
     Ok(())
 }
 

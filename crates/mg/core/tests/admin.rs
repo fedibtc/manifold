@@ -187,6 +187,7 @@ fn callback_admin_projection_is_closed_and_sanitized() {
             decommissioned: false,
             completion_callback: status,
             backup: None,
+            seat_grant: None,
         });
         assert_eq!(value["completion_callback"], expected);
         let encoded = value.to_string();
@@ -336,6 +337,81 @@ async fn admin_socket_round_trips_operator_verbs() {
     .await
     .unwrap_err();
     assert!(unknown.message.contains("unknown seat"), "{unknown:?}");
+
+    // Guardian codes: issue, list, revoke. A label over 32 characters is
+    // refused before anything is issued.
+    let too_long = ask(AdminRequest::CreateSeatGrant {
+        label: Some("x".repeat(33)),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(too_long.kind, AdminErrorKind::Other, "{too_long:?}");
+    let issued = ask(AdminRequest::CreateSeatGrant {
+        label: Some("Book club".into()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(issued["label"], "Book club");
+    assert_eq!(issued["status"]["state"], "unused");
+    let uri = issued["status"]["uri"].as_str().unwrap().to_owned();
+    let code = fedi_decentralized_service_manifold_guardian::SeatGrantCode::parse(
+        &uri,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+    )
+    .unwrap();
+    assert_eq!(
+        code.locator().service_pubkey,
+        fleet.identity().derive_service_pubkey()
+    );
+    assert_eq!(
+        issued["grant_nonce"],
+        serde_json::to_value(code.grant().grant_nonce).unwrap()
+    );
+    let unlabeled = ask(AdminRequest::CreateSeatGrant { label: None })
+        .await
+        .unwrap();
+    assert_eq!(unlabeled["label"], serde_json::Value::Null);
+    let listed = ask(AdminRequest::ListSeatGrants).await.unwrap();
+    assert_eq!(
+        listed["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|grant| grant["grant_nonce"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            issued["grant_nonce"].clone(),
+            unlabeled["grant_nonce"].clone()
+        ],
+        "oldest first, even within one second"
+    );
+    assert_eq!(
+        listed["grants"][0], issued,
+        "the listed code is the one issued"
+    );
+    let grant_nonce = code.grant().grant_nonce;
+    let revoked = ask(AdminRequest::RevokeSeatGrant { grant_nonce })
+        .await
+        .unwrap();
+    assert_eq!(revoked["status"], serde_json::json!({ "state": "revoked" }));
+    assert_eq!(
+        ask(AdminRequest::RevokeSeatGrant { grant_nonce })
+            .await
+            .unwrap(),
+        revoked
+    );
+    let unknown_grant = ask(AdminRequest::RevokeSeatGrant {
+        grant_nonce: fedi_decentralized_service_manifold_guardian::SeatGrantNonce::from_bytes(
+            [7; 32],
+        ),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(
+        unknown_grant.kind,
+        AdminErrorKind::Other,
+        "{unknown_grant:?}"
+    );
 
     assert_eq!(
         ask(AdminRequest::PayoutDestination).await.unwrap()["destination"],

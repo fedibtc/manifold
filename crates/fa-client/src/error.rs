@@ -323,6 +323,10 @@ pub enum MgCause {
     SeatTransferGrantMismatch,
     #[error("federation_already_hosted")]
     FederationAlreadyHosted,
+    /// The guardian code was already used or revoked; the FA asks its
+    /// operator for a new one (SPEC-seat-grant).
+    #[error("seat_grant_unusable")]
+    SeatGrantUnusable,
     #[error("unsupported_verb")]
     UnsupportedVerb,
     #[error("other")]
@@ -364,6 +368,7 @@ impl From<fedi_decentralized_service_manifold_guardian::ManifoldGuardianError> f
             E::InvalidGatewayApiUrl => Self::InvalidGatewayApiUrl,
             E::SeatTransferGrantMismatch => Self::SeatTransferGrantMismatch,
             E::FederationAlreadyHosted => Self::FederationAlreadyHosted,
+            E::SeatGrantUnusable => Self::SeatGrantUnusable,
             E::WrongState { status } => Self::WrongState(status),
             E::InvalidDkgInput(_) => Self::InvalidDkgInput,
             E::UnsupportedVerb { .. } => Self::UnsupportedVerb,

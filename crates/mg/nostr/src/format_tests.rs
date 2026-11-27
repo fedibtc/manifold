@@ -540,7 +540,7 @@ fn a_document_from_a_future_version_is_refused() {
     let mut payload = Vec::new();
     ciborium::into_writer(
         &Envelope {
-            version: TRANSFER_DOCUMENT_VERSION + 1,
+            version: SEAT_GRANT_DOCUMENT_VERSION + 1,
             document: 0xF00D_u32,
         },
         &mut payload,
@@ -1056,4 +1056,160 @@ fn padding_boundaries_produce_whole_uniform_events() {
     for slice in exact.iter().chain(&spilled).chain(&empty) {
         assert_eq!(slice.len(), uniform);
     }
+}
+
+fn grant_redemption() -> mg_core::facts::SeatGrantRedemption {
+    mg_core::facts::SeatGrantRedemption {
+        grant_nonce: fedi_decentralized_service_manifold_guardian::SeatGrantNonce::from_bytes(
+            [0x3c; 32],
+        ),
+        label: Some(
+            fedi_decentralized_service_manifold_guardian::SeatGrantLabel::new("Cedar family")
+                .unwrap(),
+        ),
+    }
+}
+
+fn revocations_event(
+    identity: &BackupIdentity,
+    revoked: Vec<fedi_decentralized_service_manifold_guardian::SeatGrantNonce>,
+) -> Event {
+    identity
+        .seat_grant_revocations_event(&SeatGrantRevocationsDocument { revoked })
+        .unwrap()
+        .sign_with_keys(identity.keys())
+        .unwrap()
+}
+
+/// SPEC-seat-grant: the used nonce travels in the seat's document. Old
+/// readers ignore unknown fields, so a grant-bearing document carries a
+/// version they refuse rather than one they would restore without the nonce,
+/// which would revive the grant. Its archive sits at the current coordinates,
+/// with or without transfer facts beside the grant.
+#[test]
+fn a_grant_document_restores_with_its_archive_and_old_readers_refuse_it() {
+    let identity = test_identity();
+    let archive = big_guardian_archive();
+    let mut granted = formed_publication(&seat_facts_no(1, 0), &archive);
+    granted.document.seat_grant = Some(grant_redemption());
+    let mut transferred = stopped_source_publication(&seat_facts_no(2, 1), &archive);
+    transferred.document.seat_grant = Some(grant_redemption());
+
+    for publication in [granted, transferred] {
+        let events = published_events(&identity, &publication);
+        assert!(events.len() > 2, "the interesting case is a sliced archive");
+        let document = events.last().unwrap().content.clone();
+        let err = pre_transfer_open(&identity, &document).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                BackupError::UnsupportedVersion {
+                    found: SEAT_GRANT_DOCUMENT_VERSION
+                }
+            ),
+            "expected UnsupportedVersion, got {err:?}"
+        );
+        let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
+        assert_eq!(recovered.seats, vec![publication.document.clone()]);
+        assert_eq!(
+            recovered.archives.get(&publication.document.seat_id),
+            Some(&archive)
+        );
+    }
+}
+
+/// A grant and the grant version come together: a grant under an older
+/// version is one an old reader would restore without it, and the grant
+/// version without a grant is no writer's output.
+#[test]
+fn seat_grant_facts_under_the_wrong_version_are_refused() {
+    let identity = test_identity();
+    let ordinary = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let mut granted = ordinary.clone();
+    granted.seat_grant = Some(grant_redemption());
+    for (case, version, document) in [
+        ("a grant at version 1", LEGACY_DOCUMENT_VERSION, &granted),
+        ("a grant at version 2", BACKUP_DOCUMENT_VERSION, &granted),
+        ("a grant at version 3", TRANSFER_DOCUMENT_VERSION, &granted),
+        (
+            "no grant at the grant version",
+            SEAT_GRANT_DOCUMENT_VERSION,
+            &ordinary,
+        ),
+    ] {
+        let mut payload = Vec::new();
+        ciborium::into_writer(&Envelope { version, document }, &mut payload).unwrap();
+        let sealed = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
+        let err = identity.open_seat_document(&sealed).unwrap_err();
+        assert!(
+            matches!(err, BackupError::SeatGrantVersion),
+            "{case}: expected SeatGrantVersion, got {err:?}"
+        );
+    }
+}
+
+/// The fleet's revocation document restores beside the seats. A reader
+/// from before grants cannot open it as a document, so its restore finds an
+/// event no seat claims and refuses rather than revive the revoked grants.
+#[test]
+fn the_revocation_document_restores_and_old_readers_refuse_the_restore() {
+    use fedi_decentralized_service_manifold_guardian::SeatGrantNonce;
+
+    let identity = test_identity();
+    let revoked = vec![
+        SeatGrantNonce::from_bytes([0x11; 32]),
+        SeatGrantNonce::from_bytes([0x77; 32]),
+    ];
+    let unformed = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let mut events = published_events(
+        &identity,
+        &SeatPublication {
+            document: unformed.clone(),
+            archive: None,
+        },
+    );
+    let revocations = revocations_event(&identity, revoked.clone());
+    assert!(matches!(
+        identity.open_seat_document(&revocations.content),
+        Err(BackupError::Decrypt)
+    ));
+    events.push(revocations);
+
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events.clone()).unwrap();
+    assert_eq!(recovered.seats, vec![unformed]);
+    assert_eq!(recovered.revoked_seat_grants, revoked);
+
+    // Another mnemonic's key cannot read it.
+    assert!(
+        stranger_identity()
+            .open_seat_grant_revocations(&events.last().unwrap().content)
+            .is_err()
+    );
+    // Two at the one coordinate cannot both be the latest.
+    events.push(revocations_event(&identity, Vec::new()));
+    assert!(recover_from_events(&identity, &test_mnemonic(), events).is_err());
+}
+
+/// The daemon refuses a revocation past this many, so this many must fit
+/// the one event the document is.
+#[test]
+fn the_most_revocations_the_daemon_allows_fit_one_event() {
+    use fedi_decentralized_service_manifold_guardian::SeatGrantNonce;
+
+    let identity = test_identity();
+    let revoked: Vec<_> = (0..mg_core::backup::MAX_REVOKED_SEAT_GRANTS)
+        .map(|index| {
+            let mut nonce = [0xff; 32];
+            nonce[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            SeatGrantNonce::from_bytes(nonce)
+        })
+        .collect();
+    let event = revocations_event(&identity, revoked.clone());
+    assert_eq!(
+        identity
+            .open_seat_grant_revocations(&event.content)
+            .unwrap()
+            .revoked,
+        revoked
+    );
 }

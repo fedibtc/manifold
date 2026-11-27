@@ -34,7 +34,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use tokio::sync::{Notify, watch};
 
-use crate::backup::{BackupSink, seat_publication_plan};
+use crate::backup::{BackupSink, SeatGrantRevocationsDocument, seat_publication_plan};
 use crate::db::{Db, now_ms};
 use crate::seat_process::SeatProcessConfig;
 
@@ -192,7 +192,77 @@ impl BackupWorker {
             completed_at_ms: now_ms(),
             pending_seats: pending,
         }));
+        // The revocation document is no seat, so it is not counted in the
+        // operator's pending seats, but an unconfirmed one keeps the worker
+        // on its retry backoff like one.
+        if let Err(error) = self.reconcile_seat_grant_revocations(sink, db).await {
+            tracing::warn!(
+                error = format_args!("{error:#}"),
+                "failed to publish the seat grant revocation document"
+            );
+            tracing::warn!(
+                safe_to_share = true,
+                stage = "backup_publish",
+                failure_kind = "seat_grant_revocations_publish_failed",
+                "failed to publish the seat grant revocation document"
+            );
+            return Ok(pending + 1);
+        }
         Ok(pending)
+    }
+
+    /// Converge the fleet-level revocation document the way a seat's
+    /// document converges: publish when what the database says differs from
+    /// what the relay was last confirmed to serve, then record. An MG that
+    /// never revoked a grant publishes nothing.
+    async fn reconcile_seat_grant_revocations(
+        &self,
+        sink: &Arc<dyn BackupSink>,
+        db: &Db,
+    ) -> anyhow::Result<()> {
+        let document = SeatGrantRevocationsDocument {
+            revoked: db.revoked_seat_grants().await?,
+        };
+        let doc_sha256 = document.sha256();
+        let recorded = db
+            .seat_grant_revocations_publication(sink.format_version())
+            .await?;
+        let unchanged = match &recorded {
+            Some(recorded) => *recorded == doc_sha256,
+            None => document.revoked.is_empty(),
+        };
+        if unchanged {
+            return Ok(());
+        }
+        tokio::time::timeout(
+            PUBLISH_TIMEOUT,
+            sink.publish_seat_grant_revocations(&document),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "publish did not resolve within {}s",
+                PUBLISH_TIMEOUT.as_secs()
+            )
+        })??;
+        // A revocation landing while the relay responded is not in what was
+        // confirmed; leave it to the next scan rather than record over it.
+        let current = SeatGrantRevocationsDocument {
+            revoked: db.revoked_seat_grants().await?,
+        };
+        anyhow::ensure!(
+            current.sha256() == doc_sha256,
+            "seat grant revocations changed during publication"
+        );
+        db.record_seat_grant_revocations_publication(&doc_sha256, sink.format_version())
+            .await?;
+        tracing::info!(
+            safe_to_share = true,
+            stage = "backup_publish",
+            revoked_seat_grants = document.revoked.len(),
+            "confirmed the seat grant revocation document on the relay"
+        );
+        Ok(())
     }
 
     async fn reconcile_seat(

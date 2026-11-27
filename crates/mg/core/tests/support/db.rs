@@ -84,6 +84,17 @@ pub(crate) async fn insert_test_seat(db: &Db, new_seat: NewSeat) -> SeatFacts {
             .await
             .unwrap();
     }
+    if let Some(grant) = &new_seat.seat_grant {
+        sqlx::query(
+            "INSERT INTO seat_grant_redemptions (grant_nonce, quote_id, label) VALUES (?, ?, ?)",
+        )
+        .bind(grant.grant_nonce.as_bytes().as_slice())
+        .bind(new_seat.seat_id.as_bytes().as_slice())
+        .bind(grant.label.as_ref().map(|label| label.as_str().to_owned()))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
     tx.commit().await.unwrap();
 
     SeatFacts {

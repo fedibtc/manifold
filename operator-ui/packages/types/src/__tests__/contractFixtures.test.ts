@@ -56,6 +56,7 @@ import mgPayoutJobCappedJson from '../../fixtures/mg_payout_job_capped.json';
 import mgPayoutJobStatusJson from '../../fixtures/mg_payout_job_status.json';
 import mgPlansJson from '../../fixtures/mg_plans.json';
 import mgReenrollTelemetryJson from '../../fixtures/mg_reenroll_telemetry.json';
+import mgSeatGrantsJson from '../../fixtures/mg_seat_grants.json';
 import mgSeatGuardianFeesJson from '../../fixtures/mg_seat_guardian_fees.json';
 import mgSeatReadinessJson from '../../fixtures/mg_seat_readiness.json';
 import mgSeatReportsJson from '../../fixtures/mg_seat_reports.json';
@@ -80,6 +81,7 @@ import type {
   GuardianLinkResponse,
   GuardianLinkTestResponse,
   ListPaymentFederationsResponse,
+  ListSeatGrantsResponse,
   ListSeatsResponse,
   ListWalletOperationsResponse,
   MarkSupportReadResponse,
@@ -304,6 +306,9 @@ const adminRequestsMirror = {
   ListSeats: 'ListSeats',
   SeatStatus: { SeatStatus: { seat_id: SEAT_ID } },
   DecommissionSeat: { DecommissionSeat: { seat_id: SEAT_ID } },
+  ListSeatGrants: 'ListSeatGrants',
+  CreateSeatGrant: { CreateSeatGrant: { label: 'Book club' } },
+  RevokeSeatGrant: { RevokeSeatGrant: { grant_nonce: '5a'.repeat(32) } },
   ReenrollTelemetry: 'ReenrollTelemetry',
   GuardianLink: 'GuardianLink',
   CreateGuardianLinkOffer: 'CreateGuardianLinkOffer',
@@ -502,12 +507,13 @@ const mgSeatsMirror = {
     {
       seat_id: SEAT_ID,
       fi_id: FA_ID,
-      plan: PLAN,
+      plan: { InfiniteBestEffort: { price_msats: 0 } },
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'not_paid' },
       decommissioned: false,
       completion_callback: { state: 'not_configured' },
-      backup: null
+      backup: null,
+      seat_grant: { grant_nonce: '3c'.repeat(32), label: 'Cedar family' }
     },
     {
       seat_id: SEAT_ID,
@@ -522,7 +528,8 @@ const mgSeatsMirror = {
         next_attempt_at_ms: 1_753_600_060_000,
         last_reason: 'network'
       },
-      backup: { published_at_ms: 1_753_600_010_000, archive_confirmed: false }
+      backup: { published_at_ms: 1_753_600_010_000, archive_confirmed: false },
+      seat_grant: null
     },
     {
       seat_id: SEAT_ID,
@@ -532,7 +539,8 @@ const mgSeatsMirror = {
       payment_claim: { state: 'success', at_ms: 1_753_600_000_000 },
       decommissioned: false,
       completion_callback: { state: 'delivered', attempts: 1, at_ms: 1_753_600_030_000 },
-      backup: { published_at_ms: 1_753_600_020_000, archive_confirmed: true }
+      backup: { published_at_ms: 1_753_600_020_000, archive_confirmed: true },
+      seat_grant: null
     },
     {
       seat_id: SEAT_ID,
@@ -546,7 +554,8 @@ const mgSeatsMirror = {
         attempts: 3,
         reason: 'gateway_origin_missing'
       },
-      backup: null
+      backup: null,
+      seat_grant: null
     },
     {
       seat_id: DECOMMISSIONED_SEAT_ID,
@@ -561,7 +570,8 @@ const mgSeatsMirror = {
         at_ms: CREATED_AT_MS,
         reason: 'decommissioned'
       },
-      backup: { published_at_ms: 1_753_600_040_000, archive_confirmed: true }
+      backup: { published_at_ms: 1_753_600_040_000, archive_confirmed: true },
+      seat_grant: null
     }
   ],
   backup_scan: { completed_at_ms: 1_753_600_050_000, pending_seats: 1 }
@@ -606,6 +616,7 @@ const mgSeatStatusMirror = {
   decommissioned: false,
   completion_callback: { state: 'delivered', attempts: 1, at_ms: 1_753_600_030_000 },
   backup: { published_at_ms: 1_753_600_020_000, archive_confirmed: true },
+  seat_grant: null,
   report: {
     state: 'active',
     health: 'healthy',
@@ -614,6 +625,38 @@ const mgSeatStatusMirror = {
   },
   guardian_fee: readGuardianFee
 } satisfies SeatStatusResponse;
+
+const mgSeatGrantsMirror = {
+  grants: [
+    {
+      grant_nonce: '77'.repeat(32),
+      issued_at: 1_753_300_000,
+      label: null,
+      status: { state: 'revoked' }
+    },
+    {
+      grant_nonce: '3c'.repeat(32),
+      issued_at: 1_753_400_000,
+      label: 'Cedar family',
+      status: { state: 'used', seat_id: SEAT_ID }
+    },
+    {
+      grant_nonce: '5a'.repeat(32),
+      issued_at: 1_753_500_000,
+      label: 'Book club',
+      status: {
+        state: 'unused',
+        uri:
+          'manifold:seat-grant?v=1' +
+          '&env=development' +
+          '&node=a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0' +
+          '&key=4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa' +
+          '&grant=eyJncmFudF9ub25jZSI6IjVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWEiLCJpc3N1ZWRfYXQiOjE3NTM1MDAwMDAsImxhYmVsIjoiQm9vayBjbHViIn0' +
+          '&sig=accf9c7a48883ef21455aa9c734333635af05f86b8aa9441437e1247cb5aed28f2b30b51b699bce529b98955ff07e2cdcb948af8f3907763051b33133a07d723'
+      }
+    }
+  ]
+} satisfies ListSeatGrantsResponse;
 
 const mgDecommissionSeatMirror = {
   decommissioned: true,
@@ -875,6 +918,10 @@ describe('committed MG fixtures match their type-checked mirrors', () => {
 
   it('should keep mg_seats.json equal to the typed mirror', () => {
     expect(mgSeatsJson).toEqual(mgSeatsMirror);
+  });
+
+  it('should keep mg_seat_grants.json equal to the typed mirror', () => {
+    expect(mgSeatGrantsJson).toEqual(mgSeatGrantsMirror);
   });
 
   it('should keep mg_seat_reports.json equal to the typed mirror', () => {

@@ -250,6 +250,7 @@ fn input(
         } else {
             VerifiedPayment::Free
         },
+        seat_grant: None,
     }
 }
 
@@ -5497,6 +5498,13 @@ impl crate::backup::BackupSink for FakeBackupSink {
             .lock()
             .unwrap()
             .push(publication.document.clone());
+        Ok(())
+    }
+
+    async fn publish_seat_grant_revocations(
+        &self,
+        _document: &crate::backup::SeatGrantRevocationsDocument,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

@@ -39,6 +39,12 @@ pub enum AdminVerb {
         #[command(subcommand)]
         verb: GuardianFeesVerb,
     },
+    /// Guardian codes (SeatGrants): each gives one free seat on this MG to
+    /// whichever FA redeems it.
+    GuardianCodes {
+        #[command(subcommand)]
+        verb: GuardianCodesVerb,
+    },
     /// The phone linked to this host, which gets a push notification when
     /// its guardians need attention.
     GuardianLink {
@@ -216,6 +222,24 @@ pub enum SeatsVerb {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum GuardianCodesVerb {
+    /// Every code this MG issued, with its state; an unused code's
+    /// `manifold:seat-grant` URI is printed again.
+    List,
+    /// Issue a code and print its `manifold:seat-grant` URI to share.
+    Create {
+        /// Your own note on who the code is for, at most 32 characters. The
+        /// FA that redeems the code sees it.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Revoke an unused code, so it is refused.
+    Revoke {
+        grant_nonce: fedi_decentralized_service_manifold_guardian::SeatGrantNonce,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum GuardianLinkVerb {
     /// The linked phone, the open link offer, and whether this host can
     /// notify a phone at all.
@@ -366,6 +390,15 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
             seat_id: seat_id.into_seat_id(),
             request_id,
         },
+        AdminVerb::GuardianCodes {
+            verb: GuardianCodesVerb::List,
+        } => AdminRequest::ListSeatGrants,
+        AdminVerb::GuardianCodes {
+            verb: GuardianCodesVerb::Create { label },
+        } => AdminRequest::CreateSeatGrant { label },
+        AdminVerb::GuardianCodes {
+            verb: GuardianCodesVerb::Revoke { grant_nonce },
+        } => AdminRequest::RevokeSeatGrant { grant_nonce },
         AdminVerb::GuardianLink {
             verb: GuardianLinkVerb::Show,
         } => AdminRequest::GuardianLink,

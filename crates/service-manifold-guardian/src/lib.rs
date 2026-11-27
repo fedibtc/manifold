@@ -82,8 +82,9 @@ pub use maintenance::{
 pub use mg_name::MgName;
 pub use monthly_data_budget::{InvalidMonthlyDataBudget, MonthlyDataBudget};
 pub use seat_grant::{
-    InvalidSeatGrantCode, InvalidSeatGrantLabel, SEAT_GRANT_LABEL_MAX_CHARS, SeatGrant,
-    SeatGrantCode, SeatGrantLabel, SeatGrantNonce,
+    InvalidSeatGrantCode, InvalidSeatGrantLabel, InvalidSeatGrantNonce,
+    SEAT_GRANT_FEDERATION_SIZES, SEAT_GRANT_LABEL_MAX_CHARS, SeatGrant, SeatGrantCode,
+    SeatGrantLabel, SeatGrantNonce,
 };
 pub use service::{
     FmResult, ManifoldGuardianService, ManifoldGuardianServiceClient,

@@ -1,5 +1,8 @@
 mod guardian_link;
+mod seat_grants;
 mod seats;
+
+pub(crate) use seat_grants::{SeatGrantRevocation, StoredSeatGrant, StoredSeatGrantState};
 
 pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 mod transfers;

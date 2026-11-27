@@ -1,0 +1,30 @@
+{
+  "grants": [
+    {
+      "grant_nonce": "7777777777777777777777777777777777777777777777777777777777777777",
+      "issued_at": 1753300000,
+      "label": null,
+      "status": {
+        "state": "revoked"
+      }
+    },
+    {
+      "grant_nonce": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+      "issued_at": 1753400000,
+      "label": "Cedar family",
+      "status": {
+        "seat_id": "0707070707070707070707070707070707070707070707070707070707070707",
+        "state": "used"
+      }
+    },
+    {
+      "grant_nonce": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "issued_at": 1753500000,
+      "label": "Book club",
+      "status": {
+        "state": "unused",
+        "uri": "manifold:seat-grant?v=1&env=development&node=a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0&key=4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa&grant=eyJncmFudF9ub25jZSI6IjVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWE1YTVhNWEiLCJpc3N1ZWRfYXQiOjE3NTM1MDAwMDAsImxhYmVsIjoiQm9vayBjbHViIn0&sig=accf9c7a48883ef21455aa9c734333635af05f86b8aa9441437e1247cb5aed28f2b30b51b699bce529b98955ff07e2cdcb948af8f3907763051b33133a07d723"
+      }
+    }
+  ]
+}

@@ -137,6 +137,7 @@ const seat = (overrides: Partial<MockSeat> & Pick<MockSeat, 'seat_id' | 'report'
   completion_callback: { state: 'not_configured' },
   decommissioned: false,
   backup: { published_at_ms: NOW_MS - DAY_MS, archive_confirmed: true },
+  seat_grant: null,
   guardian_fee: {
     remittance_account: '{"id":"acct1mockguardianfeeaccount"}',
     share_matches_policy: true,

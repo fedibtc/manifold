@@ -292,6 +292,7 @@ async fn source_with(
             plan: Plan::InfiniteBestEffort { price_msats: 0 },
             federation_size: FederationSize(1),
             payment: None,
+            seat_grant: None,
         },
     )
     .await;

@@ -140,6 +140,7 @@ async fn a_publication_carries_the_archive_its_document_names() {
             plan: facts.plan.clone(),
             federation_size: facts.federation_size,
             payment: None,
+            seat_grant: None,
         },
     )
     .await;

@@ -642,3 +642,67 @@ async fn recommended_seat_limits_migrate_to_automatic() {
         );
     }
 }
+
+/// Revoking is decided at the writer: an unknown or used grant is refused,
+/// repeating a revocation is a no-op even at the cap, and a new revocation
+/// past the cap is refused rather than left out of the backup.
+#[tokio::test]
+async fn seat_grant_revocation_outcomes() {
+    use fedi_decentralized_service_manifold_guardian::{
+        FaId, FederationSize, Plan, QuoteId, SeatGrantNonce,
+    };
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = Db::open(temp.path()).await.unwrap();
+    let nonce = |byte| SeatGrantNonce::from_bytes([byte; 32]);
+    for byte in [1, 2, 3] {
+        db.insert_seat_grant(&nonce(byte), b"{}", &[0; 64])
+            .await
+            .unwrap();
+    }
+    let seat_id = SeatId::from(QuoteId([9; 32]));
+    crate::test_support::insert_test_seat(
+        &db,
+        NewSeat {
+            seat_id: seat_id.clone(),
+            fa_id: FaId(
+                secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7; 32])
+                    .unwrap()
+                    .x_only_public_key()
+                    .0,
+            ),
+            plan: Plan::InfiniteBestEffort { price_msats: 0 },
+            federation_size: FederationSize(4),
+            payment: None,
+            seat_grant: Some(crate::facts::SeatGrantRedemption {
+                grant_nonce: nonce(3),
+                label: None,
+            }),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        db.revoke_seat_grant(&nonce(8), 1).await.unwrap(),
+        SeatGrantRevocation::Unknown
+    );
+    assert_eq!(
+        db.revoke_seat_grant(&nonce(3), 1).await.unwrap(),
+        SeatGrantRevocation::AlreadyUsed
+    );
+    assert_eq!(
+        db.revoke_seat_grant(&nonce(1), 1).await.unwrap(),
+        SeatGrantRevocation::Revoked
+    );
+    assert_eq!(
+        db.revoke_seat_grant(&nonce(1), 1).await.unwrap(),
+        SeatGrantRevocation::Revoked
+    );
+    assert_eq!(
+        db.revoke_seat_grant(&nonce(2), 1).await.unwrap(),
+        SeatGrantRevocation::TooMany
+    );
+    assert_eq!(db.revoked_seat_grants().await.unwrap(), vec![nonce(1)]);
+    assert!(!db.is_seat_grant_refused(&nonce(2)).await.unwrap());
+    assert!(db.is_seat_grant_refused(&nonce(3)).await.unwrap());
+}

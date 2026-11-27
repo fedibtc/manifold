@@ -3,8 +3,8 @@ use fedi_decentralized_service_manifold_guardian::{
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
     MetaConsensusBase, MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest,
-    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId, SeatTransferGrant,
-    SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
+    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatGrantLabel, SeatGrantNonce,
+    SeatId, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
 };
 use tempfile::TempDir;
 
@@ -672,6 +672,373 @@ async fn create_seat_rejects_a_signed_incoherent_quote() {
         rpc.create_seat(SignedRequest::create(&request, &fa_key).unwrap())
             .await
             .unwrap_err(),
+        ManifoldGuardianError::InvalidPayment
+    );
+    assert!(rpc.fleet.seat_summaries().await.unwrap().is_empty());
+    rpc.fleet.shutdown().await;
+}
+
+/// A grant this MG issued, as an FA presents it.
+async fn issued_grant(
+    rpc: &ManifoldGuardianRpc,
+    label: &str,
+) -> SignedResponse<fedi_decentralized_service_manifold_guardian::SeatGrant> {
+    let issued = rpc
+        .fleet
+        .create_seat_grant(Some(SeatGrantLabel::new(label).unwrap()))
+        .await
+        .unwrap();
+    let crate::fleet::IssuedSeatGrantStatus::Unused { code } = issued.status else {
+        panic!("a new grant is unused")
+    };
+    code.signed_grant().clone()
+}
+
+fn grant_quote_request(
+    fa_id: FaId,
+    federation_size: u16,
+    grant: &SignedResponse<fedi_decentralized_service_manifold_guardian::SeatGrant>,
+) -> GetQuoteRequest {
+    GetQuoteRequest {
+        fa_id,
+        fedimintd_version: supported_fedimintd_version(),
+        federation_size: FederationSize(federation_size),
+        plan: Plan::InfiniteBestEffort { price_msats: 0 },
+        payment_federation_id: None,
+        refund_issuance: None,
+        seat_grant: Some(grant.clone()),
+    }
+}
+
+async fn create_seat_from(
+    rpc: &ManifoldGuardianRpc,
+    fa_key: &Keypair,
+    quote: SignedResponse<GetQuoteResponse>,
+) -> Result<CreateSeatOutcome, ManifoldGuardianError> {
+    let request = CreateSeatRequest {
+        ts: now(),
+        fa_id: FaId(fa_key.x_only_public_key().0),
+        quote,
+        payment_signatures: Vec::new(),
+    };
+    Ok(rpc
+        .create_seat(SignedRequest::create(&request, fa_key).unwrap())
+        .await?
+        .verify(&rpc.signing_key.x_only_public_key().0)
+        .unwrap()
+        .into_inner()
+        .outcome)
+}
+
+fn grant_nonce(
+    rpc: &ManifoldGuardianRpc,
+    grant: &SignedResponse<fedi_decentralized_service_manifold_guardian::SeatGrant>,
+) -> SeatGrantNonce {
+    grant
+        .clone()
+        .verify(&rpc.signing_key.x_only_public_key().0)
+        .unwrap()
+        .into_inner()
+        .grant_nonce
+}
+
+async fn grant_state(
+    rpc: &ManifoldGuardianRpc,
+    grant: &SignedResponse<fedi_decentralized_service_manifold_guardian::SeatGrant>,
+) -> crate::fleet::IssuedSeatGrantStatus {
+    let nonce = grant_nonce(rpc, grant);
+    rpc.fleet
+        .seat_grants()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|issued| issued.grant.grant_nonce == nonce)
+        .expect("the grant is listed")
+        .status
+}
+
+/// SPEC-seat-grant: a grant quotes the free plan for 4..=20 guardians even
+/// when this MG sells publicly at a price, outside its advertised sizes, with
+/// no accepted payment federation and while its readiness gate is shut; the
+/// quote writes nothing, the seat it creates records the grant as used, and
+/// a replay of the same quote returns that seat.
+#[tokio::test]
+async fn a_seat_grant_redeems_a_free_seat_past_price_sizes_and_readiness() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc(&temp, 29_120).await;
+    // Priced, with an empty accepted payment federation set: a public quote
+    // cannot be paid at all.
+    rpc.fleet
+        .set_offered_price(Some(Msats(1_024)))
+        .await
+        .unwrap();
+    rpc.fleet
+        .set_seat_readiness(ReadinessReport {
+            checked_at_ms: 2,
+            relay: ReadinessOutcome::RelayDisconnected,
+            discovery: ReadinessOutcome::Pass,
+            bitcoin: ReadinessOutcome::BitcoinSyncing,
+            version: ReadinessOutcome::NotApplicable,
+            pressure: ReadinessOutcome::NotApplicable,
+            host_pressure: None,
+            max_host_pressure: None,
+            ordering_latency: ReadinessOutcome::NotApplicable,
+            ordering_latency_6h_ms: None,
+            max_ordering_latency_6h_ms: None,
+            uptime: ReadinessOutcome::Pass,
+            uptime_comparison: None,
+        })
+        .await
+        .unwrap();
+    assert!(!rpc.fleet.ready_for_new_seats().await);
+    let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let fa_id = FaId(fa_key.x_only_public_key().0);
+    let grant = issued_grant(&rpc, "Book club").await;
+
+    // The public path is shut for this MG.
+    assert_eq!(
+        rpc.get_quote(GetQuoteRequest {
+            seat_grant: None,
+            plan: Plan::InfiniteBestEffort { price_msats: 1_024 },
+            ..grant_quote_request(fa_id, 7, &grant)
+        })
+        .await
+        .unwrap_err(),
+        ManifoldGuardianError::CapacityExhausted
+    );
+
+    for size in [3, 21] {
+        assert_eq!(
+            rpc.get_quote(grant_quote_request(fa_id, size, &grant))
+                .await
+                .unwrap_err(),
+            ManifoldGuardianError::UnsupportedFederationSize,
+            "size {size}"
+        );
+    }
+    // A grant is free: presenting it with the public price is not a plan it
+    // quotes.
+    assert_eq!(
+        rpc.get_quote(GetQuoteRequest {
+            plan: Plan::InfiniteBestEffort { price_msats: 1_024 },
+            ..grant_quote_request(fa_id, 7, &grant)
+        })
+        .await
+        .unwrap_err(),
+        ManifoldGuardianError::PlanNotOffered
+    );
+    // 6 is outside the advertised sizes; 4 and 20 are the grant's bounds.
+    assert!(!FEDERATION_SIZES_0_1.contains(&6));
+    for size in [4, 6, 20] {
+        let terms = rpc
+            .get_quote(grant_quote_request(fa_id, size, &grant))
+            .await
+            .unwrap_or_else(|error| panic!("size {size} must be quoted: {error}"))
+            .verify(&rpc.signing_key.x_only_public_key().0)
+            .unwrap()
+            .into_inner()
+            .terms;
+        assert_eq!(terms.price_msats, 0);
+        assert_eq!(terms.payment, None);
+    }
+    // Quoting wrote nothing.
+    assert!(matches!(
+        grant_state(&rpc, &grant).await,
+        crate::fleet::IssuedSeatGrantStatus::Unused { .. }
+    ));
+    assert!(rpc.fleet.seat_summaries().await.unwrap().is_empty());
+
+    let quote = rpc
+        .get_quote(grant_quote_request(fa_id, 4, &grant))
+        .await
+        .unwrap();
+    let first = create_seat_from(&rpc, &fa_key, quote.clone())
+        .await
+        .unwrap();
+    let CreateSeatOutcome::Accepted { seat_id, .. } = &first else {
+        panic!("a grant quote is refused: {first:?}")
+    };
+    assert_eq!(
+        create_seat_from(&rpc, &fa_key, quote).await.unwrap(),
+        first,
+        "replaying the quote returns the seat it created"
+    );
+    assert_eq!(
+        grant_state(&rpc, &grant).await,
+        crate::fleet::IssuedSeatGrantStatus::Used {
+            seat_id: seat_id.clone()
+        }
+    );
+    let summaries = rpc.fleet.seat_summaries().await.unwrap();
+    assert_eq!(summaries.len(), 1);
+    let redemption = summaries[0].seat_grant.as_ref().expect("grant recorded");
+    assert_eq!(
+        redemption.label.as_ref().map(SeatGrantLabel::as_str),
+        Some("Book club")
+    );
+    // The one slot is taken, but a used grant is refused as used first.
+    assert_eq!(
+        rpc.get_quote(grant_quote_request(fa_id, 4, &grant))
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::SeatGrantUnusable
+    );
+    rpc.fleet.shutdown().await;
+}
+
+/// A used grant and a revoked grant are refused with the same error at both
+/// GetQuote and CreateSeat, so an FA cannot tell which happened.
+#[tokio::test]
+async fn used_and_revoked_grants_are_refused_alike() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc(&temp, 29_130).await;
+    rpc.fleet.set_max_seats(Some(3)).await.unwrap();
+    let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let other_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let fa_id = FaId(fa_key.x_only_public_key().0);
+
+    // Two quotes for one grant from two FAs: the first seat uses it.
+    let used = issued_grant(&rpc, "used").await;
+    let first_quote = rpc
+        .get_quote(grant_quote_request(fa_id, 5, &used))
+        .await
+        .unwrap();
+    let second_quote = rpc
+        .get_quote(grant_quote_request(
+            FaId(other_key.x_only_public_key().0),
+            5,
+            &used,
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        create_seat_from(&rpc, &fa_key, first_quote).await.unwrap(),
+        CreateSeatOutcome::Accepted { .. }
+    ));
+    let used_at_create = create_seat_from(&rpc, &other_key, second_quote)
+        .await
+        .unwrap_err();
+    let used_at_quote = rpc
+        .get_quote(grant_quote_request(fa_id, 5, &used))
+        .await
+        .unwrap_err();
+
+    // A grant quoted, then revoked before its seat is created.
+    let revoked = issued_grant(&rpc, "revoked").await;
+    let revoked_quote = rpc
+        .get_quote(grant_quote_request(fa_id, 5, &revoked))
+        .await
+        .unwrap();
+    let revoked_nonce = grant_nonce(&rpc, &revoked);
+    rpc.fleet.revoke_seat_grant(&revoked_nonce).await.unwrap();
+    // Repeating a revocation succeeds; a used grant has nothing to revoke.
+    rpc.fleet.revoke_seat_grant(&revoked_nonce).await.unwrap();
+    rpc.fleet
+        .revoke_seat_grant(&grant_nonce(&rpc, &used))
+        .await
+        .unwrap_err();
+    let revoked_at_create = create_seat_from(&rpc, &fa_key, revoked_quote)
+        .await
+        .unwrap_err();
+    let revoked_at_quote = rpc
+        .get_quote(grant_quote_request(fa_id, 5, &revoked))
+        .await
+        .unwrap_err();
+
+    for error in [
+        used_at_create,
+        used_at_quote,
+        revoked_at_create,
+        revoked_at_quote,
+    ] {
+        assert_eq!(error, ManifoldGuardianError::SeatGrantUnusable);
+    }
+    assert_eq!(rpc.fleet.seat_summaries().await.unwrap().len(), 1);
+    assert_eq!(
+        grant_state(&rpc, &revoked).await,
+        crate::fleet::IssuedSeatGrantStatus::Revoked
+    );
+    rpc.fleet.shutdown().await;
+}
+
+/// A grant skips readiness but not capacity, and its quote is bound to the
+/// offer epoch like any other: a stale one is refused without using the
+/// grant.
+#[tokio::test]
+async fn a_seat_grant_still_needs_capacity_and_a_current_epoch() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc(&temp, 29_140).await;
+    let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let fa_id = FaId(fa_key.x_only_public_key().0);
+    let grant = issued_grant(&rpc, "late").await;
+
+    let stale = rpc
+        .get_quote(grant_quote_request(fa_id, 9, &grant))
+        .await
+        .unwrap();
+    rpc.fleet.set_offered_price(Some(Msats(7))).await.unwrap();
+    assert!(matches!(
+        create_seat_from(&rpc, &fa_key, stale).await.unwrap(),
+        CreateSeatOutcome::Refused {
+            reason: RefusalReason::OfferChanged,
+            ..
+        }
+    ));
+    assert!(matches!(
+        grant_state(&rpc, &grant).await,
+        crate::fleet::IssuedSeatGrantStatus::Unused { .. }
+    ));
+
+    rpc.fleet.set_max_seats(Some(0)).await.unwrap();
+    assert_eq!(
+        rpc.get_quote(grant_quote_request(fa_id, 9, &grant))
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::CapacityExhausted
+    );
+    rpc.fleet.shutdown().await;
+}
+
+/// Only this MG's own signature makes a grant: one signed by another key is
+/// refused at GetQuote, and at CreateSeat even inside a quote this MG signed.
+#[tokio::test]
+async fn a_grant_signed_by_another_key_is_refused() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc(&temp, 29_150).await;
+    let fa_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let fa_id = FaId(fa_key.x_only_public_key().0);
+    let foreign = SignedResponse::create(
+        &fedi_decentralized_service_manifold_guardian::SeatGrant {
+            grant_nonce: SeatGrantNonce::from_bytes([9; 32]),
+            issued_at: fedi_decentralized_service_manifold_guardian::Timestamp(1),
+            label: None,
+        },
+        &Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng()),
+    )
+    .unwrap();
+    assert_eq!(
+        rpc.get_quote(grant_quote_request(fa_id, 8, &foreign))
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::Unauthorized
+    );
+
+    let offer = rpc.fleet.quote_offer().await.unwrap();
+    let quote = SignedResponse::create(
+        &GetQuoteResponse {
+            terms: QuoteTerms {
+                quote_nonce: [2; 32],
+                offer_epoch: offer.epoch,
+                request: grant_quote_request(fa_id, 8, &foreign),
+                price_msats: 0,
+                payment: None,
+            },
+        },
+        &rpc.signing_key,
+    )
+    .unwrap();
+    assert_eq!(
+        create_seat_from(&rpc, &fa_key, quote).await.unwrap_err(),
         ManifoldGuardianError::InvalidPayment
     );
     assert!(rpc.fleet.seat_summaries().await.unwrap().is_empty());

@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationSize, InviteCode, Plan, SeatId,
+    FaId, FederationSize, InviteCode, Plan, SeatGrantNonce, SeatId,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::facts::{SeatFacts, SeatNo};
+use crate::facts::{SeatFacts, SeatGrantRedemption, SeatNo};
 use crate::identity::RootMnemonic;
 
 /// One seat's irreplaceable state.
@@ -86,6 +86,43 @@ pub struct SeatBackupDocument {
     /// their original document digest. Never contains a live signed grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<TransferBackup>,
+    /// The SeatGrant the seat was redeemed from, so a restore keeps its nonce
+    /// used ([SPEC-seat-grant](../../specs/SPEC-seat-grant.md)). Absent for a
+    /// seat taken through the public offer; omission preserves those seats'
+    /// document digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_grant: Option<SeatGrantRedemption>,
+}
+
+/// The one fleet-level backup document: every revoked SeatGrant nonce, so a
+/// restore cannot make a revoked grant usable again
+/// ([SPEC-seat-grant](../../specs/SPEC-seat-grant.md)). Used nonces travel in
+/// the seat documents of the seats they created, and an unused grant needs no
+/// backup, because its signature stays valid.
+///
+/// Republished whole on each revocation, like a seat document; reconciled by
+/// the same worker against its own confirmed-publication record.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SeatGrantRevocationsDocument {
+    /// In nonce order, so one set has one spelling and one hash.
+    pub revoked: Vec<SeatGrantNonce>,
+}
+
+/// How many grants an MG may have revoked: the revocation document is one
+/// relay event, and this many nonces is what the storage adapter guarantees
+/// fits in one (`mg-nostr` tests it). Far above what an operator revokes;
+/// [`crate::fleet::Fleet::revoke_seat_grant`] refuses past it rather than
+/// leave a revocation the backup cannot carry.
+pub const MAX_REVOKED_SEAT_GRANTS: usize = 400;
+
+impl SeatGrantRevocationsDocument {
+    /// The hash a publication is recorded and reconciled under (deterministic
+    /// CBOR, as for seat documents).
+    pub fn sha256(&self) -> String {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(self, &mut bytes).expect("a revocation document serializes");
+        sha256_hex(bytes)
+    }
 }
 
 /// Transfer facts are independent of the guardian archive: a removed source
@@ -378,6 +415,7 @@ impl SeatBackupDocument {
             guardian,
             decommissioned_at_ms,
             transfer: None,
+            seat_grant: None,
         }
     }
 
@@ -537,6 +575,7 @@ pub(crate) async fn seat_publication_plan(
         outgoing,
         formed_invite,
         decommissioned_at_ms,
+        seat_grant,
     } = db.seat_recovery_facts(&facts.seat_id).await?;
     let payment = payment.map(|record| PaymentBackup::from_record(&record));
     let removed = outgoing == Some(crate::transfer_state::OutgoingTransfer::Removed);
@@ -572,6 +611,7 @@ pub(crate) async fn seat_publication_plan(
         federation_invite,
     });
     let mut document = SeatBackupDocument::new(facts, payment, guardian, decommissioned_at_ms);
+    document.seat_grant = seat_grant;
     let accepted_backup = incoming.filter(|_| !removed).and_then(|incoming| {
         let keys = incoming.accepted()?;
         Some(IncomingTransferBackup::Accepted {
@@ -610,6 +650,8 @@ pub struct RecoveredFleet {
     /// Each seat's guardian archive, already reassembled and verified against
     /// the digest it must hash to.
     pub archives: HashMap<SeatId, GuardianArchive>,
+    /// The revocation document's nonces; empty when none was published.
+    pub revoked_seat_grants: Vec<SeatGrantNonce>,
 }
 
 impl RecoveredFleet {
@@ -658,6 +700,13 @@ pub trait BackupSink: Send + Sync + 'static {
     /// of the archive is unconfirmed.
     async fn publish(&self, publication: &SeatPublication) -> anyhow::Result<()>;
 
+    /// Publish the fleet-level revocation document, replacing the last, and
+    /// confirm it reads back, under the same contract as [`Self::publish`].
+    async fn publish_seat_grant_revocations(
+        &self,
+        document: &SeatGrantRevocationsDocument,
+    ) -> anyhow::Result<()>;
+
     /// The storage format version this sink writes. Confirmed-publication
     /// records are scoped to it: a record written under another version
     /// describes events this sink's own reader would refuse, so changing the
@@ -679,6 +728,13 @@ pub struct DiscardBackupSink;
 #[async_trait::async_trait]
 impl BackupSink for DiscardBackupSink {
     async fn publish(&self, _publication: &SeatPublication) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn publish_seat_grant_revocations(
+        &self,
+        _document: &SeatGrantRevocationsDocument,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
