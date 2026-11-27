@@ -7,9 +7,11 @@ use std::process::Command;
 use anyhow::Context;
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::util::SafeUrl;
-use fedimint_gateway_common::{ConnectFedPayload, DepositAddressPayload, V1_API_ENDPOINT};
+use fedimint_gateway_common::{
+    ConnectFedPayload, DepositAddressPayload, LightningInfo, V1_API_ENDPOINT,
+};
 use fedimint_ln_common::client::GatewayApi;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep, timeout_at};
 
 use super::bitcoin::BitcoinFixture;
 use super::{
@@ -71,6 +73,46 @@ impl GatewayFixture {
         })
         .await
         .context("target gateway address setup exceeded 120 seconds")?
+    }
+
+    /// Waits until gatewayd's lightning node has connected every block up to
+    /// `height`.
+    ///
+    /// gatewayd's `/balances` reports the node's total on-chain balance, which
+    /// counts a deposit the node has only seen in the mempool. The node refuses
+    /// to send that unconfirmed amount, so a test that sends right after a
+    /// deposit must first wait for the node to see the confirming blocks. LDK
+    /// connects each block to its on-chain wallet before the channel manager,
+    /// whose best block is the `block_height` reported here.
+    pub async fn wait_for_chain_height(&self, height: u64) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut last_seen_height = None;
+        timeout_at(deadline, async {
+            let connectors = ConnectorRegistry::build_from_client_defaults()
+                .bind()
+                .await?;
+            let api = GatewayApi::new(Some(self.password.clone()), connectors);
+            let base_url = SafeUrl::parse(&self.api_url)?.join(V1_API_ENDPOINT)?;
+            loop {
+                let info = fedimint_gateway_client::get_info(&api, &base_url)
+                    .await
+                    .context("query gatewayd info")?;
+                if let LightningInfo::Connected { block_height, .. } = info.lightning_info {
+                    last_seen_height = Some(block_height);
+                    if block_height >= height {
+                        return Ok(());
+                    }
+                }
+                sleep(POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "timed out waiting for gatewayd lightning node to reach height {height}; \
+                 last seen height: {last_seen_height:?}"
+            )
+        })?
     }
 
     pub async fn start(
