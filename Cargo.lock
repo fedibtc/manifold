@@ -2872,6 +2872,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedi-social-common"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bitcoin_hashes",
+ "fedimint-aead",
+ "fedimint-core",
+ "fedimint-threshold-crypto",
+ "hex",
+ "impl-tools",
+ "secp256k1 0.29.1",
+ "serde",
+ "strum 0.27.2",
+ "strum_macros 0.27.2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fedi-social-server"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "erased-serde",
+ "fedi-social-common",
+ "fedimint-core",
+ "fedimint-server",
+ "fedimint-threshold-crypto",
+ "futures",
+ "rand 0.8.6",
+ "secp256k1 0.29.1",
+ "strum 0.27.2",
+ "subtle",
+ "tracing",
+]
+
+[[package]]
 name = "fedi-stability-pool-client"
 version = "0.1.0"
 dependencies = [
@@ -6336,12 +6374,15 @@ dependencies = [
  "backtrace",
  "bitcoin",
  "clap",
+ "erased-serde",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-push-gateway-types",
  "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
+ "fedi-social-server",
  "fedi-stability-pool-server",
+ "fedimint-api-client",
  "fedimint-build",
  "fedimint-core",
  "fedimint-ln-common",

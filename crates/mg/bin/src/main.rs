@@ -16,6 +16,7 @@ mod guardian_config;
 mod heap_profile;
 #[cfg(target_os = "linux")]
 mod huge_pages;
+mod not_enabled_by_default;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
@@ -38,6 +39,7 @@ use fedi_decentralized_service_manifold_guardian::{
     ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
 };
 use fedi_iroh_rpc::IrohProtocol;
+use fedi_social_server::FediSocialInit;
 use mg_core::admin;
 use mg_core::admin_http::{self, AdminHttpAuth};
 use mg_core::bundled_fedimintd;
@@ -61,6 +63,7 @@ use mg_core::seat_process::{
 };
 use mg_core::service::ManifoldGuardianRpc;
 use mg_telemetry::GuardianTelemetryRpc;
+use not_enabled_by_default::NotEnabledByDefault;
 use push_callback::PushGatewayCallbackInvoker;
 use stability_pool_server::StabilityPoolInit;
 use stability_pool_server::common::config::{CollateralRatio, OracleConfig};
@@ -785,6 +788,9 @@ fn manifold_stability_pool_init() -> StabilityPoolInit {
 fn manifold_modules() -> ServerModuleInitRegistry {
     let mut modules = fedimintd::default_modules();
     modules.attach(manifold_stability_pool_init());
+    // Available to a formation whose setup code names it, never part of the
+    // default set: a federation gets social backup only by asking for it.
+    modules.attach(NotEnabledByDefault(FediSocialInit));
     modules
 }
 

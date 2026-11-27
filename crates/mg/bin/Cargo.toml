@@ -30,12 +30,15 @@ async-trait = { workspace = true }
 axum = "0.8.9"
 bitcoin = "0.32.6"
 clap = { version = "4", features = ["derive"] }
+erased-serde = "0.4"
 
 fedi-decentralized-domain = { path = "../../domain" }
 fedi-decentralized-manifold-environment = { path = "../../manifold-environment" }
 fedi-decentralized-push-gateway-types = { path = "../../push-gateway-types" }
 fedi-decentralized-service-manifold-guardian = { path = "../../service-manifold-guardian" }
 fedi-iroh-rpc = { path = "../../fedi-iroh-rpc" }
+fedi-social-server = { workspace = true }
+fedimint-api-client = { workspace = true }
 fedimint-core = { workspace = true }
 fedimint-ln-common = { workspace = true }
 fedimint-lnv2-common = { workspace = true }

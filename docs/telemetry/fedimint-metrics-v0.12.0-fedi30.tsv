@@ -2,20 +2,23 @@
 #
 # Regenerate this file from the exact Fedimint input when the pin or bundled
 # module set changes. `flake.nix` scans every Rust source in the entire pinned
-# Fedimint input and the exact Cargo-selected stability-pool server input for
-# `opts!`/`histogram_opts!` registrations, including each registration's
-# producer identity, and compares them with these rows. The separate Markdown
+# Fedimint input and the exact Cargo-selected stability-pool and fedi-social
+# server inputs for `opts!`/`histogram_opts!` registrations, including each
+# registration's producer identity, and compares them with these rows. The separate Markdown
 # privacy inventory explains labels and review rationale; this compact file owns
 # the checkable source boundary.
-# `package` rows are the normal and target-specific dependency closure rooted at
-# stability-pool-server. Build and dev dependencies are intentionally excluded:
-# they do not link into the MG runtime image. Any unaccounted same-source
+# `package` rows are each module producer's normal and target-specific
+# dependency closure rooted at its server package. Build and dev dependencies
+# are intentionally excluded: they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi30
 producer	fedimint	fedibtc/fedimint	v0.12.0-fedi30	15671ec113a28273ccfca84c549a9dcfd03eb67d
 producer	stability_pool	fedibtc/stability-pool	212c29d7e09f1fd7eee44e0132ca2092d41efa8d	212c29d7e09f1fd7eee44e0132ca2092d41efa8d
 package	stability_pool	fedi-stability-pool-common	crates/common
 package	stability_pool	fedi-stability-pool-server	crates/server
+producer	fedi_social	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
+package	fedi_social	fedi-social-common	crates/modules/fedi-social/common
+package	fedi_social	fedi-social-server	crates/modules/fedi-social/server
 revision	15671ec113a28273ccfca84c549a9dcfd03eb67d
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
