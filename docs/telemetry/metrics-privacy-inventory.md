@@ -9,8 +9,8 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`15671ec113a28273ccfca84c549a9dcfd03eb67d` (tag `v0.12.0-fedi30`). The machine-checked
-[`fedimint-metrics-v0.12.0-fedi30.tsv`](./fedimint-metrics-v0.12.0-fedi30.tsv)
+`9868aaa30b26c9cebdcdb7720a02d6714727c207` (tag `v0.12.0-fedi34`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi34.tsv`](./fedimint-metrics-v0.12.0-fedi34.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. Compared with fedi13, the fedi15 source
@@ -35,7 +35,10 @@ the duration of each peer send, completed sessions by how the signed outcome
 was obtained, and the database commit time of each consensus item. fedi29 adds
 per-guardian settled-volume counters to LNv2 and Walletv2, kept in the module
 database and read through an admin API endpoint; it registers no metrics. fedi30 stores
-AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metrics either. The existing
+AlephBFT backup units in batches and tunes the RocksDB WAL; it registers no metrics either. fedi33
+reports deposit progress from the wallet and walletv2 modules and guards the connector pool with
+a std mutex, and fedi34 adds client APIs that start a payout under a caller-named operation id;
+neither registers metrics. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
@@ -48,7 +51,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedibtc/stability-pool` server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi30`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi34`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from

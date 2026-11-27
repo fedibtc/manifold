@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1795604519,
-        "narHash": "sha256-1FSA7kONuaHC5ain+criBpCaQ/RLRh+nY/Jt9mhbCP8=",
+        "lastModified": 1795788775,
+        "narHash": "sha256-W5zsS4y6/J5iVKLAeZzpdjNfk0wlC+93D+FzpkdrIPg=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "83d0d7061401bd3da76a0a601b23e987396a4004",
+        "rev": "9868aaa30b26c9cebdcdb7720a02d6714727c207",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "roboman/payout-caller-operation-id",
+        "ref": "v0.12.0-fedi34",
         "repo": "fedimint",
         "type": "github"
       }
