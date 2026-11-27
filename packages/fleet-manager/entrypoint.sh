@@ -41,6 +41,15 @@ elif [ -n "${FLEET_MANAGER_ADMIN_HTTP_AUTH:-}" ] || [ -n "${FLEET_MANAGER_ADMIN_
   exit 1
 fi
 
+# Web UIs on the host the linked phone may open over Guardian Link, as
+# comma-separated NAME=ADDRESS entries reached from this container, such as
+# host-ui=10.21.0.1:80. The platform package sets them; without any there is
+# nothing to forward.
+forward_targets=()
+if [ -n "${FLEET_MANAGER_FORWARD_TARGETS:-}" ]; then
+  forward_targets+=(--forward-target "$FLEET_MANAGER_FORWARD_TARGETS")
+fi
+
 exec fleet-manager serve \
   --data-dir "${FLEET_MANAGER_DATA_DIR}" \
   --manifold-environment "${FLEET_MANAGER_MANIFOLD_ENVIRONMENT}" \
@@ -48,4 +57,5 @@ exec fleet-manager serve \
   --bitcoind-username "${FLEET_MANAGER_BITCOIND_USERNAME}" \
   --bitcoind-password="${FLEET_MANAGER_BITCOIND_PASSWORD}" \
   ${esplora[@]+"${esplora[@]}"} \
-  ${operator_http[@]+"${operator_http[@]}"}
+  ${operator_http[@]+"${operator_http[@]}"} \
+  ${forward_targets[@]+"${forward_targets[@]}"}

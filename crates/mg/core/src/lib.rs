@@ -29,6 +29,7 @@ mod fedimint_stats;
 pub mod fleet;
 pub mod guardian_fee;
 pub mod guardian_link;
+pub mod guardian_link_forward;
 pub mod host_pressure;
 pub mod identity;
 pub mod legacy_layout;

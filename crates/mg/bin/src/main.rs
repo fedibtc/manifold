@@ -24,6 +24,7 @@ mod resource_report;
 mod seat_readiness;
 mod transfer_source;
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,15 +34,16 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_service_manifold_guardian::{
-    GUARDIAN_LINK_ALPN, GUARDIAN_TELEMETRY_ALPN, GuardianLinkServiceServer,
-    GuardianTelemetryApiServer, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,
-    ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
+    ForwardTarget, GUARDIAN_LINK_ALPN, GUARDIAN_LINK_FORWARD_ALPN, GUARDIAN_TELEMETRY_ALPN,
+    GuardianLinkServiceServer, GuardianTelemetryApiServer, Locator, MANIFOLD_GUARDIAN_ALPN,
+    MG_E2E_ENDPOINT_ADDRS_ENV, ManifoldGuardianServiceServer, parse_endpoint_addr_pairs,
 };
 use fedi_iroh_rpc::IrohProtocol;
 use mg_core::admin;
 use mg_core::admin_http::{self, AdminHttpAuth};
 use mg_core::bundled_fedimintd;
 use mg_core::guardian_link::GuardianLinkRpc;
+use mg_core::guardian_link_forward::GuardianLinkForward;
 
 use fedimint_core::Amount;
 use fedimint_core::util::SafeUrl;
@@ -159,6 +161,49 @@ struct ServeArgs {
     /// `--admin-http-auth password`; forbidden with `trusted-proxy`.
     #[arg(long, requires = "admin_http_bind")]
     admin_http_password_file: Option<PathBuf>,
+    /// A web UI on the host the linked phone may open over Guardian Link, as
+    /// `NAME=ADDRESS` with the address as reached from the MG, such as
+    /// `host-ui=10.21.0.1:80`. Repeat it, or separate entries with commas, for
+    /// each target the platform package offers; without any there is nothing
+    /// to forward. The names are SPEC-guardian-link's targets.
+    #[arg(
+        long = "forward-target",
+        env = "FLEET_MANAGER_FORWARD_TARGETS",
+        value_delimiter = ',',
+        value_parser = parse_forward_target
+    )]
+    forward_targets: Vec<(ForwardTarget, SocketAddr)>,
+}
+
+fn parse_forward_target(value: &str) -> Result<(ForwardTarget, SocketAddr), String> {
+    let (name, address) = value
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=ADDRESS, got {value:?}"))?;
+    let target = name.trim().parse().map_err(|_| {
+        let known: Vec<_> = ForwardTarget::ALL.map(ForwardTarget::name).into();
+        format!(
+            "unknown forward target {name:?}; known: {}",
+            known.join(", ")
+        )
+    })?;
+    let address = address
+        .trim()
+        .parse()
+        .map_err(|error| format!("forward target {name}: {error}"))?;
+    Ok((target, address))
+}
+
+/// The forward targets as a map, refusing a target given twice.
+fn forward_targets(
+    entries: &[(ForwardTarget, SocketAddr)],
+) -> anyhow::Result<BTreeMap<ForwardTarget, SocketAddr>> {
+    let mut targets = BTreeMap::new();
+    for (target, address) in entries {
+        if targets.insert(*target, *address).is_some() {
+            anyhow::bail!("forward target {target} is given more than once");
+        }
+    }
+    Ok(targets)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -310,6 +355,7 @@ fn admin_http_config(args: &ServeArgs) -> anyhow::Result<Option<(SocketAddr, Adm
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let forward_targets = forward_targets(&args.forward_targets)?;
     let manifold_environment = args
         .manifold_environment
         .profile()
@@ -640,6 +686,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 4,
                 std::time::Duration::from_secs(5),
             ),
+        )
+        .accept(
+            GUARDIAN_LINK_FORWARD_ALPN,
+            GuardianLinkForward::new(fleet.clone(), forward_targets),
         )
         .spawn();
     fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());

@@ -69,6 +69,7 @@ tokio = { workspace = true, features = [
   "fs",
   "io-util",
   "macros",
+  "net",
   "process",
   "rt-multi-thread",
   "signal",
@@ -83,12 +84,16 @@ url = "2"
 fedimint-build = { workspace = true }
 
 [dev-dependencies]
+# `ws` for the fake host UI the host-UI forward tests talk to.
+axum = { version = "0.8.9", features = ["ws"] }
 blind-rsa-signatures = "0.17"
+futures = "0.3"
 humantime = "2.4.0"
 jsonrpsee-server = "0.24"
 peerbadge-protocol.workspace = true
 reqwest = { version = "0.12", default-features = false }
 safe-tracing = { path = "../../safe-tracing" }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio-tungstenite = "0.26"
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
