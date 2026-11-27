@@ -3274,6 +3274,7 @@ mod tests {
                 plan: Plan::InfiniteBestEffort { price_msats },
                 payment_federation_id: Some(payment_federation),
                 refund_issuance: Some(refund_issuance),
+                seat_grant: None,
             },
             price_msats,
             payment: Some(payment),

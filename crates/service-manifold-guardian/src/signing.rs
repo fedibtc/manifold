@@ -40,8 +40,8 @@ use crate::{
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteResponse, GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest,
     PullSeatRequest, RegisterGatewayRequest, RemoveSeatRequest, ReplaceSeatBindingRequest,
-    RestartDkgRequest, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, Timestamp,
-    TransferSeatRequest,
+    RestartDkgRequest, SeatGrant, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest,
+    Timestamp, TransferSeatRequest,
 };
 
 /// Domain separator for FA-signed requests. `v1` versions the signing
@@ -216,6 +216,7 @@ macro_rules! manager_signed_responses {
 manager_signed_responses! {
     GetQuoteResponse => "get_quote",
     CreateSeatResponse => "create_seat",
+    SeatGrant => "seat_grant",
 }
 
 /// A request type carried inside [`MgSignedRequest`]: a verb one MG calls on

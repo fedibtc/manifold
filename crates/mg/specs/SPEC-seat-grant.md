@@ -2,9 +2,12 @@
 
 ## Status
 
-Not implemented. `GetQuote` accepts no grant, `QuoteTerms` carries no grant
-nonce, and the operator surfaces cannot issue grants. Formation from grants in
-`fa-client` and the Fedi app does not exist yet.
+The wire format applies: the grant payload, its `seat_grant` signature label,
+the URI, and the optional grant on `GetQuoteRequest` exist in
+`service-manifold-guardian`. Nothing else does yet: the MG ignores a presented
+grant and quotes from its public offer, the operator surfaces cannot issue
+grants, and formation from grants in `fa-client` and the Fedi app does not
+exist.
 
 ## Record justification
 
@@ -27,7 +30,7 @@ A grant is a payload that the MG signs with its commitment-signing key, using
 the manager response signature with its own `seat_grant` label
 ([SPEC-signed-envelopes](../../service-manifold-guardian/specs/SPEC-signed-envelopes.md)).
 The payload holds a random 32-byte `grant_nonce`, `issued_at`, and an optional
-operator label of at most 32 characters. A grant carries no FA identity,
+non-empty operator label of at most 32 characters. A grant carries no FA identity,
 federation size or expiry: all of those are delegated to whoever redeems it.
 
 The shared form is one URI:
@@ -78,11 +81,13 @@ backup, because its signature stays valid.
   The size must still be 4 through 20.
 
 It returns an ordinary signed free quote bound to the FA, size, fedimintd
-version and current offer epoch. The quote's terms carry the `grant_nonce`.
+version and current offer epoch. The quote's terms echo the request, so they
+carry the signed grant, and with it the `grant_nonce` and label, with no
+separate copy to keep in agreement.
 `GetQuote` still writes nothing, so the FA uses it as the preview of a code as
 often as it likes.
 
-`CreateSeat` is unchanged for the FA. For a quote that carries a grant nonce,
+`CreateSeat` is unchanged for the FA. For a quote that carries a grant,
 the MG refuses a revoked nonce and records the nonce as used in the same
 transaction that admits the seat. Replaying the same quote returns the same
 seat. Any other quote for a used nonce is refused with its own error code. The

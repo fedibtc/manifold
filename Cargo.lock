@@ -2815,6 +2815,7 @@ dependencies = [
  "bitcoin",
  "blind-rsa-signatures",
  "ciborium",
+ "fedi-decentralized-manifold-environment",
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
  "fedi-stability-pool-common",

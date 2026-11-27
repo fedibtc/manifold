@@ -237,6 +237,7 @@ fn input(
                 plan: Plan::InfiniteBestEffort { price_msats: 0 },
                 payment_federation_id: None,
                 refund_issuance: None,
+                seat_grant: None,
             },
             price_msats,
             payment: None,

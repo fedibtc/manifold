@@ -3520,6 +3520,7 @@ where
             plan,
             payment_federation_id,
             refund_issuance,
+            seat_grant: None,
         };
         let result = async {
             let signed_quote = client

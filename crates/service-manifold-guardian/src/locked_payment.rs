@@ -4,7 +4,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::{
-    FaId, FederationId, FederationSize, FedimintdVersion, Plan, SignedResponse, Timestamp,
+    FaId, FederationId, FederationSize, FedimintdVersion, Plan, SeatGrant, SignedResponse,
+    Timestamp,
 };
 
 /// Content-derived identity of a signed quote.
@@ -136,6 +137,14 @@ pub struct GetQuoteRequest {
     pub payment_federation_id: Option<FederationId>,
     /// Required for paid plans and absent for free plans.
     pub refund_issuance: Option<RefundIssuance>,
+    /// The operator's grant this seat is redeemed from, as shared in its
+    /// [`SeatGrantCode`](crate::SeatGrantCode); absent for a seat bought or
+    /// taken through the MG's public offer (SPEC-seat-grant). The quote
+    /// echoes the request, so its terms carry the signed grant too. Omitted
+    /// when absent, so a request without a grant, and every quote over one,
+    /// keeps its earlier bytes and quote id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_grant: Option<SignedResponse<SeatGrant>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
