@@ -93,6 +93,7 @@ pub(crate) struct JournalPoller {
 
 impl JournalPoller {
     /// Build the production direct-Iroh journal poller from validated settings.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,
         archive: JournalArchive,
