@@ -1,0 +1,19 @@
+.root {
+  @apply flex flex-wrap items-center gap-3 rounded-card border border-muted px-4 py-3 text-sm;
+}
+
+.empty {
+  @apply flex-1 text-gray-500;
+}
+
+.label {
+  @apply shrink-0 whitespace-nowrap text-gray-500;
+}
+
+.address {
+  @apply min-w-0 break-all font-medium text-ink;
+}
+
+.link {
+  @apply uLinkButton;
+}

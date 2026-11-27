@@ -29,13 +29,30 @@ pub struct PayoutJobOperationWire {
     pub amount_msat: u64,
     pub capped: Option<DestinationCapWire>,
     pub committed_at_ms: u64,
+    /// When the operator said an ecash payout's token was redeemed: their
+    /// word, not the federation's, so a later cancel is still accepted.
+    /// Always null for a Lightning payout.
+    pub confirmed_at_ms: Option<u64>,
+}
+
+/// How a payout leaves the wallet, fixed when its request is first recorded.
+///
+/// A Lightning job serializes as `method: "lightning"` plus the destination
+/// snapshot it was bound to; an ecash job carries no destination, because the
+/// bearer token is handed to the operator instead.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum PayoutMethodWire {
+    Lightning { destination: String },
+    Ecash,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct PayoutJobWire {
     pub request_id: PayoutRequestId,
     pub scope: PayoutScopeWire,
-    pub destination: String,
+    #[serde(flatten)]
+    pub method: PayoutMethodWire,
     pub operation: Option<PayoutJobOperationWire>,
     pub created_at_ms: u64,
 }
@@ -125,8 +142,64 @@ impl WalletDrainStatusWire {
     }
 }
 
+/// One job with its native state.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct PayoutJobStatusWire {
     pub job: PayoutJobWire,
-    pub payout: Option<OutgoingOperationWire>,
+    #[serde(flatten)]
+    pub native: PayoutNativeStatusWire,
+}
+
+/// The native projection of a job, keyed by its method: `payout` for a
+/// Lightning job, `ecash` for an ecash job. Either is null before the job has
+/// a committed native operation.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub enum PayoutNativeStatusWire {
+    Lightning {
+        payout: Option<OutgoingOperationWire>,
+    },
+    Ecash {
+        ecash: Option<EcashPayoutStateWire>,
+    },
+}
+
+/// Where an ecash payout's notes are, as the wallet database reads it. The
+/// operator's confirmation is not a state: it is `confirmed_at_ms` on the
+/// job's operation, and an issued payout without it is still open.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EcashPayoutStateWire {
+    /// The notes left this wallet and nothing has reclaimed them. `token` is
+    /// the bearer token in a single-payout answer, and null in a list: answers
+    /// that are polled never carry it.
+    Issued { token: Option<EcashTokenWire> },
+    /// A reclaim of the notes is submitted and not yet terminal.
+    Reclaiming,
+    /// The reclaim succeeded: the notes are back in this wallet.
+    Reclaimed,
+    /// The federation refused the reclaim, almost always because the notes'
+    /// inputs were already spent: the token was redeemed first. `token` is
+    /// carried as in `Issued`, so notes a refusal for another reason left
+    /// behind stay reachable.
+    AlreadySpent { token: Option<EcashTokenWire> },
+}
+
+/// A bearer ecash token returned to the authorized operator. Whoever holds the
+/// string can redeem the notes, so `Debug` redacts it and nothing formats it.
+#[derive(Clone, Eq, PartialEq, serde::Serialize)]
+#[serde(transparent)]
+pub struct EcashTokenWire(pub String);
+
+impl std::fmt::Debug for EcashTokenWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EcashTokenWire(<redacted>)")
+    }
+}
+
+/// Payouts of both methods, newest first, without tokens: the newest jobs,
+/// plus every older ecash job whose token is issued or whose reclaim runs.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct PayoutsWire {
+    pub payouts: Vec<PayoutJobStatusWire>,
 }

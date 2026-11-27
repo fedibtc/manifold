@@ -36,20 +36,17 @@ client changes operation creation, transaction submission, or database commit
 ordering.
 
 Native payout start uses the same returned-ID durability boundary for both
-Lightning generations. MG serializes request lookup and possible start within
-one wallet scope and
-rejects a v1 LNURL invoice whose payment hash already has a completed operation,
-because the pinned v1 client would otherwise return that old operation without
-committing a new one. After start, MG reads only the exact returned v1
-operation and requires its request ID, destination, rail, and amount to match;
-missing, legacy, or mismatched metadata fails closed without snapshotting the
-wallet's growing operation history. Native status and await apply the same exact
-operation metadata binding in the selected wallet scope; they subscribe to or
-read that operation and never fetch another invoice or call a payment-start API.
-Both Lightning generations persist the caller request id in native payout
-metadata. A start under the scope fence returns the existing matching operation
-instead of requesting another invoice; this reconciles process death after the
-native commit but before the MG SQLite job records the operation id.
+Lightning generations. Under one wallet scope's payout fence, MG fetches an
+invoice that must be new to the wallet, records the attempt (rail, invoice, and
+destination cap) in the payout ledger before paying, and then pays it. The
+attempt names the operation id the client derives from that invoice (v2
+`send_operation_id`, v1 the first attempt for the payment hash), and the start
+requires the returned id to equal it. A replay looks up exactly that operation:
+if it exists the job links it, and only its absence permits a fresh attempt.
+Native status and await read or subscribe to that one operation id and never
+fetch another invoice or call a payment-start API. This reconciles process
+death after the native commit but before the MG SQLite job records the link,
+without scanning the wallet's operation history.
 The normalized rail outcome is independent of the operation's active-state-machine
 fact: v2 success may retain mint change work, while a rejected or refunded rail
 may retain mint input/refund work. The payout worker in this crate durably binds
@@ -113,6 +110,16 @@ ecash. Missing, malformed, wrong-kind, and non-identical entries remain errors.
 Re-audit this recovery boundary whenever Fedimint changes receive operation-ID
 derivation, metadata shape or persistence, ecash encoding, or `AlreadyReceived`
 semantics.
+
+An ecash payout is the second dependency-owned retention: the pinned clients'
+out-of-band spend writes the spent notes into the spend's operation metadata
+(mint-v1 `SpendOOB.oob_notes`, mint-v2 `Send.ecash`) in the same commit that
+removes them from the wallet. MG keeps no other copy. It reads that metadata
+only for the operation id the ledger derives from the payout's request id, to
+return the token to the operator over the admin interface while the payout is
+issued, and to reissue the same notes when the operator cancels. The token type
+redacts itself in `Debug`, has no `Display` or serialization outside the admin
+wire, and never enters tracing, errors, or SQLite.
 
 Outside that dependency-owned metadata, raw OOB tokens exist only while being
 constructed and received or returned directly to the authorized caller. Do not

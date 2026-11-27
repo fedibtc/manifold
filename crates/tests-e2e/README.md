@@ -96,10 +96,15 @@ and proves one `resume` reaches the same formation rather than starting over.
 DKG begins only after every seat completes that loop. The gate reconciles the
 final payer balance as setup prices plus Fedimint fees plus returned spendable
 change, and waits for an accepted payment to settle into an MG wallet. The
-harness also runs an esplora indexer
-over the defe bitcoind (hence the esplora binary): the Fedi fedimint
-(`v0.11.2-fedi4`) wallet *client* can only watch the chain through esplora, so
-the FA wallet's peg-in would never confirm without one.
+v1 variant
+(`manifold_guardian_0_1_paid_formation_through_a_v1_payment_federation_under_defe`)
+forms the payment federation on Fedimint's v1 mint, Lightning, and wallet
+modules, through the harness-only `MG_E2E_LEGACY_MODULES` marker, and runs an
+esplora indexer over the defe bitcoind (hence the esplora binary): the v1
+wallet *client* watches the chain only through esplora, so the FA wallet's
+peg-in would never confirm without one. The defe gateway is LDK-backed and
+Fedimint's gateway announces itself to Lightning v1 modules only when
+LND-backed, so the v1 variant pays its former-member sweeps out as ecash.
 
 The Linux-only
 `fa_client_resumes_real_dkg_after_sigkill_under_defe` gate converts the

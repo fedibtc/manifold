@@ -2,21 +2,54 @@
 
 use fedi_decentralized_service_manifold_guardian::{FederationId, SeatId};
 
-use crate::payout_operation_id::PayoutOperationId;
-pub use mg_core::wallet::PayoutRequestId;
+use lightning_invoice::Bolt11Invoice;
 
-/// A native Fedimint Lightning payout committed to the wallet database.
+use crate::payout_operation_id::PayoutOperationId;
+use crate::wallet_drain::OutgoingRail;
+pub use mg_core::wallet::{PayoutRail, PayoutRequestId};
+
+/// A native Fedimint payout committed to the wallet database.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Payout {
     pub operation_id: PayoutOperationId,
     pub amount_msat: u64,
-    pub capped: Option<DestinationCap>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct DestinationCap {
     pub maximum_msat: u64,
     pub remaining_msat: u64,
+}
+
+/// How a payout leaves the wallet, fixed when its request is first recorded.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum PayoutMethod {
+    /// A native Lightning payment to this destination snapshot.
+    Lightning {
+        /// LNURL-pay or Lightning Address read from settings at creation.
+        destination: String,
+    },
+    /// One bearer ecash token of the whole balance, handed to the operator.
+    Ecash,
+}
+
+impl PayoutMethod {
+    pub(crate) fn rail(&self) -> PayoutRail {
+        match self {
+            Self::Lightning { .. } => PayoutRail::Lightning,
+            Self::Ecash => PayoutRail::Ecash,
+        }
+    }
+
+    pub(crate) fn to_wire(&self) -> mg_core::payout_wire::PayoutMethodWire {
+        match self {
+            Self::Lightning { destination } => mg_core::payout_wire::PayoutMethodWire::Lightning {
+                destination: destination.clone(),
+            },
+            Self::Ecash => mg_core::payout_wire::PayoutMethodWire::Ecash,
+        }
+    }
 }
 
 /// The exact wallet scope a payout job owns.
@@ -35,9 +68,43 @@ pub enum PayoutScope {
         /// Seat whose separately derived wallet is swept.
         seat_id: SeatId,
         /// Validated public client invite retained so decommission cannot orphan the job.
-        #[serde(serialize_with = "serialize_invite_code")]
+        #[serde(serialize_with = "serialize_display")]
         invite_code: fedimint_core::invite_code::InviteCode,
     },
+}
+
+/// The Lightning payment a job pays, written before it is paid. Its rail and
+/// invoice name the native operation, so recovery looks that one up.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct LightningAttempt {
+    pub rail: OutgoingRail,
+    #[serde(serialize_with = "serialize_display")]
+    pub invoice: Bolt11Invoice,
+    pub capped: Option<DestinationCap>,
+}
+
+impl LightningAttempt {
+    /// The operation the rail records the first payment of this invoice under.
+    pub(crate) fn operation_id(&self) -> PayoutOperationId {
+        PayoutOperationId::from_native(match self.rail {
+            OutgoingRail::Lnv2 => {
+                fedimint_lnv2_client::LightningClientModule::send_operation_id(&self.invoice)
+            }
+            // A new invoice's payment is its first attempt.
+            OutgoingRail::Lnv1 => {
+                fedimint_ln_client::LightningClientModule::get_payment_operation_id(
+                    self.invoice.payment_hash(),
+                    1,
+                )
+            }
+        })
+    }
+
+    pub(crate) fn amount_msat(&self) -> u64 {
+        self.invoice
+            .amount_milli_satoshis()
+            .expect("an attempt's invoice comes from LNURL-pay with an amount")
+    }
 }
 
 /// One immutable durable payout request and its optional committed operation.
@@ -47,8 +114,12 @@ pub struct PayoutJob {
     pub request_id: PayoutRequestId,
     /// Wallet scope permanently bound to the identity.
     pub scope: PayoutScope,
-    /// Destination snapshot permanently bound to the identity.
-    pub destination: String,
+    /// Method, and for Lightning the destination snapshot, permanently bound
+    /// to the identity.
+    pub method: PayoutMethod,
+    /// The Lightning payment being paid. Replaceable until an operation is
+    /// committed, and only when the wallet has no operation for it.
+    pub attempt: Option<LightningAttempt>,
     /// Native operation recorded after its wallet commit.
     pub operation: Option<PayoutJobOperation>,
     /// Time at which the durable request row was created.
@@ -65,16 +136,15 @@ pub struct PayoutJobOperation {
     pub capped: Option<DestinationCap>,
     /// Time at which MG linked the native operation to the job.
     pub committed_at_ms: u64,
+    /// Time at which the operator confirmed redeeming an ecash payout's token.
+    pub confirmed_at_ms: Option<u64>,
 }
 
-fn serialize_invite_code<Serializer>(
-    invite_code: &fedimint_core::invite_code::InviteCode,
+fn serialize_display<Value: std::fmt::Display, Serializer: serde::Serializer>(
+    value: &Value,
     serializer: Serializer,
-) -> Result<Serializer::Ok, Serializer::Error>
-where
-    Serializer: serde::Serializer,
-{
-    serializer.serialize_str(&invite_code.to_string())
+) -> Result<Serializer::Ok, Serializer::Error> {
+    serializer.collect_str(value)
 }
 
 #[cfg(test)]
@@ -107,7 +177,7 @@ impl PayoutJob {
         mg_core::payout_wire::PayoutJobWire {
             request_id: self.request_id.clone(),
             scope: self.scope.to_wire(),
-            destination: self.destination.clone(),
+            method: self.method.to_wire(),
             operation: self.operation.as_ref().map(|operation| {
                 mg_core::payout_wire::PayoutJobOperationWire {
                     operation_id: operation.operation_id.to_string(),
@@ -119,6 +189,7 @@ impl PayoutJob {
                             remaining_msat: cap.remaining_msat,
                         }),
                     committed_at_ms: operation.committed_at_ms,
+                    confirmed_at_ms: operation.confirmed_at_ms,
                 }
             }),
             created_at_ms: self.created_at_ms,

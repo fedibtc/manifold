@@ -21,9 +21,9 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    # fedi30 is fedi29 plus the batched AlephBFT backup write (with
-    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    # fedi34 is fedi33 plus client APIs that start a payout (Lightning or
+    # ecash) under an operation id the caller names.
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi34";
     # Stability Pool v2 module crates. MG bundles the server module; FLIP and
     # fa-client use the client.
     stability-pool = {
@@ -301,7 +301,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi34.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1008,12 +1008,12 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi30";
+        fedimintdRelease = "0.12.0-fedi34";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
+        fedimintSourceRev = "9868aaa30b26c9cebdcdb7720a02d6714727c207";
         stabilityPoolSourceRev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1225,7 +1225,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi34.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${stabilityPoolPatched}
@@ -1658,7 +1658,7 @@
           fetcherVersion = 2;
           # Refresh whenever operator-ui/pnpm-lock.yaml changes; the build error
           # prints the replacement.
-          hash = "sha256-asvIJm7yAQd+qp+MIl+c2ZPUmYC33tdsoxTF7yQUgXs=";
+          hash = "sha256-uG4NFzjg1dyxVQYd3aT2z9+8/NDq9/cZ02mqY/zJoUw=";
         };
 
         operatorUi = pkgs.stdenv.mkDerivation {

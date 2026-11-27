@@ -83,13 +83,19 @@ pub enum AdminRequest {
     PayoutDestination,
     /// Replace or clear the global Lightning destination.
     SetPayoutDestination { destination: Option<String> },
-    /// Sweep one setup-payment wallet through an automatically selected gateway.
+    /// Pay one setup-payment wallet out: over Lightning through an
+    /// automatically selected gateway, or as one bearer ecash token of the
+    /// whole balance.
     SweepPaymentFees {
         #[ts(type = "FederationId")]
         federation_id: FederationId,
         /// Caller-generated idempotency identity.
         #[ts(type = "string")]
         request_id: crate::wallet::PayoutRequestId,
+        /// Absent means Lightning.
+        #[serde(default)]
+        #[ts(optional, type = "\"lightning\" | \"ecash\"")]
+        method: crate::wallet::PayoutRail,
     },
     /// Read one durable payout request and its exact native operation.
     PayoutStatus {
@@ -98,6 +104,23 @@ pub enum AdminRequest {
     },
     /// Await one durable payout request's exact native operation.
     AwaitPayout {
+        #[ts(type = "string")]
+        request_id: crate::wallet::PayoutRequestId,
+    },
+    /// Payouts of both methods, newest first: the 20 newest, plus every older
+    /// ecash payout still in progress. List items never carry an ecash token;
+    /// `PayoutStatus` returns it.
+    ListPayouts,
+    /// Mark an ecash payout redeemed: sets `confirmed_at_ms` on its job. The
+    /// daemon takes the operator's word for it; a cancel stays possible.
+    ConfirmEcashPayout {
+        #[ts(type = "string")]
+        request_id: crate::wallet::PayoutRequestId,
+    },
+    /// Take an issued ecash payout back into the wallet it left. Answers
+    /// `already_spent` when the token was redeemed first. Accepted after
+    /// `ConfirmEcashPayout` too, for a token that never arrived.
+    CancelEcashPayout {
         #[ts(type = "string")]
         request_id: crate::wallet::PayoutRequestId,
     },
@@ -139,13 +162,18 @@ pub enum AdminRequest {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
     },
-    /// Sweep collected guardian-fee ecash through an automatically selected gateway.
+    /// Pay one seat's collected guardian-fee ecash out, by the same methods
+    /// as `SweepPaymentFees`.
     SweepGuardianFees {
         #[ts(type = "SeatId")]
         seat_id: SeatId,
         /// Caller-generated idempotency identity.
         #[ts(type = "string")]
         request_id: crate::wallet::PayoutRequestId,
+        /// Absent means Lightning.
+        #[serde(default)]
+        #[ts(optional, type = "\"lightning\" | \"ecash\"")]
+        method: crate::wallet::PayoutRail,
     },
     /// The operator's linked Fedi app, the open link offer, and whether this
     /// host can notify a phone at all (SPEC-guardian-link).
@@ -529,9 +557,10 @@ pub(crate) async fn dispatch(
         AdminRequest::SweepPaymentFees {
             federation_id,
             request_id,
+            method,
         } => Ok(serde_json::to_value(
             fleet
-                .payout_payment_fees(&federation_id, &request_id)
+                .payout_payment_fees(&federation_id, &request_id, method)
                 .await?,
         )?),
         AdminRequest::PayoutStatus { request_id } => Ok(serde_json::to_value(
@@ -539,6 +568,13 @@ pub(crate) async fn dispatch(
         )?),
         AdminRequest::AwaitPayout { request_id } => Ok(serde_json::to_value(
             fleet.await_payout_job(&request_id).await?,
+        )?),
+        AdminRequest::ListPayouts => Ok(serde_json::to_value(fleet.list_payouts().await?)?),
+        AdminRequest::ConfirmEcashPayout { request_id } => Ok(serde_json::to_value(
+            fleet.confirm_ecash_payout(&request_id).await?,
+        )?),
+        AdminRequest::CancelEcashPayout { request_id } => Ok(serde_json::to_value(
+            fleet.cancel_ecash_payout(&request_id).await?,
         )?),
         AdminRequest::ListSeats => Ok(seats_json(
             fleet.seat_summaries().await?,
@@ -587,8 +623,11 @@ pub(crate) async fn dispatch(
         AdminRequest::SweepGuardianFees {
             seat_id,
             request_id,
+            method,
         } => Ok(serde_json::to_value(
-            fleet.payout_guardian_fees(&seat_id, &request_id).await?,
+            fleet
+                .payout_guardian_fees(&seat_id, &request_id, method)
+                .await?,
         )?),
         AdminRequest::GuardianLink => Ok(guardian_link_json(fleet.guardian_link_status().await?)),
         AdminRequest::CreateGuardianLinkOffer => {

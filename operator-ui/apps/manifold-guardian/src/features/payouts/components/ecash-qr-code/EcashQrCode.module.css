@@ -1,0 +1,3 @@
+.box {
+  @apply flex flex-none items-center justify-center self-start rounded-card border border-muted bg-white p-3;
+}

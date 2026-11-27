@@ -1,0 +1,12 @@
+.open {
+  @apply cursor-pointer whitespace-nowrap border-0 bg-transparent p-0 text-left text-sm text-ink underline decoration-gray-200 underline-offset-4 hover:decoration-ink;
+}
+
+.nowrap {
+  @apply whitespace-nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  @apply uTableEmpty;
+}

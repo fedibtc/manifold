@@ -58,6 +58,53 @@ fn telemetry_reenrollment_is_exposed_as_a_global_admin_verb() {
     assert!(matches!(args.verb, AdminVerb::ReenrollTelemetry));
 }
 
+#[test]
+fn sweeps_default_to_lightning_and_take_ecash_by_method() {
+    let method = |arguments: &[&str]| match guardian_fee_verb(arguments) {
+        GuardianFeesVerb::Sweep { method, .. } => method,
+        other => panic!("expected a sweep, got {other:?}"),
+    };
+    let sweep = [
+        "fman-cli",
+        "--data-dir",
+        "/tmp/mg",
+        "guardian-fees",
+        "sweep",
+        SEAT_1,
+        "--request-id",
+        "r",
+    ];
+    assert_eq!(method(&sweep), mg_core::wallet::PayoutRail::Lightning);
+    assert_eq!(
+        method(&[&sweep[..], &["--method", "ecash"]].concat()),
+        mg_core::wallet::PayoutRail::Ecash
+    );
+    assert!(Args::try_parse_from([&sweep[..], &["--method", "cash"]].concat()).is_err());
+
+    let args = Args::try_parse_from([
+        "fman-cli",
+        "--data-dir",
+        "/tmp/mg",
+        "payment-federations",
+        "sweep",
+        "fed1",
+        "--request-id",
+        "r",
+        "--method",
+        "ecash",
+    ])
+    .unwrap();
+    assert!(matches!(
+        args.verb,
+        AdminVerb::PaymentFederations {
+            verb: PaymentFederationsVerb::Sweep {
+                method: mg_core::wallet::PayoutRail::Ecash,
+                ..
+            }
+        }
+    ));
+}
+
 fn guardian_fee_verb(arguments: &[&str]) -> GuardianFeesVerb {
     let args = Args::try_parse_from(arguments).expect("parse guardian-fee command");
     let AdminVerb::GuardianFees { verb } = args.verb else {

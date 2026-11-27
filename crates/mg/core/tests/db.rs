@@ -642,3 +642,119 @@ async fn recommended_seat_limits_migrate_to_automatic() {
         );
     }
 }
+
+/// Migration 0020 rebuilds `payout_jobs`: every existing job survives as a
+/// Lightning job with its destination, link, and cap, and the rebuilt table
+/// keeps refusing identity changes, operation replacement, and deletion.
+#[tokio::test]
+async fn ecash_payout_migration_keeps_existing_lightning_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(dir.path().join("mg.sqlite"))
+        .create_if_missing(true);
+    let pool = SqlitePool::connect_with(options).await.unwrap();
+    for migration in [
+        include_str!("../migrations/0001_initial.sql"),
+        include_str!("../migrations/0002_wallet_origin.sql"),
+        include_str!("../migrations/0003_payout_destination_cap.sql"),
+        include_str!("../migrations/0004_dkg_inputs.sql"),
+        include_str!("../migrations/0005_single_holder_authorization.sql"),
+        include_str!("../migrations/0006_seat_readiness.sql"),
+        include_str!("../migrations/0007_support_chat.sql"),
+        include_str!("../migrations/0008_runtime_seat_limits.sql"),
+        include_str!("../migrations/0009_uptime.sql"),
+        include_str!("../migrations/0010_guardian_transfers.sql"),
+        include_str!("../migrations/0011_payable_price.sql"),
+        include_str!("../migrations/0012_guardian_link.sql"),
+        include_str!("../migrations/0013_host_pressure.sql"),
+        include_str!("../migrations/0014_monthly_data_budget.sql"),
+        include_str!("../migrations/0015_cpu_capacity.sql"),
+        include_str!("../migrations/0016_disk_seat_limit.sql"),
+        include_str!("../migrations/0017_feature_cache.sql"),
+        include_str!("../migrations/0018_active_wallet_samples.sql"),
+        include_str!("../migrations/0019_ordering_latency.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+    let operation = "ab".repeat(32);
+    sqlx::query(
+        "INSERT INTO payout_jobs (request_id, scope_kind, federation_id, destination, created_at_ms) \
+         VALUES ('pending', 'payment_federation', 'fed', 'first@example.com', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO payout_jobs (request_id, scope_kind, federation_id, seat_id, invite_code, \
+         destination, operation_id, amount_msat, created_at_ms, committed_at_ms, \
+         cap_maximum_msat, cap_remaining_msat) \
+         VALUES ('linked', 'guardian_fee', 'fed', 'seat', 'invite', 'second@example.com', ?, 42, \
+         2, 3, 42, 58)",
+    )
+    .bind(&operation)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0020_ecash_payouts.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    type Job = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let jobs: Vec<Job> = sqlx::query_as(
+        "SELECT request_id, method, destination, operation_id, amount_msat, \
+         cap_maximum_msat, cap_remaining_msat, confirmed_at_ms \
+         FROM payout_jobs ORDER BY request_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        jobs,
+        vec![
+            (
+                "linked".into(),
+                "lightning".into(),
+                Some("second@example.com".into()),
+                Some(operation.clone()),
+                Some(42),
+                Some(42),
+                Some(58),
+                None,
+            ),
+            (
+                "pending".into(),
+                "lightning".into(),
+                Some("first@example.com".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]
+    );
+    for refused in [
+        "UPDATE payout_jobs SET destination = 'other@example.com' WHERE request_id = 'pending'",
+        "UPDATE payout_jobs SET method = 'ecash', destination = NULL WHERE request_id = 'pending'",
+        "UPDATE payout_jobs SET operation_id = NULL, amount_msat = NULL, committed_at_ms = NULL \
+         WHERE request_id = 'linked'",
+        "UPDATE payout_jobs SET confirmed_at_ms = 4 WHERE request_id = 'linked'",
+        "DELETE FROM payout_jobs WHERE request_id = 'pending'",
+    ] {
+        assert!(
+            sqlx::query(refused).execute(&pool).await.is_err(),
+            "{refused}"
+        );
+    }
+}

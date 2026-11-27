@@ -17,5 +17,13 @@ Unverified.
   process restart, and the fleet database and wallet databases are restored as
   one consistent data root.
 - A successful pinned Fedimint payout start has durably committed its operation
-  metadata before returning, and durable operation enumeration returns that
-  metadata after restart.
+  before returning, and a durable lookup by operation id returns that operation
+  after restart.
+- The pinned Fedimint client records a payout under a predictable operation id:
+  a mint v1 or v2 send under the caller's id, refused in the transaction that
+  takes the notes when that id already exists; a Lightning v2 send of a new
+  invoice under the id derived from the invoice and attempt 0; and the first
+  Lightning v1 payment of a payment hash under the id derived from that hash and
+  attempt 1.
+- No request was left started but not linked to its operation by a release
+  before the ledger named payout operation ids.

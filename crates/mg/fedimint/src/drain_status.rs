@@ -1,7 +1,5 @@
 //! Read-only, fail-closed wallet drain projection.
 
-use crate::payout_job::Payout;
-use crate::payout_job::PayoutRequestId;
 use crate::payout_operation_id::PayoutOperationId;
 use crate::wallet_drain::{
     OutgoingOperation, OutgoingRail, OutgoingState, WalletDrainQuery, WalletDrainStatus,
@@ -189,8 +187,6 @@ async fn outgoing_operations_from(
 pub(crate) async fn payout_status(
     client: &ClientHandleArc,
     operation_id: OperationId,
-    request_id: Option<&PayoutRequestId>,
-    destination: Option<&str>,
 ) -> anyhow::Result<OutgoingOperation> {
     let active = client.get_active_operations().await.contains(&operation_id);
     let mut dbtx = client.db().begin_transaction_nc().await;
@@ -198,106 +194,8 @@ pub(crate) async fn payout_status(
         .get_value(&OperationLogKey { operation_id })
         .await
         .context("native payout operation does not exist")?;
-    let outgoing = outgoing_operation(operation_id, &entry, active)?
-        .context("native operation is not an MG payout")?;
-    if let (Some(request_id), Some(destination)) = (request_id, destination) {
-        anyhow::ensure!(
-            payout_request_amount(&entry, request_id, destination)?.is_some(),
-            "native payout operation belongs to another request or destination"
-        );
-    }
-    Ok(outgoing)
-}
-
-/// Read the exact returned operation's v1 payout binding without scanning
-/// active state machines or any other operation.
-pub(crate) async fn v1_payout_request_amount(
-    client: &ClientHandleArc,
-    operation_id: OperationId,
-    request_id: &PayoutRequestId,
-    destination: &str,
-) -> anyhow::Result<u64> {
-    let mut dbtx = client.db().begin_transaction_nc().await;
-    let entry = dbtx
-        .get_value(&OperationLogKey { operation_id })
-        .await
-        .context("returned Lightning v1 payout operation does not exist")?;
-    anyhow::ensure!(
-        entry.operation_module_kind() == "ln",
-        "returned Lightning v1 payout operation belongs to another rail"
-    );
-    payout_request_amount(&entry, request_id, destination)?
-        .context("returned Lightning v1 payout operation belongs to another request")
-}
-
-/// Find the unique native payout carrying the caller's request metadata.
-pub(crate) async fn payout_for_request(
-    client: &ClientHandleArc,
-    request_id: &PayoutRequestId,
-    destination: &str,
-) -> anyhow::Result<Option<Payout>> {
-    let mut found = None;
-    for (key, entry) in ClientOperationSource(client).all().await? {
-        let Some(amount_msat) = payout_request_amount(&entry, request_id, destination)? else {
-            continue;
-        };
-        anyhow::ensure!(
-            found.is_none(),
-            "multiple native payouts carry the same MG request id"
-        );
-        found = Some(Payout {
-            operation_id: PayoutOperationId::parse(&key.operation_id.fmt_full().to_string())
-                .expect("Fedimint formats a canonical operation id"),
-            amount_msat,
-            capped: None,
-        });
-    }
-    Ok(found)
-}
-
-fn payout_request_amount(
-    entry: &fedimint_client_module::oplog::OperationLogEntry,
-    request_id: &PayoutRequestId,
-    destination: &str,
-) -> anyhow::Result<Option<u64>> {
-    Ok(match entry.operation_module_kind() {
-        "ln" => {
-            let metadata = entry
-                .try_meta::<LightningV1OperationMeta>()
-                .context("decode Lightning v1 operation metadata")?;
-            let LightningOperationMetaVariant::Pay(payment) = metadata.variant else {
-                return Ok(None);
-            };
-            if !has_request_id(&metadata.extra_meta, request_id) {
-                return Ok(None);
-            }
-            ensure_destination_binding(&metadata.extra_meta, destination)?;
-            Some(
-                payment
-                    .invoice
-                    .amount_milli_satoshis()
-                    .context("Lightning v1 payout invoice has no amount")?,
-            )
-        }
-        "lnv2" => {
-            let metadata = entry
-                .try_meta::<LightningV2OperationMeta>()
-                .context("decode Lightning v2 operation metadata")?;
-            let LightningV2OperationMeta::Send(payment) = metadata else {
-                return Ok(None);
-            };
-            if !has_request_id(&payment.custom_meta, request_id) {
-                return Ok(None);
-            }
-            ensure_destination_binding(&payment.custom_meta, destination)?;
-            Some(match &payment.invoice {
-                fedimint_lnv2_common::LightningInvoice::Bolt11(invoice) => invoice
-                    .amount_milli_satoshis()
-                    .context("Lightning v2 payout invoice has no amount")?,
-            })
-        }
-        _ => None,
-    })
+    outgoing_operation(operation_id, &entry, active)?
+        .context("native operation is not an MG payout")
 }
 
 fn outgoing_operation(
@@ -362,28 +260,6 @@ fn outgoing_operation(
 
 fn is_mg_payout(metadata: &serde_json::Value) -> bool {
     metadata.get("purpose").and_then(serde_json::Value::as_str) == Some("fman-payout")
-}
-
-fn has_request_id(metadata: &serde_json::Value, request_id: &PayoutRequestId) -> bool {
-    is_mg_payout(metadata)
-        && metadata
-            .get("request_id")
-            .and_then(serde_json::Value::as_str)
-            == Some(request_id.as_str())
-}
-
-fn ensure_destination_binding(
-    metadata: &serde_json::Value,
-    destination: &str,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        metadata
-            .get("destination")
-            .and_then(serde_json::Value::as_str)
-            == Some(destination),
-        "native payout request id is bound to another destination"
-    );
-    Ok(())
 }
 
 fn v1_state(
@@ -477,8 +353,7 @@ fn operation(
     active: bool,
 ) -> OutgoingOperation {
     OutgoingOperation::new(
-        PayoutOperationId::parse(&operation_id.fmt_full().to_string())
-            .expect("Fedimint formats a canonical operation id"),
+        PayoutOperationId::from_native(operation_id),
         rail,
         state,
         recipient_amount_msat,
@@ -663,32 +538,11 @@ mod tests {
 
         assert!(is_mg_payout(&decoded.extra_meta));
         assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                "operator@example.com",
-            )
-            .unwrap(),
-            Some(900)
-        );
-        assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("other").unwrap(),
-                "operator@example.com",
-            )
-            .unwrap(),
-            None
-        );
-        assert!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                "retargeted@example.com",
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("another destination")
+            outgoing_operation(id(), &entry, true)
+                .unwrap()
+                .unwrap()
+                .recipient_amount_msat,
+            900
         );
         assert!(matches!(
             decoded.variant,
@@ -701,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_v2_payout_metadata_binds_request_and_destination() {
+    fn pinned_v2_payout_metadata_decodes() {
         use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
         use bitcoin_hashes::{Hash as _, sha256};
         use fedimint_core::OutPointRange;
@@ -739,25 +593,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                "operator@example.com",
-            )
-            .unwrap(),
-            Some(900)
-        );
-        assert!(
-            payout_request_amount(
-                &entry,
-                &PayoutRequestId::parse("caller-request").unwrap(),
-                "retargeted@example.com",
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("another destination")
-        );
+        let payout = outgoing_operation(id(), &entry, false).unwrap().unwrap();
+        assert_eq!(payout.rail, OutgoingRail::Lnv2);
+        assert_eq!(payout.recipient_amount_msat, 900);
     }
 
     #[test]

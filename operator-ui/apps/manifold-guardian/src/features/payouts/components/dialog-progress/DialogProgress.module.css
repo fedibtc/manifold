@@ -1,0 +1,19 @@
+.progress {
+  @apply m-0 flex list-none flex-col gap-3 p-0 text-sm;
+}
+
+.stepDone {
+  @apply flex items-center gap-3 text-gray-500;
+}
+
+.stepNow {
+  @apply flex items-center gap-3 font-medium text-ink;
+}
+
+.tick {
+  @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-50 text-xs;
+}
+
+.spinner {
+  @apply inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-ink;
+}

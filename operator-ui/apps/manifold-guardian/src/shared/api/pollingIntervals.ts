@@ -4,7 +4,9 @@
 // so their cadence is a cost multiplier (interval × seat count) — argue
 // changes to these constants in seats, not milliseconds.
 export const SEAT_FORMATION_POLL_MS = 5_000; // seat status, only while non-terminal
-export const LIST_POLL_MS = 30_000; // ListSeats, ListPaymentFederations
+export const LIST_POLL_MS = 30_000; // ListSeats, ListPaymentFederations, ListPayouts
+export const PAYOUT_PROGRESS_POLL_MS = 5_000; // ListPayouts, only while a payout is moving on its own
+export const PAYOUT_STATUS_POLL_MS = 2_000; // PayoutStatus, only while the open dialog watches a moving payout
 export const GUARDIAN_LINK_POLL_MS = 2_000; // Observe phone linking and offer expiration while the page is open
 export const GUARDIAN_LINK_NAV_POLL_MS = 30_000; // GuardianLink, the navigation attention dot
 export const SUPPORT_CHAT_OPEN_POLL_MS = 2_000; // SupportChat, only while the Support page shows the thread

@@ -367,6 +367,7 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         bin: &fedimint_cli_bin,
         data_dir: temp.join("fedimint-cli-client"),
         iroh_overrides: &moved_overrides,
+        esplora_url: None,
     };
     // The restarted guardians need a moment before they answer a join.
     tokio::time::timeout(Duration::from_secs(90), async {

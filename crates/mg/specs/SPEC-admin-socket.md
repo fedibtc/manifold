@@ -200,12 +200,15 @@ the fleet.
   operation is active or has an unresolved outcome, and the known
   fee-aware recipient amount is zero. It is otherwise `sweepable`,
   `pending_wallet_work`, or `unknown`. A cached Lightning success does not
-  override active mint change/refund state machines.
+  override active mint change/refund state machines. An ecash payout of the
+  wallet that is `issued` and not marked redeemed, or `reclaiming`, makes a
+  wallet that would read `drained` or `sweepable` read `pending_wallet_work`:
+  its token exists only in this wallet's database.
 - `PayoutDestination` returns the one LNURL-pay or Lightning Address used for
   all payment and guardian-fee sweeps, or null when none is configured.
   `SetPayoutDestination` replaces or clears it.
-- `SweepPaymentFees` requires a caller-generated `request_id` and a configured
-  payout destination. It uses the
+- `SweepPaymentFees` requires a caller-generated `request_id`, and a Lightning
+  sweep also a configured payout destination. A Lightning sweep uses the
   Fedimint client's native, persisted Lightning
   operation to send as much of that federation's balance as can economically
   fund the recipient amount, gateway fee, federation Lightning output fee,
@@ -223,22 +226,28 @@ the fleet.
   Payouts and drain estimates use the same selection rules. When no eligible route
   exists, selection returns an unavailable result, not a drained wallet.
   The response is a durable job carrying the request, its immutable
-  payment-federation scope and destination snapshot, and the committed native
-  operation id and recipient amount, not bearer ecash.
+  payment-federation scope, `method: "lightning"` with the destination
+  snapshot, and the committed native operation id and recipient amount, not
+  bearer ecash.
 
   Before native start, MG inserts the job keyed by `request_id`. Reusing that
   id with another scope fails. Reusing it in the same scope returns the same job
   and never creates another native operation; it retains the original destination
-  snapshot even when the global destination setting has since changed. Both
-  payment-wallet and guardian-fee wallets expose native request-aware start,
-  status, and await primitives. Start returns the
-  native operation id and recipient amount only after the pinned Fedimint
-  client has committed the operation log entry, transaction submission, request
-  metadata, and state machines in its local database. Within each wallet scope,
-  the request lookup and possible start share one process-lifetime fence. A
-  serialized v1 start rejects an LNURL
-  invoice with an already completed payment operation instead of returning the
-  old success as a new start. Status and await accept that exact id,
+  snapshot even when the global destination setting has since changed. The
+  ledger names each job's native operation before starting it, so recovery
+  looks up one operation by id and never scans the wallet. An ecash job's
+  operation id derives from its `request_id`, and the pinned client refuses a
+  spend under an id that already exists in the transaction that takes the
+  notes. A Lightning job first records an attempt: the rail and the LNURL
+  invoice sized to the spendable balance, whose operation id the rail derives
+  from the invoice. Then it pays that invoice. An invoice that already names an
+  operation in the wallet is refused before it is recorded. A retry that finds
+  no operation for the recorded attempt has paid nothing, so it replaces the
+  attempt with a new one. Start returns the native operation id and recipient
+  amount only after the pinned Fedimint client has committed the operation log
+  entry, transaction submission and state machines in its local database.
+  Within each wallet scope, the lookup and possible start share one
+  process-lifetime fence. Status and await accept that exact id,
   verify from durable metadata that it is an MG payout in the selected wallet
   scope, and never request an invoice or submit another payment. Their common
   projection keeps the Lightning rail state (`pending`, `succeeded`,
@@ -253,12 +262,18 @@ the fleet.
   aggregate failure result.
 
   Process death after the native commit but before the SQLite job link leaves a
-  pending job and a request-marked operation. Repeating the sweep or reading
-  `PayoutStatus` reconciles that exact operation into the job before doing
+  pending job whose named operation exists. Repeating the sweep or reading
+  `PayoutStatus` looks that operation up and links it to the job before doing
   anything else. `PayoutStatus` never starts work; it reports a pending job when
-  no native commit exists. `AwaitPayout` also reconciles, then requires and
-  awaits the exact committed operation. Both verbs use `request_id`, so a lost
-  response is recovered without another invoice or outgoing payment.
+  no native commit exists. `AwaitPayout` also links, then requires and
+  awaits the exact committed operation. Fedimint caches a payment's outcome
+  only when something drains its updates, so `PayoutStatus` drains them, for at
+  most 10 seconds, for a Lightning payout whose state machines have stopped
+  with no cached outcome; a payout nobody awaited otherwise reads `unknown`
+  forever. Both verbs use `request_id`, so a lost
+  response is recovered without another invoice or outgoing payment. A job left
+  started but unlinked by a release before ledger-named operation ids is
+  treated as never started.
 - `ListSeats` returns durable summary facts for every accepted seat, including
   decommissioned records, sorted by creation time. Expired or otherwise
   refused quotes never create seats. Each summary carries a sanitized
@@ -333,7 +348,8 @@ the fleet.
   failed phase, whether that phase itself produced a durable operation ID, and an
   operator-safe error. A failure remains an Admin error only when no durable
   operation exists and no earlier progress was confirmed.
-- `SweepGuardianFees` requires a caller-generated `request_id` and sends as much
+- `SweepGuardianFees` requires a caller-generated `request_id` and takes the
+  same `method`. A Lightning sweep sends as much
   already-collected ecash as is economically
   sweepable to the same global payout destination, using the same automatic
   gateway selection as `SweepPaymentFees`. Collection remains a separate explicit
@@ -344,6 +360,55 @@ the fleet.
   `GuardianFees.wallet` exposes the same drain projection for that seat's
   separate guardian-client scope; stability-pool staged, locked, and idle
   balances remain separate fields and are not ordinary ecash.
+- Both sweeps take an optional `method`: `lightning`, the default and what a
+  request without the field means, or `ecash`. An ecash sweep needs no payout
+  destination and spends every note the scope's wallet holds into one bearer
+  ecash token with the federation invite, through the pinned client's own
+  out-of-band spend (mint v1 or mint v2, whichever is the wallet's primary
+  module). It shares the Lightning sweep's `payout_jobs` ledger, request-id
+  identity, wallet-scope fence, and crash recovery: a `request_id` stays
+  bound to its first scope and its first method, and reusing it with the
+  other method fails rather than starting a second payout. Its response is
+  the job, as for a Lightning sweep, carrying `method: "ecash"` and no
+  destination; the token is read with `PayoutStatus`. The token is never in
+  SQLite: the metadata of the spend operation the job names, in the protected
+  Fedimint database, holds it, and every ecash answer rereads it from there.
+  The answers to `PayoutStatus` and `AwaitPayout` for an ecash job are
+  `{job, ecash}`: `ecash` is null before the
+  spend commits, then the wallet's state of the notes: `issued` with the
+  token, `reclaiming`, `reclaimed`, or `already_spent` with the token. A
+  refused reclaim almost always means the token was redeemed, but the token
+  stays readable in case the refusal had another cause, such as a partly
+  redeemed token, and left notes only the token reaches. The admin socket is
+  the only place the token leaves the wallet.
+  `ListPayouts` takes no arguments and returns jobs of both methods, newest
+  first, in the `PayoutStatus` shape: the 20 newest jobs (a daemon constant,
+  because every listed job opens its wallet to read its state; a read that
+  does not await refuses a wallet another task is still opening and never
+  joins a guardian-fee wallet, so one such job is left out rather than holding
+  up the list) plus every
+  older unmarked ecash job whose state is `issued` or `reclaiming`, so newer
+  payouts never push an issued token out of the list. A job is listed only
+  once it has a native operation, after the same lookup
+  `PayoutStatus` does: a start the wallet refused (no gateway, an LNURL error)
+  leaves a ledger row but never a payout. List items never carry the token:
+  an `issued` or `already_spent` item has `"token": null`, and
+  `PayoutStatus` returns the token when the operator opens the payout.
+  `ConfirmEcashPayout` records the operator's word
+  that the token was redeemed as `confirmed_at_ms` on the job's operation and
+  answers the job. It is one ledger write, set once, that reads no wallet and
+  is not a state: the payout stays `issued` until a cancel, and an issued
+  payout without the mark is the one still waiting for the operator.
+  Confirming a payout a cancel already settled changes nothing the wallet
+  reports. `CancelEcashPayout` reissues the token's notes back into the same
+  wallet under a reclaim operation id the dependency derives from the notes,
+  so a repeated cancel continues the same reclaim; it waits for the outcome
+  and answers `reclaimed` once the reissued notes are spendable in the
+  balance, or `already_spent` when the operator's redemption won. Until then
+  the payout reads `reclaiming`. It is accepted after `ConfirmEcashPayout` too, because the operator's
+  word that a token arrived can be wrong and the reclaim itself finds out
+  whether the notes were spent. A cancel is serialized with starts by the
+  wallet-scope fence.
 - `Onboarding` returns `service_pubkey`, the commitment-signing public key,
   `fman_name`, the deterministic two-word presentation name derived from the
   public MG identity

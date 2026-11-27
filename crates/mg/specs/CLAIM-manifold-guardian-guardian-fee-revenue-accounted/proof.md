@@ -122,14 +122,15 @@ Any one witness falsifies this conjunctive claim.
    invoice-payee binding.
 
 7. **Native v2/v1 start and replay (`code`, `test`).** The worker selects only the
-   stored payment scope or mnemonic/seat-derived guardian scope. Nested per-scope
-   fences search operation metadata for the exact request id and stored destination
-   before start. Lightning v2 `send` and v1 `pay_bolt11_invoice` receive the remote
-   LNURL invoice plus that metadata. V1 additionally rejects an already completed
-   invoice and validates the exact returned operation's rail, metadata, and amount.
-   A successful-return native commit surviving before the SQLite link is found and linked by replay;
-   the stated A4 guarantee covers successful-return commits and enumeration, but
-   does not explicitly settle every interruption inside a dependency start.
+   stored payment scope or mnemonic/seat-derived guardian scope. Under the
+   per-scope payout fence, a start fetches an invoice new to the wallet, records
+   the attempt (rail, invoice, cap) in the job before paying, and passes that
+   invoice to Lightning v2 `send` or v1 `pay_bolt11_invoice`; the returned
+   operation id must equal the one the attempt names. Ecash spends under an id
+   derived from the request id. A successful-return native commit surviving
+   before the SQLite link is found by looking up that one id and linked by
+   replay; the stated A4 guarantee covers successful-return commits, but does
+   not explicitly settle every interruption inside a dependency start.
 
 8. **Observation, refund/reclaim, and lazy recovery (`code`, `test`, `claim`,
    `assumption`).** Status and await reopen the stored scope and pass one committed

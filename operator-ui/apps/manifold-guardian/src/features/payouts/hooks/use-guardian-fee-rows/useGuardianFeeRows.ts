@@ -10,6 +10,9 @@ export interface GuardianFeeRow {
   /** Already collected out of the pool and sitting as ordinary ecash, which is
    *  the only money a guardian-fee sweep can send. `null` reads as unknown. */
   collectedEcashMsat: number | null;
+  /** What of the collected ecash reaches a Lightning destination after fees.
+   *  `null` reads as unknown. */
+  sweepableMsat: number | null;
   /** False when the federation charges a rate of zero or has no fee policy, so
    *  nothing new accrues. `null` when the policy has not been read. */
   earning: boolean | null;
@@ -41,6 +44,7 @@ export const useGuardianFeeRows = (): GuardianFeeRow[] => {
       seatId: seat.seat_id,
       collectableMsat: fees ? fees.collectable_msat : null,
       collectedEcashMsat: fees ? fees.wallet.available_ecash_msat : null,
+      sweepableMsat: fees ? fees.wallet.economically_sweepable_recipient_msat : null,
       earning: fees ? isEarning(fees.policy) : null
     };
   });
