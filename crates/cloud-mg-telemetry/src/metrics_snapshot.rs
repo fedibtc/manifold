@@ -33,7 +33,27 @@ pub(crate) struct MetricsTargetHealth {
     pub(crate) seats: Vec<String>,
 }
 
+/// Whether the collector admitted its MGs on a verified badge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MgVerification {
+    /// Every MG proved a Holder authorization at registration.
+    Badged,
+    /// Any key could register, so every MG series is labelled unverified.
+    Unbadged,
+}
+
+impl MgVerification {
+    /// Label prepended to every label set that names an MG.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Badged => "",
+            Self::Unbadged => "fman_verified=\"false\",",
+        }
+    }
+}
+
 /// Render durable sparse observations without changing their observation time.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_metrics(
     mut snapshots: Vec<MetricsSnapshot>,
     mut targets: Vec<MetricsTargetHealth>,
@@ -42,10 +62,12 @@ pub(crate) fn render_metrics(
     stale_after_ms: i64,
     method_source_ready: bool,
     observability: &MetricsObservability,
+    verification: MgVerification,
 ) -> Result<String, ExpositionError> {
     if stale_after_ms <= 0 {
         return Err(ExpositionError);
     }
+    let verified = verification.label();
     snapshots.sort_by(|left, right| {
         (&left.mg_id, &left.guardian_seat_id).cmp(&(&right.mg_id, &right.guardian_seat_id))
     });
@@ -75,7 +97,7 @@ pub(crate) fn render_metrics(
                 });
             writeln!(
                 seat_samples,
-                "cloud_fman_telemetry_seat_fresh{{fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"}} {} {now_ms}",
+                "cloud_fman_telemetry_seat_fresh{{{verified}fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"}} {} {now_ms}",
                 escape(&target.mg_id),
                 escape(&target.mg_name),
                 escape(seat),
@@ -85,7 +107,7 @@ pub(crate) fn render_metrics(
         }
         writeln!(
             target_samples,
-            "cloud_fman_telemetry_target_fresh{{fman_id=\"{}\",fman_name=\"{}\"}} {} {now_ms}",
+            "cloud_fman_telemetry_target_fresh{{{verified}fman_id=\"{}\",fman_name=\"{}\"}} {} {now_ms}",
             escape(&target.mg_id),
             escape(&target.mg_name),
             i64::from(target.fresh),
@@ -97,7 +119,7 @@ pub(crate) fn render_metrics(
         if snapshot.observed_at_ms < 0 || snapshot.observed_at_ms > now_ms {
             return Err(ExpositionError);
         }
-        let labels = identity_labels(&snapshot);
+        let labels = format!("{verified}{}", identity_labels(&snapshot));
         let stale = i64::from(now_ms.saturating_sub(snapshot.observed_at_ms) > stale_after_ms);
         writeln!(
             observation_samples,
@@ -120,6 +142,14 @@ pub(crate) fn render_metrics(
             if group.0 != kind {
                 return Err(ExpositionError);
             }
+            let sample = match verification {
+                MgVerification::Badged => sample,
+                // Every admitted sample carries the collector's identity labels.
+                MgVerification::Unbadged => {
+                    let (name, labels) = sample.split_once('{').ok_or(ExpositionError)?;
+                    format!("{name}{{{verified}{labels}")
+                }
+            };
             group.1.push((sample, snapshot.observed_at_ms));
         }
     }

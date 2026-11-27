@@ -1,10 +1,5 @@
 # SPEC-guardian-telemetry-proxy: guardian telemetry over MG Iroh
 
-## Status
-
-An MG without a Holder authorization does not register yet: registration to
-the unbadged collector is not implemented.
-
 ## Record justification
 
 No single artifact can own this contract because the MG journal and metrics
@@ -129,7 +124,8 @@ registration URLs. On startup, policy change, and every 15 minutes, MG sends
 one idempotent MG-level registration containing its Iroh endpoint id, durable
 capability generation, corresponding capability, and current Holder authorization.
 An MG without a Holder authorization sends the same registration without one
-to the policy's unbadged registration URL instead, where a separate collector
+to the policy's unbadged registration URL instead, or does not register when
+the policy names none. A separate collector there
 admits it on the NIP-98 proof alone
 ([ARCH-cloud-mg-telemetry](../../../specs/ARCH-cloud-mg-telemetry.md)).
 

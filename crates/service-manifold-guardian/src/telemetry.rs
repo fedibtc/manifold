@@ -56,8 +56,10 @@ pub struct GuardianTelemetryRegistrationRequest {
     pub generation: u64,
     /// One bearer for seat discovery, metrics, and safe-event journals.
     pub capability: TelemetryCapability,
-    /// Current Holder authorization carrying the MG's PeerBadge.
-    pub holder_authorization: HolderAuthorizationEnvelope,
+    /// Current Holder authorization carrying the MG's PeerBadge. An MG
+    /// without one omits it and registers with the unbadged collector instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_authorization: Option<HolderAuthorizationEnvelope>,
 }
 
 impl core::fmt::Debug for GuardianTelemetryRegistrationRequest {
@@ -545,7 +547,7 @@ mod tests {
             iroh_endpoint_id: "endpoint-a".to_owned(),
             generation: 17,
             capability: TelemetryCapability::from_bytes([9; 32]),
-            holder_authorization: holder_authorization(),
+            holder_authorization: Some(holder_authorization()),
         }
     }
 
@@ -579,6 +581,28 @@ mod tests {
         assert!(
             serde_json::from_value::<GuardianTelemetryRegistrationRequest>(legacy).is_err(),
             "the required generation deliberately rejects the old wire shape"
+        );
+        // An MG without a badge omits the field instead of sending null, so
+        // the badged body that deployed collectors parse keeps its bytes.
+        let unbadged = GuardianTelemetryRegistrationRequest {
+            holder_authorization: None,
+            ..registration_fixture()
+        };
+        let unbadged_json = serde_json::to_value(&unbadged).unwrap();
+        assert_eq!(
+            unbadged_json,
+            serde_json::json!({
+                "version": 1,
+                "iroh_endpoint_id": "endpoint-a",
+                "generation": 17,
+                "capability": vec![9; 32],
+            })
+        );
+        assert!(
+            serde_json::from_value::<GuardianTelemetryRegistrationRequest>(unbadged_json)
+                .unwrap()
+                .holder_authorization
+                .is_none()
         );
 
         let request = ListGuardianTelemetrySeatsRequest {

@@ -6,7 +6,7 @@ mod metrics_policy;
 #[path = "../src/metrics_snapshot.rs"]
 mod metrics_snapshot;
 
-use metrics_snapshot::{ExpositionError, MetricsSnapshot, MetricsTargetHealth};
+use metrics_snapshot::{ExpositionError, MetricsSnapshot, MetricsTargetHealth, MgVerification};
 
 fn render_metrics(
     snapshots: Vec<MetricsSnapshot>,
@@ -24,6 +24,7 @@ fn render_metrics(
         stale_after_ms,
         method_source_ready,
         &metrics_observability::MetricsObservability::default(),
+        MgVerification::Badged,
     )
 }
 
@@ -210,9 +211,17 @@ fn exposes_fixed_admission_outcomes_without_source_dimensions() {
     observability.record(AdmissionOutcome::UnknownDiscarded);
     observability.record(AdmissionOutcome::InvalidAdmittedDiscarded);
     observability.record(AdmissionOutcome::Rejected);
-    let output =
-        metrics_snapshot::render_metrics(vec![], vec![], 0, 2_000, 60_000, false, &observability)
-            .unwrap();
+    let output = metrics_snapshot::render_metrics(
+        vec![],
+        vec![],
+        0,
+        2_000,
+        60_000,
+        false,
+        &observability,
+        MgVerification::Badged,
+    )
+    .unwrap();
     assert!(output.contains(
         "cloud_fman_telemetry_metrics_admission_total{event=\"known_deny_discarded\"} 1 2000"
     ));
@@ -237,9 +246,17 @@ fn exposes_fixed_collection_failure_stages() {
     observability.record_collection_failure(CollectionFailure::Scrape);
     observability.record_collection_failure(CollectionFailure::Scrape);
     observability.record_collection_failure(CollectionFailure::Deadline);
-    let output =
-        metrics_snapshot::render_metrics(vec![], vec![], 0, 2_000, 60_000, false, &observability)
-            .unwrap();
+    let output = metrics_snapshot::render_metrics(
+        vec![],
+        vec![],
+        0,
+        2_000,
+        60_000,
+        false,
+        &observability,
+        MgVerification::Badged,
+    )
+    .unwrap();
     for (stage, count) in [
         ("connect", 0),
         ("list", 0),
@@ -258,4 +275,61 @@ fn exposes_fixed_collection_failure_stages() {
             .count(),
         5
     );
+}
+
+#[test]
+fn an_unbadged_collector_labels_every_mg_series_unverified() {
+    let output = metrics_snapshot::render_metrics(
+        vec![snapshot("11", "seat-a", 1_000)],
+        vec![MetricsTargetHealth {
+            mg_id: "11".to_owned(),
+            mg_name: "same-display-name".to_owned(),
+            fresh: true,
+            seats: vec!["seat-a".to_owned()],
+        }],
+        0,
+        2_000,
+        60_000,
+        false,
+        &metrics_observability::MetricsObservability::default(),
+        MgVerification::Unbadged,
+    )
+    .unwrap();
+    let mg_series: Vec<_> = output
+        .lines()
+        .filter(|line| line.contains("fman_id="))
+        .collect();
+    // Target and seat freshness, observation time, staleness and the forwarded sample.
+    assert_eq!(mg_series.len(), 5, "{output}");
+    for line in mg_series {
+        assert!(line.contains("{fman_verified=\"false\","), "{line}");
+    }
+    assert!(output.contains(
+        "fm_consensus_session_count{fman_verified=\"false\",fman_id=\"11\",fman_name=\"same-display-name\",guardian_seat_id=\"seat-a\"} 7 1000"
+    ));
+    // Collector-wide series name no MG and carry no label.
+    assert!(output.contains("cloud_fman_telemetry_snapshot_rejected_rows 0 2000"));
+    let parsed = prometheus_parse::Scrape::parse(output.lines().map(|line| Ok(line.to_owned())))
+        .expect("the exposition still parses");
+    assert!(
+        parsed
+            .samples
+            .iter()
+            .filter(|sample| sample.labels.get("fman_id").is_some())
+            .all(|sample| sample.labels.get("fman_verified") == Some("false"))
+    );
+}
+
+#[test]
+fn a_badged_collector_adds_no_verification_label() {
+    let output = render_metrics(
+        vec![snapshot("11", "seat-a", 1_000)],
+        vec![],
+        0,
+        2_000,
+        60_000,
+        false,
+    )
+    .unwrap();
+    assert!(!output.contains("fman_verified"));
 }

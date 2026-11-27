@@ -1,13 +1,21 @@
 # CLAIM-cloud-mg-telemetry-admission-confined: Target admission is confined
 
-Against arbitrary registration bytes and identities, replay, stale credentials,
-and concurrent registrations, only a fresh NIP-98 request that signs the
+In badged admission mode, against arbitrary registration bytes and identities,
+replay, stale credentials, and concurrent registrations, only a fresh NIP-98 request that signs the
 collector-configured URL, POST method, and SHA-256 digest of the submitted body,
 and whose signer matches a fully verified current Holder subject can create a
 registration or replace its registration-owned MG public key, Iroh endpoint,
 capability, or generation. A lower generation cannot replace those authority
 fields, and a same-generation heartbeat can refresh its lease and authorization
-material but cannot replace its capability.
+material but cannot replace its capability. In unbadged admission mode the
+same holds with any NIP-98 signer in place of a verified Holder subject, and a
+new target is created only within the configured target cap and hourly
+creation limits. The admission mode is fixed per instance at startup and
+defaults to badged, so a badged instance never admits a signer without a badge.
+
+## Status
+
+Unverified.
 
 ## Assumptions
 

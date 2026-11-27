@@ -272,6 +272,40 @@ counted here; they
 have their own admission events. When target snapshots stop advancing, the
 stage that increased shows where polls fail.
 
+## Unbadged instance
+
+MGs without a badge register with a second, separate collector deployment
+([ARCH-cloud-mg-telemetry](../../specs/ARCH-cloud-mg-telemetry.md#unbadged-instance)).
+It runs the same image with `CLOUD_FMAN_TELEMETRY_ADMISSION=unbadged` and
+follows every control in this guide, with its own volume, its own 32-byte key
+and key ID, and its own public HTTPS origin. Never point it at the badged
+collector's volume or key: the store is bound to its admission mode and
+refuses to open the other mode's database.
+
+Unbadged mode requires four limits, and badged mode refuses them:
+
+| Variable | Meaning | Starting value |
+| --- | --- | --- |
+| `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. Stored targets keep their slot after their lease ends. | `1024` |
+| `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
+| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates per hour. | `4` |
+| `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |
+
+Renewing an existing target counts against none of them. A refused creation
+answers 503, and the MG retries at its next reconcile. The existing
+per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes.
+
+The unbadged collector has no direct UDP transport. It reaches MGs only
+through the default n0 relays and resolves endpoints through n0 DNS and
+pkarr, so allow egress to those. It does not serve `GET /v1/federations`;
+connect no invite consumer to it. Its MG series carry
+`fman_verified="false"`. Scrape it as its own Prometheus job.
+
+Publish its registration URL, `<origin>/v1/telemetry/registrations`, as
+`unbadged_telemetry_registration_url` in the setup-payment publication
+([SPEC-setup-payment-federations](../../specs/SPEC-setup-payment-federations.md)).
+MGs older than the release that reads it ignore the field.
+
 ## Read-only staging comparison
 
 This comparison audits the `k8s-devops` staging manifests at Git revision

@@ -216,11 +216,16 @@ impl JournalArchive {
     }
 
     /// Append and sync one independent frame, returning its durable boundary.
+    ///
+    /// `target_room` is what the stream's target may still add under its own
+    /// budget, if it has one. A frame over either bound is refused before
+    /// writing; nothing already archived is evicted to make room.
     pub(crate) fn append(
         &self,
         stream_id: &JournalStreamId,
         day: &ReceptionDay,
         batch: &ValidatedJournalBatch,
+        target_room: Option<u64>,
     ) -> Result<ArchiveFrame, ArchiveError> {
         let jsonl = batch.jsonl();
         if jsonl.is_empty() || jsonl.len() > MAX_JSONL_BATCH_BYTES {
@@ -238,7 +243,9 @@ impl JournalArchive {
         if state.append_poisoned {
             return Err(ArchiveError::Poisoned);
         }
-        if frame.len() > MAX_COMPRESSED_FRAME_BYTES {
+        if frame.len() > MAX_COMPRESSED_FRAME_BYTES
+            || target_room.is_some_and(|room| frame.len() as u64 > room)
+        {
             return Err(ArchiveError::Capacity);
         }
         let next_used_bytes = state

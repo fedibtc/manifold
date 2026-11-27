@@ -74,9 +74,13 @@ pub(crate) async fn verify_registration(
         .ok_or_else(telemetry_unavailable)?;
     EndpointId::from_str(&request.iroh_endpoint_id).map_err(|_| invalid_registration())?;
 
+    let holder_authorization = request
+        .holder_authorization
+        .as_ref()
+        .ok_or_else(invalid_registration)?;
     let badge = runtime
         .verifier
-        .verify(&request.holder_authorization)
+        .verify(holder_authorization)
         .await
         .map_err(|_| invalid_registration())?;
     if badge.subject().0.to_string() != signer.0 {

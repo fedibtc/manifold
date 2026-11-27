@@ -2506,6 +2506,7 @@ dependencies = [
  "fedi-iroh-rpc",
  "fedimint-core",
  "fs2",
+ "futures-util",
  "hex",
  "humantime",
  "hyper",

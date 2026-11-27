@@ -22,9 +22,6 @@ mnemonic restore rejoins it from the backed-up claim evidence
 ([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
 so it is listed and sweepable there too.
 
-Current readers ignore `unbadged_telemetry_registration_url` in either publication.
-The field is reserved for a future design and is not a supported enrollment setting.
-
 Deployment has two stages. First deploy readers that understand both addresses.
 Continue to publish a compatible `37707` manifest: **keep `fman_version`** or
 old readers reject even the payment fields. Preserve optional legacy settings
@@ -161,11 +158,15 @@ an integrity error, not an empty cache. Payment rotation is unchanged.
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
   username, password, query, or fragment;
-- Reserved and not implemented: `unbadged_telemetry_registration_url` would be
-  a URL of the same form for MGs without a Holder authorization
-  ([SPEC-guardian-telemetry-proxy](../crates/mg/specs/SPEC-guardian-telemetry-proxy.md)).
-  Under that design, omitting it would disable registration for those MGs. Neither
-  signer can set this endpoint today; the feature signer cannot redirect enrollment;
+- `unbadged_telemetry_registration_url`, a URL of the same form where MGs
+  without a Holder authorization register, with the unbadged collector
+  ([SPEC-guardian-telemetry-proxy](../crates/mg/specs/SPEC-guardian-telemetry-proxy.md),
+  [ARCH-cloud-mg-telemetry](./ARCH-cloud-mg-telemetry.md#unbadged-instance)).
+  Optional: absent means those MGs do not register. Only the payment
+  publication carries it; the feature signer cannot redirect enrollment.
+  The field is new in 0.1.21. Consumers that admit unknown fields but
+  predate it, which includes every MG and FA release from 0.1.1 to 0.1.20,
+  ignore it, so their MGs without a badge do not register;
 - `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already
@@ -333,8 +334,8 @@ Admission performs all of these checks before the set influences policy:
    canonical federation ID;
 8. reject invites containing an API bearer secret;
 9. reject multiple invites that derive the same federation ID.
-10. reject a telemetry registration URL that is not credential-free HTTPS or
-    contains a query or fragment;
+10. reject a telemetry registration URL, badged or unbadged, that is not
+    credential-free HTTPS or contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib`, `seat_memory_budget_mib_v2` or

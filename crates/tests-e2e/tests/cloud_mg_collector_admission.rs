@@ -128,7 +128,7 @@ async fn valid_badge_crosses_real_registration_router_and_persists_target() {
         generation: 7,
         iroh_endpoint_id: IrohSecretKey::from_bytes(&[8; 32]).public().to_string(),
         capability: TelemetryCapability::from_bytes([9; 32]),
-        holder_authorization: envelope,
+        holder_authorization: Some(envelope),
     })
     .expect("serialize registration");
     let authorization = nip98(&mg, &body);

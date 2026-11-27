@@ -24,6 +24,11 @@ fn args() -> Args {
         log_quota_bytes: MAX_LOG_QUOTA_BYTES,
         log_retention_days: MAX_LOG_RETENTION_DAYS,
         source_budget: 4,
+        admission: AdmissionMode::Badged,
+        max_targets: None,
+        new_targets_per_hour: None,
+        source_new_targets_per_hour: None,
+        log_target_quota_bytes: None,
         trusted_proxies: Vec::new(),
         #[cfg(feature = "defe-test-support")]
         e2e_iroh_endpoint_addr: None,
@@ -111,5 +116,91 @@ fn retained_journal_limit_is_higher_only_in_staging() {
         let mut args = args();
         args.environment = environment.into();
         assert_eq!(args.validate().unwrap().max_journals_per_target, expected);
+    }
+}
+
+#[test]
+fn unbadged_admission_requires_every_limit_and_badged_admission_takes_none() {
+    let unbadged = [
+        "--admission",
+        "unbadged",
+        "--max-targets",
+        "1024",
+        "--new-targets-per-hour",
+        "60",
+        "--source-new-targets-per-hour",
+        "4",
+        "--log-target-quota-bytes",
+        "8388608",
+    ];
+    let Admission::Unbadged(limits) = parsed_args(&unbadged).validate().unwrap().admission else {
+        panic!("unbadged mode was not selected");
+    };
+    assert_eq!(limits.max_targets.get(), 1024);
+    assert_eq!(limits.new_targets_per_hour.get(), 60);
+    assert_eq!(limits.source_new_targets_per_hour.get(), 4);
+    assert_eq!(limits.log_target_quota_bytes.get(), 8_388_608);
+
+    // The existing deployment sets no mode and stays badged.
+    assert!(matches!(
+        parsed_args(&[]).validate().unwrap().admission,
+        Admission::Badged
+    ));
+    // Each limit is required: a forgotten one must not mean "unlimited".
+    for missing in [2, 4, 6, 8] {
+        let mut partial = unbadged.to_vec();
+        partial.drain(missing..missing + 2);
+        assert!(parsed_args(&partial).validate().is_err(), "{partial:?}");
+    }
+    // A limit on a badged collector would silently do nothing.
+    assert!(parsed_args(&["--max-targets", "10"]).validate().is_err());
+
+    for (flag, value) in [
+        ("--max-targets", "0"),
+        ("--max-targets", "4097"),
+        ("--new-targets-per-hour", "0"),
+        ("--source-new-targets-per-hour", "0"),
+        ("--log-target-quota-bytes", "0"),
+        // Above the whole archive quota.
+        ("--log-target-quota-bytes", "10737418241"),
+    ] {
+        let mut arguments = unbadged.to_vec();
+        let index = arguments
+            .iter()
+            .position(|argument| *argument == flag)
+            .unwrap();
+        arguments[index + 1] = value;
+        assert!(
+            parsed_args(&arguments).validate().is_err(),
+            "{flag}={value}"
+        );
+    }
+    let mut at_bounds = unbadged.to_vec();
+    at_bounds[3] = "4096";
+    at_bounds[9] = "10737418240";
+    assert!(parsed_args(&at_bounds).validate().is_ok());
+
+    let command = Args::command();
+    for (id, env) in [
+        ("admission", "CLOUD_FMAN_TELEMETRY_ADMISSION"),
+        ("max_targets", "CLOUD_FMAN_TELEMETRY_MAX_TARGETS"),
+        (
+            "new_targets_per_hour",
+            "CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR",
+        ),
+        (
+            "source_new_targets_per_hour",
+            "CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR",
+        ),
+        (
+            "log_target_quota_bytes",
+            "CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES",
+        ),
+    ] {
+        let argument = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == id)
+            .unwrap();
+        assert_eq!(argument.get_env(), Some(OsStr::new(env)));
     }
 }

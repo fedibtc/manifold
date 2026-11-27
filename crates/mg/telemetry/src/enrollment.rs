@@ -1,4 +1,5 @@
-//! Periodic Holder-authorized enrollment of one MG telemetry endpoint.
+//! Periodic enrollment of one MG telemetry endpoint with the badged or
+//! unbadged collector.
 
 use std::{
     future::Future,
@@ -68,8 +69,9 @@ pub fn start_registration(
                 break;
             }
             let admitted = policy.borrow().clone();
+            let holder_authorization = selected_holder_authorization(&nostr);
             if let Some(admitted) = admitted
-                && let Some(holder_authorization) = selected_holder_authorization(&nostr)
+                && let Some(url) = registration_url(&admitted, holder_authorization.is_some())
             {
                 let (generation, capability) = fleet.telemetry_registration_capability();
                 let request = GuardianTelemetryRegistrationRequest {
@@ -81,9 +83,10 @@ pub fn start_registration(
                 };
                 match serde_json::to_vec(&request) {
                     Ok(body) if body.len() <= MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES => {
-                        let url = &admitted.telemetry_registration_url().0;
+                        let url = url.0.clone();
                         let Some(result) =
-                            unless_shutdown(&worker_shutdown, transport.register(url, &body)).await
+                            unless_shutdown(&worker_shutdown, transport.register(&url, &body))
+                                .await
                         else {
                             break;
                         };
@@ -118,6 +121,20 @@ pub fn start_registration(
         shutdown,
         stopped,
         join_handle,
+    }
+}
+
+/// Where this MG registers: the badged collector with a Holder authorization,
+/// else the unbadged one if the policy names it
+/// ([ARCH-cloud-mg-telemetry](../../../../specs/ARCH-cloud-mg-telemetry.md)).
+fn registration_url(
+    admitted: &AdmittedSetupPaymentFederations,
+    holds_authorization: bool,
+) -> Option<&fedi_decentralized_domain::Url> {
+    if holds_authorization {
+        Some(admitted.telemetry_registration_url())
+    } else {
+        admitted.unbadged_telemetry_registration_url()
     }
 }
 
@@ -282,6 +299,38 @@ mod tests {
                 && tag.get(1).map(String::as_str)
                     == Some(hex::encode(Sha256::digest(b"body")).as_str())
         }));
+    }
+
+    fn policy(unbadged: &str) -> AdmittedSetupPaymentFederations {
+        AdmittedSetupPaymentFederations::parse(
+            format!(
+                r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://badged.example/v1/telemetry/registrations"{unbadged}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_mg_registers_with_the_collector_its_authorization_selects() {
+        let both = policy(
+            r#","unbadged_telemetry_registration_url":"https://unbadged.example/v1/telemetry/registrations""#,
+        );
+        assert_eq!(
+            registration_url(&both, true).unwrap().0,
+            "https://badged.example/v1/telemetry/registrations"
+        );
+        assert_eq!(
+            registration_url(&both, false).unwrap().0,
+            "https://unbadged.example/v1/telemetry/registrations"
+        );
+        // Without an unbadged collector, an MG without a badge does not register.
+        let badged_only = policy("");
+        assert!(registration_url(&badged_only, false).is_none());
+        assert_eq!(
+            registration_url(&badged_only, true).unwrap().0,
+            "https://badged.example/v1/telemetry/registrations"
+        );
     }
 
     #[test]

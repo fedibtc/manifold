@@ -1,5 +1,10 @@
 # Proof: Cloud MG telemetry admission confinement
 
+> **Stale proof:** this argument covers badged admission mode only. The
+> unbadged mode (any NIP-98 signer, the target cap and the hourly creation
+> limits in `Store::admit` and `register_inner`) is not yet argued here; it
+> needs a requested verification.
+
 ## Scope
 
 This implementation-grounded proof covers:
@@ -53,7 +58,8 @@ request proof, Holder currentness, and durable/cryptographic operations below.
 
 1. **[type, code] The wire and route boundary is closed.**
    `GuardianTelemetryRegistrationRequest` has typed protocol, `u64` generation,
-   32-byte capability, and Holder-envelope fields and denies unknown fields.
+   32-byte capability, and optional Holder-envelope fields and denies unknown
+   fields.
    `public_router` exposes only `POST /v1/telemetry/registrations`; the private
    router has no protected-authority mutation route. `register_inner` reads at most
    `MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES`, parses that exact byte slice only
@@ -91,8 +97,11 @@ request proof, Holder currentness, and durable/cryptographic operations below.
    transactions, but no authority write occurs between them.
 
 4. **[code, assumption] Holder verification and subject binding precede the
-   writer.** After reservation, `register_inner` passes the body-carried
-   `holder_authorization` to the assumed complete `PeerBadgeVerifier::verify`.
+   writer.** The admission mode is parsed once from configuration, defaults to
+   badged, and selects `Registrants` for the process lifetime. In badged mode,
+   after reservation, `register_inner` refuses a body without
+   `holder_authorization` and passes the body-carried envelope to the assumed
+   complete `PeerBadgeVerifier::verify`.
    Every error returns before admission. It extracts `VerifiedPeerBadge.subject`
    and requires its canonical key string to equal the NIP-98 signer. It then
    derives the display name from that same signer and constructs

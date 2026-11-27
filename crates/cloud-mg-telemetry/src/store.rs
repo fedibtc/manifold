@@ -127,6 +127,13 @@ pub(crate) struct TargetMaterial<'a> {
     pub(crate) generation: u64,
 }
 
+/// Bounds on creating targets, for a collector where an identity costs nothing.
+#[derive(Clone, Copy)]
+struct NewTargetLimit {
+    max_targets: i64,
+    per_hour: i64,
+}
+
 /// Durable collector state backed by one WAL-mode SQLite database.
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -136,6 +143,8 @@ pub(crate) struct Store {
     trust_profile: String,
     lease_seconds: i64,
     max_journals_per_target: u16,
+    /// Bounds on creating targets; `None` keeps only the global target bound.
+    new_target_limit: Option<NewTargetLimit>,
     data_dir: PathBuf,
     #[cfg(test)]
     commit_hook: Option<std::sync::Arc<TestCommitHook>>,
@@ -171,6 +180,44 @@ fn wait_test_hook(hook: &Option<std::sync::Arc<TestCommitHook>>) {
 impl Store {
     pub(crate) fn max_journals_per_target(&self) -> u16 {
         self.max_journals_per_target
+    }
+
+    /// Refuse a new target once `max_targets` are stored or `per_hour` were
+    /// created in the trailing hour. Existing targets keep renewing.
+    pub(crate) fn limit_new_targets(
+        mut self,
+        max_targets: std::num::NonZeroU16,
+        per_hour: std::num::NonZeroU16,
+    ) -> Self {
+        self.new_target_limit = Some(NewTargetLimit {
+            max_targets: i64::from(max_targets.get()).min(MAX_TARGETS),
+            per_hour: i64::from(per_hour.get()),
+        });
+        self
+    }
+
+    /// Whether a target, in any state, is stored for this MG.
+    pub(crate) async fn target_exists(&self, mg_pubkey: &str) -> Result<bool, StoreError> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM targets WHERE fman_pubkey = ?")
+                .bind(mg_pubkey)
+                .fetch_one(&self.pool)
+                .await?
+                > 0,
+        )
+    }
+
+    /// Compressed archive bytes the target's streams hold within retention.
+    pub(crate) async fn target_archive_bytes(&self, target_id: &str) -> Result<u64, StoreError> {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(f.end_offset - f.start_offset), 0)
+             FROM archive_frames f JOIN journal_streams s ON s.stream_id = f.stream_id
+             WHERE s.target_id = ?",
+        )
+        .bind(target_id)
+        .fetch_one(&self.pool)
+        .await?;
+        u64::try_from(bytes).map_err(|_| StoreError::Corrupt)
     }
 
     #[cfg(test)]
@@ -299,6 +346,7 @@ impl Store {
             trust_profile: trust_profile.to_owned(),
             lease_seconds,
             max_journals_per_target,
+            new_target_limit: None,
             data_dir,
             #[cfg(test)]
             commit_hook: None,
@@ -425,10 +473,24 @@ impl Store {
                 AdmissionOutcome::Updated
             }
         } else {
+            let max_targets = self
+                .new_target_limit
+                .map_or(MAX_TARGETS, |limit| limit.max_targets);
             if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM targets")
                 .fetch_one(&mut *transaction)
                 .await?
-                >= MAX_TARGETS
+                >= max_targets
+            {
+                return Err(StoreError::Saturated);
+            }
+            if let Some(limit) = self.new_target_limit
+                && sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM targets WHERE created_at > ?",
+                )
+                .bind(now.saturating_sub(3600))
+                .fetch_one(&mut *transaction)
+                .await?
+                    >= limit.per_hour
             {
                 return Err(StoreError::Saturated);
             }
@@ -2066,7 +2128,7 @@ pub(crate) enum StoreError {
     Filesystem(#[from] std::io::Error),
 }
 
-const MAX_TARGETS: i64 = 4096;
+const MAX_TARGETS: i64 = crate::config::MAX_TARGETS as i64;
 const KEY_SENTINEL: &[u8] = b"cloud-fman-telemetry-key-sentinel-v1";
 const TARGET_SECRET_FORMAT: i64 = 2;
 
@@ -2304,6 +2366,117 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_target_limits_refuse_only_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir).await.limit_new_targets(
+            std::num::NonZeroU16::new(3).unwrap(),
+            std::num::NonZeroU16::new(2).unwrap(),
+        );
+        let admit = |mg: &'static str, event: &'static str, now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit(&auth(event, now), target_for(mg, "endpoint", 1), now)
+                    .await
+            }
+        };
+        admit("a1", "1", 10_000).await.unwrap();
+        admit("b2", "2", 10_001).await.unwrap();
+        // The hour's creations are spent, so a third key waits...
+        assert!(matches!(
+            admit("c3", "3", 13_599).await,
+            Err(StoreError::Saturated)
+        ));
+        // ...while targets that exist keep renewing.
+        assert_eq!(
+            admit("a1", "4", 13_599).await.unwrap(),
+            AdmissionOutcome::Idempotent
+        );
+        // The first creation leaves the trailing hour at exactly 3,600 s.
+        admit("c3", "5", 13_600).await.unwrap();
+        // The store is now full, though the hour allows another creation.
+        assert!(matches!(
+            admit("d4", "6", 20_000).await,
+            Err(StoreError::Saturated)
+        ));
+        // An expired target still holds its slot and renews.
+        admit("b2", "7", 20_000).await.unwrap();
+        assert!(store.target_exists("a1").await.unwrap());
+        assert!(!store.target_exists("d4").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn target_archive_bytes_count_only_the_targets_retained_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir).await;
+        store
+            .admit(&auth("a", 100), target_for("a1", "endpoint", 1), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("b", 100), target_for("b2", "endpoint", 1), 100)
+            .await
+            .unwrap();
+        let target_id = |mg: &'static str| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT target_id FROM targets WHERE fman_pubkey=?")
+                    .bind(mg)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first, second) = (target_id("a1").await, target_id("b2").await);
+        for (stream, target, selector) in [
+            ("s1", &first, "mg"),
+            ("s2", &first, "seat"),
+            ("s3", &second, "mg"),
+        ] {
+            sqlx::query(
+                "INSERT INTO journal_streams(stream_id,target_id,journal_selector) VALUES(?,?,?)",
+            )
+            .bind(stream)
+            .bind(target)
+            .bind(selector.as_bytes())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        for (stream, day, start, end) in [
+            ("s1", "2024-01-01", 0, 100),
+            ("s1", "2024-01-02", 0, 30),
+            ("s1", "2024-01-02", 30, 37),
+            ("s2", "2024-01-02", 0, 5),
+            ("s3", "2024-01-02", 0, 1_000),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_frames(
+                    stream_id,reception_day,start_offset,end_offset,frame_hash,
+                    observed_generation,continuity_gap
+                 ) VALUES(?,?,?,?,?,0,0)",
+            )
+            .bind(stream)
+            .bind(day)
+            .bind(start)
+            .bind(end)
+            .bind([0_u8; 32].as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(store.target_archive_bytes(&first).await.unwrap(), 142);
+        assert_eq!(store.target_archive_bytes(&second).await.unwrap(), 1_000);
+        // Retention frees what it prunes.
+        store
+            .prune_archive_ledger(&ReceptionDay::parse("2024-01-02".into()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(store.target_archive_bytes(&first).await.unwrap(), 42);
+        assert_eq!(store.target_archive_bytes("unknown").await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -3229,6 +3402,7 @@ mod tests {
             stale_after * 1000,
             false,
             &crate::metrics_observability::MetricsObservability::default(),
+            crate::metrics_snapshot::MgVerification::Badged,
         )
         .unwrap()
     }
