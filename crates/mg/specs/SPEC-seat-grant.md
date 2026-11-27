@@ -66,7 +66,7 @@ backup, because its signature stays valid.
 `GetQuoteRequest` takes an optional grant. With a grant, the MG:
 
 - verifies its own signature over the grant and refuses a nonce that is
-  already used or revoked;
+  already used or revoked, with one error code for both (see below);
 - requires the free `InfiniteBestEffort` plan and no payment fields, and quotes
   it free whatever price the MG offers publicly;
 - applies its usual seat capacity, the release's fedimintd version, and the
@@ -90,8 +90,14 @@ often as it likes.
 `CreateSeat` is unchanged for the FA. For a quote that carries a grant,
 the MG refuses a revoked nonce and records the nonce as used in the same
 transaction that admits the seat. Replaying the same quote returns the same
-seat. Any other quote for a used nonce is refused with its own error code. The
-seat records that it came from a grant, and its label, in its backup.
+seat. Any other quote for a used nonce is refused.
+
+A used and a revoked grant are refused with the same error code, at `GetQuote`
+and at `CreateSeat`. Telling them apart helps only someone who holds a leaked
+code: it reveals whether the operator revoked it or another FA redeemed it
+first. Either way the FA does the same thing: it asks the operator for a new
+code. The operator sees each grant's state in its own list. The seat records
+that it came from a grant, and its label, in its backup.
 
 An FA previews every code before it creates any seat, and creates seats only
 once the set of codes is final, because each seat is bound to its federation
