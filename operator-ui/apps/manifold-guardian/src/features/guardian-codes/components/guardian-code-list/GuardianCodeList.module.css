@@ -1,0 +1,19 @@
+.tableWrap {
+  @apply overflow-x-auto;
+}
+
+.label {
+  @apply uLabel;
+}
+
+.noLabel {
+  @apply uMutedText;
+}
+
+.actions {
+  @apply flex justify-end gap-2;
+}
+
+.seatLink {
+  @apply flex justify-end text-sm font-medium text-info hover:opacity-80;
+}

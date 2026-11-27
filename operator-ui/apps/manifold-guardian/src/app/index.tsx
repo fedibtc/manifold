@@ -10,6 +10,7 @@ import { SetupGate } from '@/app/components/setup-gate/SetupGate';
 import { AuthorizationPage } from '@/pages/authorization/AuthorizationPage';
 import { BackupPage } from '@/pages/backup/BackupPage';
 import { BackupPhrasePage } from '@/pages/backup-phrase/BackupPhrasePage';
+import { GuardianCodesPage } from '@/pages/guardian-codes/GuardianCodesPage';
 import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
@@ -45,6 +46,7 @@ const router = createBrowserRouter([
                   { path: 'authorization', element: <AuthorizationPage /> },
                   { path: 'seats', element: <SeatsPage /> },
                   { path: 'seats/:seatId', element: <SeatDetailPage /> },
+                  { path: 'guardian-codes', element: <GuardianCodesPage /> },
                   { path: 'payouts', element: <PayoutsPage /> },
                   { path: 'offer', element: <OfferPage /> },
                   { path: 'backup', element: <BackupPage /> },

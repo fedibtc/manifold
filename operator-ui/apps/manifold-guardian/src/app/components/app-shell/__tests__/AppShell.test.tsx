@@ -23,6 +23,7 @@ beforeEach(() => {
       fman_name: 'blissful-chiffchaff',
       service_pubkey: 'abc',
       nostr: { state: 'not_observed', checked_at: 1_760_000_000 },
+      badgeless_mg: true,
       fman_version: { current: '0.1.0', latest: null, update_required: false }
     }
   } as ReturnType<typeof useOnboarding>);

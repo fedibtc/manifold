@@ -8,7 +8,14 @@ interface SeatAvailabilityProps {
   /** Whether the network offers guardian codes at all (`badgeless_mg`). */
   guardianCodes: boolean;
   authorized: boolean;
+  /** Absent while the guardian code list has not answered. */
+  unusedCodes: number | undefined;
 }
+
+const describeCodes = (unusedCodes: number | undefined) =>
+  unusedCodes === undefined
+    ? 'Free setup'
+    : `Free setup · ${unusedCodes} unused ${unusedCodes === 1 ? 'code' : 'codes'}`;
 
 // The ways a seat reaches this host. A badge adds Fedi-verified selection
 // beside guardian codes; without one, guardian codes are the whole offer and
@@ -17,7 +24,8 @@ interface SeatAvailabilityProps {
 export const SeatAvailability = ({
   priceMsat,
   guardianCodes,
-  authorized
+  authorized,
+  unusedCodes
 }: SeatAvailabilityProps) => {
   const badgeless = guardianCodes && !authorized;
   const codes = guardianCodes ? (
@@ -30,7 +38,11 @@ export const SeatAvailability = ({
         </span>
       </div>
 
-      <span className={styles.value}>Free setup</span>
+      <span className={styles.value}>{describeCodes(unusedCodes)}</span>
+
+      <Link to="/guardian-codes" className={styles.link}>
+        {unusedCodes === 0 ? 'Create a guardian code' : 'Manage guardian codes'}
+      </Link>
     </div>
   ) : null;
 

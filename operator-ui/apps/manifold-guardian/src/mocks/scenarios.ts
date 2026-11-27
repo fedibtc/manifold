@@ -1,5 +1,5 @@
 import type { ScenarioNote } from '@operator-ui/mock-devtools';
-import type { HostPressure, MgVersionReport } from '@operator-ui/types';
+import type { HostPressure, MgVersionReport, SeatGrantEntry } from '@operator-ui/types';
 import type { MockGuardianFees, MockSeat, MockState } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -169,6 +169,55 @@ const runningSeat = (seat_id: string, invite: string) =>
     report: { state: 'active', health: 'healthy', phase: 'running', invite_code: invite }
   });
 
+// Guardian codes (SPEC-seat-grant). The URI has the shape the MG shares; its
+// key, payload and signature are placeholders that no FA would accept.
+export const mockSeatGrantUri = (grantNonce: string) =>
+  `manifold:seat-grant?v=1&env=development&node=mocknode7f3c19e4b6d02581cae37b90f4d6152ce8b41a09d7e3f26b5c08d419e2a6f3b&key=02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9&grant=${grantNonce}&sig=mock`;
+
+const grant = (
+  grant_nonce: string,
+  label: string | null,
+  issuedDaysAgo: number,
+  status: SeatGrantEntry['status']
+): SeatGrantEntry => ({
+  grant_nonce,
+  label,
+  // Relative to the real clock, like a code the operator just made.
+  issued_at: Math.floor((Date.now() - issuedDaysAgo * DAY_MS) / 1000),
+  status
+});
+
+const GRANT_SEAT_ID = 'seat-code-cedar-01';
+const LISBON_NONCE = 'a9c42e7d0b1f5836c4a2e9d70b1f58364a2e9d70b1f58364c4a2e9d70b1f5836';
+const UNLABELLED_NONCE = '5e81d03c7a9f2b64e81d03c7a9f2b645e81d03c7a9f2b64e81d03c7a9f2b6401';
+const CEDAR_NONCE = 'c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2';
+const REVOKED_NONCE = '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+
+// Oldest first, as the MG lists them: one revoked, one used for a running
+// seat, two waiting.
+const issuedGrants = (): SeatGrantEntry[] => [
+  grant(REVOKED_NONCE, 'Test with Bob', 12, { state: 'revoked' }),
+  grant(CEDAR_NONCE, 'Cedar family federation', 6, { state: 'used', seat_id: GRANT_SEAT_ID }),
+  grant(UNLABELLED_NONCE, null, 2, { state: 'unused', uri: mockSeatGrantUri(UNLABELLED_NONCE) }),
+  grant(LISBON_NONCE, 'Lisbon meetup', 0, { state: 'unused', uri: mockSeatGrantUri(LISBON_NONCE) })
+];
+
+// A seat a guardian code created: free whatever the public price, and never
+// paid, so it is no sale.
+const grantSeat = () =>
+  seat({
+    seat_id: GRANT_SEAT_ID,
+    plan: { InfiniteBestEffort: { price_msats: 0 } },
+    payment_claim: { state: 'not_paid' },
+    seat_grant: { grant_nonce: CEDAR_NONCE, label: 'Cedar family federation' },
+    report: {
+      state: 'active',
+      health: 'healthy',
+      phase: 'running',
+      invite_code: 'fed1cedar00000000000000000000000000000000000000000000000000000000'
+    }
+  });
+
 const noAuthorization: MockState['onboarding']['nostr'] = { state: 'checking' };
 
 const base = (): Pick<
@@ -197,6 +246,7 @@ const base = (): Pick<
   | 'supportMessages'
   | 'supportReadIds'
   | 'fleetOpensAfterReads'
+  | 'seatGrants'
 > => ({
   onboarded: true,
   maxSeats: 3,
@@ -214,6 +264,7 @@ const base = (): Pick<
   supportAvailable: true,
   supportMessages: [],
   supportReadIds: [],
+  seatGrants: [],
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
@@ -406,9 +457,58 @@ const builders = {
       version({ latest: '0.2.0', update_required: true })
     )
   }),
-  // Set up without a badge: no stored authorization and no price; seats come
-  // only through guardian codes.
+  'guardian-codes-empty': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized
+  }),
+  // One sold seat beside the seat a code gave away: only the sold one earns.
+  'guardian-codes-list': () => ({
+    ...base(),
+    seats: [
+      runningSeat(
+        'seat-running-01',
+        'fed1running0000000000000000000000000000000000000000000000000000'
+      ),
+      grantSeat()
+    ],
+    paymentFederations: [
+      {
+        federation_id: FEDERATION_A,
+        accepted: true,
+        receivable: true,
+        wallet: walletStatus(SEAT_PRICE_MSAT)
+      }
+    ],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    seatGrants: issuedGrants()
+  }),
+  // Every seat this host can take is taken: a code still issues, but no FA can
+  // use one until a seat frees up or the limit rises.
+  'guardian-codes-no-free-seats': () => ({
+    ...base(),
+    seats: [grantSeat()],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    maxSeats: 1,
+    onboarding: authorized,
+    seatGrants: issuedGrants()
+  }),
+  // Set up without a badge: no stored authorization, no price, seats only
+  // through guardian codes.
   'badgeless-ready': () => ({
+    ...base(),
+    relayAuthorization: 'absent',
+    seats: [grantSeat()],
+    paymentFederations: [],
+    price: null,
+    onboarding: onboarding(noAuthorization),
+    seatGrants: issuedGrants()
+  }),
+  'badgeless-codes-empty': () => ({
     ...base(),
     relayAuthorization: 'absent',
     seats: [],
@@ -930,9 +1030,25 @@ const notes: Record<ScenarioName, ScenarioNote> = {
       'support'
     ]
   },
+  'guardian-codes-empty': {
+    desc: 'Badged host with a public price and no guardian codes issued yet.',
+    affects: ['guardian-codes']
+  },
+  'guardian-codes-list': {
+    desc: 'Badged host with one sold seat and four guardian codes: two unused, one used for a running seat, one revoked.',
+    affects: ['guardian-codes', 'seats']
+  },
+  'guardian-codes-no-free-seats': {
+    desc: 'The guardian code list on a host whose seat limit is reached; a new code cannot be used until a seat frees up.',
+    affects: ['guardian-codes']
+  },
   'badgeless-ready': {
-    desc: 'Set up without a badge: no authorization and no price.',
-    affects: ['overview', 'authorization']
+    desc: 'Set up without a badge: no authorization, no price, one seat from a guardian code.',
+    affects: ['overview', 'authorization', 'guardian-codes']
+  },
+  'badgeless-codes-empty': {
+    desc: 'Set up without a badge and no guardian codes issued yet.',
+    affects: ['overview', 'authorization', 'guardian-codes']
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',

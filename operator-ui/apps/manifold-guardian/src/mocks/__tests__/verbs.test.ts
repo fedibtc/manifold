@@ -1,4 +1,4 @@
-import type { MonthlyDataBudget } from '@operator-ui/types';
+import type { MonthlyDataBudget, SeatGrantEntry } from '@operator-ui/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getState, resetState } from '@/mocks/state';
 import { dispatch } from '@/mocks/world/verbs';
@@ -497,5 +497,77 @@ describe('guardian link', () => {
       Err: { kind: 'other', message: 'no push gateway configured' }
     });
     expect(getState().guardianLink.offer).toBeNull();
+  });
+});
+
+describe('guardian codes', () => {
+  it('should issue an unused code with its label and list it last', () => {
+    resetState('guardian-codes-list');
+
+    const created = dispatch({ CreateSeatGrant: { label: 'Porto book club' } }) as {
+      Ok: SeatGrantEntry;
+    };
+    const listed = dispatch('ListSeatGrants') as { Ok: { grants: SeatGrantEntry[] } };
+
+    expect(created.Ok.label).toBe('Porto book club');
+    expect(created.Ok.grant_nonce).toMatch(/^[0-9a-f]{64}$/);
+    expect(created.Ok.status).toEqual({
+      state: 'unused',
+      uri: expect.stringMatching(/^manifold:seat-grant\?v=1&/)
+    });
+    expect(listed.Ok.grants.at(-1)?.grant_nonce).toBe(created.Ok.grant_nonce);
+  });
+
+  it('should take no label as null and refuse an empty one', () => {
+    resetState('guardian-codes-empty');
+
+    const unlabelled = dispatch({ CreateSeatGrant: { label: null } }) as {
+      Ok: { label: unknown };
+    };
+    const empty = dispatch({ CreateSeatGrant: { label: '' } }) as { Err?: unknown };
+
+    expect(unlabelled.Ok.label).toBeNull();
+    expect(empty.Err).toBeDefined();
+  });
+
+  // 32 characters, not 32 UTF-16 units: an emoji is one character.
+  it('should take a 32-character label and refuse a 33-character one', () => {
+    resetState('guardian-codes-empty');
+
+    const fits = dispatch({ CreateSeatGrant: { label: `${'a'.repeat(31)}🌳` } }) as {
+      Ok?: unknown;
+    };
+    const tooLong = dispatch({ CreateSeatGrant: { label: 'a'.repeat(33) } }) as {
+      Err?: { message: string };
+    };
+
+    expect(fits.Ok).toBeDefined();
+    expect(tooLong.Err?.message).toMatch(/32 characters/);
+  });
+
+  it('should revoke an unused code, stop sharing it, and accept a repeat', () => {
+    resetState('guardian-codes-list');
+    const unused = getState().seatGrants.find((grant) => grant.status.state === 'unused');
+    const request = { RevokeSeatGrant: { grant_nonce: unused?.grant_nonce ?? '' } };
+
+    expect(dispatch(request)).toMatchObject({ Ok: { status: { state: 'revoked' } } });
+    expect(dispatch(request)).toMatchObject({ Ok: { status: { state: 'revoked' } } });
+  });
+
+  // A used code already created its seat; revoking it would not remove that seat.
+  it('should refuse to revoke a used code and leave its seat', () => {
+    resetState('guardian-codes-list');
+    const used = getState().seatGrants.find((grant) => grant.status.state === 'used');
+    const seatsBefore = getState().seats.length;
+
+    const refused = dispatch({ RevokeSeatGrant: { grant_nonce: used?.grant_nonce ?? '' } }) as {
+      Err?: { message: string };
+    };
+
+    expect(refused.Err?.message).toMatch(/seat stays/);
+    expect(getState().seats).toHaveLength(seatsBefore);
+    expect(
+      getState().seatGrants.find((grant) => grant.grant_nonce === used?.grant_nonce)?.status.state
+    ).toBe('used');
   });
 });
