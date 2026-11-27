@@ -21,10 +21,17 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi28";
-    # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
-    # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
-    # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
+    # fedi30 is fedi29 plus the batched AlephBFT backup write (with
+    # fedibtc/AlephBFT v0.36.0-fedi1) and the RocksDB WAL tuning.
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi30";
+    # Stability Pool v2 module crates. MG bundles the server module; FLIP and
+    # fa-client use the client.
+    stability-pool = {
+      url = "github:fedibtc/stability-pool/212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
+      flake = false;
+    };
+    # SP-enabled fedimintd for the live stability-pool E2E. The fedixyz/fedi
+    # monorepo's `fedi-fedimintd` package bundles the stability-pool server module (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
     # `fedimint-pkgs` follows our `fedimint` input for Fedi's Nix dependencies.
     # `fedi-fedimintd` still builds its Rust graph from this Fedi revision's
     # Cargo.lock, so that graph is not necessarily identical to FLIP's pin.
@@ -44,6 +51,7 @@
       selfci,
       peerbadge-sdk-src,
       fedimint,
+      stability-pool,
       fedi,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -84,6 +92,27 @@
           "linked-specs-claims"
           "linked-specs-claims-verification"
         ];
+        retiredReviewSkillNames = [
+          # Names before and after the multipart-review rename.
+          "dpc-general-multipart-review"
+          "dpc-review-coordination"
+          "dpc-review-architecture"
+          "dpc-review-judgment"
+          "dpc-review-maintainability"
+          "dpc-review-rust-style"
+          "dpc-review-reliability"
+          "multipart-review"
+          "multipart-review-coordination"
+          "multipart-review-architecture"
+          "multipart-review-judgment"
+          "multipart-review-maintainability"
+          "multipart-review-rust-style"
+          "multipart-review-reliability"
+        ];
+        retiredSkillPackages = [
+          "dpc-public-skills"
+          "maan2003-skills"
+        ];
         linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
           set -eu
 
@@ -92,20 +121,22 @@
           source_dir="${dpc-public-skills.packages.${system}.skills}/share/agents/skills"
           ${pkgs.coreutils}/bin/mkdir -p "$skills_dir"
 
-          remove_old_link() {
-            target="$skills_dir/$1"
-            if [ -L "$target" ]; then
-              ${pkgs.coreutils}/bin/rm -f "$target"
-            elif [ -e "$target" ]; then
-              printf 'refusing to replace non-symlink: %s\n' "$target" >&2
-              exit 1
+          remove_imported_link() {
+            local target="$skills_dir/$1" destination
+            # Read the direct target without resolving it: the store path may
+            # have been collected. Preserve even trailing newlines for matching.
+            if [ -L "$target" ] &&
+               IFS= read -r -d "" destination < <(${pkgs.coreutils}/bin/readlink -z "$target") &&
+               [[ "$destination" =~ ^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-"$2"$ ]]; then
+              ${pkgs.coreutils}/bin/rm -f -- "$target"
             fi
           }
 
-          remove_old_link dpc-public-skills
-          remove_old_link maan2003-skills
-          for name in dpc-general-multipart-review dpc-review-coordination dpc-review-architecture dpc-review-judgment dpc-review-maintainability dpc-review-rust-style dpc-review-reliability multipart-review multipart-review-coordination multipart-review-architecture multipart-review-judgment multipart-review-maintainability multipart-review-rust-style multipart-review-reliability; do
-            remove_old_link "$name"
+          for name in ${pkgs.lib.escapeShellArgs retiredSkillPackages}; do
+            remove_imported_link "$name" "$name/share/agents/skills"
+          done
+          for name in ${pkgs.lib.escapeShellArgs retiredReviewSkillNames}; do
+            remove_imported_link "$name" "dpc-public-skills/share/agents/skills/$name"
           done
 
           for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
@@ -128,18 +159,18 @@
             ${pkgs.coreutils}/bin/touch "$exclude_file"
 
             tmp_file="$(${pkgs.coreutils}/bin/mktemp "$exclude_file.XXXXXX")"
-            ${pkgs.gnugrep}/bin/grep -Fvx \
-              -e '/.agents/skills/dpc-public-skills' \
-              -e '/.agents/skills/maan2003-skills' \
-              -e '/.agents/skills/multipart-review' \
-              -e '/.agents/skills/multipart-review-coordination' \
-              -e '/.agents/skills/multipart-review-architecture' \
-              -e '/.agents/skills/multipart-review-judgment' \
-              -e '/.agents/skills/multipart-review-maintainability' \
-              -e '/.agents/skills/multipart-review-rust-style' \
-              -e '/.agents/skills/multipart-review-reliability' \
-              "$exclude_file" >"$tmp_file" || true
-            ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
+            if ${pkgs.gnugrep}/bin/grep -aFvx \
+              ${
+                pkgs.lib.concatMapStringsSep " " (name: "-e ${pkgs.lib.escapeShellArg "/.agents/skills/${name}"}") (
+                  retiredSkillPackages ++ retiredReviewSkillNames
+                )
+              } \
+              "$exclude_file" >"$tmp_file" || [ "$?" -eq 1 ]; then
+              ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
+            else
+              ${pkgs.coreutils}/bin/rm -f "$tmp_file"
+              exit 1
+            fi
 
             for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
               pattern="/.agents/skills/$name"
@@ -178,28 +209,13 @@
           };
           patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
         };
-        # AlephBFT marks a peer as a forker when it proves the peer signed two
-        # units for one round, but reports the fact only in an info-level log
-        # that fedimintd's filter hides, while fedimint's `status` still shows
-        # the forker as contributing. Emit a safe event when a forker is
-        # marked, so a federation stalled on too few honest creators is
-        # visible in seat telemetry.
-        alephBftPatched = pkgs.applyPatches {
-          name = "fedimint-aleph-bft-forker-safe-event";
-          src = pkgs.fetchCrate {
-            pname = "fedimint-aleph-bft";
-            version = "0.36.0";
-            hash = "sha256-cg3E1x+N55JOe+q6eJW7gzy/e+IhSJbcpihcKta1D8Q=";
-          };
-          patches = [ ./patches/fedimint-aleph-bft-forker-safe-event.patch ];
-        };
         # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
         # agree on the DKG consensus checksum. Votes still activate 2.2.
-        fediPatched = pkgs.applyPatches {
-          name = "fedi-stability-pool-config-version";
-          src = fedi;
-          patches = [ ./patches/fedi-stability-pool-config-version.patch ];
+        stabilityPoolPatched = pkgs.applyPatches {
+          name = "stability-pool-config-version";
+          src = stability-pool;
+          patches = [ ./patches/stability-pool-config-version.patch ];
         };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
@@ -231,9 +247,8 @@
 
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
-          link_dependency fedi ${fediPatched}
+          link_dependency stability-pool ${stabilityPoolPatched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
-          link_dependency fedimint-aleph-bft ${alephBftPatched}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
@@ -286,7 +301,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi28.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -356,6 +371,17 @@
             defe = craneLib.buildPackage {
               cargoArtifacts = workspaceDeps;
               cargoExtraArgs = "-p defe";
+            };
+
+            manifoldTestIssuer = craneLib.buildPackage {
+              cargoArtifacts = workspaceDeps;
+              cargoExtraArgs = "-p devmon --bin manifold-test-issuer";
+            };
+
+            faCli = craneLib.buildPackage {
+              cargoArtifacts = workspaceDeps;
+              cargoExtraArgs = "-p fa-cli --bin fa-cli";
+              env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
             };
 
             pushGateway = craneLib.buildPackage {
@@ -993,13 +1019,13 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.12.0-fedi28";
+        fedimintdRelease = "0.12.0-fedi30";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "5bdb75485c4aaaeead4ab655fff6c62852de80b0";
-        stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
+        fedimintSourceRev = "15671ec113a28273ccfca84c549a9dcfd03eb67d";
+        stabilityPoolSourceRev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI
@@ -1210,10 +1236,10 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi28.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi30.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
-              stability_pool_source=${fediPatched}
+              stability_pool_source=${stabilityPoolPatched}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
@@ -1233,17 +1259,17 @@
               grep -q -- "\"rev\": \"${fedimintSourceRev}\"" ${./flake.lock}
               grep -q -- "\"rev\": \"${stabilityPoolSourceRev}\"" ${./flake.lock}
               grep -q -- "fedibtc/fedimint/v${fedimintdRelease}" ${./flake.nix}
-              grep -q -- "fedixyz/fedi/${stabilityPoolSourceRev}" ${./flake.nix}
+              grep -q -- "fedibtc/stability-pool/${stabilityPoolSourceRev}" ${./flake.nix}
               grep -q -- $'producer\tfedimint\tfedibtc/fedimint\tv${fedimintdRelease}\t${fedimintSourceRev}' "$manifest"
-              grep -q -- $'producer\tstability_pool\tfedixyz/fedi\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"
-              grep -Fq -- "stability-pool-client = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              grep -Fq -- "stability-pool-server = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              grep -Fq -- "stability-pool-common = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
-              if ${pkgs.ripgrep}/bin/rg -n 'github\.com/fedixyz/fedi' ${./crates} --glob Cargo.toml; then
-                echo "crate manifests must inherit Fedi dependencies from the workspace" >&2
+              grep -q -- $'producer\tstability_pool\tfedibtc/stability-pool\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"
+              grep -Fq -- "stability-pool-client = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              grep -Fq -- "stability-pool-server = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              grep -Fq -- "stability-pool-common = { git = \"https://github.com/fedibtc/stability-pool\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
+              if ${pkgs.ripgrep}/bin/rg -n 'github\.com/fedibtc/stability-pool' ${./crates} --glob Cargo.toml; then
+                echo "crate manifests must inherit stability-pool dependencies from the workspace" >&2
                 exit 1
               fi
-              test -d "$stability_pool_source/crates/modules/stability-pool/server"
+              test -d "$stability_pool_source/crates/server"
               source_metric_version=$(
                 ${pkgs.gawk}/bin/awk '
                   /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
@@ -1277,7 +1303,7 @@
               revision = sys.argv[3]
               expected_source = None  # Nix-patched, pinned path packages
               expected_dependency_source = (
-                  f"git+https://github.com/fedixyz/fedi?rev={revision}"
+                  f"git+https://github.com/fedibtc/stability-pool?rev={revision}"
               )
               with open(source_root / "Cargo.toml", "rb") as manifest_file:
                   workspace_manifest = tomllib.load(manifest_file)
@@ -1308,7 +1334,7 @@
               workspace_alias_fixture = tomllib.loads(
                   """
                   [workspace.dependencies]
-                  pool-common-alias = { package = "stability-pool-common", version = "0.3" }
+                  pool-common-alias = { package = "fedi-stability-pool-common", version = "0.1" }
                   """
               )["workspace"]["dependencies"]
               assert (
@@ -1317,7 +1343,7 @@
                       {"workspace": True},
                       workspace_alias_fixture,
                   )
-                  == "stability-pool-common"
+                  == "fedi-stability-pool-common"
               )
 
               packages = {}
@@ -1332,7 +1358,7 @@
                   packages[name] = (path, manifest)
 
               closure = set()
-              pending = ["stability-pool-server"]
+              pending = ["fedi-stability-pool-server"]
               while pending:
                   name = pending.pop()
                   if name in closure:
@@ -1643,7 +1669,7 @@
           fetcherVersion = 2;
           # Refresh whenever operator-ui/pnpm-lock.yaml changes; the build error
           # prints the replacement.
-          hash = "sha256-2uuWz8DS7znGIxxN8d7UskHko52+Jskk3NsLdi0f1dk=";
+          hash = "sha256-asvIJm7yAQd+qp+MIl+c2ZPUmYC33tdsoxTF7yQUgXs=";
         };
 
         operatorUi = pkgs.stdenv.mkDerivation {
@@ -1737,6 +1763,9 @@
           push-gateway = multiBuild.pushGateway;
           fleet-manager = multiBuild.fleetManager;
           fman-cli = multiBuild.fleetManager;
+          defe = multiBuild.defe;
+          manifold-test-issuer = multiBuild.manifoldTestIssuer;
+          fa-cli = multiBuild.faCli;
           setup-payment-publisher = multiBuild.setupPaymentPublisher;
           # The flake-pinned fedimint binaries, re-exposed so E2E runs can point
           # MG_E2E_FEDIMINTD_BIN / MG_E2E_FEDIMINT_CLI_BIN at the exact build

@@ -16,7 +16,7 @@ use crate::fedimint_api::FedimintApi;
 use crate::seat::SeatPhase;
 use crate::seat_process::fake::{
     FAKE_LNV2_INSTANCE_ID, FAKE_META_INSTANCE_ID, FakeApiState, FakeDkgStep, FakeSeatChildHandle,
-    FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
+    FakeSeatProcessSpawner, FakeWalletSampling, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
 use crate::seat_readiness::{
@@ -276,8 +276,7 @@ async fn current_input(
 /// before its daemon reaches [`Fleet::open`].
 /// A setup-payment policy that lets MGs start guardian transfers.
 fn transfer_policy()
--> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
-{
+-> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>> {
     policy_with_transfer_flag("guardian_transfer_v2", Some(true))
 }
 
@@ -285,8 +284,7 @@ fn transfer_policy()
 fn policy_with_transfer_flag(
     field: &str,
     flag: Option<bool>,
-) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations>>
-{
+) -> tokio::sync::watch::Receiver<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>> {
     let mut content = serde_json::json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -299,7 +297,9 @@ fn policy_with_transfer_flag(
     let policy = fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
         content.to_string().as_bytes(),
     )
-    .expect("test policy parses");
+    .expect("test policy parses")
+    .features()
+    .clone();
     assert_eq!(
         policy.guardian_transfer_v2(),
         if field == "guardian_transfer_v2" {
@@ -515,6 +515,90 @@ fn running_federation(peer: u16, meta_consensus: Option<Vec<u8>>) -> FakeApiStat
         meta_consensus,
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn healthy_seat_samples_wallets_promptly_after_session_zero() {
+    use fedimint_core::backup::BackupStatistics;
+    use fedimint_core::core::DynModuleConsensusItem;
+    use fedimint_core::epoch::ConsensusItem;
+    use fedimint_core::session_outcome::{AcceptedItem, SessionOutcome};
+    use fedimint_lnv2_common::LightningConsensusItem;
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 31_280).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 142).await;
+    let (finish_session, session_zero) = tokio::sync::watch::channel(None);
+    let pending_read = Arc::new(Notify::new());
+    fleet
+        .form_fake_child(
+            &seat_id,
+            FakeApiState {
+                wallet_sampling: Some(FakeWalletSampling {
+                    backups: BackupStatistics {
+                        refreshed_1m: 7,
+                        ..Default::default()
+                    },
+                    session_zero,
+                    pending_read: pending_read.clone(),
+                }),
+                ..running_federation(0, None)
+            },
+        )
+        .await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    assert!(matches!(
+        seat.cached_report_for_test(),
+        SeatReport::Active {
+            phase: SeatPhase::Running { .. },
+            health: SeatHealth::Healthy,
+        }
+    ));
+    tokio::time::timeout(Duration::from_secs(15), pending_read.notified())
+        .await
+        .expect("sampler sees a serving guardian with session zero pending");
+    tokio::time::timeout(Duration::from_secs(20), pending_read.notified())
+        .await
+        .expect("sampler rechecks session zero without waiting for the 300s error backoff");
+    // The worker dates the observation, so look for the first row even if
+    // midnight UTC passes before the test reads it.
+    let read_sample = || async {
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT wallet_count, complete FROM active_wallet_samples
+             WHERE quote_id = ? ORDER BY utc_day LIMIT 1",
+        )
+        .bind(seat_id.as_bytes().as_slice())
+        .fetch_optional(fleet.db.pool())
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        read_sample().await,
+        None,
+        "no sample before provenance is known"
+    );
+    finish_session.send_replace(Some(SessionOutcome {
+        items: vec![AcceptedItem {
+            peer: fedimint_core::PeerId::from(0),
+            item: ConsensusItem::Module(DynModuleConsensusItem::from_typed(
+                FAKE_LNV2_INSTANCE_ID,
+                LightningConsensusItem::UnixTimeVote((crate::db::now_ms() / 1000) as u64),
+            )),
+        }],
+    }));
+    let sample = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(sample) = read_sample().await {
+                break sample;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("background sampling retries without waiting for the 300s error backoff");
+    assert_eq!(sample, (7, true));
+    fleet.shutdown().await;
 }
 
 fn fee_account(byte: u8) -> Account {
@@ -1256,7 +1340,7 @@ async fn runtime_limits_divide_the_data_budget_by_the_published_data_per_seat() 
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     fleet
         .set_monthly_data_budget(MonthlyDataBudget::Gb(
@@ -1421,7 +1505,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
 /// A setup-payment publication with a per-seat CPU budget, or without one.
 fn cpu_budget_policy(
     budget: Option<u32>,
-) -> Option<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {
+) -> Option<fedi_decentralized_domain::AdmittedFeaturePolicy> {
     let mut content = serde_json::json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -1435,7 +1519,9 @@ fn cpu_budget_policy(
         fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
             content.to_string().as_bytes(),
         )
-        .expect("test policy parses"),
+        .expect("test policy parses")
+        .features()
+        .clone(),
     )
 }
 
@@ -1515,38 +1601,54 @@ async fn runtime_seat_limits_divide_the_data_filesystem_by_the_published_disk_fi
             .await
             .unwrap(),
     );
-    let policy = |figure: Option<u32>| {
+    let policy = |figure: Option<(&str, u32)>| {
         let mut content = serde_json::json!({
             "version": 1,
             "fman_version": "0.1.0",
             "federations": [],
             "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
         });
-        if let Some(figure) = figure {
-            content["seat_disk_gb"] = serde_json::json!(figure);
+        if let Some((field, figure)) = figure {
+            content[field] = serde_json::json!(figure);
         }
         Some(
             fedi_decentralized_domain::AdmittedSetupPaymentFederations::parse(
                 content.to_string().as_bytes(),
             )
-            .expect("test policy parses"),
+            .expect("test policy parses")
+            .features()
+            .clone(),
         )
     };
     // A 1 TB drive's ext4 size: 12 seats at the default 80 GB, 6 at 160 GB.
-    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
-    let limits = crate::seat_capacity::spawn_runtime_seat_limits(
-        fleet.clone(),
-        receiver,
-        None,
-        Some(984_000_000_000),
-    );
+    let ext4 = crate::seat_capacity::DataFilesystem {
+        kind: crate::seat_capacity::FilesystemKind::Known("ext4"),
+        bytes: 984_000_000_000,
+    };
+    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 160))));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, Some(ext4));
     disk_limit_becomes(&fleet, Some(6)).await;
     publish.send_replace(policy(None));
     disk_limit_becomes(&fleet, Some(12)).await;
     limits.abort();
 
+    // The same size on btrfs takes the btrfs figure, which defaults to 160 GB
+    // whatever the general one says, and which a publication can move.
+    let btrfs = crate::seat_capacity::DataFilesystem {
+        kind: crate::seat_capacity::FilesystemKind::BTRFS,
+        ..ext4
+    };
+    let (publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 40))));
+    let limits =
+        crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, Some(btrfs));
+    disk_limit_becomes(&fleet, Some(6)).await;
+    publish.send_replace(policy(Some(("seat_disk_gb_btrfs", 240))));
+    disk_limit_becomes(&fleet, Some(4)).await;
+    limits.abort();
+
     // Without a measurement there is no disk limit: it clears a stored one.
-    let (_publish, receiver) = tokio::sync::watch::channel(policy(Some(160)));
+    let (_publish, receiver) = tokio::sync::watch::channel(policy(Some(("seat_disk_gb", 160))));
     let limits =
         crate::seat_capacity::spawn_runtime_seat_limits(fleet.clone(), receiver, None, None);
     disk_limit_becomes(&fleet, None).await;
@@ -1569,8 +1671,40 @@ fn readiness(ready: bool) -> ReadinessReport {
         pressure: ReadinessOutcome::NotApplicable,
         host_pressure: None,
         max_host_pressure: None,
+        ordering_latency: ReadinessOutcome::NotApplicable,
+        ordering_latency_6h_ms: None,
+        max_ordering_latency_6h_ms: None,
         uptime: ReadinessOutcome::Pass,
         uptime_comparison: None,
+    }
+}
+
+/// The ordering latency readings of the running seats, as a test sets them
+/// before each run.
+#[derive(Clone, Default)]
+struct SeatReadings(Arc<std::sync::Mutex<Vec<SeatReading>>>);
+
+type SeatReading = (SeatId, Option<crate::ordering_latency::OrderingTotals>);
+
+impl SeatReadings {
+    /// Running seats with these cumulative `(sum seconds, count)` totals.
+    fn set(&self, totals: &[(u8, f64, f64)]) {
+        *self.0.lock().unwrap() = totals
+            .iter()
+            .map(|&(byte, sum_secs, count)| {
+                (
+                    SeatId::new(hex::encode([byte; 32])).unwrap(),
+                    Some(crate::ordering_latency::OrderingTotals { sum_secs, count }),
+                )
+            })
+            .collect();
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::seat_readiness::OrderingLatencySource for SeatReadings {
+    async fn read(&mut self) -> Vec<SeatReading> {
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -1769,85 +1903,6 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
     fleet.shutdown().await;
 }
 
-/// Resetting the uptime history reopens an MG an outage closed at once: the
-/// readiness worker reruns without waiting out its retry minute, and the
-/// history restarts at 95% from the slot it records.
-#[tokio::test]
-async fn resetting_uptime_reruns_readiness_and_restarts_the_history() {
-    use crate::seat_readiness::{ReadinessProbe, run};
-
-    /// Passing prerequisites on every run, counting the runs.
-    struct CountingProbe(Arc<std::sync::atomic::AtomicUsize>);
-
-    #[async_trait::async_trait]
-    impl ReadinessProbe for CountingProbe {
-        async fn probe(&mut self) -> ReadinessReport {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            readiness(true)
-        }
-    }
-
-    let temp = TempDir::new().unwrap();
-    let fleet = Arc::new(
-        open_fleet(config(&temp, 2, 31_400).await, Arc::new(NoWallet))
-            .await
-            .unwrap(),
-    );
-    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
-    let slot = |n: u64| {
-        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + n * UPTIME_SLOT_SECS)
-    };
-    // Up, then four days no daemon recorded: every window falls below its
-    // default minimum.
-    let day = 24 * 60 * 60 / UPTIME_SLOT_SECS;
-    fleet.record_uptime_slot(slot(1), true).await.unwrap();
-    let now = slot(1 + 4 * day);
-    let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (_publish, policies) = tokio::sync::watch::channel(None);
-    let worker = tokio::spawn(run(
-        CountingProbe(runs.clone()),
-        fleet.clone(),
-        policies,
-        move || now,
-        None::<fn() -> anyhow::Result<crate::host_pressure::PressureTotals>>,
-    ));
-    let report_where = |wanted: fn(&ReadinessReport) -> bool| {
-        let fleet = fleet.clone();
-        async move {
-            // Well under the worker's one-minute retry while it fails.
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    if let Some(report) = fleet.seat_readiness().filter(wanted)
-                        && fleet.ready_for_new_seats().await == report.ready()
-                    {
-                        break report;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .expect("a run reports it")
-        }
-    };
-    let closed = report_where(|report| report.uptime != ReadinessOutcome::Pass).await;
-    assert_eq!(closed.uptime, ReadinessOutcome::DayUptimeLow);
-    assert!(!fleet.availability_snapshot().await.accepting_seats);
-    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    fleet.reset_uptime().await.unwrap();
-    let reopened = report_where(|report| report.uptime == ReadinessOutcome::Pass).await;
-    assert!(reopened.ready(), "{reopened:?}");
-    assert!(fleet.availability_snapshot().await.accepting_seats);
-    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
-    // The rerun's own up slot is the history's first.
-    let scores = fleet.uptime().await.unwrap();
-    for score in [scores.day, scores.week, scores.month] {
-        assert!((0.95..0.951).contains(&score), "{scores:?}");
-    }
-    worker.abort();
-    fleet.shutdown().await;
-}
-
 /// The readiness worker follows the setup-payment policy's minimum release
 /// and maximum pressures: raising the minimum above this release, or a
 /// maximum below the host's CPU, IO or memory pressure average, stops
@@ -1909,7 +1964,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     let first_slot = 3_000_000;
     let slot = Arc::new(AtomicU64::new(first_slot));
@@ -1939,6 +1994,7 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
         policies,
         clock,
         Some(read_pressure),
+        None::<SeatReadings>,
     ));
 
     let this = env!("CARGO_PKG_VERSION");
@@ -2040,6 +2096,187 @@ async fn the_readiness_worker_follows_the_policy_gates_and_keeps_uptime_up() {
     fleet.shutdown().await;
 }
 
+/// The ordering latency check: it does not apply without running seats, nor
+/// to running seats until one orders items over an interval; the median seat
+/// decides, so one slow seat does not close the MG; a slow median closes it
+/// to new seats while every slot stays up; and the average survives a
+/// restart, which leaves the seats' baselines to start again.
+#[tokio::test]
+async fn the_ordering_latency_check_closes_new_seats_without_costing_uptime() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use ReadinessOutcome::{NotApplicable, OrderingLatencyHigh, Pass};
+
+    use crate::host_pressure::PressureTotals;
+    use crate::ordering_latency::MAX_ORDERING_LATENCY_MS;
+    use crate::seat_readiness::{ReadinessProbe, run};
+
+    /// Passing prerequisites, one run per step, each in the next slot.
+    struct SteppedProbe {
+        slot: Arc<AtomicU64>,
+        steps: tokio::sync::mpsc::Receiver<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReadinessProbe for SteppedProbe {
+        async fn probe(&mut self) -> ReadinessReport {
+            if self.steps.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
+            ReadinessReport {
+                checked_at_ms: self.slot.fetch_add(1, Ordering::SeqCst) + 1,
+                ..readiness(true)
+            }
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 2, 31_700).await;
+    let open = || async {
+        let fleet = Arc::new(
+            open_fleet(config.clone(), Arc::new(NoWallet))
+                .await
+                .unwrap(),
+        );
+        fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+        fleet
+    };
+    let slot = Arc::new(AtomicU64::new(3_000_000));
+    let clock = {
+        let slot = slot.clone();
+        move || {
+            std::time::UNIX_EPOCH
+                + Duration::from_secs(slot.load(Ordering::SeqCst) * UPTIME_SLOT_SECS)
+        }
+    };
+    let readings = SeatReadings::default();
+    let start = |fleet: Arc<Fleet>| {
+        let (step, steps) = tokio::sync::mpsc::channel(1);
+        let (publish, policies) = tokio::sync::watch::channel(None);
+        let worker = tokio::spawn(run(
+            SteppedProbe {
+                slot: slot.clone(),
+                steps,
+            },
+            fleet,
+            policies,
+            clock.clone(),
+            None::<fn() -> anyhow::Result<PressureTotals>>,
+            Some(readings.clone()),
+        ));
+        ((step, publish), worker)
+    };
+    /// Let one run go and return its report once its verdict is stored.
+    async fn step(
+        fleet: &Fleet,
+        (step, publish): &(
+            tokio::sync::mpsc::Sender<()>,
+            tokio::sync::watch::Sender<Option<fedi_decentralized_domain::AdmittedFeaturePolicy>>,
+        ),
+        slot: &AtomicU64,
+    ) -> ReadinessReport {
+        let checked = slot.load(Ordering::SeqCst) + 1;
+        // A policy change ends the worker's wait for the next slot.
+        publish.send_replace(None);
+        step.send(()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(report) = fleet.seat_readiness()
+                    && report.checked_at_ms == checked
+                    && fleet.ready_for_new_seats().await == report.ready()
+                {
+                    break report;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the run's verdict is stored")
+    }
+
+    let fleet = open().await;
+    let (stepper, worker) = start(fleet.clone());
+    let mut day = fleet.uptime().await.unwrap().day;
+    let mut run_once = async |totals: &[(u8, f64, f64)]| {
+        readings.set(totals);
+        let report = step(&fleet, &stepper, &slot).await;
+        // Every run's slot is up, whatever the ordering latency check says.
+        assert!(report.prerequisites_passed());
+        let after = fleet.uptime().await.unwrap().day;
+        assert!(after > day, "{after} after {day}");
+        day = after;
+        assert_eq!(fleet.ready_for_new_seats().await, report.ready());
+        report
+    };
+
+    // No running seat: nothing to measure.
+    let idle = run_once(&[]).await;
+    assert_eq!(
+        (
+            idle.ordering_latency,
+            idle.ordering_latency_6h_ms,
+            idle.max_ordering_latency_6h_ms
+        ),
+        (NotApplicable, None, None)
+    );
+    assert!(idle.ready());
+
+    // Running seats with no history: their first readings are baselines,
+    // and seats whose federations order nothing never give an interval.
+    // Neither closes the MG.
+    for _ in 0..2 {
+        let unmeasured = run_once(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]).await;
+        assert_eq!(
+            (
+                unmeasured.ordering_latency,
+                unmeasured.ordering_latency_6h_ms,
+                unmeasured.max_ordering_latency_6h_ms
+            ),
+            (NotApplicable, None, Some(MAX_ORDERING_LATENCY_MS))
+        );
+        assert!(unmeasured.ready());
+    }
+
+    // Two seats at 1 s and one at 40 s: the median, 1 s, passes.
+    let healthy = run_once(&[(1, 10.0, 10.0), (2, 10.0, 10.0), (3, 400.0, 10.0)]).await;
+    assert_eq!(
+        (healthy.ordering_latency, healthy.ordering_latency_6h_ms),
+        (Pass, Some(1000))
+    );
+    assert!(healthy.ready());
+
+    // Every seat at 40 s for the next 10 minutes. The two equal intervals
+    // weigh 1 and 1 - g against each other, g = 1 - e^(-10 min / 6 h):
+    // 1 s + 39 s / (2 - g), about 20.8 s.
+    let slow = run_once(&[(1, 410.0, 20.0), (2, 410.0, 20.0), (3, 800.0, 20.0)]).await;
+    let gain = 1.0 - (-(UPTIME_SLOT_SECS as f64) / (6.0 * 3600.0)).exp();
+    let expected = ((1.0 + 39.0 / (2.0 - gain)) * 1000.0).round() as u32;
+    assert_eq!(
+        (slow.ordering_latency, slow.ordering_latency_6h_ms),
+        (OrderingLatencyHigh, Some(expected))
+    );
+    assert!(!slow.ready());
+    assert!(!fleet.ready_for_new_seats().await);
+    worker.abort();
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // After a restart the seats' first readings are baselines again, and the
+    // stored average decides.
+    let fleet = open().await;
+    let (stepper, worker) = start(fleet.clone());
+    readings.set(&[(1, 0.0, 0.0), (2, 0.0, 0.0), (3, 0.0, 0.0)]);
+    let restarted = step(&fleet, &stepper, &slot).await;
+    assert_eq!(
+        (restarted.ordering_latency, restarted.ordering_latency_6h_ms),
+        (OrderingLatencyHigh, Some(expected))
+    );
+    assert!(restarted.prerequisites_passed());
+    assert!(!fleet.ready_for_new_seats().await);
+    worker.abort();
+    fleet.shutdown().await;
+}
+
 /// The pressure history is durable: a restart keeps the averages and the
 /// last reading, so the interval across a quick restart is measured; a
 /// cgroup recreated by the restart starts its counters again, which leaves
@@ -2071,12 +2308,12 @@ async fn the_pressure_history_survives_restart() {
             )
             .as_bytes(),
         )
-        .unwrap()
+        .unwrap().features().clone()
     };
     /// One run under `policy` at `now`, reading `reading`, then its report.
     async fn one_run(
         fleet: &Arc<Fleet>,
-        policy: AdmittedSetupPaymentFederations,
+        policy: fedi_decentralized_domain::AdmittedFeaturePolicy,
         now: std::time::SystemTime,
         reading: anyhow::Result<PressureTotals>,
     ) -> ReadinessReport {
@@ -2088,6 +2325,7 @@ async fn the_pressure_history_survives_restart() {
             policies,
             move || now,
             Some(move || reading.lock().unwrap().take().expect("one run reads once")),
+            None::<SeatReadings>,
         ));
         let report = tokio::time::timeout(Duration::from_secs(10), async {
             loop {

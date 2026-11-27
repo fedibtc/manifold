@@ -66,7 +66,8 @@ Related kinds owned elsewhere: `37702` is the FLIP provider advertisement
 ([SPEC-flip-advertisement](../../liquidity-manager-daemon/specs/SPEC-flip-advertisement.md)),
 `37706` is reserved for the draft FA encrypted backup snapshot
 ([`docs/fa-nostr-backups.md`](../../../docs/fa-nostr-backups.md)), and `37707`
-is the Fedi-authored setup-payment federation set
+is the setup-payment federation set. Kind `37710` with `d=manifold-feature-config`
+is the independently signed feature snapshot
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 Kind-`37701` events and relay tags never carry an MG-local payment set.
 

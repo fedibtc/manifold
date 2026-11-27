@@ -328,8 +328,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
-    // Measured once: the disk seat limit divides it, and the resource sample
-    // reports it.
+    // Measured once: the disk seat limit divides the size by the kind's
+    // per-seat figure, and the resource sample reports both.
+    let data_filesystem_kind = mg_core::seat_capacity::FilesystemKind::of(&args.data_dir);
     let data_filesystem_bytes = mg_core::seat_capacity::data_filesystem_bytes(&args.data_dir)
         .inspect_err(|error| {
             tracing::warn!(%error, "cannot measure the data filesystem; no disk seat limit");
@@ -337,7 +338,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .ok();
     #[cfg(target_os = "linux")]
     resource_report::spawn(resource_report::Role::Daemon {
-        data_filesystem: resource_report::DataFilesystem::of(&args.data_dir),
+        data_filesystem: data_filesystem_kind,
         data_filesystem_bytes,
     });
     tracing::info!(
@@ -406,6 +407,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         )),
         manifold_environment.setup_payment_publisher().is_some(),
+        manifold_environment.environment(),
     );
     let phase = admin::OperatorPhase::onboarding(onboarding.clone());
     let admin_task = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
@@ -482,7 +484,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // E2E starts many MGs on one host's filesystem, often a small temporary
     // one, so it skips the disk seat limit as it skips the CPU one. A failed
     // measurement is no disk limit, not a failed start.
-    let disk_seat_limit_bytes = data_filesystem_bytes.filter(|_| !local_e2e);
+    let disk_seat_limit_filesystem = data_filesystem_bytes.filter(|_| !local_e2e).map(|bytes| {
+        mg_core::seat_capacity::DataFilesystem {
+            kind: data_filesystem_kind,
+            bytes,
+        }
+    });
 
     // Reuse the one service endpoint for outbound transfer pulls. It is bound
     // only after the duplicate-instance veto and before fleet workers start.
@@ -567,12 +574,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let policy_store = Arc::new(FleetSetupPaymentPolicyStore::new(fleet.clone()));
     // Revalidate retained authority before exposing the RPC router. A publisher
     // rotation must fail startup without a window serving the old policy.
-    let retained_setup_payment_federations = match setup_payment_publisher {
-        Some(publisher) => {
-            mg_nostr::load_retained_setup_payment_policy(&policy_store, publisher).await?
-        }
-        None => None,
-    };
+    let retained_setup_payment_federations = mg_nostr::load_retained_setup_payment_policy(
+        &policy_store,
+        setup_payment_publisher,
+        manifold_environment.feature_config_publisher().copied(),
+        &db,
+    )
+    .await?;
     let keys = identity.derive_service_nostr_keys();
     let telemetry_registration_keys = keys.clone();
     let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::for_fleet(&fleet));
@@ -590,10 +598,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         holder_authorization_store,
         db,
     );
-    fleet.bind_guardian_link_policy(nostr.subscribe_setup_payment_federations());
+    fleet.bind_guardian_link_policy(nostr.subscribe_features());
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
-    let rpc = ManifoldGuardianRpc::new(fleet.clone(), nostr.subscribe_setup_payment_federations());
+    let rpc = ManifoldGuardianRpc::new(
+        fleet.clone(),
+        nostr.subscribe_setup_payment_federations(),
+        nostr.subscribe_features(),
+    );
     let server = ManifoldGuardianServiceServer::new(rpc.clone());
     let telemetry = GuardianTelemetryApiServer::new(GuardianTelemetryRpc::new(fleet.clone())?);
     let router = Router::builder(endpoint)
@@ -631,14 +643,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .spawn();
     fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());
-    let guardian_link_notifier = mg_core::guardian_link::spawn_notifier(
-        fleet.clone(),
-        nostr.subscribe_setup_payment_federations(),
-    );
+    let guardian_link_notifier =
+        mg_core::guardian_link::spawn_notifier(fleet.clone(), nostr.subscribe_features());
 
     let mut seat_readiness =
         seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
-            .spawn(fleet.clone(), nostr.subscribe_setup_payment_federations());
+            .spawn(fleet.clone(), nostr.subscribe_features());
     let host = Arc::new(FleetNostrHost::new(
         fleet.clone(),
         router.endpoint().id().to_string(),
@@ -659,9 +669,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     let runtime_seat_limits = mg_core::seat_capacity::spawn_runtime_seat_limits(
         fleet.clone(),
-        nostr.subscribe_setup_payment_federations(),
+        nostr.subscribe_features(),
         cpu_capacity,
-        disk_seat_limit_bytes,
+        disk_seat_limit_filesystem,
     );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),

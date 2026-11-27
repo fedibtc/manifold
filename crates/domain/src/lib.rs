@@ -47,10 +47,11 @@ pub use mg_seat_bindings::{
 };
 pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use setup_payment_federations::{
-    AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
-    DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,
-    DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, MaxPressurePercent, MaxPressureWindows, MgVersion,
-    MinUptimePercent, SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES,
+    AdmittedFeaturePolicy, AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG,
+    DEFAULT_SEAT_DISK_GB, DEFAULT_SEAT_DISK_GB_BTRFS, DEFAULT_SEAT_MEMORY_BUDGET_MIB,
+    DEFAULT_SEAT_MONTHLY_DATA_GB, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, FeatureConfigContent,
+    FeaturePolicy, MaxPressurePercent, MaxPressureWindows, MgVersion, MinUptimePercent,
+    PolicyContentError, SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES,
     SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_COUNT,
     SETUP_PAYMENT_MAX_MIN_FEE_PPM, SETUP_PAYMENT_MAX_SEATS_PER_MG,
     SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE, SETUP_PAYMENT_SEAT_DISK_GB_RANGE,

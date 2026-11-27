@@ -21,7 +21,11 @@ password-manager read tsp-publisher-key | \
     --receipt signed-event.json
 ```
 
-For every update, supply the latest retained receipt:
+For every update, supply the current published event as the previous receipt.
+Fetch the kind-37707 event with the publisher's key as author and `d` tag
+`setup-payment-federations` from `wss://relay.dev.fedibtc.com`, the
+Fedi-operated canonical relay, save its JSON, and check that its content is the
+policy you expect:
 
 ```console
 password-manager read tsp-publisher-key | \
@@ -32,12 +36,13 @@ password-manager read tsp-publisher-key | \
     --receipt new-signed-event.json
 ```
 
-The custodian must retain the newest receipt as the publisher high-water mark.
-The tool checks it against every Production relay before loading the secret.
-Publishing an empty stop-set additionally requires `--allow-empty-stop-set`.
+The previous receipt is the publisher high-water mark. The tool checks it
+against every Production relay before loading the secret, and refuses it if any
+relay holds a newer event. Keep the new receipt until every relay has verified
+it. Publishing an empty stop-set additionally requires `--allow-empty-stop-set`.
 Exactly one publish or republish operation for this key may run at a time across
-all custodians and hosts; the custody procedure must serialize operations and
-retain the winning newest receipt. Relay preflight is not a distributed lock.
+all custodians and hosts; custodians agree with each other before each run.
+Relay preflight is not a distributed lock.
 
 If one relay fails after the receipt is saved, retry the same signed event
 without the secret:
@@ -47,6 +52,11 @@ nix run .#setup-payment-publisher -- republish \
   --receipt signed-event.json \
   --expected-publisher <hex-or-npub>
 ```
+
+The following flags in this payment publication affect legacy readers and
+readers without an admitted feature snapshot. Once a reader admits kind 37710,
+publish feature changes at that independent address instead. Changes to these
+fields in kind 37707 no longer affect that reader's feature policy.
 
 To let MGs start direct-proof guardian transfers, set
 `"guardian_transfer_v2": true` in the policy file; set `false` to stop new
@@ -116,6 +126,17 @@ that figure from its default of 80, set for example `"seat_disk_gb": 100`, in
 GB (10^9 bytes), from 1 to 100,000. Tune it from the fleet's
 `cgroup_block_write_bytes` and `data_filesystem_bytes` in the `cgroup
 resource sample`.
+
+MGs from 0.1.20 on reserve `"seat_memory_budget_mib_v3"` MiB of available
+memory per seat, from 256 to 16,384, default 1,024. They ignore
+`"seat_memory_budget_mib_v2"`, which MGs from 0.1.16 to 0.1.19 read, and
+`"seat_memory_budget_mib"`, which older MGs read; those default to 1,229.
+Set each field for the releases it should reach.
+
+MGs from 0.1.20 on whose data filesystem is btrfs divide by a figure of its
+own, `"seat_disk_gb_btrfs"`, default 160, with the same bounds. Older MGs
+apply `seat_disk_gb` on btrfs too. Compare the fleet's writes per seat within
+one `data_filesystem` kind when tuning either figure.
 
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or

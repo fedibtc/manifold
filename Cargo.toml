@@ -1,5 +1,9 @@
 [workspace]
-exclude = [".nix-deps/fedi", ".nix-deps/fedimint", ".nix-deps/peerbadge-sdk"]
+exclude = [
+  ".nix-deps/fedimint",
+  ".nix-deps/peerbadge-sdk",
+  ".nix-deps/stability-pool",
+]
 members = [
   "crates/bounded-rolling-file",
   "crates/cloud-mg-telemetry",
@@ -51,7 +55,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/fedibtc/manifold"
-version = "0.1.17"
+version = "0.1.20"
 
 [profile.dev]
 debug = false
@@ -232,9 +236,9 @@ proc-macro2 = "1"
 quote = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-stability-pool-client = { git = "https://github.com/fedixyz/fedi", rev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6", package = "stability-pool-client" }
-stability-pool-common = { git = "https://github.com/fedixyz/fedi", rev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6", package = "stability-pool-common" }
-stability-pool-server = { git = "https://github.com/fedixyz/fedi", rev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6", package = "stability-pool-server" }
+stability-pool-client = { git = "https://github.com/fedibtc/stability-pool", rev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d", package = "fedi-stability-pool-client" }
+stability-pool-common = { git = "https://github.com/fedibtc/stability-pool", rev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d", package = "fedi-stability-pool-common" }
+stability-pool-server = { git = "https://github.com/fedibtc/stability-pool", rev = "212c29d7e09f1fd7eee44e0132ca2092d41efa8d", package = "fedi-stability-pool-server" }
 strum = { version = "0.26", features = ["derive"] }
 syn = { version = "2", features = ["full"] }
 thiserror = "2"
@@ -287,17 +291,17 @@ fedimint-wallet-common = { path = ".nix-deps/fedimint/modules/fedimint-wallet-co
 fedimint-walletv2-client = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-client" }
 fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-common" }
 librocksdb-sys = { path = ".nix-deps/librocksdb-sys" }
-# Emits a safe event when AlephBFT marks a forker; see `alephBftPatched` in
-# flake.nix.
-fedimint-aleph-bft = { path = ".nix-deps/fedimint-aleph-bft" }
 # netwatch 0.5 uses socket2 APIs gated behind its "all" feature on macOS.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
-# iroh 0.35 (Fedimint p2p) with a fix for a send livelock that pins every
-# tokio worker (fedibtc/iroh `fedi/v0.35.0-no-send-spin`). `iroh-base` and
-# `iroh-relay` come from the same checkout because git `iroh` uses them by path.
-iroh = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
-iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
-iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+# iroh 0.35 (Fedimint p2p and API clients) with fixes for a send livelock that
+# pins every tokio worker, and for a magicsock actor that deadlocks on its own
+# full inbox when relays are disabled, as in Fedimint API clients; it then leaks
+# every unanswered disco ping (fedibtc/iroh `v0.35.0-fedi1`).
+# `iroh-base` and `iroh-relay` come from the same checkout because git `iroh`
+# uses them by path.
+iroh = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
+iroh-base = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
+iroh-relay = { git = "https://github.com/fedibtc/iroh", tag = "v0.35.0-fedi1" }
 # iroh 1.4.1 (MG endpoint, Fedimint) with bounded waits in the relay actor
 # (fedibtc/iroh `roboman/relay-actor-bounded-waits-1.4.1`). Without it, a relay
 # that goes silent while an idle relay connection closes wedges the relay
@@ -309,54 +313,8 @@ iroh-base-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad79
 iroh-dns-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh-dns" }
 iroh-relay-1 = { git = "https://github.com/fedibtc/iroh", rev = "ba77618cdf93ad7930fa934d5279ec556c46ef5d", package = "iroh-relay" }
 
-# Still load-bearing after workspace crates dropped their direct Fedimint git
-# deps: `stability-pool-client`/`stability-pool-common` (a git dependency of
-# FLIP) themselves depend on Fedimint crates through this git source, so these
-# transitive deps must also be redirected to the pinned `.nix-deps/fedimint`
-# source rather than the upstream git tag. Remove this block only once nothing
-# in the resolved graph references the `github.com/fedibtc/fedimint` git source.
-[patch."https://github.com/fedibtc/fedimint"]
-fedimint-aead = { path = ".nix-deps/fedimint/crypto/aead" }
-fedimint-api-client = { path = ".nix-deps/fedimint/fedimint-api-client" }
-fedimint-bip39 = { path = ".nix-deps/fedimint/fedimint-bip39" }
-fedimint-bitcoind = { path = ".nix-deps/fedimint/fedimint-bitcoind" }
-fedimint-build = { path = ".nix-deps/fedimint/fedimint-build" }
-fedimint-client = { path = ".nix-deps/fedimint/fedimint-client" }
-fedimint-client-module = { path = ".nix-deps/fedimint/fedimint-client-module" }
-fedimint-connectors = { path = ".nix-deps/fedimint/fedimint-connectors" }
-fedimint-core = { path = ".nix-deps/fedimint/fedimint-core" }
-fedimint-db-locked = { path = ".nix-deps/fedimint/fedimint-db-locked" }
-fedimint-derive-secret = { path = ".nix-deps/fedimint/crypto/derive-secret" }
-fedimint-eventlog = { path = ".nix-deps/fedimint/fedimint-eventlog" }
-fedimint-gateway-client = { path = ".nix-deps/fedimint/gateway/fedimint-gateway-client" }
-fedimint-gateway-common = { path = ".nix-deps/fedimint/gateway/fedimint-gateway-common" }
-fedimint-hkdf = { path = ".nix-deps/fedimint/crypto/hkdf" }
-fedimint-ln-client = { path = ".nix-deps/fedimint/modules/fedimint-ln-client" }
-fedimint-ln-common = { path = ".nix-deps/fedimint/modules/fedimint-ln-common" }
-fedimint-lnv2-client = { path = ".nix-deps/fedimint/modules/fedimint-lnv2-client" }
-fedimint-lnv2-common = { path = ".nix-deps/fedimint/modules/fedimint-lnv2-common" }
-fedimint-logging = { path = ".nix-deps/fedimint/fedimint-logging" }
-fedimint-meta-client = { path = ".nix-deps/fedimint/modules/fedimint-meta-client" }
-fedimint-meta-common = { path = ".nix-deps/fedimint/modules/fedimint-meta-common" }
-fedimint-metrics = { path = ".nix-deps/fedimint/fedimint-metrics" }
-fedimint-mint-client = { path = ".nix-deps/fedimint/modules/fedimint-mint-client" }
-fedimint-mint-common = { path = ".nix-deps/fedimint/modules/fedimint-mint-common" }
-fedimint-mintv2-client = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-client" }
-fedimint-mintv2-common = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-common" }
-fedimint-rocksdb = { path = ".nix-deps/fedimint/fedimint-rocksdb" }
-fedimint-server = { path = ".nix-deps/fedimint/fedimint-server" }
-fedimint-server-bitcoin-rpc = { path = ".nix-deps/fedimint/fedimint-server-bitcoin-rpc" }
-fedimint-server-core = { path = ".nix-deps/fedimint/fedimint-server-core" }
-fedimint-tbs = { path = ".nix-deps/fedimint/crypto/tbs" }
-fedimint-tpe = { path = ".nix-deps/fedimint/crypto/tpe" }
-fedimint-util-error = { path = ".nix-deps/fedimint/fedimint-util-error" }
-fedimint-wallet-client = { path = ".nix-deps/fedimint/modules/fedimint-wallet-client" }
-fedimint-wallet-common = { path = ".nix-deps/fedimint/modules/fedimint-wallet-common" }
-fedimint-walletv2-client = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-client" }
-fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-common" }
-
-# Route the pinned stability-pool modules to the Nix-provided `.nix-deps/fedi` source.
-[patch."https://github.com/fedixyz/fedi"]
-stability-pool-client = { path = ".nix-deps/fedi/crates/modules/stability-pool/client" }
-stability-pool-common = { path = ".nix-deps/fedi/crates/modules/stability-pool/common" }
-stability-pool-server = { path = ".nix-deps/fedi/crates/modules/stability-pool/server" }
+# Route the pinned stability-pool modules to the Nix-provided `.nix-deps/stability-pool` source.
+[patch."https://github.com/fedibtc/stability-pool"]
+fedi-stability-pool-client = { path = ".nix-deps/stability-pool/crates/client" }
+fedi-stability-pool-common = { path = ".nix-deps/stability-pool/crates/common" }
+fedi-stability-pool-server = { path = ".nix-deps/stability-pool/crates/server" }

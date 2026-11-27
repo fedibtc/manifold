@@ -7,14 +7,12 @@ import type {
   AdminResult,
   MonthlyDataBudget,
   PayoutJob,
-  Plan,
-  ReadinessReport
+  Plan
 } from '@operator-ui/types';
 import { mockGuardianLinkOffer } from '@/mocks/scenarios';
 import { getState, type MockSeat, RESTORE_COUNTS } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY } from '@/mocks/world/keys';
-import { failedChecks } from '@/shared/utils/seatReadiness';
 
 /** One verb, standing in for the daemon: it takes the payload the Rust enum
  *  declares for that name and answers the response type declared beside it. The
@@ -287,8 +285,8 @@ const onboarding: Verb<'Onboarding'> = () => {
 const REFRESH_READ_AT = 1_786_000_000;
 
 /** One bounded relay read, as the daemon performs it: what the relay holds is
- *  retained, and retaining at least one authorization is what advances the
- *  wizard stage past `holder_authorization` — there is no skip. */
+ *  retained, and retaining at least one authorization advances the wizard
+ *  stage past `holder_authorization`, as the operator's skip also does. */
 const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
   const state = getState();
   if (state.relayAuthorization === 'present') {
@@ -370,28 +368,6 @@ const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
     ready_for_new_seats: getState().readyForNewSeats,
     report: report && { ...report, checked_at_ms: Date.now() - 2 * 60_000 }
   };
-};
-
-// Like the daemon: the history restarts at 95% and the checks rerun, so the
-// next read carries the new run, which passes uptime and reopens the MG when
-// every other check passes too.
-const resetUptime: Verb<'ResetUptime'> = () => {
-  const state = getState();
-  const report = state.seatReadiness;
-  if (report) {
-    const rerun: ReadinessReport = {
-      ...report,
-      uptime: 'pass',
-      uptime_comparison: report.uptime_comparison && {
-        ...report.uptime_comparison,
-        scores: { '1d': 950, '7d': 950, '30d': 950 },
-        wait_secs: { '1d': 0, '7d': 0, '30d': 0 }
-      }
-    };
-    state.seatReadiness = rerun;
-    state.readyForNewSeats = failedChecks(rerun).length === 0;
-  }
-  return { uptime_reset: 'rechecking' };
 };
 
 // The durable ceiling never moves below seats that are still active,
@@ -621,6 +597,22 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
   return { onboarded: 'restored', seats, formed };
 };
 
+/** The operator runs this host without a badge. Nothing is retained, so the
+ *  host stays unauthorized; a repeat at `initial_offer` finds the stage settled,
+ *  as the daemon's does. */
+const skipHolderAuthorization: Verb<'SkipHolderAuthorization'> = () => {
+  const state = getState();
+  if (!state.onboarding.badgeless_mg) {
+    throw new Error(
+      'this network does not support setting up a Manifold Fedimint Guardian without a badge yet'
+    );
+  }
+  if (state.onboarding.stage === 'holder_authorization') {
+    state.onboarding = { ...state.onboarding, stage: 'initial_offer' };
+  }
+  return state.onboarding;
+};
+
 const onboardingHandlers: VerbTable<OnboardingVerbName> = {
   OnboardAsNew: onboardAsNew,
   OnboardFromBackup: onboardFromBackup
@@ -642,7 +634,6 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
   ShowSeatReadiness: showSeatReadiness,
-  ResetUptime: resetUptime,
   SetCapacity: setCapacity,
   SetDataBudget: setDataBudget,
   ListPaymentFederations: listPaymentFederations,
@@ -656,6 +647,7 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SweepGuardianFees: sweepGuardianFees,
   Onboarding: onboarding,
   RefreshHolderAuthorizations: refreshHolderAuthorizations,
+  SkipHolderAuthorization: skipHolderAuthorization,
   ConfigureInitialOffer: configureInitialOffer,
   ShowMnemonic: showMnemonic
 };
@@ -674,10 +666,10 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardAsNew',
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
+  'SkipHolderAuthorization',
   'ConfigureInitialOffer',
   'SetCapacity',
   'SetDataBudget',
-  'ResetUptime',
   'SendSupportMessage',
   'MarkSupportRead',
   'CreateGuardianLinkOffer',
@@ -722,12 +714,14 @@ const STAGE_VERBS: Record<'holder_authorization' | 'initial_offer', ReadonlySet<
   holder_authorization: new Set([
     'Onboarding',
     'RefreshHolderAuthorizations',
+    'SkipHolderAuthorization',
     'ShowMnemonic',
     'OnboardAsNew',
     'OnboardFromBackup'
   ]),
   initial_offer: new Set([
     'Onboarding',
+    'SkipHolderAuthorization',
     'ShowMnemonic',
     'ConfigureInitialOffer',
     'OnboardAsNew',
@@ -770,7 +764,7 @@ const stageRefusal = (method: AdminRequestName): AdminResult<unknown> | null => 
     return startingRefusal();
   }
   // Initial offer setup is settled; authorization can be refreshed again.
-  if (method === 'ConfigureInitialOffer') {
+  if (method === 'ConfigureInitialOffer' || method === 'SkipHolderAuthorization') {
     return {
       Err: {
         kind: 'already_onboarded',

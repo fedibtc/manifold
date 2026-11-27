@@ -59,11 +59,6 @@ pub enum AdminRequest {
     ShowCapacity,
     /// The latest new-seat readiness report, absent before the first run.
     ShowSeatReadiness,
-    /// Forget this MG's uptime history, so it restarts at 95% as on a new MG,
-    /// and rerun the readiness checks now. For an outage the MG's badge issuer
-    /// agrees was not the host's fault; uptime is self-reported, and the
-    /// issuer may revoke the badge of an MG that resets it otherwise.
-    ResetUptime,
     /// Replace the operator's admission ceiling without moving it below
     /// active seats. `null` is automatic: the memory and policy limits decide.
     SetCapacity {
@@ -169,8 +164,14 @@ pub enum AdminRequest {
     /// Schedule one bounded relay fetch that verifies and durably retains any
     /// Holder authorizations addressed to this MG.
     RefreshHolderAuthorizations,
+    /// Leave the Holder-authorization onboarding stage without an
+    /// authorization, to run this MG without a badge. Its fleet opens but
+    /// publishes no advertisement until a later `RefreshHolderAuthorizations`
+    /// enrolls one.
+    SkipHolderAuthorization,
     /// Finish first-run setup with the admission limit and initial price. This
-    /// is accepted only after a Holder authorization has been retained.
+    /// is accepted only after the Holder-authorization stage has been settled,
+    /// by a retained authorization or an explicit skip.
     /// `max_seats` `null` is automatic. `monthly_data_budget` is the answer
     /// [`AdminRequest::SetDataBudget`] takes; setup does not finish without
     /// one.
@@ -503,10 +504,6 @@ pub(crate) async fn dispatch(
             fleet.ready_for_new_seats().await,
             fleet.seat_readiness(),
         )),
-        AdminRequest::ResetUptime => {
-            fleet.reset_uptime().await?;
-            Ok(reset_uptime_json())
-        }
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
             Ok(capacity_json(&fleet.availability_snapshot().await))
@@ -610,7 +607,7 @@ pub(crate) async fn dispatch(
             authorizations.refresh().await?;
             Ok(fleet_status_json(fleet, &directory.borrow()))
         }
-        AdminRequest::ConfigureInitialOffer { .. } => {
+        AdminRequest::SkipHolderAuthorization | AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
         AdminRequest::ShowMnemonic => Ok(mnemonic_json(&fleet.identity().phrase())),
@@ -634,6 +631,7 @@ fn fleet_status_json(fleet: &Fleet, directory: &DirectoryPresence) -> Value {
         &env!("CARGO_PKG_VERSION")
             .parse::<MgVersion>()
             .expect("workspace package version is valid SemVer"),
+        fleet.config().manifold_environment.badgeless_mg(),
     )
 }
 
@@ -779,12 +777,6 @@ pub fn decommission_seat_json(newly_decommissioned: bool) -> Value {
     json!({ "decommissioned": true, "already_decommissioned": !newly_decommissioned })
 }
 
-/// The readiness checks rerun on their own; `ShowSeatReadiness` shows the
-/// verdict once they finish.
-pub fn reset_uptime_json() -> Value {
-    json!({ "uptime_reset": "rechecking" })
-}
-
 /// The rotated bearer is deliberately absent from the operator response.
 pub fn reenroll_telemetry_json() -> Value {
     json!({ "telemetry_reenrollment": "scheduled" })
@@ -888,6 +880,7 @@ pub fn onboarding_json(
     service_pubkey: &str,
     directory: &DirectoryPresence,
     current_mg_version: &MgVersion,
+    badgeless_mg: bool,
 ) -> Value {
     let update_required = directory
         .latest_mg_version
@@ -924,6 +917,10 @@ pub fn onboarding_json(
         "service_pubkey": service_pubkey,
         "service_nostr_pubkey": directory.service_nostr_pubkey.to_string(),
         "nostr": status,
+        // Whether this environment lets an MG run without a badge
+        // (`ManifoldEnvironment::badgeless_mg`). The dashboard shows the
+        // badgeless setup path and states only when it does.
+        "badgeless_mg": badgeless_mg,
         "fman_version": {
             "current": current_mg_version.to_string(),
             "latest": directory.latest_mg_version.as_ref().map(ToString::to_string),

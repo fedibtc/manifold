@@ -16,7 +16,6 @@ const SIGNED_EVENT_FIXTURE: &str = r#"{"id":"ee7d6ff74b9a89b0fe488a3aa124a24b00a
 fn content(invites: &[&str]) -> String {
     serde_json::to_string(&SetupPaymentFederationsContent {
         version: ProtocolV1,
-        mg_version: "0.1.0".parse().expect("valid MG version"),
         federations: invites
             .iter()
             .map(|invite| InviteCode((*invite).to_owned()))
@@ -25,21 +24,26 @@ fn content(invites: &[&str]) -> String {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
-        min_uptime_percent: None,
-        max_guardian_offline_secs: None,
-        support_nostr_pubkey: None,
-        seat_memory_budget_mib: None,
-        seat_cpu_iterations_per_sec: None,
-        seat_monthly_data_gb: None,
-        seat_disk_gb: None,
-        max_seats_per_mg: None,
-        seat_memory_budget_mib_v2: None,
-        max_seats_per_mg_v2: None,
-        max_pressure_percent: None,
-        guardian_transfer_v2: None,
-        guardian_link: None,
-        min_mg_version: None,
-        recommended_min_mg_version: None,
+        legacy_features: fedi_decentralized_domain::FeaturePolicy {
+            mg_version: "0.1.0".parse().expect("valid MG version"),
+            min_uptime_percent: None,
+            max_guardian_offline_secs: None,
+            support_nostr_pubkey: None,
+            seat_memory_budget_mib: None,
+            seat_cpu_iterations_per_sec: None,
+            seat_monthly_data_gb: None,
+            seat_disk_gb: None,
+            seat_disk_gb_btrfs: None,
+            max_seats_per_mg: None,
+            seat_memory_budget_mib_v2: None,
+            seat_memory_budget_mib_v3: None,
+            max_seats_per_mg_v2: None,
+            max_pressure_percent: None,
+            guardian_transfer_v2: None,
+            guardian_link: None,
+            min_mg_version: None,
+            recommended_min_mg_version: None,
+        },
     })
     .expect("test content serializes")
 }
@@ -164,7 +168,7 @@ fn admits_unknown_fields_but_rejects_unknown_versions() {
             let admitted = result.expect("unknown fields do not prevent admission");
             assert_eq!(admitted.event(), &publication);
             assert_eq!(admitted.set().len(), 1);
-            assert_eq!(admitted.set().mg_version().to_string(), "0.1.0");
+            assert_eq!(admitted.set().features().mg_version().to_string(), "0.1.0");
             assert_eq!(admitted.set().min_fee_ppm(), 2_345);
             assert_eq!(
                 admitted.set().iter().next().unwrap().1,
@@ -217,7 +221,11 @@ fn a_signed_update_replaces_the_minimum_mg_release() {
 
     let enforced = admit(&signed(1_000, serde_json::json!("0.1.0")), None).unwrap();
     assert_eq!(
-        enforced.set().min_mg_version().map(ToString::to_string),
+        enforced
+            .set()
+            .features()
+            .min_mg_version()
+            .map(ToString::to_string),
         Some("0.1.0".to_owned())
     );
 
@@ -229,7 +237,7 @@ fn a_signed_update_replaces_the_minimum_mg_release() {
     );
 
     let lifted = admit(&signed(1_002, serde_json::Value::Null), Some(&enforced)).unwrap();
-    assert_eq!(lifted.set().min_mg_version(), None);
+    assert_eq!(lifted.set().features().min_mg_version(), None);
 }
 
 #[test]

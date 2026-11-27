@@ -32,6 +32,9 @@
         "6h": 700
       }
     },
+    "max_ordering_latency_6h_ms": 5000,
+    "ordering_latency": "ordering_latency_high",
+    "ordering_latency_6h_ms": 6200,
     "pressure": "host_pressure_6h_high",
     "relay": "pass",
     "uptime": "uptime_7d_low",

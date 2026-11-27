@@ -1,6 +1,6 @@
 mod callback;
-mod custom_gateway;
 mod discovery;
+mod federation_stats;
 mod maintenance;
 mod recovery_policy;
 mod seat_purchase;
@@ -151,6 +151,8 @@ impl FaIdentity for OtherIdentity {
 
 #[derive(Clone, Default)]
 struct TestRegistry {
+    feature_candidates: Arc<Mutex<Vec<Event>>>,
+    feature_pin: Option<PublicKey>,
     candidates: Arc<Mutex<Vec<Event>>>,
     advertisements: Arc<Mutex<Vec<Event>>>,
     fail: Arc<AtomicBool>,
@@ -167,6 +169,15 @@ impl FaNostrClient for TestRegistry {
         _timeout: Duration,
     ) -> NostrClientResult<Event> {
         Err(NostrClientError::MissingEvent { context: "test" })
+    }
+
+    async fn fetch_feature_config(
+        &self,
+        publisher: PublicKey,
+        _timeout: Duration,
+    ) -> NostrClientResult<Vec<Event>> {
+        assert_eq!(self.feature_pin, Some(publisher));
+        Ok(self.feature_candidates.lock().unwrap().clone())
     }
 
     async fn fetch_setup_payment_federations(
@@ -221,6 +232,7 @@ enum TestEffect {
 #[derive(Default)]
 struct PaymentState {
     payable_calls: AtomicUsize,
+    fail_payable: AtomicBool,
     readiness_calls: AtomicUsize,
     reservation_recover_calls: AtomicUsize,
     whole_release_calls: AtomicUsize,
@@ -315,6 +327,9 @@ impl FaPayments for TestPayments {
         admitted: &[FederationId],
     ) -> Result<Vec<FederationId>, FaPaymentError> {
         self.0.payable_calls.fetch_add(1, Ordering::SeqCst);
+        if self.0.fail_payable.load(Ordering::SeqCst) {
+            return Err(FaPaymentError::new("wallet capability query interrupted"));
+        }
         if self.0.pay_none.load(Ordering::SeqCst) {
             return Ok(Vec::new());
         }
@@ -836,6 +851,8 @@ struct MgState {
     formation_guardian_verification_fee_accounts: Mutex<HashMap<usize, Account>>,
     /// Every LNv2 gateway URL accepted by a fake guardian.
     gateway_registrations: Mutex<Vec<(usize, String)>>,
+    /// Seat index -> the FA Stats that guardian reports; others refuse.
+    fedimint_stats: Mutex<HashMap<usize, FedimintStats>>,
     /// Every signed merge base observed by a fake, in submission-wave order.
     meta_request_bases: Mutex<Vec<(usize, MetaConsensusBase)>>,
     /// Positive test-only submission count that completes one metadata wave.
@@ -866,6 +883,9 @@ struct MgState {
     /// Wakes cancellation tests after a fake accepts a metadata proposal.
     meta_submission_changed: Notify,
     attestation_calls: AtomicUsize,
+    /// MG index -> attestation requests left that answer `SeatUnavailable`,
+    /// as while the seat's guardian process restarts.
+    unavailable_attestations: Mutex<HashMap<usize, usize>>,
     /// Replacement MG index -> original federation peer id it operates.
     attested_peer_overrides: Mutex<HashMap<usize, usize>>,
     /// MG index -> federation peer id, the position of its guardian code in
@@ -902,10 +922,12 @@ struct MgState {
 /// What a test MG answers to `GetVersion`.
 #[derive(Clone, Copy, Debug, Default)]
 enum TestMgVersion {
-    /// At the API version with guardian transfer v2.
+    /// At this build's API version.
     #[default]
     Current,
-    /// Answers, but below that API version.
+    /// At the API version with guardian transfer v2, before stats.
+    WithoutStats,
+    /// Answers, but below guardian transfer v2.
     WithoutTransfer,
     /// From before `GetVersion`.
     BeforeGetVersion,
@@ -1128,6 +1150,12 @@ impl ManifoldGuardianService for TestMg {
             .unwrap_or_default()
         {
             TestMgVersion::Current => Ok(GetVersionResponse {
+                mg_version: "0.2.0".parse().expect("test version parses"),
+                // A current MG serves stats, which this build may already read
+                // before its own MG annotates the verb.
+                api_version: MG_API_VERSION.max(FEDIMINT_STATS_API_VERSION),
+            }),
+            TestMgVersion::WithoutStats => Ok(GetVersionResponse {
                 mg_version: "0.2.0".parse().expect("test version parses"),
                 api_version: GUARDIAN_TRANSFER_V2_API_VERSION,
             }),
@@ -1607,6 +1635,17 @@ impl ManifoldGuardianService for TestMg {
         _request: SignedRequest<GetPeerAttestationRequest>,
     ) -> FmResult<GetPeerAttestationResponse> {
         self.state.attestation_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(left) = self
+            .state
+            .unavailable_attestations
+            .lock()
+            .expect("test lock")
+            .get_mut(&self.index)
+            && *left > 0
+        {
+            *left -= 1;
+            return Err(ManifoldGuardianError::SeatUnavailable);
+        }
         let foreign = self.index == 0 && self.state.attest_foreign_peer.load(Ordering::SeqCst);
         let wrong_fee_account =
             self.index == 0 && self.state.attest_wrong_fee_account.load(Ordering::SeqCst);
@@ -1937,9 +1976,18 @@ impl ManifoldGuardianService for TestMg {
 
     async fn get_fedimint_stats(
         &self,
-        _request: SignedRequest<GetFedimintStatsRequest>,
+        request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse> {
-        Err(unsupported())
+        request.verify(Timestamp(test_now_secs()))?;
+        let stats = self
+            .state
+            .fedimint_stats
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+            .ok_or_else(unsupported)?;
+        Ok(GetFedimintStatsResponse { stats })
     }
 }
 
@@ -2065,6 +2113,9 @@ struct TestConsensusReader {
     failures: Arc<AtomicUsize>,
     /// Reads that still show the old metadata after enough votes were submitted.
     delayed_meta_reads: Arc<AtomicUsize>,
+    /// Reads that still lack the formation directory after enough votes were
+    /// submitted, as before the federation adopts them.
+    delayed_formation_reads: Arc<AtomicUsize>,
     offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
@@ -2086,6 +2137,7 @@ impl TestConsensusReader {
             guardian_reports: Arc::new(Mutex::new(None)),
             failures: Arc::new(AtomicUsize::new(0)),
             delayed_meta_reads: Arc::new(AtomicUsize::new(0)),
+            delayed_formation_reads: Arc::new(AtomicUsize::new(0)),
             offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
@@ -2310,6 +2362,12 @@ impl FederationConsensusReader for TestConsensusReader {
             if !fields.contains_key(fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY)
                 && let (Some(value), Some((send_ppm, recipients))) =
                     (self.agreed_value(), self.agreed_fee_policy())
+                && self
+                    .delayed_formation_reads
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                        reads.checked_sub(1)
+                    })
+                    .is_err()
             {
                 fields.insert(
                     fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
@@ -4703,6 +4761,7 @@ async fn open_client_that_cannot_pay(
         },
         test_peer_badge_verifier(),
         None,
+        None,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4795,6 +4854,7 @@ async fn open_client_with_registry_reader_and_fee_account(
     consensus_reader: TestConsensusReader,
     fa_fee_account_provider: TestFaFeeAccountProvider,
 ) -> TestClient {
+    let feature_pin = registry.feature_pin;
     FaClient::open_inner(
         database,
         FaClientPorts {
@@ -4807,6 +4867,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         },
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
+        feature_pin,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4842,6 +4903,7 @@ async fn open_client_with_verifier(
         },
         verifier,
         Some(setup_payment_keys().public_key()),
+        None,
         Some(guardian_fee_account(31)),
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
     )
@@ -4892,6 +4954,7 @@ async fn open_client_with_store_and_registry(
             run_guard: Arc::new(tokio::sync::Mutex::new(())),
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
+            feature_config_publisher: None,
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
             manifold_environment:
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Production,
@@ -7634,6 +7697,10 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
         client.create_at(intent(), locators(), options()).await,
         Err(FaError::Payment(_))
     ));
+    assert_eq!(
+        formation(&client.status()).last_error.unwrap().disposition,
+        crate::FailureDisposition::Retryable,
+    );
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let recovery = active_recovery(
@@ -8006,9 +8073,10 @@ async fn formation_names_the_mg_with_a_divergent_guardian_verification_fee_accou
         .lock()
         .expect("test lock")
         .insert(divergent_index, divergent_account.clone());
+    let database = MemDatabase::new().into_database();
     let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         mg_state.clone(),
         MgConfig::given_away(),
     )
@@ -8032,6 +8100,20 @@ async fn formation_names_the_mg_with_a_divergent_guardian_verification_fee_accou
             .contains_key(&divergent_index),
         "the divergent MG must reject before submitting a vote"
     );
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::ManifoldGuardian,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    drop(client);
+    let reopened = open_client(database, payments, mg_state, MgConfig::given_away()).await;
+    assert_eq!(formation(&reopened.status()).last_error, None);
+    // A single refused vote is not a terminal aggregate failure: successful
+    // siblings can already have adopted the proposal, which resume must read.
+    reopened.resume().await.unwrap();
+    assert!(matches!(reopened.status(), FaStatus::Formed(_)));
 }
 
 #[tokio::test]
@@ -9174,7 +9256,17 @@ async fn a_timed_out_post_dkg_consensus_read_is_retried_within_the_run() {
 
 /// A formation stopped in `PublishingSeatBindings`, as when its run timed
 /// out before the metadata vote reached consensus, reopened on a new client.
+/// The earlier votes are gone, so the reopened run has to vote again.
 async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> TestClient {
+    let reopened = reopened_after_unconfirmed_votes(mg_state.clone()).await;
+    mg_state.meta_submissions.lock().unwrap().clear();
+    mg_state.fee_submissions.lock().unwrap().clear();
+    reopened
+}
+
+/// A formation stopped in `PublishingSeatBindings` after every seat voted,
+/// reopened on a new client. Consensus adopts the votes on its next read.
+async fn reopened_after_unconfirmed_votes(mg_state: Arc<MgState>) -> TestClient {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let reader = TestConsensusReader::new(mg_state.clone());
@@ -9197,7 +9289,7 @@ async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> Test
         formation(&reopened.status()).phase,
         FormationPhase::PublishingSeatBindings
     );
-    // Let the fake consensus adopt the submitted directory on the next read.
+    // Drop the forced value, so that the next read adopts the votes.
     *mg_state.meta_consensus_raw.lock().unwrap() = None;
     reopened
 }
@@ -9205,7 +9297,8 @@ async fn reopened_while_publishing_seat_bindings(mg_state: Arc<MgState>) -> Test
 #[tokio::test]
 async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
     // On a poor network single MG connections fail intermittently. The seats
-    // exist, so one failed dial is retried instead of ending the run.
+    // exist, so a failed dial is retried in the next wave instead of ending
+    // the run, even while too few seats voted for consensus.
     let mg_state = Arc::new(MgState::default());
     let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
     let connects = mg_state.connect_calls.load(Ordering::SeqCst);
@@ -9226,7 +9319,8 @@ async fn a_post_dkg_resume_retries_mg_connections_within_the_run() {
 #[tokio::test]
 async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial() {
     // A dial that hangs until the request timeout must neither hold back the
-    // other seats' dials nor end the run.
+    // other seats' votes nor end the run. The other six seats are a consensus
+    // threshold, so the hung seat is not needed again.
     let mg_state = Arc::new(MgState::default());
     let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
     let next = mg_state
@@ -9246,8 +9340,8 @@ async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial()
     formed(&reopened.status());
     assert_eq!(
         mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
-        Some(next + 1),
-        "the hung dial was retried once"
+        Some(next),
+        "consensus adopted the vote without the hung seat"
     );
     let connected: Vec<usize> = effect_log
         .lock()
@@ -9258,12 +9352,210 @@ async fn a_post_dkg_resume_dials_mgs_concurrently_and_retries_a_timed_out_dial()
             _ => None,
         })
         .collect();
-    let mut others: Vec<usize> = connected[..connected.len() - 1].to_vec();
+    let mut others = connected.clone();
     others.sort_unstable();
     assert_eq!(
-        (others, connected.last().copied()),
-        ((1..locators().len()).collect::<Vec<_>>(), Some(0)),
-        "every other seat connected while seat 0's first dial hung: {connected:?}"
+        others,
+        (1..locators().len()).collect::<Vec<_>>(),
+        "every other seat connected while seat 0's dial hung: {connected:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_resumes_without_every_mg() {
+    // Seven guardians need five matching votes. A proposal that consensus
+    // already carries needs no MG; an unpublished one needs only enough
+    // reachable voters.
+    for (already_adopted, offline) in [
+        (true, vec![0, 1, 2, 3, 4, 5, 6]),
+        (false, vec![0, 6]),
+        (false, vec![0, 3, 6]),
+    ] {
+        let mg_state = Arc::new(MgState::default());
+        let reopened = if already_adopted {
+            reopened_after_unconfirmed_votes(mg_state.clone()).await
+        } else {
+            reopened_while_publishing_seat_bindings(mg_state.clone()).await
+        };
+        let connects = mg_state.connect_calls.load(Ordering::SeqCst);
+        let attestations = mg_state.attestation_calls.load(Ordering::SeqCst);
+        let starts = mg_state.start_callbacks.lock().unwrap().len();
+        mg_state
+            .offline_indices
+            .lock()
+            .unwrap()
+            .extend(offline.iter().copied());
+
+        let result = reopened.resume_with_options(options()).await;
+
+        if offline.len() == 3 {
+            assert!(
+                matches!(
+                    &result,
+                    // A dial the deadline cuts off reports a timeout.
+                    Err(FaError::Mg(MgFailure {
+                        operation: MgOperation::Connect,
+                        cause: MgCause::Transport | MgCause::Timeout,
+                        ..
+                    }))
+                ),
+                "four votes cannot confirm a seven-guardian proposal: {result:?}"
+            );
+            assert_eq!(
+                formation(&reopened.status()).phase,
+                FormationPhase::PublishingSeatBindings
+            );
+            assert!(reopened.inner.store.backup_payload().await.is_err());
+            mg_state.offline_indices.lock().unwrap().remove(&3);
+            reopened.resume_with_options(options()).await.unwrap();
+        } else {
+            result.expect("a saved proposal does not need every MG");
+        }
+        formed(&reopened.status());
+        assert_eq!(
+            mg_state.attestation_calls.load(Ordering::SeqCst),
+            attestations,
+            "the saved proposal is replayed, not rebuilt"
+        );
+        assert_eq!(mg_state.start_callbacks.lock().unwrap().len(), starts);
+        if already_adopted {
+            assert_eq!(
+                mg_state.connect_calls.load(Ordering::SeqCst),
+                connects,
+                "consensus already carried the proposal"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_waits_for_adoption_after_a_threshold_voted() {
+    // Consensus adopts a vote some reads after the guardians accepted it.
+    // Once five of seven seats voted, one failing seat, whether offline or
+    // refusing, must not end the run before the federation adopts.
+    for refusing in [false, true] {
+        let mg_state = Arc::new(MgState::default());
+        let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+        if refusing {
+            mg_state
+                .meta_terminal_errors
+                .lock()
+                .unwrap()
+                .insert(0, ManifoldGuardianError::Unauthorized);
+        } else {
+            mg_state.offline_indices.lock().unwrap().insert(0);
+        }
+        reopened
+            .inner
+            .ports
+            .consensus_reader
+            .delayed_formation_reads
+            .store(3, Ordering::SeqCst);
+
+        reopened
+            .resume_with_options(options())
+            .await
+            .expect("six votes are adopted on a later read");
+
+        formed(&reopened.status());
+        assert_eq!(
+            mg_state.meta_submissions.lock().unwrap().len(),
+            locators().len() - 1
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_saved_formation_proposal_stops_dialing_once_a_threshold_voted() {
+    // Six of seven seats vote in the first wave while seat 0's dial fails.
+    // Consensus adopts only some reads later. A later dial to seat 0 would
+    // hang until the deadline, so after a threshold voted the run must only
+    // read consensus.
+    let mg_state = Arc::new(MgState::default());
+    let reopened = reopened_while_publishing_seat_bindings(mg_state.clone()).await;
+    let next = mg_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *mg_state.fail_connect_on_attempt.lock().unwrap() = Some((0, next));
+    *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next + 1));
+    reopened
+        .inner
+        .ports
+        .consensus_reader
+        .delayed_formation_reads
+        .store(3, Ordering::SeqCst);
+    // A request bound longer than the run lets the hung dial reach the
+    // deadline.
+    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(1),
+        run_timeout: Duration::from_secs(2),
+        request_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+
+    reopened
+        .resume_with_options(options)
+        .await
+        .expect("six votes are adopted without another dial");
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.connect_attempts.lock().unwrap().get(&0).copied(),
+        Some(next),
+        "seat 0 was dialed only in the first wave"
+    );
+}
+
+#[tokio::test]
+async fn dkg_recovery_retries_an_attestation_while_a_guardian_restarts() {
+    // A run that stopped at `DkgComplete` has no saved proposal yet, so it
+    // needs every seat's attestation. A guardian process that restarts
+    // answers `SeatUnavailable` for a while; that is retried, not fatal.
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.fail_next(usize::MAX);
+    let client = open_client_with_reader(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    assert!(matches!(
+        client.create_at(intent(), locators(), options()).await,
+        Err(FaError::Timeout(_))
+    ));
+    assert_eq!(
+        formation(&client.status()).phase,
+        FormationPhase::DkgComplete
+    );
+    drop(client);
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
+    mg_state
+        .unavailable_attestations
+        .lock()
+        .unwrap()
+        .insert(3, 2);
+
+    reopened.resume_with_options(options()).await.unwrap();
+
+    formed(&reopened.status());
+    assert_eq!(
+        mg_state.unavailable_attestations.lock().unwrap()[&3],
+        0,
+        "both unavailable answers were retried"
+    );
+    assert_eq!(
+        mg_state.attestation_calls.load(Ordering::SeqCst),
+        locators().len() + 2
     );
 }
 
@@ -9281,9 +9573,10 @@ async fn a_post_dkg_resume_still_ends_at_the_deadline_when_an_mg_stays_unreachab
     assert!(
         matches!(
             result,
+            // A dial the deadline cuts off reports a timeout.
             Err(FaError::Mg(MgFailure {
                 operation: MgOperation::Connect,
-                cause: MgCause::Transport,
+                cause: MgCause::Transport | MgCause::Timeout,
                 ..
             }))
         ),
@@ -13081,9 +13374,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     assert!(
         matches!(reopened.status(), FaStatus::Formation(_)),
@@ -13092,9 +13392,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
 
     let error = reopened.abandon_formation(options()).await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -13217,9 +13524,16 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FaError::Storage(message)
+        matches!(&error, FaError::StorageInvariant(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -15027,6 +15341,250 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
     );
 }
 
+#[test]
+fn failure_disposition_distinguishes_causes_with_identical_progress_codes() {
+    use crate::FailureDisposition::{Retryable, Terminal};
+    let failure = |cause| MgFailure {
+        mg: manager_key(3).x_only_public_key().0,
+        operation: MgOperation::GetStatus,
+        cause,
+    };
+    let cases = [
+        (
+            FaError::Storage("I/O interrupted".into()),
+            FaErrorCode::Storage,
+            Retryable,
+        ),
+        (
+            FaError::StorageInvariant("missing authorized quote".into()),
+            FaErrorCode::Storage,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::Transport)),
+            FaErrorCode::ManifoldGuardian,
+            Retryable,
+        ),
+        (
+            FaError::Mg(failure(MgCause::TerminalStatus(
+                ServiceStatus::Decommissioned,
+            ))),
+            FaErrorCode::ManifoldGuardian,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::OfferChanged)),
+            FaErrorCode::ManifoldGuardian,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::GuardianVerificationFeeAccountMismatch)),
+            FaErrorCode::ManifoldGuardian,
+            Retryable,
+        ),
+        (
+            FaError::Mg(failure(MgCause::InvalidResponse)),
+            FaErrorCode::InvalidManifoldGuardians,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::FormationMetaAlreadyPublished)),
+            FaErrorCode::InvalidManifoldGuardians,
+            Terminal,
+        ),
+        (
+            FaError::Mg(failure(MgCause::Timeout)),
+            FaErrorCode::Timeout,
+            Retryable,
+        ),
+        (
+            FaError::SelectionPreviewTimeout,
+            FaErrorCode::Timeout,
+            Terminal,
+        ),
+        (
+            FaError::Payment("wallet temporarily unavailable".into()),
+            FaErrorCode::Payment,
+            Retryable,
+        ),
+        (
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                failure: None,
+            },
+            FaErrorCode::SelectionReauthorizationRequired,
+            Terminal,
+        ),
+        (
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(failure(MgCause::Timeout)),
+            },
+            FaErrorCode::SelectionReauthorizationRequired,
+            Terminal,
+        ),
+    ];
+    for (error, code, disposition) in cases {
+        assert_eq!(error.code(), code);
+        assert_eq!(error.disposition(), disposition, "{error:?}");
+        assert_eq!(
+            crate::FormationFailure::from(&error),
+            crate::FormationFailure { code, disposition }
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_guardian_status_pauses_formation_without_discarding_recovery() {
+    for status in [ServiceStatus::DataLoss, ServiceStatus::Decommissioned] {
+        let database = MemDatabase::new().into_database();
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(MgState::default());
+        state
+            .seat_statuses
+            .lock()
+            .unwrap()
+            .insert(4, status.clone());
+        let client = open_client(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            MgConfig::given_away(),
+        )
+        .await;
+        assert!(matches!(
+            client.create_at(intent(), locators(), options()).await.as_ref(),
+            Err(FaError::Mg(MgFailure { mg, operation: MgOperation::GetStatus, cause: MgCause::TerminalStatus(actual) }))
+                if *actual == status && *mg == manager_key(4).x_only_public_key().0
+        ));
+        let before = formation(&client.status()).clone();
+        assert_eq!(
+            before.last_error,
+            Some(crate::FormationFailure {
+                code: FaErrorCode::ManifoldGuardian,
+                disposition: crate::FailureDisposition::Terminal,
+            })
+        );
+        assert!(before.seats.iter().all(|seat| seat.seat_id.is_some()));
+        drop(client);
+        let reopened = open_client(database, payments, state, MgConfig::given_away()).await;
+        assert_eq!(
+            formation(&reopened.status()).formation_id,
+            before.formation_id
+        );
+        assert_eq!(formation(&reopened.status()).last_error, None);
+        assert!(reopened.resume().await.is_err());
+        assert_eq!(formation(&reopened.status()).last_error, before.last_error);
+    }
+}
+
+#[tokio::test]
+async fn wallet_lookup_failure_retains_selected_formation_and_exact_reservation() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("retry-wallet-query".to_owned());
+    let reservation_id = seed_selected_recorded_reservation(
+        &client,
+        &payment_state,
+        formation_id.clone(),
+        test_now_secs() + 300,
+    )
+    .await;
+    payment_state.fail_payable.store(true, Ordering::SeqCst);
+    let error = client.resume().await.unwrap_err();
+    assert!(matches!(error, FaError::Payment(_)), "{error:?}");
+    assert_eq!(formation(&client.status()).formation_id, formation_id);
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FaErrorCode::Payment,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    assert!(
+        payment_state
+            .reservations
+            .lock()
+            .unwrap()
+            .contains_key(reservation_id.as_str())
+    );
+    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
+    payment_state.fail_payable.store(false, Ordering::SeqCst);
+    client.resume().await.unwrap();
+    assert!(matches!(client.status(), FaStatus::Formed(_)));
+}
+
+#[tokio::test]
+async fn policy_removed_payer_requires_reauthorization_while_wallet_is_unavailable() {
+    let database = MemDatabase::new().into_database();
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("retry-removed-payer".to_owned());
+    seed_selected_recorded_reservation(
+        &client,
+        &payment_state,
+        formation_id.clone(),
+        test_now_secs() + 300,
+    )
+    .await;
+    drop(client);
+
+    // The policy replaces the selected payer [A] with [B] while the wallet
+    // cannot answer: the removal must win over the wallet failure.
+    let second_invite = second_payment_invite();
+    let registry = TestRegistry::default();
+    *registry.candidates.lock().expect("test lock") =
+        vec![setup_payment_event(test_now_secs() + 1, &[&second_invite])];
+    payment_state.fail_payable.store(true, Ordering::SeqCst);
+    let payable_calls = payment_state.payable_calls.load(Ordering::SeqCst);
+    let reopened = open_client_with_registry(
+        database,
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+        registry,
+    )
+    .await;
+    let error = reopened.resume().await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+                failure: None,
+            }
+        ),
+        "{error:?}"
+    );
+    // Before outputs start, a removed payer ends the selected formation and
+    // releases its exact reservation, as it does with a healthy wallet.
+    assert_eq!(reopened.status(), FaStatus::Idle);
+    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        payment_state.payable_calls.load(Ordering::SeqCst),
+        payable_calls,
+        "a payer outside the policy needs no wallet capability query",
+    );
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
+}
+
 // Keep the subscriber attached to the future, not a process-global default:
 // formation tests run concurrently and each seat's diagnostics must stay isolated.
 #[derive(Clone, Default)]
@@ -15657,3 +16215,153 @@ async fn eligibility_finds_a_seat_by_the_peer_its_guardian_is_bound_to() {
 
 #[path = "tests/replacement_receipts.rs"]
 mod replacement_receipts;
+
+#[tokio::test]
+async fn feature_replacements_survive_reopen_without_payment_authority() {
+    use fedi_decentralized_nostr::feature_config::{FEATURE_CONFIG_D_TAG, FEATURE_CONFIG_KIND};
+    let feature_keys = Keys::generate();
+    let now = test_now_secs();
+    let registry = TestRegistry {
+        feature_pin: Some(feature_keys.public_key()),
+        ..Default::default()
+    };
+    let feature = |version: &str, ts| {
+        EventBuilder::new(Kind::Custom(FEATURE_CONFIG_KIND),serde_json::json!({"version":1,"fman_version":version,"min_fee_ppm":0,"federations":[],"telemetry_registration_url":"https://ignored.example","guardian_transfer_v2":true}).to_string()).tag(Tag::identifier(FEATURE_CONFIG_D_TAG)).custom_created_at(nostr_sdk::Timestamp::from_secs(ts)).sign_with_keys(&feature_keys).unwrap()
+    };
+    registry
+        .feature_candidates
+        .lock()
+        .unwrap()
+        .push(feature("2.0.0", now));
+    let db = MemDatabase::new().into_database();
+    let open = || {
+        open_client_with_registry(
+            db.clone(),
+            TestPayments::new().0,
+            Arc::new(MgState::default()),
+            MgConfig::paid(),
+            registry.clone(),
+        )
+    };
+    let client = open().await;
+    client.refresh_maintenance_policy(options()).await.unwrap();
+    assert_eq!(
+        client
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.0.0"
+    );
+    assert!(
+        client
+            .admitted_setup_payment_federations(options())
+            .await
+            .is_err()
+    );
+    registry
+        .candidates
+        .lock()
+        .unwrap()
+        .push(setup_payment_raw_event(now + 5, serde_json::json!({"version":1,"fman_version":"0.1.0","federations":[PAYMENT_INVITE],"telemetry_registration_url":"https://example.com/enroll","min_fee_ppm":3210,"guardian_link":true}).to_string()));
+    client.refresh_maintenance_policy(options()).await.unwrap();
+    assert_eq!(client.min_guardian_fee_ppm().await, 3210);
+    assert_eq!(
+        client.replacement_policy().await.unwrap().guardian_link(),
+        None
+    );
+    drop(client);
+    *registry.feature_candidates.lock().unwrap() = vec![feature("1.1.0", now - 1)];
+    let reopened = open().await;
+    reopened
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.0.0"
+    );
+    assert_eq!(reopened.min_guardian_fee_ppm().await, 3210);
+    // A payment record this release cannot interpret still blocks payment,
+    // not the independently authenticated feature policy.
+    reopened
+        .inner
+        .store
+        .store_setup_payment_federations_event(setup_payment_raw_event(now + 6, r#"{"version":2}"#))
+        .await
+        .unwrap();
+    reopened
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .replacement_policy()
+            .await
+            .unwrap()
+            .guardian_transfer_v2(),
+        Some(true)
+    );
+    assert!(
+        reopened
+            .admitted_setup_payment_federations(options())
+            .await
+            .is_err()
+    );
+
+    let stored = EventBuilder::new(
+        Kind::Custom(FEATURE_CONFIG_KIND),
+        r#"{"version":1,"fman_version":"1.0.0","seat_memory_budget_mib_v2":0}"#,
+    )
+    .tag(Tag::identifier(FEATURE_CONFIG_D_TAG))
+    .custom_created_at(nostr_sdk::Timestamp::from_secs(now + 10))
+    .sign_with_keys(&feature_keys)
+    .unwrap();
+    reopened
+        .inner
+        .store
+        .store_feature_config_event(stored.clone())
+        .await
+        .unwrap();
+    drop(reopened);
+    let recovered = open().await;
+    *registry.feature_candidates.lock().unwrap() = vec![feature("2.1.0", now + 9)];
+    // This fixture's payment record is also unsupported; the refresh cannot
+    // supply policy, but must not replace the authentic feature floor.
+    assert!(
+        recovered
+            .refresh_maintenance_policy(options())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        recovered
+            .inner
+            .store
+            .load_feature_config_event(feature_keys.public_key())
+            .await
+            .unwrap()
+            .id,
+        stored.id
+    );
+    *registry.feature_candidates.lock().unwrap() = vec![feature("2.2.0", now + 11)];
+    recovered
+        .refresh_maintenance_policy(options())
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered
+            .replacement_policy()
+            .await
+            .unwrap()
+            .mg_version()
+            .to_string(),
+        "2.2.0"
+    );
+}

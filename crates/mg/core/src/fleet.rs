@@ -44,6 +44,7 @@ use crate::db::{
 use crate::facts::{PortBase, SeatPorts};
 use crate::host_pressure::{PressureSample, PressureState};
 use crate::identity::RootMnemonic;
+use crate::ordering_latency::OrderingLatencyState;
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
 use crate::seat::{
@@ -376,9 +377,6 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
-    /// Edge trigger for the readiness loop to run now rather than at its next
-    /// slot, after the operator reset the uptime history.
-    readiness_rerun: Notify,
     /// The operator's linked phone: offer and evaluator memory
     /// ([`crate::guardian_link`]).
     pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
@@ -592,7 +590,6 @@ impl Fleet {
             advertisement_changed,
             replacement_admissions: Semaphore::new(4),
             seat_readiness: Mutex::new(None),
-            readiness_rerun: Notify::new(),
             guardian_link: Default::default(),
             iroh_endpoint_id: std::sync::OnceLock::new(),
         };
@@ -684,20 +681,28 @@ impl Fleet {
         let seat = self
             .seat_by_id(seat_id)
             .ok_or(TelemetryAccessError::Unavailable)?;
-        let report = seat
-            .report()
+        running_metrics_port(&seat)
             .await
-            .map_err(|_| TelemetryAccessError::Unavailable)?;
-        if !matches!(
-            report,
-            SeatReport::Active {
-                phase: crate::seat::SeatPhase::Running { .. },
-                ..
+            .ok_or(TelemetryAccessError::Unavailable)
+    }
+
+    /// The loopback metrics port of every seat whose child is running, for
+    /// the readiness ordering latency check.
+    pub async fn running_seat_metrics_ports(&self) -> Vec<(SeatId, u16)> {
+        let seats = self
+            .seats
+            .read()
+            .expect("seat registry lock is never poisoned")
+            .iter()
+            .map(|(seat_id, seat)| (seat_id.clone(), seat.clone()))
+            .collect::<Vec<_>>();
+        let mut running = Vec::with_capacity(seats.len());
+        for (seat_id, seat) in seats {
+            if let Some(port) = running_metrics_port(&seat).await {
+                running.push((seat_id, port));
             }
-        ) {
-            return Err(TelemetryAccessError::Unavailable);
         }
-        Ok(seat.metrics_port())
+        running
     }
 
     pub fn safe_event_journals(&self) -> Vec<SafeEventJournal> {
@@ -936,24 +941,6 @@ impl Fleet {
             .map_or(UptimeScores::START, |uptime| uptime.scores))
     }
 
-    /// Forget the uptime history, so it restarts at [`UptimeScores::START`]
-    /// at the next up slot as on a new MG, and wake the readiness loop so the
-    /// verdict follows now.
-    pub async fn reset_uptime(&self) -> anyhow::Result<()> {
-        self.db.reset_uptime().await?;
-        tracing::warn!(
-            safe_to_share = true,
-            "the operator reset the uptime history"
-        );
-        self.readiness_rerun.notify_one();
-        Ok(())
-    }
-
-    /// Wait until the readiness checks should run before their next slot.
-    pub async fn readiness_rerun_requested(&self) {
-        self.readiness_rerun.notified().await;
-    }
-
     /// Account for this run's pressure reading, `None` when the counters
     /// could not be read, and return the pressure history after it.
     pub async fn record_host_pressure(
@@ -961,6 +948,17 @@ impl Fleet {
         reading: Option<PressureSample>,
     ) -> anyhow::Result<Option<PressureState>> {
         Ok(self.db.record_host_pressure(reading).await?)
+    }
+
+    /// Account for a run that read its running seats' ordering latency at
+    /// `at`, with the median of their interval means, `None` when no seat's
+    /// interval said anything, and return the history after it.
+    pub async fn record_ordering_latency(
+        &self,
+        at: SystemTime,
+        median_secs: Option<f64>,
+    ) -> anyhow::Result<OrderingLatencyState> {
+        Ok(self.db.record_ordering_latency(at, median_secs).await?)
     }
 
     /// The durable verdict that gates admission.
@@ -1484,6 +1482,19 @@ impl Fleet {
 /// service Nostr identity [`crate::service`] signs `GetPeerAttestation`
 /// responses under. A seat-binding directory this fleet's guardians vote for
 /// must bind each of their seats to exactly this key.
+/// `seat`'s loopback metrics port while its child is running.
+async fn running_metrics_port(seat: &Seat) -> Option<u16> {
+    let report = seat.report().await.ok()?;
+    matches!(
+        report,
+        SeatReport::Active {
+            phase: crate::seat::SeatPhase::Running { .. },
+            ..
+        }
+    )
+    .then(|| seat.metrics_port())
+}
+
 fn attestation_pubkey(identity: &RootMnemonic) -> Pubkey {
     Pubkey(
         identity

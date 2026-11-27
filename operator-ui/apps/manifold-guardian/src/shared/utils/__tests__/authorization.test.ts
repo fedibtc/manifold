@@ -1,7 +1,7 @@
 import type { OnboardingResponse } from '@operator-ui/types';
 import { describe, expect, it } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
-import { buildAuthorizationRequest, isAuthorized } from '@/shared/utils/authorization';
+import { buildAuthorizationRequest, isAuthorized, isBadgeless } from '@/shared/utils/authorization';
 
 const waiting: OnboardingResponse = {
   stage: 'holder_authorization',
@@ -9,6 +9,7 @@ const waiting: OnboardingResponse = {
   fman_name: 'mutual-hamster',
   service_pubkey: '02abc',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+  badgeless_mg: true,
   nostr: { state: 'not_observed', checked_at: 1_760_000_000 },
   fman_version: { current: '0.1.0', latest: '0.1.0', update_required: false }
 };
@@ -56,5 +57,24 @@ describe('isAuthorized', () => {
 
   it('should be false with no response at all', () => {
     expect(isAuthorized(undefined)).toBe(false);
+  });
+});
+
+describe('isBadgeless', () => {
+  it('should be true for a host with no authorization where badgeless setup exists', () => {
+    expect(isBadgeless(waiting)).toBe(true);
+  });
+
+  // In production a missing authorization is a problem to fix, not a mode.
+  it('should be false where the network offers no badgeless setup', () => {
+    expect(isBadgeless({ ...waiting, badgeless_mg: false })).toBe(false);
+  });
+
+  it('should be false once a badge is connected', () => {
+    expect(isBadgeless(observed)).toBe(false);
+  });
+
+  it('should be false with no response at all', () => {
+    expect(isBadgeless(undefined)).toBe(false);
   });
 });

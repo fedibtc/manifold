@@ -206,6 +206,7 @@ fn production_pins_its_issuer_identities() {
             "npub1auj9edrs2cfnuk2u64xkdh5tmkl8rw59swkzcthdu78e2xvpulmqe86t0t",
             "npub1c08msdcfzpv3gq0nryma5z0lahqw6nlkfer8w2a8c03xw7z2fsdqrvynla",
             "npub124rwnjk2dw9ywndfm2ren70clxyg3qqcksjzn6lqph2tnnf0dgcsk67pr9",
+            "npub1ff79m5ykm69ude3x4zxs3n5cdglmpwe4gl0re84nx3m5v3c4rx0s3wntpz",
         ]
     );
 
@@ -535,6 +536,13 @@ fn a_published_guardian_link_flag_wins_over_the_environment_default() {
 }
 
 #[test]
+fn badgeless_setup_is_off_only_in_production() {
+    assert!(ManifoldEnvironment::Development.badgeless_mg());
+    assert!(ManifoldEnvironment::Staging.badgeless_mg());
+    assert!(!ManifoldEnvironment::Production.badgeless_mg());
+}
+
+#[test]
 fn each_environment_names_its_push_gateway_and_only_development_overrides_it() {
     let origin = |environment: ManifoldEnvironment| {
         environment
@@ -571,4 +579,39 @@ fn each_environment_names_its_push_gateway_and_only_development_overrides_it() {
             ..
         })
     ));
+}
+
+#[test]
+fn feature_pin_is_opt_in_distinct_and_development_only() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        assert!(
+            environment
+                .profile_with_env(|_| None)
+                .unwrap()
+                .feature_config_publisher()
+                .is_none()
+        );
+        let configured = environment.profile_with_env(|name| {
+            (name == DEV_FEATURE_CONFIG_PUBLISHER_ENV)
+                .then(|| STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER.to_owned())
+        });
+        if environment == ManifoldEnvironment::Development {
+            assert!(configured.unwrap().feature_config_publisher().is_some());
+        } else {
+            assert!(matches!(
+                configured,
+                Err(ManifoldEnvironmentProfileError::OverrideOutsideDevelopment { .. })
+            ));
+        }
+    }
+    assert!(
+        ManifoldEnvironment::Development
+            .profile_with_env(|name| (name == DEV_FEATURE_CONFIG_PUBLISHER_ENV)
+                .then(|| DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER.to_owned()))
+            .is_err()
+    );
 }

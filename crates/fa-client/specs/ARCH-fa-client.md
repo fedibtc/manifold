@@ -2,8 +2,8 @@
 
 ## Status
 
-Formation and replacement from SeatGrants
-([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md))
+Formation and replacement from SeatGrants, and custom gateway attachment
+([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)),
 are not implemented: every seat and replacement destination still comes from a
 verified selection, and the size range is 7 through 20.
 
@@ -32,8 +32,7 @@ read-only statically admitted enumeration, and trust-based selection with
 its read-only preview is implemented over it (see *Registry discovery and
 selection* below). Typed post-formation maintenance, liquidity orchestration,
 and guardian-fee arrangement are implemented as separate operations.
-Post-formation liquidity, and the custom gateway attachment that is the
-federation's other gateway source, are governed by
+Post-formation liquidity is governed by
 [`SPEC-fa-post-formation-liquidity`](./SPEC-fa-post-formation-liquidity.md).
 Each increment extends this consumer boundary and state engine rather than
 adding a second driver to any consumer. The public `FormationIntent`
@@ -68,10 +67,6 @@ it fails with reset guidance. Every older record must be
 reset rather than migrated because it predates the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
-The custom gateway attachment is its own record keyed by federation id,
-holding the URL and whether the fresh LNv2 view confirmed it. It was added
-without changing any existing record, so earlier stores need no migration; an
-older build ignores it. The record is local: the FA backup does not carry it.
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
@@ -203,7 +198,10 @@ with joined wallet state for selection/refill UI. Ids alone describe only the
 members a consumer has already joined, because an id cannot be turned back
 into an invite; a consumer that offers joining an unjoined member needs the
 join material the publication already carries. Operations that need a payer
-reject the empty set before consulting the wallet.
+check its policy membership, which rejects the empty set, before consulting the
+wallet: a payer the policy removed requires reauthorization even while the
+wallet cannot answer, and a wallet failure for an admitted payer stays a
+retryable payment error.
 `pay_and_create` separately requires the explicit payer to be admitted and
 Ready before persisting the formation or requesting the first quote.
 `create_without_payer` bypasses that paid capability only by failing closed on
@@ -436,6 +434,14 @@ guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
+Formation `last_error` carries a runtime-only error code and retry disposition.
+Manifold classifies the cause; consumers must not infer retry policy from the
+coarse code. `Terminal` stops automatic resume until an explicit command or a
+fresh launch. It neither permits abandonment nor means funds are unrecoverable.
+Reopen clears the verdict and rechecks durable facts once; no error verdict is
+stored in the database or backup. Concrete user actions still come from the
+durable formation state.
+
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
 `DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
@@ -443,7 +449,15 @@ with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
 submission; its confirmation in consensus ends the formation and publishes
-`FaStatus::Formed`. Reopening preserves these phases. A formation record that an
+`FaStatus::Formed`. Saving that target needs every MG running and attesting; a
+seat that answers `SeatUnavailable` while its guardian restarts is retried
+until the run deadline. Once the target is saved, resume reads consensus
+first and submits the target through each seat it can reach, without waiting
+for every MG. Unreachable, timed-out and restarting seats are retried until
+the deadline. After a consensus threshold of seats acknowledged the current
+base, the run dials no more seats and only reads consensus until the target
+appears or the deadline passes. Before that, a guardian-verification fee
+account refusal ends the run at once. Reopening preserves these phases. A formation record that an
 older build marked formed converts to the formed record when it loads.
 Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
@@ -666,10 +680,35 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Federation stats
+
+`federation_stats` asks every formed seat's MG for its guardian's FA Stats
+in one pass, with no lease, retries or stored state. Custody comes from
+consensus; active wallets come from guardian-local client backups, so a moved
+or restored guardian reports that window as partial. Volume covers the 1008
+and 4320 module consensus blocks before the current 144-block bucket, which is
+about 7 and 30 days, not calendar spans. For each figure the FA
+takes the lower median of the complete answers once at least 2f+1 guardians
+gave one, so up to f dishonest answers cannot move it outside the honest ones,
+and otherwise the lower median of every answer, marked partial. Each figure says how many answers it rests on.
+Each MG's `GetVersion` API version says whether it serves stats; a
+guardian that cannot be reached, errors, or runs an older MG gives no answer. The call fails only when no guardian answers, and its error
+separates guardians whose MG lacks the verb from guardians that failed, so the
+consumer can tell "stats arrive once guardians update" from "retry".
+
+The active-wallet comparison is separate from the standalone total. It uses
+only guardians with complete counts for the UTC date at the start of the
+request wave and exactly 30 UTC dates earlier. When at least 2f+1 give such a
+pair, FA takes both lower medians over that same cohort and reports the date,
+cohort size, and change. There is no partial comparison or stale-date
+fallback. A missing baseline (including an older MG without history) does not
+affect the ordinary totals or count as zero. A measured zero is a valid count
+but has no percentage change.
+
 ## Replacement eligibility
 
 The FA checks the other guardians' public reports and authenticated MG trust
-material against the signed setup-payment policy. It recommends replacement
+material against the effective feature policy (37710, or the legacy projection before admission). It recommends replacement
 for prolonged absence, a low weekly or monthly peer score, or confirmed holder
 credential revocation. Absence is judged from last-seen timestamps and needs
 f+1 other reporters. Without enough of those, as just after a guardian transfer
@@ -758,8 +797,8 @@ are unknown, so the preview excludes their MGs but not their holders.
 explicit payer. Before it asks any MG, it refuses an approval previewed for
 another federation, checks the same custody rule, checks that the destination
 shares no service key with a current guardian, and refuses a priced preview
-without a payer. It then refreshes the setup-payment policy, falling back to
-the retained one on a relay timeout, and refuses with
+without a payer. It then refreshes payment and feature policy, falling back to
+the retained policies on a relay timeout, and refuses with
 `FaError::GuardianTransferDisabled` (category `capability_unavailable`)
 unless transfer is enabled: the policy's `guardian_transfer_v2` flag, or, when
 the policy omits it, the default of the client's Manifold environment, the
@@ -892,11 +931,10 @@ seals a backup that restore would refuse.
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
-- `custom_gateway` — the FA-supplied gateway attachment, its durable
-  record, and its exclusion with liquidity.
 - `seat_purchase` — selection and purchase of a transfer's destination seat.
 - `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
+- `federation_stats` — combining the guardians' FA Stats.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 
 ## Testing
@@ -967,10 +1005,7 @@ validators in the client fake.
 
 Liquidity tests use fake discovery, provider, MG, and consensus-reader ports
 to cover durable completion replay before provider discovery, exact gateway-URL
-proof invalidation, and signed completion-evidence validation. Custom gateway
-tests cover threshold attachment and finality, resume of an unfinished
-attachment after reopen, and the one-source exclusion in both directions,
-including a rejected liquidity request that leaves the federation free. The
+proof invalidation, and signed completion-evidence validation. The
 federation-preview unit test separately covers per-entry admission and
 deduplication after upstream aggregation; module discovery, the live threshold
 query, and network freshness remain that adapter's integration boundary. The

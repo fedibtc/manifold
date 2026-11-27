@@ -134,6 +134,47 @@ struct MetadataConsensusJson<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FederationStatsJson {
+    guardians: u16,
+    custodied_msats: CombinedFigureJson,
+    active_wallets_30d: CombinedFigureJson,
+    volume_1008_blocks_msats: CombinedFigureJson,
+    volume_4320_blocks_msats: CombinedFigureJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_wallets_comparison: Option<ActiveWalletComparisonJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveWalletComparisonJson {
+    utc_day: u64,
+    current_30d: u64,
+    previous_30d: u64,
+    based_on: u16,
+    delta: i128,
+    delta_percent: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CombinedFigureJson {
+    value: u64,
+    based_on: u16,
+    partial: bool,
+}
+
+impl From<fa_client::CombinedFigure> for CombinedFigureJson {
+    fn from(figure: fa_client::CombinedFigure) -> Self {
+        Self {
+            value: figure.value,
+            based_on: figure.based_on,
+            partial: figure.partial,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DecommissionJson<'a> {
     decommissioned: &'a [u16],
     already_decommissioned: &'a [u16],
@@ -755,6 +796,72 @@ impl<'a> CliOutput<'a> {
             )?;
             for (index, reason) in &outcome.refused {
                 writeln!(self.stdout, "seat {index} NOT decommissioned: {reason}")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the formed federation's combined FA Stats.
+    pub(crate) fn federation_stats(
+        &mut self,
+        stats: &fa_client::FederationStats,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(
+                &mut self.stdout,
+                &FederationStatsJson {
+                    guardians: stats.guardians,
+                    custodied_msats: stats.custodied_msats.into(),
+                    active_wallets_30d: stats.active_wallets_30d.into(),
+                    volume_1008_blocks_msats: stats.volume_1008_blocks_msats.into(),
+                    volume_4320_blocks_msats: stats.volume_4320_blocks_msats.into(),
+                    active_wallets_comparison: stats.active_wallets_comparison.map(|comparison| {
+                        ActiveWalletComparisonJson {
+                            utc_day: comparison.utc_day,
+                            current_30d: comparison.current_30d,
+                            previous_30d: comparison.previous_30d,
+                            based_on: comparison.based_on,
+                            delta: comparison.delta(),
+                            delta_percent: comparison.delta_percent(),
+                        }
+                    }),
+                },
+            )?;
+            writeln!(self.stdout)?;
+        } else {
+            for (name, figure) in [
+                ("custodied msats", stats.custodied_msats),
+                ("active wallets 30d", stats.active_wallets_30d),
+                ("volume 1008 blocks msats", stats.volume_1008_blocks_msats),
+                ("volume 4320 blocks msats", stats.volume_4320_blocks_msats),
+            ] {
+                writeln!(
+                    self.stdout,
+                    "{name}: {} (based on {} of {} guardians{})",
+                    figure.value,
+                    figure.based_on,
+                    stats.guardians,
+                    if figure.partial { ", partial" } else { "" }
+                )?;
+            }
+            if let Some(comparison) = stats.active_wallets_comparison {
+                write!(
+                    self.stdout,
+                    "active wallets 30d comparison (UTC day {}, based on {} of {} guardians): {} vs {} 30 days earlier (change {:+}",
+                    comparison.utc_day,
+                    comparison.based_on,
+                    stats.guardians,
+                    comparison.current_30d,
+                    comparison.previous_30d,
+                    comparison.delta(),
+                )?;
+                if let Some(percent) = comparison.delta_percent() {
+                    write!(self.stdout, ", {percent:+.2}%")?;
+                }
+                writeln!(self.stdout, ")")?;
+            } else {
+                writeln!(self.stdout, "active wallets 30d comparison: unavailable")?;
             }
         }
         Ok(())

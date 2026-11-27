@@ -1,10 +1,5 @@
 # SPEC-flip-federation-trust: Federation eligibility verification
 
-## Status
-
-Policy evaluation still counts distinct MG identities; distinct holders are
-not enforced yet.
-
 ## Record justification
 
 The eligibility contract spans the shared `domain` attestation types, MG
@@ -96,7 +91,9 @@ identity once regardless of how many peers it operates. If the threshold cannot
 be determined, the request is rejected.
 
 Trusted identities whose verified badges name the same holder count as one
-operator. `all_trusted` rejects a federation in which two operating identities
+operator, whichever issuers signed those badges, and the relation is
+transitive: an identity carrying several holders' badges joins every identity
+that shares any of them. `all_trusted` rejects a federation in which two operating identities
 share a holder, and `consensus_majority_trusted` counts distinct holders toward
 its threshold. This is the FA's one-seat-per-holder rule
 ([ARCH-fa-client-discovery-selection](../../fa-client/specs/ARCH-fa-client-discovery-selection.md)),
@@ -178,9 +175,9 @@ egress boundary outside the process.
 ## Rejection mapping
 
 An identity the request carries no trust material for is untrusted;
-structurally valid but insufficient distinct trusted identities are
-`policy_mismatch`. Malformed, unverifiable, revoked, stale, below-minimum,
-wrong-subject, or wrong-federation credential material is
+structurally valid but insufficient distinct trusted operators, including
+identities that share a badge holder, are `policy_mismatch`. Malformed,
+unverifiable, revoked, stale, below-minimum, wrong-subject, or wrong-federation credential material is
 `invalid_credentials`, as are a
 request carrying no trust material at all, duplicate documents for one
 identity, and material signed by an identity other than the expected

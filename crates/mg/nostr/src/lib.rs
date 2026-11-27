@@ -23,9 +23,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use fedi_decentralized_domain::AdmittedFeaturePolicy;
 use fedi_decentralized_domain::MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS;
 pub use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, HolderAuthorizationEnvelope};
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
+use fedi_decentralized_nostr::feature_config::{FeatureConfigEvent, feature_config_filter};
 use fedi_decentralized_nostr::mg::HolderAuthorizationEventContent;
 pub use fedi_decentralized_nostr::mg::{
     AdvertisedUptime, AdvertisementDocument, AdvertisementPayload, AdvertisementV2Payload,
@@ -69,7 +71,7 @@ const LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// Both the relay-side filter limit and the local cap on one fetch: at most
 /// one candidate replaces the retained event per refresh, so this only needs
 /// enough headroom for a relay serving stale duplicates alongside it.
-const SETUP_PAYMENT_FETCH_LIMIT: u16 = 64;
+const POLICY_FETCH_LIMIT: u16 = 64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// One Holder authorization read, connections included. With durable
 /// publication after it, it must end well inside the operator UI's 60-second
@@ -244,6 +246,7 @@ struct Inner {
     setup_payment_publisher: Option<PublicKey>,
     presence: watch::Sender<DirectoryPresence>,
     holder_authorizations: watch::Sender<Vec<HolderAuthorizationEnvelope>>,
+    features: watch::Sender<Option<AdmittedFeaturePolicy>>,
     setup_payment_federations: watch::Sender<Option<AdmittedSetupPaymentFederations>>,
     started: AtomicBool,
     authorization_store: Arc<FleetHolderAuthorizationStore>,
@@ -266,14 +269,13 @@ impl ManifoldGuardianNostr {
         keys: Keys,
         setup_payment_publisher: Option<PublicKey>,
         retained_holder_authorizations: Vec<HolderAuthorizationEnvelope>,
-        retained_setup_payment_federations: Option<AdmittedSetupPaymentFederations>,
+        retained: RetainedPolicy,
         manifold_environment: ManifoldEnvironmentProfile,
         authorization_store: Arc<FleetHolderAuthorizationStore>,
         db: Db,
     ) -> Self {
-        let latest_mg_version = retained_setup_payment_federations
-            .as_ref()
-            .map(|policy| policy.mg_version().clone());
+        let features = AdmittedFeaturePolicy::resolve(retained.features, retained.payment.as_ref());
+        let latest_mg_version = features.as_ref().map(|policy| policy.mg_version().clone());
         let (presence, _) = watch::channel(DirectoryPresence {
             service_nostr_pubkey: keys.public_key(),
             // No read has happened yet, so a retained authorization reports
@@ -282,7 +284,7 @@ impl ManifoldGuardianNostr {
             latest_mg_version,
         });
         let (holder_authorizations, _) = watch::channel(retained_holder_authorizations);
-        let (setup_payment_federations, _) = watch::channel(retained_setup_payment_federations);
+        let (setup_payment_federations, _) = watch::channel(retained.payment);
         Self {
             inner: Arc::new(Inner {
                 db,
@@ -293,6 +295,7 @@ impl ManifoldGuardianNostr {
                 presence,
                 holder_authorizations,
                 setup_payment_federations,
+                features: watch::channel(features).0,
                 started: AtomicBool::new(false),
                 authorization_store,
                 authorization_refresh: tokio::sync::Mutex::new(()),
@@ -376,6 +379,11 @@ impl ManifoldGuardianNostr {
         Ok(proof)
     }
 
+    /// Subscribe to feature policy independently of whether paid setup is available.
+    pub fn subscribe_features(&self) -> watch::Receiver<Option<AdmittedFeaturePolicy>> {
+        self.inner.features.subscribe()
+    }
+
     pub fn subscribe_setup_payment_federations(
         &self,
     ) -> watch::Receiver<Option<AdmittedSetupPaymentFederations>> {
@@ -413,10 +421,10 @@ impl SupportChat for ManifoldGuardianNostr {
 }
 
 impl Inner {
-    /// The Fedi support key: the one the admitted setup-payment policy names,
+    /// The Fedi support key: the one the effective feature policy names,
     /// else the environment profile's. `None` disables the support chat.
     fn support(&self) -> Option<PublicKey> {
-        self.setup_payment_federations
+        self.features
             .borrow()
             .as_ref()
             .and_then(|policy| policy.support_nostr_pubkey().copied())
@@ -493,6 +501,17 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after the epoch")
         .as_secs()
+}
+
+/// The offer to advertise, or `None` for an MG with no enrolled Holder
+/// authorization. Such an MG, whose operator skipped that onboarding stage,
+/// is not publicly discoverable; the enrollment watch wakes the
+/// advertisement loop once an authorization arrives (SPEC-advertisement).
+fn advertisement_payload(
+    snapshot: AdvertisementSnapshot,
+    holder_authorizations: Vec<HolderAuthorizationEnvelope>,
+) -> Option<AdvertisementV2Payload> {
+    (!holder_authorizations.is_empty()).then(|| build_payload(snapshot, holder_authorizations))
 }
 
 /// Render one daemon snapshot as the unsigned v2 offer. The kind-37701
@@ -579,41 +598,88 @@ async fn run_setup_payment_refreshes(
     store: Arc<FleetSetupPaymentPolicyStore>,
     nostr: NostrRelayClient,
 ) {
-    let Some(publisher) = inner.setup_payment_publisher else {
+    if inner.setup_payment_publisher.is_none()
+        && inner
+            .manifold_environment
+            .feature_config_publisher()
+            .is_none()
+    {
         return;
-    };
+    }
     let poll_interval = if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL
     } else {
         SETUP_PAYMENT_POLL_INTERVAL
     };
     loop {
-        match refresh_setup_payment_federations(&nostr, publisher, &store).await {
-            Ok(Some(policy)) => {
-                let admitted = policy.set();
-                let latest_mg_version = admitted.mg_version().clone();
-                inner.presence.send_if_modified(|presence| {
-                    if presence.latest_mg_version.as_ref() == Some(&latest_mg_version) {
-                        false
-                    } else {
-                        presence.latest_mg_version = Some(latest_mg_version.clone());
-                        true
-                    }
+        let features = async {
+            let Some(key) = inner
+                .manifold_environment
+                .feature_config_publisher()
+                .copied()
+            else {
+                return Ok(None);
+            };
+            let candidates = nostr
+                .fetch_events_capped(
+                    feature_config_filter(key).limit(usize::from(POLICY_FETCH_LIMIT)),
+                    REQUEST_TIMEOUT,
+                    POLICY_FETCH_LIMIT,
+                )
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(?err, "feature policy fetch failed");
+                    Vec::new()
                 });
-                inner.setup_payment_federations.send_if_modified(|current| {
-                    if current.as_ref() == Some(admitted) {
-                        false
-                    } else {
-                        *current = Some(admitted.clone());
-                        true
+            refresh_features(&inner.db, key, candidates).await
+        };
+        let (payment, features) = tokio::join!(
+            async {
+                match inner.setup_payment_publisher {
+                    Some(publisher) => {
+                        refresh_setup_payment_federations(&nostr, publisher, &store).await
                     }
-                });
+                    None => Ok(None),
+                }
+            },
+            features
+        );
+        match payment {
+            Ok(Some(payment)) => {
+                inner
+                    .setup_payment_federations
+                    .send_if_modified(|old| update_policy(old, payment.set()));
             }
-            Ok(None) => {}
-            Err(err) => tracing::warn!(?err, "setup-payment policy refresh failed"),
+            Ok(None) => (),
+            Err(err) => tracing::warn!(?err, "payment policy refresh failed"),
+        }
+        match features {
+            Ok(feature) => {
+                let resolved = AdmittedFeaturePolicy::resolve(
+                    feature.map(FeatureConfigEvent::into_policy),
+                    inner.setup_payment_federations.borrow().as_ref(),
+                );
+                if let Some(policy) = resolved {
+                    inner.presence.send_if_modified(|presence| {
+                        update_policy(&mut presence.latest_mg_version, policy.mg_version())
+                    });
+                    inner
+                        .features
+                        .send_if_modified(|old| update_policy(old, &policy));
+                }
+            }
+            Err(err) => tracing::warn!(?err, "feature policy refresh failed"),
         }
         tokio::time::sleep(poll_interval).await;
     }
+}
+
+fn update_policy<T: Clone + PartialEq>(old: &mut Option<T>, next: &T) -> bool {
+    if old.as_ref() == Some(next) {
+        return false;
+    }
+    *old = Some(next.clone());
+    true
 }
 
 /// Publish both advertisement formats from one snapshot. Each format is
@@ -628,7 +694,9 @@ async fn advertise_once(
     let Some(snapshot) = host.advertisement().await else {
         return Ok(());
     };
-    let payload = build_payload(snapshot, holder_authorizations);
+    let Some(payload) = advertisement_payload(snapshot, holder_authorizations) else {
+        return Ok(());
+    };
     let mut failed = Vec::new();
     for format in MgAdvertisementFormat::ALL {
         let published = async {
@@ -823,9 +891,9 @@ async fn refresh_setup_payment_federations(
         .identifier(
             fedi_decentralized_nostr::setup_payment_federations::SETUP_PAYMENT_FEDERATIONS_D_TAG,
         )
-        .limit(usize::from(SETUP_PAYMENT_FETCH_LIMIT));
+        .limit(usize::from(POLICY_FETCH_LIMIT));
     let candidates = match nostr
-        .fetch_events_capped(filter, REQUEST_TIMEOUT, SETUP_PAYMENT_FETCH_LIMIT)
+        .fetch_events_capped(filter, REQUEST_TIMEOUT, POLICY_FETCH_LIMIT)
         .await
     {
         Ok(candidates) => candidates,
@@ -840,25 +908,57 @@ async fn refresh_setup_payment_federations(
     admit_setup_payment_federations(store, publisher, candidates, Timestamp::now()).await
 }
 
-/// Load the retained setup-payment policy, admitting it under the current
-/// publisher. Startup's read, before the boundary exists: the result is what
-/// [`ManifoldGuardianNostr::new`] starts its watch from.
-///
-/// # Errors
-///
-/// Fails when the retained event cannot be decoded or no longer authenticates
-/// under `publisher` — a rotated publisher must stop the daemon, not silently
-/// downgrade it to no policy. An authentic event whose content this release
-/// no longer admits loads as no policy instead.
+/// Independent revalidated policy records loaded before exposing RPCs.
+#[derive(Default)]
+pub struct RetainedPolicy {
+    payment: Option<AdmittedSetupPaymentFederations>,
+    features: Option<AdmittedFeaturePolicy>,
+}
+
+/// Restore the payment event and the selected publisher's feature snapshot before serving RPCs.
+/// Authentic but unsupported content supplies only a replacement floor. A rotated
+/// payment publisher or an integrity error in either selected record fails startup.
+/// Other feature publishers' records are neither read nor overwritten.
 pub async fn load_retained_setup_payment_policy(
     store: &FleetSetupPaymentPolicyStore,
-    publisher: PublicKey,
-) -> anyhow::Result<Option<AdmittedSetupPaymentFederations>> {
-    Ok(
-        admit_setup_payment_federations(store, publisher, Vec::new(), Timestamp::now())
+    publisher: Option<PublicKey>,
+    feature_publisher: Option<PublicKey>,
+    db: &Db,
+) -> anyhow::Result<RetainedPolicy> {
+    let payment = match publisher {
+        Some(key) => admit_setup_payment_federations(store, key, Vec::new(), Timestamp::now())
             .await?
-            .map(|policy| policy.set().clone()),
-    )
+            .map(|p| p.set().clone()),
+        None => None,
+    };
+    let features = match feature_publisher {
+        Some(key) => refresh_features(db, key, Vec::new())
+            .await?
+            .map(FeatureConfigEvent::into_policy),
+        None => None,
+    };
+    Ok(RetainedPolicy { payment, features })
+}
+
+async fn refresh_features(
+    db: &Db,
+    key: PublicKey,
+    candidates: Vec<Event>,
+) -> anyhow::Result<Option<FeatureConfigEvent>> {
+    let stored: Option<Event> = db
+        .feature_config_json(&key.to_hex())
+        .await?
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()?;
+    let old = stored.as_ref().map(|e| e.id);
+    let current = FeatureConfigEvent::select(stored, key, candidates, Timestamp::now())?;
+    if let Some(next) = &current
+        && Some(next.event().id) != old
+    {
+        db.store_feature_config(&key.to_hex(), &serde_json::to_string(next.event())?)
+            .await?;
+    }
+    Ok(current)
 }
 
 async fn admit_setup_payment_federations(

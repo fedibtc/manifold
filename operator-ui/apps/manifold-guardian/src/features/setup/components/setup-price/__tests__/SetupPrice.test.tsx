@@ -4,11 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { SetupPrice } from '../SetupPrice';
 
-const renderPrice = (onDone = vi.fn()) => {
+const renderPrice = (onDone = vi.fn(), withPrice = true) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <SetupPrice onDone={onDone} />
+      <SetupPrice withPrice={withPrice} onDone={onDone} />
     </QueryClientProvider>
   );
   return { onDone };
@@ -25,6 +25,29 @@ afterEach(() => {
 });
 
 describe('SetupPrice', () => {
+  // A host without a badge sells nothing: no price field, no price sent, and
+  // the data hint says it takes seats rather than sells them.
+  it('should ask only the data question without a badge', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice(vi.fn(), false);
+
+    expect(screen.queryByLabelText('Price per seat (sats)')).toBeNull();
+    expect(screen.getByText(/stops taking new seats/)).toBeTruthy();
+    expect(screen.queryByText(/selling/)).toBeNull();
+    fireEvent.click(noLimit());
+    fireEvent.click(finishButton());
+
+    await waitFor(() =>
+      expect(adminCallSpy).toHaveBeenCalledWith({
+        ConfigureInitialOffer: {
+          max_seats: null,
+          price_msats: null,
+          monthly_data_budget: 'unlimited'
+        }
+      })
+    );
+  });
+
   it('should write the entered price as millisatoshis', async () => {
     const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
     renderPrice();

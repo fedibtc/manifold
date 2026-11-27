@@ -21,7 +21,7 @@ use crate::identity::RootMnemonic;
 use crate::wallet::{ClaimOutcome, EcashClaimEvidence};
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FaId, FederationSize, GuardianCode, InviteCode, OfferEpoch, Plan,
-    QuoteId, SeatId,
+    QuoteId, SeatId, WindowedFigure,
 };
 
 /// The durable facts a seat's recovery document is assembled from, as of one
@@ -924,6 +924,47 @@ impl Db {
         seat_id: &SeatId,
     ) -> Result<Option<InviteCode>, DbError> {
         formed_federation_invite(&mut *self.pool().acquire().await?, seat_id).await
+    }
+
+    /// When this install first held the seat's formed guardian: at DKG, at a
+    /// transfer import, or at a restore.
+    pub(crate) async fn formed_at_ms(&self, seat_id: &SeatId) -> Result<Option<i64>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT formed_at_ms FROM formed_seats WHERE quote_id = ?")
+                .bind(seat_id.as_bytes().as_slice())
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
+    pub(crate) async fn active_wallet_sample(
+        &self,
+        seat_id: &SeatId,
+        utc_day: i64,
+    ) -> anyhow::Result<Option<WindowedFigure>> {
+        let row: Option<(i64, bool)> = sqlx::query_as(
+            "SELECT wallet_count, complete FROM active_wallet_samples WHERE quote_id = ? AND utc_day = ?"
+        ).bind(seat_id.as_bytes().as_slice()).bind(utc_day).fetch_optional(self.pool()).await?;
+        row.map(|(count, complete)| {
+            Ok(WindowedFigure {
+                value: u64::try_from(count)?,
+                complete,
+            })
+        })
+        .transpose()
+    }
+
+    pub(crate) async fn record_active_wallet_sample(
+        &self,
+        seat_id: &SeatId,
+        utc_day: i64,
+        figure: WindowedFigure,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO active_wallet_samples (quote_id, utc_day, wallet_count, complete) VALUES (?, ?, ?, ?)")
+            .bind(seat_id.as_bytes().as_slice()).bind(utc_day)
+            .bind(i64::try_from(figure.value)?).bind(figure.complete)
+            .execute(self.pool()).await?;
+        Ok(())
     }
 
     /// One seat's recovery-relevant lifecycle facts, read from one snapshot.

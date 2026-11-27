@@ -373,7 +373,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         keys.clone(),
         None,
         Vec::new(),
-        None,
+        Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
         db,
@@ -439,7 +439,7 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         keys.clone(),
         Some(Keys::generate().public_key()),
         Vec::new(),
-        None,
+        Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         db,
@@ -476,7 +476,7 @@ async fn transfer_proofs_follow_live_enrollment_and_reloaded_material() {
         keys.clone(),
         None,
         Vec::new(),
-        None,
+        Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
         db.clone(),
@@ -544,7 +544,7 @@ async fn transfer_proofs_follow_live_enrollment_and_reloaded_material() {
         keys,
         None,
         retained,
-        None,
+        Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         store,
         db,
@@ -788,7 +788,7 @@ async fn support_verbs_answer_from_the_fleet_database() {
         Keys::generate(),
         None,
         Vec::new(),
-        None,
+        Default::default(),
         // Production names Fedi support in its profile, so no policy is needed.
         ManifoldEnvironment::Production.profile().unwrap(),
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
@@ -909,8 +909,11 @@ fn admit_support_policy(service: &ManifoldGuardianNostr, support: Option<PublicK
     if let Some(support) = support {
         policy["support_nostr_pubkey"] = support.to_hex().into();
     }
-    service.inner.setup_payment_federations.send_replace(Some(
-        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
+    service.inner.features.send_replace(Some(
+        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes())
+            .unwrap()
+            .features()
+            .clone(),
     ));
 }
 
@@ -924,7 +927,7 @@ async fn the_policy_support_key_overrides_the_profile_key() {
         Keys::generate(),
         None,
         Vec::new(),
-        None,
+        Default::default(),
         profile,
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         db,
@@ -937,8 +940,42 @@ async fn the_policy_support_key_overrides_the_profile_key() {
         "the policy names no key"
     );
     let rotated = Keys::generate().public_key();
+    let mut inbox = support::inbox_policy(&service.inner);
     admit_support_policy(&service, Some(rotated));
+    assert!(inbox.has_changed().unwrap());
+    assert_eq!(
+        inbox
+            .borrow_and_update()
+            .as_ref()
+            .unwrap()
+            .support_nostr_pubkey(),
+        Some(&rotated)
+    );
     assert_eq!(service.inner.support(), Some(rotated));
+}
+
+/// An MG run without a badge advertises nothing, however ready its offer;
+/// one enrolled authorization makes the same snapshot advertisable, with that
+/// authorization embedded.
+#[test]
+fn only_an_enrolled_authorization_makes_the_offer_advertisable() {
+    let keys = Keys::generate();
+    assert!(advertisement_payload(test_snapshot(), Vec::new()).is_none());
+
+    let envelope = verified_holder_authorization_event(
+        authorization_event(&Keys::generate(), keys.public_key()),
+        &keys.public_key(),
+        now_secs(),
+    )
+    .unwrap()
+    .authorization;
+    let payload = advertisement_payload(test_snapshot(), vec![envelope.clone()])
+        .expect("an enrolled MG advertises");
+    assert_eq!(
+        serde_json::to_value(&payload.holder_authorizations).unwrap(),
+        serde_json::to_value([envelope]).unwrap()
+    );
+    assert_eq!(payload.plans, test_snapshot().plans);
 }
 
 /// Scores outside 0..=1000 cannot be advertised; the payload reports none
@@ -983,4 +1020,95 @@ fn an_authorization_lookup_reports_none_only_after_a_quorum_of_reads() {
             "{error}"
         );
     }
+}
+
+#[tokio::test]
+async fn feature_cache_restores_the_latest_admitted_snapshot_without_a_payment_set() {
+    let root = tempfile::TempDir::new().unwrap();
+    let db = Db::open(root.path()).await.unwrap();
+    let keys = Keys::generate();
+    let make = |version: &str, ts| {
+        let content =
+            serde_json::from_value(serde_json::json!({"version":1,"fman_version":version}))
+                .unwrap();
+        fedi_decentralized_nostr::feature_config::feature_config_event_builder(&content)
+            .unwrap()
+            .custom_created_at(nostr_sdk::Timestamp::from_secs(ts))
+            .sign_with_keys(&keys)
+            .unwrap()
+    };
+    let older = make("1.0.0", 100);
+    let newer = make("2.0.0", 101);
+    refresh_features(&db, keys.public_key(), vec![newer, older.clone()])
+        .await
+        .unwrap();
+    drop(db);
+    let reopened = Db::open(root.path()).await.unwrap();
+    let features = refresh_features(&reopened, keys.public_key(), vec![older])
+        .await
+        .unwrap()
+        .unwrap()
+        .into_policy();
+    assert_eq!(features.mg_version().to_string(), "2.0.0");
+    let legacy = AdmittedSetupPaymentFederations::parse(br#"{"version":1,"fman_version":"1.0.0","federations":[],"telemetry_registration_url":"https://example.com","guardian_link":true}"#).unwrap();
+    let service = ManifoldGuardianNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        RetainedPolicy {
+            payment: Some(legacy),
+            features: Some(features),
+        },
+        ManifoldEnvironment::Development.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(reopened.clone())),
+        reopened.clone(),
+    );
+    assert_eq!(
+        service
+            .subscribe_features()
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .guardian_link(),
+        None
+    );
+    assert!(
+        refresh_features(&reopened, Keys::generate().public_key(), Vec::new())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let floor = EventBuilder::new(
+        Kind::Custom(fedi_decentralized_nostr::feature_config::FEATURE_CONFIG_KIND),
+        r#"{"version":1,"fman_version":"1.0.0","seat_memory_budget_mib_v2":0}"#,
+    )
+    .tag(Tag::identifier(
+        fedi_decentralized_nostr::feature_config::FEATURE_CONFIG_D_TAG,
+    ))
+    .custom_created_at(nostr_sdk::Timestamp::from_secs(110))
+    .sign_with_keys(&keys)
+    .unwrap();
+    reopened
+        .store_feature_config(
+            &keys.public_key().to_hex(),
+            &serde_json::to_string(&floor).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        refresh_features(&reopened, keys.public_key(), vec![make("3.0.0", 109)])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        refresh_features(&reopened, keys.public_key(), vec![make("3.1.0", 111)])
+            .await
+            .unwrap()
+            .unwrap()
+            .into_policy()
+            .mg_version()
+            .to_string(),
+        "3.1.0"
+    );
 }

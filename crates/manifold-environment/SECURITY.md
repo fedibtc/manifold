@@ -86,6 +86,10 @@ not an approximation of deployment-owned production credentials. It issues
 the selected profile's minimum level so local and staging workflows exercise
 the same relying-party gate as deployed consumers.
 
+The independent feature pin authorizes kind 37710 only. Only Development accepts
+`MANIFOLD_DEV_FEATURE_CONFIG_PUBLISHER`, distinct from the payment publisher.
+Production retains legacy feature behavior until a separately reviewed pin ships.
+
 The setup-payment publisher key authenticates the kind-37707 federation list
 that decides which federations paid setup uses, so whoever holds its secret
 controls that policy. Each environment deliberately trusts exactly one

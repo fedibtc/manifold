@@ -96,10 +96,22 @@ fn envelope_for(
     authority: &peerbadge_protocol::IssuerAuthority,
     mg: &Mg,
 ) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
-    let holder = HolderContext::generate();
-    let credential = issue_credential_for_holder(issuer, authority, &holder)?;
+    envelope_for_holder(issuer, authority, &HolderContext::generate(), mg)
+}
+
+/// Issue a badge to `holder` and authorize `mg` to present it.
+///
+/// Reusing one holder across MGs is how an operator who runs several MG
+/// identities appears to a verifier.
+fn envelope_for_holder(
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
+    holder: &HolderContext,
+    mg: &Mg,
+) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
+    let credential = issue_credential_for_holder(issuer, authority, holder)?;
     let authorization =
-        holder_authorization_for_provider(&holder, &credential, &Pubkey(mg.pubkey_hex.clone()))?;
+        holder_authorization_for_provider(holder, &credential, &Pubkey(mg.pubkey_hex.clone()))?;
 
     Ok((authorization, credential))
 }
@@ -452,6 +464,29 @@ impl Harness {
             .map(|(issuer, authority)| {
                 let (holder_authorization, signed_credential) =
                     envelope_for(issuer, authority, mg)?;
+                Ok(HolderAuthorizationEnvelope {
+                    holder_authorization,
+                    signed_credential,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.push_material(material_for(mg, envelopes));
+        Ok(())
+    }
+
+    /// Carry trust material for this MG holding one badge per `(issuer,
+    /// holder)` pair, so tests choose which holders identities share.
+    fn program_holders(
+        &self,
+        mg_index: usize,
+        badges: &[(&TestIssuer, &HolderContext)],
+    ) -> anyhow::Result<()> {
+        let mg = &self.mgs[mg_index];
+        let envelopes = badges
+            .iter()
+            .map(|(issuer, holder)| {
+                let (holder_authorization, signed_credential) =
+                    envelope_for_holder(&issuer.issuer, &issuer.authority, holder, mg)?;
                 Ok(HolderAuthorizationEnvelope {
                     holder_authorization,
                     signed_credential,
@@ -1755,5 +1790,107 @@ async fn ten_operators_across_four_attesters_pass_all_trusted() -> anyhow::Resul
         outcome.summary.policy_result,
         VerificationCheckStatus::Passed
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_trusted_rejects_two_identities_sharing_a_holder() -> anyhow::Result<()> {
+    // One holder authorizing two MG identities is one operator wearing two
+    // keys, so a federation where every identity is trusted still fails
+    // `all_trusted` — and passes once the second identity has its own holder.
+    // The two badges come from different accepted issuers: the holder, not the
+    // (issuer, holder) pair, is what makes an operator.
+    let harness = Harness::new("shared-holder-all-trusted", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let second = harness.install_issuer(2).await?;
+    let first = TestIssuer {
+        issuer: harness.issuer.clone(),
+        authority: harness.authority.clone(),
+        attester_hex: harness.attester_hex.clone(),
+    };
+    let shared = HolderContext::generate();
+    harness.program_holders(0, &[(&first, &shared)])?;
+    harness.program_holders(1, &[(&second, &shared)])?;
+    harness.program_trusted(2)?;
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+    assert!(
+        outcome.summary.credential_checks.iter().any(|check| {
+            check.name == "distinct_badge_holder" && check.status == VerificationCheckStatus::Failed
+        }),
+        "{:?}",
+        outcome.summary
+    );
+
+    harness.program_holders(1, &[(&second, &HolderContext::generate())])?;
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn consensus_majority_counts_identities_sharing_a_holder_once() -> anyhow::Result<()> {
+    // Four seats, threshold three, three trusted identities. Two of them share
+    // a holder, so there are only two operators and the threshold is missed;
+    // a fourth identity with its own holder makes three.
+    let harness = Harness::new("shared-holder-majority", 4, 3, &[&[0], &[1], &[2], &[3]]).await?;
+    let first = TestIssuer {
+        issuer: harness.issuer.clone(),
+        authority: harness.authority.clone(),
+        attester_hex: harness.attester_hex.clone(),
+    };
+    let shared = HolderContext::generate();
+    harness.program_holders(0, &[(&first, &shared)])?;
+    harness.program_holders(1, &[(&first, &shared)])?;
+    harness.program_trusted(2)?;
+    harness.program_untrusted(3);
+
+    let outcome = harness
+        .verify(VerificationRequirement::ConsensusMajorityTrusted)
+        .await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    harness.program_trusted(3)?;
+    let outcome = harness
+        .verify(VerificationRequirement::ConsensusMajorityTrusted)
+        .await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_identity_with_several_holders_cannot_stand_in_for_a_second_operator()
+-> anyhow::Result<()> {
+    // Three seats, threshold two. Identity 0 carries badges of holders A and
+    // B; identity 1 carries B's. Counting distinct holders would see two, and
+    // pairing each identity with a holder of its own (0 with A, 1 with B)
+    // would too. Both identities name B, so they are one operator, and one
+    // operator misses the threshold. Identity 2 with its own holder makes two.
+    let harness = Harness::new("shared-holder-chain", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let first = TestIssuer {
+        issuer: harness.issuer.clone(),
+        authority: harness.authority.clone(),
+        attester_hex: harness.attester_hex.clone(),
+    };
+    let holder_a = HolderContext::generate();
+    let holder_b = HolderContext::generate();
+    harness.program_holders(0, &[(&first, &holder_a), (&first, &holder_b)])?;
+    harness.program_holders(1, &[(&first, &holder_b)])?;
+    harness.program_untrusted(2);
+
+    let outcome = harness
+        .verify(VerificationRequirement::ConsensusMajorityTrusted)
+        .await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    harness.program_trusted(2)?;
+    let outcome = harness
+        .verify(VerificationRequirement::ConsensusMajorityTrusted)
+        .await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
     Ok(())
 }

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
-    DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,
+    AdmittedFeaturePolicy, DEFAULT_MAX_SEATS_PER_MG, DEFAULT_SEAT_DISK_GB,
+    DEFAULT_SEAT_DISK_GB_BTRFS, DEFAULT_SEAT_MEMORY_BUDGET_MIB, DEFAULT_SEAT_MONTHLY_DATA_GB,
 };
 use tokio::sync::watch;
 
@@ -38,6 +38,10 @@ const DEFAULT_SEAT_MONTHLY_DATA: std::num::NonZeroU32 =
 /// The publication's default disk per seat, for when there is no publication.
 const DEFAULT_SEAT_DISK: NonZeroU32 =
     NonZeroU32::new(DEFAULT_SEAT_DISK_GB).expect("the default is nonzero");
+/// The publication's default disk per seat on btrfs, for when there is no
+/// publication.
+const DEFAULT_SEAT_DISK_BTRFS: NonZeroU32 =
+    NonZeroU32::new(DEFAULT_SEAT_DISK_GB_BTRFS).expect("the default is nonzero");
 /// Disk figures are in GB of 10^9 bytes, as drives are sold.
 const GB: u64 = 1_000_000_000;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -65,6 +69,90 @@ fn cpu_max_seats(iterations_per_sec: u32, budget: Option<NonZeroU32>) -> Option<
 fn disk_max_seats(filesystem_bytes: u64, seat_disk_gb: NonZeroU32) -> u32 {
     let seats = filesystem_bytes / (u64::from(seat_disk_gb.get()) * GB);
     u32::try_from(seats).unwrap_or(u32::MAX)
+}
+
+/// The filesystem that holds the MG data directory, as the disk seat limit
+/// sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DataFilesystem {
+    pub kind: FilesystemKind,
+    /// From [`data_filesystem_bytes`].
+    pub bytes: u64,
+}
+
+impl DataFilesystem {
+    /// The disk seat limit: one seat per whole per-seat figure of the size,
+    /// the btrfs figure on btrfs and the general one on every other kind.
+    fn max_seats(self, seat_disk_gb: NonZeroU32, seat_disk_gb_btrfs: NonZeroU32) -> u32 {
+        let figure = if self.kind == FilesystemKind::BTRFS {
+            seat_disk_gb_btrfs
+        } else {
+            seat_disk_gb
+        };
+        disk_max_seats(self.bytes, figure)
+    }
+}
+
+/// The kind of filesystem that holds the MG data directory, where the seats'
+/// databases sync every consensus unit. Filesystems count and write those
+/// small synced writes differently: btrfs writes several times more per sync
+/// than ext4 or ZFS, so it gets its own disk figure, and storage figures in
+/// telemetry compare only within one kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilesystemKind {
+    Known(&'static str),
+    /// A filesystem not in [`FILESYSTEM_MAGICS`], by its `statfs` magic.
+    Other(u32),
+    /// `statfs` failed.
+    Unknown,
+}
+
+const BTRFS_MAGIC: u32 = 0x9123_683E;
+
+/// `statfs` `f_type` magics, from Linux `include/uapi/linux/magic.h` and
+/// OpenZFS.
+const FILESYSTEM_MAGICS: &[(u32, &str)] = &[
+    (0xEF53, "ext4"),
+    (BTRFS_MAGIC, "btrfs"),
+    (0x5846_5342, "xfs"),
+    (0x2FC1_2FC1, "zfs"),
+    (0xF2F5_2010, "f2fs"),
+    (0xCA45_1A4E, "bcachefs"),
+    (0x794C_7630, "overlayfs"),
+    (0x0102_1994, "tmpfs"),
+    (0x6573_5546, "fuse"),
+    (0x6969, "nfs"),
+];
+
+impl FilesystemKind {
+    pub const BTRFS: Self = Self::Known("btrfs");
+
+    /// The filesystem that holds `path`.
+    pub fn of(path: &Path) -> Self {
+        match rustix::fs::statfs(path) {
+            // `f_type` is a signed word on some targets; the magics are 32-bit.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(stat) => Self::from_magic(stat.f_type as u32),
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    fn from_magic(magic: u32) -> Self {
+        FILESYSTEM_MAGICS
+            .iter()
+            .find(|(known, _)| *known == magic)
+            .map_or(Self::Other(magic), |(_, name)| Self::Known(name))
+    }
+}
+
+impl std::fmt::Display for FilesystemKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(name) => formatter.write_str(name),
+            Self::Other(magic) => write!(formatter, "0x{magic:x}"),
+            Self::Unknown => formatter.write_str("unknown"),
+        }
+    }
 }
 
 /// The size of the filesystem that holds `path`, used or not: its blocks
@@ -100,38 +188,46 @@ impl Smoothed {
 /// without procfs the memory limit keeps its stored value (4 seats until a
 /// first sample). The CPU limit divides `cpu`, measured once at start;
 /// without a measurement (local E2E) there is no CPU limit. The disk limit
-/// divides `data_filesystem_bytes`, also measured once at start, and is
-/// likewise absent without it.
+/// divides `data_filesystem`, also measured once at start, and is likewise
+/// absent without it.
 pub fn spawn_runtime_seat_limits(
     fleet: Arc<Fleet>,
-    mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    mut policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     cpu: Option<CpuCapacity>,
-    data_filesystem_bytes: Option<u64>,
+    data_filesystem: Option<DataFilesystem>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut smoothed =
             Smoothed::starting_at(fleet.availability_snapshot().await.limits.memory_max_seats);
         let mut sample_memory = true;
         loop {
-            let (policy_max_seats, budget_mib, cpu_budget, seat_monthly_data_gb, seat_disk_gb) =
-                policy.borrow_and_update().as_ref().map_or(
+            let (
+                policy_max_seats,
+                budget_mib,
+                cpu_budget,
+                seat_monthly_data_gb,
+                seat_disk_gb,
+                seat_disk_gb_btrfs,
+            ) = policy.borrow_and_update().as_ref().map_or(
+                (
+                    DEFAULT_MAX_SEATS_PER_MG,
+                    DEFAULT_SEAT_MEMORY_BUDGET_MIB,
+                    None,
+                    DEFAULT_SEAT_MONTHLY_DATA,
+                    DEFAULT_SEAT_DISK,
+                    DEFAULT_SEAT_DISK_BTRFS,
+                ),
+                |policy| {
                     (
-                        DEFAULT_MAX_SEATS_PER_MG,
-                        DEFAULT_SEAT_MEMORY_BUDGET_MIB,
-                        None,
-                        DEFAULT_SEAT_MONTHLY_DATA,
-                        DEFAULT_SEAT_DISK,
-                    ),
-                    |policy| {
-                        (
-                            policy.max_seats_per_mg(),
-                            policy.seat_memory_budget_mib(),
-                            policy.seat_cpu_iterations_per_sec(),
-                            policy.seat_monthly_data_gb(),
-                            policy.seat_disk_gb(),
-                        )
-                    },
-                );
+                        policy.max_seats_per_mg(),
+                        policy.seat_memory_budget_mib(),
+                        policy.seat_cpu_iterations_per_sec(),
+                        policy.seat_monthly_data_gb(),
+                        policy.seat_disk_gb(),
+                        policy.seat_disk_gb_btrfs(),
+                    )
+                },
+            );
             let mut memory_limit = None;
             if sample_memory {
                 match detect_available_ram_bytes() {
@@ -156,7 +252,8 @@ pub fn spawn_runtime_seat_limits(
                         .and_then(|cpu| cpu_max_seats(cpu.iterations_per_sec, cpu_budget)),
                 ),
                 disk_max_seats: Some(
-                    data_filesystem_bytes.map(|bytes| disk_max_seats(bytes, seat_disk_gb)),
+                    data_filesystem
+                        .map(|filesystem| filesystem.max_seats(seat_disk_gb, seat_disk_gb_btrfs)),
                 ),
                 policy_seat_monthly_data_gb: Some(seat_monthly_data_gb),
                 ..SeatsConfigUpdate::default()

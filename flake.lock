@@ -895,16 +895,16 @@
         "wild": "wild_2"
       },
       "locked": {
-        "lastModified": 1794473131,
-        "narHash": "sha256-1cot1LaylNrFJKHrgod/UR+lp68FPSz1AguCzhJBlzQ=",
+        "lastModified": 1795180262,
+        "narHash": "sha256-0XXd5dmqgTtVQLcmJZ4o3YeFZc6haipBU5WZFaw2mHo=",
         "owner": "fedibtc",
         "repo": "fedimint",
-        "rev": "5bdb75485c4aaaeead4ab655fff6c62852de80b0",
+        "rev": "15671ec113a28273ccfca84c549a9dcfd03eb67d",
         "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi28",
+        "ref": "v0.12.0-fedi30",
         "repo": "fedimint",
         "type": "github"
       }
@@ -2196,7 +2196,8 @@
         "flakebox": "flakebox_7",
         "nixpkgs": "nixpkgs_10",
         "peerbadge-sdk-src": "peerbadge-sdk-src_2",
-        "selfci": "selfci"
+        "selfci": "selfci",
+        "stability-pool": "stability-pool"
       }
     },
     "rust-analyzer-src": {
@@ -2380,6 +2381,23 @@
       "original": {
         "owner": "fedibtc",
         "repo": "sieve",
+        "type": "github"
+      }
+    },
+    "stability-pool": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795617363,
+        "narHash": "sha256-uYCeYgHxK8XzkvrKAU3iaTd5nRHgIJ6RsexQ8BX0ij0=",
+        "owner": "fedibtc",
+        "repo": "stability-pool",
+        "rev": "212c29d7e09f1fd7eee44e0132ca2092d41efa8d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fedibtc",
+        "repo": "stability-pool",
+        "rev": "212c29d7e09f1fd7eee44e0132ca2092d41efa8d",
         "type": "github"
       }
     },

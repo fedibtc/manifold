@@ -21,9 +21,9 @@ use fedimint_walletv2_client::events::{
 };
 use fedimint_walletv2_client::{WalletClientModule, WalletOperationMeta};
 use futures_util::StreamExt;
-use stability_pool_client::common::{AccountType, ActiveDeposits, FeeRate};
+use stability_pool_client::common::{ActiveDeposits, FeeRate};
 use stability_pool_client::{
-    StabilityPoolClientModule, StabilityPoolDepositOperationState, StabilityPoolMeta,
+    OwnAccount, StabilityPoolClientModule, StabilityPoolDepositOperationState, StabilityPoolMeta,
 };
 
 use crate::allocation_store::FundingTargetRecord;
@@ -623,7 +623,7 @@ impl StabilityPoolBackend for FedimintStabilityPoolBackend {
     async fn report(&self, target: &FundingTargetRecord) -> anyhow::Result<StabilityPoolReport> {
         let client = self.client(target).await?;
         let stability_pool = client.get_first_module::<StabilityPoolClientModule>()?;
-        let account = stability_pool.our_account(AccountType::Provider).id();
+        let account = stability_pool.own_account(OwnAccount::Provider).id();
         let active = stability_pool.active_deposits(account).await?;
         let liquidity_stats = stability_pool.liquidity_stats().await?;
         let observed_provided_amount = active_provided_sats(active);

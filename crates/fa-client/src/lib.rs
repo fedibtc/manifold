@@ -4,13 +4,13 @@
 
 mod backup;
 mod backup_worker;
-mod custom_gateway;
 mod db;
 mod decommission;
 mod discovery;
 mod eligibility;
 mod error;
 mod federation_reader;
+mod federation_stats;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -40,7 +40,6 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
-pub use custom_gateway::{CustomGatewayAttachment, CustomGatewayPhase};
 pub use decommission::DecommissionOutcome;
 pub use discovery::{
     AdvertisementRejection, EligibleMgCandidate, MG_ADVERTISEMENT_MAX_AGE,
@@ -49,10 +48,12 @@ pub use discovery::{
 };
 pub use eligibility::{ReplacementCandidate, ReplacementCheck, ReplacementReason};
 pub use error::{
-    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, GuardianTransferRole,
-    MgCause, MgFailure, MgOperation, SelectionReauthorizationReason, UnsupportedTransferMg,
+    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, FailureDisposition,
+    FormationFailure, GuardianTransferRole, MgCause, MgFailure, MgOperation,
+    SelectionReauthorizationReason, UnsupportedTransferMg,
 };
 pub use federation_reader::ConnectorsConsensusReader;
+pub use federation_stats::{ActiveWalletComparison, CombinedFigure, FederationStats};
 pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
@@ -143,6 +144,7 @@ struct FaClientInner<I, P, N, F, C> {
     run_guard: Arc<Mutex<()>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
+    feature_config_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
     /// Supplies the guardian-transfer default when the setup-payment policy
     /// does not say.
@@ -247,6 +249,7 @@ where
             peer_badge_verifier,
             None,
             None,
+            None,
             // Without a profile, guardian transfer defaults to production's
             // rule.
             ManifoldEnvironment::Production,
@@ -295,6 +298,7 @@ where
             },
             peer_badge_verifier,
             Some(setup_payment_publisher),
+            None,
             guardian_verification_fee_account,
             manifold_environment,
         )
@@ -369,6 +373,7 @@ where
             },
             peer_badge_verifier,
             setup_payment_publisher,
+            profile.feature_config_publisher().copied(),
             guardian_verification_fee_account,
             profile.environment(),
         )
@@ -423,6 +428,7 @@ where
         ports: FaClientPorts<I, P, N, F, C>,
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
+        feature_config_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
         manifold_environment: ManifoldEnvironment,
     ) -> FaResult<Self> {
@@ -446,6 +452,7 @@ where
                 run_guard: Arc::new(Mutex::new(())),
                 peer_badge_verifier,
                 setup_payment_publisher,
+                feature_config_publisher,
                 guardian_verification_fee_account,
                 manifold_environment,
                 backup_tasks,
@@ -486,7 +493,7 @@ where
             &self.inner.ports.registry,
             self.inner.ports.mg_connector.as_ref(),
         );
-        self.publish_error(FaErrorCode::CapabilityUnavailable);
+        self.publish_error(&FaError::CapabilityUnavailable(Capability::Registry));
         Err(FaError::CapabilityUnavailable(Capability::Registry))
     }
 
@@ -545,54 +552,66 @@ where
     /// and cancellation behavior as [`Self::resume`].
     pub async fn resume_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fa_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FaError::Identity)?;
-        let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
-            let recovery = self.inner.store.load_recovery(fa_id).await?;
-            match recovery {
-                db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
-                db::FaRecovery::Formation(recovery) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
-                    self.resume_formation(*recovery, options, deadline, &lease)
+            options.validate_for_start(&self.inner.store)?;
+            let fa_id = self
+                .inner
+                .ports
+                .identity
+                .public_key()
+                .map_err(FaError::Identity)?;
+            let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
+            let result = async {
+                let recovery = self.inner.store.load_recovery(fa_id).await?;
+                match recovery {
+                    db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
+                    db::FaRecovery::Formation(recovery) => {
+                        self.inner
+                            .progress
+                            .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
+                        self.resume_formation(*recovery, options, deadline, &lease)
+                            .await
+                    }
+                    db::FaRecovery::Formed(snapshot)
+                        if snapshot.freshness == FormationFreshness::Fresh =>
+                    {
+                        Ok(())
+                    }
+                    db::FaRecovery::Formed(snapshot) => {
+                        self.inner
+                            .progress
+                            .send_replace(FaStatus::Formed(snapshot.clone()));
+                        self.reconcile_formed(
+                            snapshot,
+                            fa_id,
+                            formation::DriverRun::new(options, deadline, &lease),
+                        )
                         .await
-                }
-                db::FaRecovery::Formed(snapshot)
-                    if snapshot.freshness == FormationFreshness::Fresh =>
-                {
-                    Ok(())
-                }
-                db::FaRecovery::Formed(snapshot) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Formed(snapshot.clone()));
-                    self.reconcile_formed(
-                        snapshot,
-                        fa_id,
-                        formation::DriverRun::new(options, deadline, &lease),
-                    )
-                    .await
+                    }
                 }
             }
+            .await;
+            formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
         }
         .await;
-        formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        if let Err(error) = &result {
+            self.publish_error(error);
+        }
+        result
     }
 
-    fn publish_error(&self, error: FaErrorCode) {
-        if let FaStatus::Formation(mut snapshot) = self.status() {
-            snapshot.last_error = Some(error);
-            self.inner
-                .progress
-                .send_replace(FaStatus::Formation(snapshot));
-        }
+    fn publish_error(&self, error: &FaError) {
+        let failure = Some(error.into());
+        self.inner.progress.send_if_modified(|status| {
+            if let FaStatus::Formation(snapshot) = status
+                && snapshot.last_error != failure
+            {
+                snapshot.last_error = failure;
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 

@@ -116,16 +116,30 @@ it('should state plainly that the fleet is not approved', () => {
   const model = deriveOverview({ nostrState: 'not_observed' });
 
   const item = model.attention.find((entry) => entry.key === 'authorization-not-observed');
-  expect(item?.detail).toMatch(/Open Authorization/i);
+  expect(item?.detail).toMatch(/Open Guardian badge/i);
   expect(item?.detail).not.toMatch(/still be reading/i);
 });
 
-// `checking` clears on its own within one relay read of daemon start. An item
-// the operator cannot act on is noise.
-it('should raise nothing while the first relay read is still outstanding', () => {
+// `checking` means nothing is stored and no read has run since startup. The
+// daemon reads only when asked, so a host set up without a badge stays here; it
+// is not advertised, and saying "Advertised and healthy" would be false.
+it('should report a host with no stored approval and no read as not approved', () => {
   const model = deriveOverview({ nostrState: 'checking' });
 
-  expect(model.attention.map((entry) => entry.key)).not.toContain('authorization-not-observed');
+  expect(model.attention.map((entry) => entry.key)).toContain('authorization-not-observed');
+  expect(model.headline).toBe('Needs your attention');
+});
+
+// A host set up without a badge stays without an authorization for good: that
+// is its normal state, and it takes seats through guardian codes.
+it('should not ask a host set up without a badge to get approved', () => {
+  for (const nostrState of ['checking', 'not_observed'] as const) {
+    const model = deriveOverview({ nostrState, badgeless: true });
+
+    expect(model.attention).toEqual([]);
+    expect(model.tone).toBe('success');
+    expect(model.headline).toBe('Healthy · taking seats through guardian codes');
+  }
 });
 
 // A failed read and an absent authorization are different facts. Folding them
@@ -167,6 +181,9 @@ const failingReport = {
     io: { '6h': 250, '3.5d': 150 },
     memory: { '6h': 700, '3.5d': 700 }
   },
+  ordering_latency: 'ordering_latency_high',
+  ordering_latency_6h_ms: 6200,
+  max_ordering_latency_6h_ms: 5000,
   uptime: 'pass',
   uptime_comparison: null
 } as const;
@@ -182,7 +199,7 @@ it('should send the operator to Health when a readiness check fails, naming only
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
       detail:
-        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU, disk and memory pressure. Open Health for what to check.',
+        'Failing: Guardian discovery, Bitcoin backend, Software version, CPU, disk and memory pressure, Consensus speed. Open Health for what to check.',
       path: '/health'
     }
   ]);
@@ -204,6 +221,9 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     pressure: 'pass',
     host_pressure: null,
     max_host_pressure: null,
+    ordering_latency: 'not_applicable',
+    ordering_latency_6h_ms: null,
+    max_ordering_latency_6h_ms: null,
     uptime: 'pass',
     uptime_comparison: null
   } as const;

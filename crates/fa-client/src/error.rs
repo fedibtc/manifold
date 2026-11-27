@@ -177,6 +177,37 @@ pub enum FaErrorCode {
     Timeout,
 }
 
+/// Whether an unchanged formation should resume without a user command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureDisposition {
+    /// A later attempt can succeed without new authorization or state repair.
+    Retryable,
+    /// Stop automatic retries until an explicit command or a fresh launch.
+    ///
+    /// This does not authorize abandonment and does not mean funds are lost.
+    Terminal,
+}
+
+/// Runtime-only formation failure. Durable recovery remains the source of truth
+/// and a fresh launch rechecks it rather than persisting a failure verdict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FormationFailure {
+    /// Stable progress-facing category.
+    pub code: FaErrorCode,
+    /// Manifold-owned automatic retry policy.
+    pub disposition: FailureDisposition,
+}
+
+impl From<&FaError> for FormationFailure {
+    fn from(error: &FaError) -> Self {
+        Self {
+            code: error.code(),
+            disposition: error.disposition(),
+        }
+    }
+}
+
 /// A failure produced by one identity-bound Manifold Guardian operation.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("MG {mg} {operation}: {cause}")]
@@ -355,6 +386,10 @@ pub enum FaError {
     /// Durable state could not be read or written.
     #[error("FA storage failure: {0}")]
     Storage(String),
+    /// Durable or in-memory recovery facts violate an engine invariant.
+    /// Retrying unchanged facts cannot repair them; this is not database I/O.
+    #[error("FA storage invariant failure: {0}")]
+    StorageInvariant(String),
     /// The consumer-provided identity could not be used.
     #[error("FA identity failure: {0}")]
     Identity(String),
@@ -440,21 +475,6 @@ pub enum FaError {
     LiquidityOperationExists {
         /// Semantic id of the live operation to resume.
         operation_id: crate::LiquidityOperationId,
-    },
-    /// The federation's gateway source is already this custom gateway. In
-    /// v1 a federation gets one gateway source: an unfinished attachment
-    /// resumes only with its own URL, a completed one is final, and either
-    /// refuses FLIP liquidity.
-    /// [`crate::FaClient::custom_gateway_attachment`] returns it.
-    #[error(
-        "the federation already has custom gateway {} ({:?}); resume an unfinished \
-         attachment with the same URL, and a completed one is final",
-        .attachment.gateway_api,
-        .attachment.phase
-    )]
-    CustomGatewayExists {
-        /// The federation's existing attachment.
-        attachment: crate::CustomGatewayAttachment,
     },
     /// The setup-payment policy this FA holds does not let MGs start a
     /// guardian transfer, so the FA does not buy a seat for one. Fedi turns
@@ -545,12 +565,70 @@ pub enum FaError {
         /// Last sanitized consumer consensus-read failure, when one occurred.
         consensus_error: Option<String>,
     },
+    /// No guardian answered a federation stats request.
+    #[error(
+        "no guardian reported federation stats; without the verb: {unsupported:?}; \
+         failed: {failed:?}"
+    )]
+    FederationStatsUnavailable {
+        /// Guardians whose MG predates the verb. When `failed` is empty, stats
+        /// arrive only once guardians update.
+        unsupported: Vec<u16>,
+        /// Sanitized failure per guardian that could not answer now.
+        failed: Vec<(u16, String)>,
+    },
     /// Formation polling reached its deadline.
     #[error("formation timed out while {0}")]
     Timeout(String),
 }
 
 impl FaError {
+    /// Classify automatic retries at the source, without parsing error text.
+    /// Unknown transport, wallet and storage failures remain retryable.
+    #[must_use]
+    pub fn disposition(&self) -> FailureDisposition {
+        match self {
+            Self::Mg(failure) => match failure.cause {
+                MgCause::InvalidResponse
+                | MgCause::FormationMetaAlreadyPublished
+                | MgCause::OfferChanged
+                | MgCause::TerminalStatus(_) => FailureDisposition::Terminal,
+                _ => FailureDisposition::Retryable,
+            },
+            Self::Storage(_)
+            | Self::Busy
+            | Self::Registry(_)
+            | Self::ManifoldGuardian { .. }
+            | Self::Payment(_)
+            | Self::Liquidity(_)
+            | Self::MaintenanceConvergence { .. }
+            | Self::FederationStatsUnavailable { .. }
+            | Self::Timeout(_) => FailureDisposition::Retryable,
+            Self::InvalidIntent(_)
+            | Self::InvalidOptions(_)
+            | Self::StorageInvariant(_)
+            | Self::Identity(_)
+            | Self::NoActiveFormation
+            | Self::AbandonUnavailable(_)
+            | Self::Selection(_)
+            | Self::InsufficientMgSeats { .. }
+            | Self::SelectionPreviewTimeout
+            | Self::SelectionEstimateOverflow
+            | Self::SelectionReauthorizationRequired { .. }
+            | Self::CapabilityUnavailable(_)
+            | Self::GuardianTransferDisabled
+            | Self::GuardianTransferUnsupported { .. }
+            | Self::InvalidManifoldGuardians(_)
+            | Self::LiquidityOperationExists { .. }
+            | Self::MaintenanceWrongState { .. }
+            | Self::MaintenanceUnsynced
+            | Self::MaintenanceRejected { .. }
+            | Self::MaintenanceUnsupported { .. }
+            | Self::MaintenanceConsensusTooLarge { .. }
+            | Self::MaintenanceConsensusInvalid { .. } => FailureDisposition::Terminal,
+        }
+    }
+
     /// Return the stable error category used by progress surfaces.
     #[must_use]
     pub fn code(&self) -> FaErrorCode {
@@ -564,7 +642,7 @@ impl FaError {
             },
             Self::InvalidIntent(_) => FaErrorCode::InvalidIntent,
             Self::InvalidOptions(_) => FaErrorCode::InvalidOptions,
-            Self::Storage(_) => FaErrorCode::Storage,
+            Self::Storage(_) | Self::StorageInvariant(_) => FaErrorCode::Storage,
             Self::Identity(_) => FaErrorCode::Identity,
             Self::Busy => FaErrorCode::Busy,
             Self::NoActiveFormation => FaErrorCode::NoActiveFormation,
@@ -583,11 +661,11 @@ impl FaError {
             | Self::GuardianTransferDisabled
             | Self::GuardianTransferUnsupported { .. } => FaErrorCode::CapabilityUnavailable,
             Self::InvalidManifoldGuardians(_) => FaErrorCode::InvalidManifoldGuardians,
-            Self::ManifoldGuardian { .. } => FaErrorCode::ManifoldGuardian,
+            Self::ManifoldGuardian { .. } | Self::FederationStatsUnavailable { .. } => {
+                FaErrorCode::ManifoldGuardian
+            }
             Self::Payment(_) => FaErrorCode::Payment,
-            Self::Liquidity(_)
-            | Self::LiquidityOperationExists { .. }
-            | Self::CustomGatewayExists { .. } => FaErrorCode::Liquidity,
+            Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
             Self::MaintenanceWrongState { .. } | Self::MaintenanceUnsynced => {
                 FaErrorCode::MaintenanceWrongState
             }

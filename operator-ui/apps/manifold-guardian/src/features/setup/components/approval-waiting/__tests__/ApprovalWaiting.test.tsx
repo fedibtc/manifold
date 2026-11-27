@@ -15,15 +15,4 @@ describe('ApprovalWaiting', () => {
 
     expect(screen.queryByText(/automatically/i)).toBeNull();
   });
-
-  it('should show the surface re-check control beside the status', () => {
-    render(
-      <ApprovalWaiting
-        lastChecked="2026-08-06 07:06 UTC"
-        action={<button type="button">Check status</button>}
-      />
-    );
-
-    expect(screen.getByRole('button', { name: 'Check status' })).toBeTruthy();
-  });
 });

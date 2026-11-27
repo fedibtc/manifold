@@ -1603,6 +1603,7 @@ async fn transfer_policy_uses_only_v2_and_the_environment_default() {
             },
             test_peer_badge_verifier(),
             Some(setup_payment_keys().public_key()),
+            None,
             Some(guardian_fee_account(31)),
             environment,
         )

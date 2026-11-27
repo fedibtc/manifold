@@ -92,9 +92,9 @@ marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.
 
-The MG uses its environment's admitted setup-payment policy to decide whether
-to start a guardian transfer; production defaults to disabled without an
-admitted policy. The MG resumes stored transfers regardless of the current
+The MG uses the effective feature policy (37710, or the legacy 37707
+projection) to decide whether to start a guardian transfer; production defaults
+to disabled without an admitted policy. The MG resumes stored transfers regardless of the current
 start policy and keeps binding replacement and retired-seat removal available
 to finish an existing move. The source durably fences and stops its guardian
 and confirms its exact retirement backup before releasing the package. The
@@ -504,7 +504,9 @@ abuse and backlog guardrails (source-prefix, per-hook, hook creation,
 registration writes, active resource caps, and outbox backlog caps). These
 counters reset on restart and are not distributed. Source-prefix limits use the
 direct socket peer unless that peer is in configured trusted-proxy CIDRs; trusted
-proxies must strip/overwrite inbound `X-Forwarded-For`/`Forwarded` headers.
+proxies must strip/overwrite the forwarding headers they write
+(`X-Forwarded-For` and/or RFC `Forwarded`); a trusted-proxy request whose two
+headers name different clients is refused.
 These controls are not a substitute for a distributed rate-limit/replay backend,
 deployment hardening, or multi-replica worker coordination before public
 production exposure. Management and registration endpoints use Nostr/NIP-98
@@ -609,9 +611,9 @@ with over NIP-17
 ([SPEC-mg-support-chat](crates/mg/specs/SPEC-mg-support-chat.md)).
 Development and staging pin known-secret test keys, so anyone can write as
 "Fedi support" there. Production pins a key that Fedi support holds. The
-signed setup-payment policy can name another support key, which then wins, so
-the setup-payment publisher key is also a trust root of the chat: whoever
-holds that key can make MGs talk to a key of their choice. The MG shows
+effective feature policy can name another support key, which then wins. The
+feature publisher (or the legacy setup-payment publisher before the first
+feature snapshot) can make MGs talk to a key of its choice. The MG shows
 only messages sealed by that key or by itself, as plain text. Fedi support
 sees the MG's service public key and the operator's words. Relays cannot
 read messages, but they see each wrap's recipient key, its size, when it was
@@ -1037,6 +1039,16 @@ the event format does not authorize its own replacement key. See
 That production CLI must durably create a no-overwrite receipt, enforce current
 addressable replacement order, publish the same signed event to every canonical
 Production relay, and verify canonical readback before reporting success.
+
+MG and FA take feature policy from a separate authenticated address when its
+publisher is pinned and has published a feature snapshot. That key controls
+release and readiness gates, resource limits, transfer and notification
+switches, and the support-chat recipient. Compromise can disrupt new seats or expose support correspondence;
+the key is not harmless. It cannot authorize payment membership, set the fee
+floor, or change the telemetry registration URL. Only the original payment
+publisher can do that. Keep the signing keys in distinct custody. Neither
+publication can select its own or the other's trust root. Staging and production have no
+feature key until a separately reviewed profile change.
 
 ## Reporting
 

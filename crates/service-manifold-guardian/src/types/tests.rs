@@ -1,4 +1,94 @@
-use super::{FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, MetaConsensusBase};
+use super::{
+    ActiveWalletHistory, FedimintStats, FedimintdDkgVersion, FedimintdVersion,
+    FedimintdVersionCore, MetaConsensusBase, WindowedFigure,
+};
+use crate::GetFedimintStatsResponse;
+
+#[test]
+fn fedimint_stats_history_is_additive_on_the_rpc_wire() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct LegacyResponse {
+        stats: LegacyStats,
+    }
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct LegacyStats {
+        custodied_msats: u64,
+        active_wallets_30d: WindowedFigure,
+        volume_1008_blocks_msats: WindowedFigure,
+        volume_4320_blocks_msats: WindowedFigure,
+    }
+
+    fn cbor(value: &impl serde::Serialize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(value, &mut bytes).unwrap();
+        bytes
+    }
+
+    let legacy = LegacyResponse {
+        stats: LegacyStats {
+            custodied_msats: 50,
+            active_wallets_30d: WindowedFigure {
+                value: 18,
+                complete: true,
+            },
+            volume_1008_blocks_msats: WindowedFigure {
+                value: 200,
+                complete: true,
+            },
+            volume_4320_blocks_msats: WindowedFigure {
+                value: 400,
+                complete: false,
+            },
+        },
+    };
+    let mut current = GetFedimintStatsResponse {
+        stats: FedimintStats {
+            custodied_msats: 50,
+            active_wallets_30d: WindowedFigure {
+                value: 18,
+                complete: true,
+            },
+            volume_1008_blocks_msats: WindowedFigure {
+                value: 200,
+                complete: true,
+            },
+            volume_4320_blocks_msats: WindowedFigure {
+                value: 400,
+                complete: false,
+            },
+            active_wallets_history: None,
+        },
+    };
+    let legacy_bytes = cbor(&legacy);
+    assert_eq!(
+        ciborium::from_reader::<GetFedimintStatsResponse, _>(&legacy_bytes[..]).unwrap(),
+        current
+    );
+    assert_eq!(cbor(&current), legacy_bytes);
+
+    for baseline in [
+        None,
+        Some(WindowedFigure {
+            value: 0,
+            complete: true,
+        }),
+    ] {
+        current.stats.active_wallets_history = Some(ActiveWalletHistory {
+            utc_day: 20_000,
+            previous_30d: baseline,
+        });
+        let bytes = cbor(&current);
+        assert_eq!(
+            ciborium::from_reader::<LegacyResponse, _>(&bytes[..]).unwrap(),
+            legacy
+        );
+        assert_eq!(
+            ciborium::from_reader::<GetFedimintStatsResponse, _>(&bytes[..]).unwrap(),
+            current
+        );
+    }
+}
 
 #[test]
 fn fedimintd_version_is_semver_and_uses_string_serde() {

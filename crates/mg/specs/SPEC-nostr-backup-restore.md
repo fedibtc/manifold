@@ -3,8 +3,7 @@
 ## Status
 
 SeatGrant state is not backed up yet: seat documents carry no grant nonce,
-the fleet-level grant revocation document does not exist, and restore cannot
-skip Holder authorization.
+and the fleet-level grant revocation document does not exist.
 
 ## Record justification
 
@@ -187,7 +186,7 @@ that records the transfer fence; the confirmed record keeps that fence
 publication only; it does **not** establish freshness against later hostile
 replay. Recovery assumes the configured relay returns the latest published
 state and operators never restart stale local snapshots. Transfers start, when the
-setup-payment policy enables them
+effective feature policy enables them
 ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md#enabling-transfer)),
 under this premise; stale rollback can resurrect a retired source.
 

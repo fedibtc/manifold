@@ -11,7 +11,7 @@ fn record(timestamp: &str, message: &str, fields: &str) -> serde_json::Value {
 
 const CAPACITY: &str = "\"mg_version\":\"0.1.6\",\"memory_max_seats\":9,\"policy_max_seats\":12,\"available_seats\":6,\"accepting_seats\":true";
 
-const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"version\":\"mg_version_too_old\",\"pressure\":\"host_pressure_6h_high\",\"cpu_pressure_6h_pct\":21.3,\"cpu_pressure_3_5d_pct\":8.7,\"io_pressure_6h_pct\":4.1,\"max_cpu_pressure_6h_pct\":15,\"max_cpu_pressure_3_5d_pct\":10,\"max_io_pressure_6h_pct\":10,\"max_io_pressure_3_5d_pct\":5,\"memory_pressure_6h_pct\":6.2,\"memory_pressure_3_5d_pct\":1.8,\"max_memory_pressure_6h_pct\":70,\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
+const READINESS: &str = "\"ready\":false,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"version\":\"mg_version_too_old\",\"pressure\":\"host_pressure_6h_high\",\"cpu_pressure_6h_pct\":21.3,\"cpu_pressure_3_5d_pct\":8.7,\"io_pressure_6h_pct\":4.1,\"max_cpu_pressure_6h_pct\":15,\"max_cpu_pressure_3_5d_pct\":10,\"max_io_pressure_6h_pct\":10,\"max_io_pressure_3_5d_pct\":5,\"memory_pressure_6h_pct\":6.2,\"memory_pressure_3_5d_pct\":1.8,\"max_memory_pressure_6h_pct\":70,\"ordering_latency\":\"ordering_latency_high\",\"ordering_latency_6h_ms\":20771,\"max_ordering_latency_6h_ms\":5000,\"uptime\":\"uptime_7d_low\",\"uptime_1d_pct\":99.4,\"uptime_7d_pct\":88.1,\"uptime_30d_pct\":95,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93";
 
 fn capacity(fields: &str) -> Option<Stated<SeatCapacity>> {
     let mut latest = LatestReports::default();
@@ -92,6 +92,12 @@ fn keeps_the_last_valid_report_of_each_kind() {
     );
     // A field the record leaves out stays absent.
     assert_eq!(readiness.report.max_memory_pressure_3_5d_pct, None);
+    assert_eq!(
+        readiness.report.ordering_latency,
+        Some(ReadinessCode("ordering_latency_high".into()))
+    );
+    assert_eq!(readiness.report.ordering_latency_6h_ms, Some(20_771));
+    assert_eq!(readiness.report.max_ordering_latency_6h_ms, Some(5_000));
 }
 
 #[test]
@@ -127,6 +133,8 @@ fn reports_from_releases_with_fewer_fields_decode() {
     assert_eq!(readiness.cpu_pressure_6h_pct, None);
     assert_eq!(readiness.uptime, None);
     assert_eq!(readiness.uptime_7d_pct, None);
+    assert_eq!(readiness.ordering_latency, None);
+    assert_eq!(readiness.ordering_latency_6h_ms, None);
 }
 
 #[test]
@@ -239,6 +247,15 @@ fn rejects_out_of_range_or_unbounded_values() {
         READINESS.replace(
             "\"max_memory_pressure_6h_pct\":70",
             "\"max_memory_pressure_6h_pct\":-1",
+        ),
+        READINESS.replace("ordering_latency_high", "OrderingLatencyHigh"),
+        READINESS.replace(
+            "\"ordering_latency_6h_ms\":20771",
+            "\"ordering_latency_6h_ms\":-1",
+        ),
+        READINESS.replace(
+            "\"max_ordering_latency_6h_ms\":5000",
+            "\"max_ordering_latency_6h_ms\":4294967296",
         ),
     ] {
         assert_eq!(readiness(&fields), None, "{fields}");

@@ -1,4 +1,4 @@
-# SPEC-setup-payment-federations: Common setup-payment federation publication
+# SPEC-setup-payment-federations: Payment and feature policy publications
 
 ## Status
 
@@ -22,8 +22,27 @@ mnemonic restore rejoins it from the backed-up claim evidence
 ([SPEC-nostr-backup-restore](../crates/mg/specs/SPEC-nostr-backup-restore.md)),
 so it is listed and sweepable there too.
 
-The parser does not yet know `unbadged_telemetry_registration_url`; it is
-ignored like any unknown field.
+Current readers ignore `unbadged_telemetry_registration_url` in either publication.
+The field is reserved for a future design and is not a supported enrollment setting.
+
+Deployment has two stages. First deploy readers that understand both addresses.
+Continue to publish a compatible `37707` manifest: **keep `fman_version`** or
+old readers reject even the payment fields. Preserve optional legacy settings
+(including explicit false, zero, version bounds and legacy resource limits)
+whenever omission would change an old reader's behavior. Old readers only see
+this projection. Do not enable a feature requiring agreement from both sides
+of a protocol until both have upgraded. Feature updates for upgraded readers
+require neither a payment publication nor its key.
+
+Then activate the feature address with a reviewed public key, provision its
+separate signer out of band, and publish a complete initial snapshot based on
+the effective legacy policy. Development can test this with an explicit
+`MANIFOLD_DEV_FEATURE_CONFIG_PUBLISHER` pin distinct from its payment key.
+Staging and Production reject that override and have no feature pin yet. The
+payment publisher continues to emit compatible version 1. Removing its required
+release or dropping still-effective optional settings is **not** part of this
+rollout; doing so while old readers remain would need explicit approval under
+[GATE-production-compatibility](GATE-production-compatibility.md).
 
 ## Record justification
 
@@ -73,9 +92,10 @@ rejects fields it does not understand rather than signing unknown policy.
 
 Publishing requires an independently supplied expected public key and reads
 the matching secret only from a file or non-terminal standard input. The
-custodian owns the complete signed-event receipts as the publisher-side durable
-high-water mark and must retain the latest receipt independently of relay
-storage.
+previous signed event is the publisher-side high-water mark. Custodians take it
+from the Fedi-operated canonical relay rather than keeping a private copy,
+because a publication completes only after every canonical relay has returned
+it. They keep each new receipt until every relay has verified it.
 
 An initial publication requires an explicit assertion that no prior publication
 exists. An update requires and authenticates the latest prior receipt. Before
@@ -105,6 +125,32 @@ this key across all custodians and hosts. Relay preflight is not a distributed
 lock. After each operation, the custodian retains the one receipt that wins
 replacement ordering as the new shared high-water mark.
 
+## Independent feature policy and rollout
+
+Kind `37710`, identifier `manifold-feature-config`, carries a complete version-1
+feature snapshot under a separate deployment-pinned Nostr author. Its content
+contains `version: 1`, the required `fman_version`, and the optional feature
+fields listed below for the legacy wire format. It has **no** payment fields.
+Only the old address can authorize `federations`, `telemetry_registration_url`, or
+`min_fee_ppm`. Additional fields in either snapshot never extend its authority.
+For example, the feature key can stop MGs from taking new seats, but cannot lower
+the fee floor or redirect telemetry enrollment.
+
+The feature event follows the same signature, exact identifier, future-skew and
+NIP-01 replacement rules as the payment event, with its own 16 KiB content
+limit and independent durable high-water mark. Once admitted, the complete
+feature snapshot wins over *all* legacy feature values, regardless of relative
+timestamps. Omitted optional features resolve to their documented defaults;
+they do not inherit old settings. Failed queries, invalid signatures and older
+snapshots do not reset feature policy. Without a feature snapshot, use the
+legacy projection, then the existing defaults if there is no payment snapshot.
+
+Select retained feature events by the configured publisher. A changed pin does
+not use another signer's event; switching back restores that signer's floor.
+An authentic but unsupported retained snapshot supplies no interpreted values
+but still orders replacements. Failure to authenticate the selected record is
+an integrity error, not an empty cache. Payment rotation is unchanged.
+
 ## Content and admission
 
 `content` is strict JSON with these known fields:
@@ -115,10 +161,11 @@ replacement ordering as the new shared high-water mark.
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
   username, password, query, or fragment;
-- `unbadged_telemetry_registration_url`, a URL of the same form for MGs without
-  a Holder authorization
+- Reserved and not implemented: `unbadged_telemetry_registration_url` would be
+  a URL of the same form for MGs without a Holder authorization
   ([SPEC-guardian-telemetry-proxy](../crates/mg/specs/SPEC-guardian-telemetry-proxy.md)).
-  Optional: absent means such MGs do not register;
+  Under that design, omitting it would disable registration for those MGs. Neither
+  signer can set this endpoint today; the feature signer cannot redirect enrollment;
 - `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already
@@ -145,9 +192,11 @@ replacement ordering as the new shared high-water mark.
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
   enough consumers have upgraded;
-- `seat_memory_budget_mib_v2`, the RAM in MiB that each MG reserves per seat
+- `seat_memory_budget_mib_v3`, the RAM in MiB that each MG reserves per seat
   when it computes its memory seat limit, from 256 to 16,384. Optional:
-  absent means 1,229 (about 1.2 GiB);
+  absent means 1,024 (1 GiB), whatever the older budget fields say. The
+  field is new in 0.1.20. Consumers that admit unknown fields but predate
+  it, which includes every MG and FA release from 0.1.1 to 0.1.19, ignore it;
 - `seat_cpu_iterations_per_sec`, the CPU capacity, in iterations per second
   of version 1 of the MG CPU benchmark, that each MG reserves per seat when
   it computes its CPU seat limit, from 1 to 100,000
@@ -171,13 +220,25 @@ replacement ordering as the new shared high-water mark.
   twin. Consumers that admit unknown fields but predate it, which includes
   every MG and FA release from 0.1.1 to 0.1.16, ignore it and apply no disk
   limit;
+- `seat_disk_gb_btrfs`, the same figure for an MG whose data filesystem is
+  btrfs, from 1 to 100,000. Optional: absent means 160, whatever
+  `seat_disk_gb` says. The field is new in 0.1.20, so it has no `_v2` twin.
+  Consumers that admit unknown fields but predate it, which includes every
+  MG and FA release from 0.1.1 to 0.1.19, ignore it, and MGs from 0.1.17 to
+  0.1.19 apply `seat_disk_gb` on btrfs too;
 - `max_seats_per_mg_v2`, a limit on total seats for each MG, from 0 to 256.
   Optional: absent means 12;
 - `seat_memory_budget_mib` and `max_seats_per_mg`, the same two limits for
-  MGs before 0.1.16, with the same ranges and defaults. MGs from 0.1.16 on
-  ignore them and read only the `_v2` fields, with no fallback, so Fedi can
-  publish separate limits for releases that run the newer readiness checks.
-  A publication that wants the same limit for every release sets both;
+  MGs before 0.1.16, with the same ranges. Absent, those MGs use 1,229 MiB
+  and 12 seats. MGs from 0.1.16 on ignore them and read only the newer
+  fields, with no fallback, so Fedi can publish separate limits for releases
+  that run the newer readiness checks. A publication that wants the same
+  limit for every release sets every version of the field;
+- `seat_memory_budget_mib_v2`, the per-seat memory budget for MGs from 0.1.16
+  to 0.1.19, with the same range. Absent, those MGs use 1,229 MiB. MGs from
+  0.1.20 on ignore it and read only `seat_memory_budget_mib_v3`, with no
+  fallback, so Fedi can give MGs from 0.1.20 on a budget apart from older
+  releases;
 - `max_pressure_percent`, an object of CPU, IO and memory pressure averages,
   each in percent of wall time from 1 to 100, above which an MG stops
   accepting new seats: `{"cpu": {"6h": ..., "3.5d": ...}, "io": {...},
@@ -276,10 +337,11 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
-12. reject a `seat_memory_budget_mib` or `seat_memory_budget_mib_v2` outside
-    256 to 16,384, a `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
-    `seat_monthly_data_gb` outside 1 to 10,000, a `seat_disk_gb` outside 1 to
-    100,000, a `max_seats_per_mg` or
+12. reject a `seat_memory_budget_mib`, `seat_memory_budget_mib_v2` or
+    `seat_memory_budget_mib_v3` outside 256 to 16,384, a
+    `seat_cpu_iterations_per_sec` outside 1 to 100,000, a
+    `seat_monthly_data_gb` outside 1 to 10,000, a `seat_disk_gb` or
+    `seat_disk_gb_btrfs` outside 1 to 100,000, a `max_seats_per_mg` or
     `max_seats_per_mg_v2` above 256, or a `max_pressure_percent` window
     outside 1 to 100, where 0 would close every MG and no share of time
     exceeds 100;
@@ -355,7 +417,12 @@ a stop for new paid formation, filters the authenticated set by wallet
 capability, and submits the canonical selected federation ID to `GetQuote`.
 MG-local rejection remains an actionable quote failure rather than a
 discovery-policy input. Joining, MG reconciliation, and publisher deployment
-belong to their consuming components.
+belong to their consuming components, with one cross-component guarantee: MG
+keeps retrying the join of an admitted member while it stays admitted, so a
+member that was unreachable when admitted becomes quotable once it is
+reachable, without an MG restart. Until then its quotes fail with the
+retryable `PaymentFederationUnavailable`. Only a join that failed after the
+wallet started opening its client waits for a restart.
 
 MG couples replacement to its quote pricing: it retains the admitted event,
 replaces its derived accepted membership, and — whenever any previously

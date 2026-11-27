@@ -6,8 +6,7 @@ Paid quoting checks the authenticated common setup-payment membership and quotes
 Quoting from a SeatGrant is not implemented.
 
 The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`,
-and `RemoveSeat` are implemented in normal daemon builds. The setup-payment
-policy's `guardian_transfer_v2` flag controls whether an MG starts new
+and `RemoveSeat` are implemented in normal daemon builds. The effective feature policy's `guardian_transfer_v2` flag controls whether an MG starts new
 transfers. Without the flag, the MG uses the environment default (off only
 in production). While transfer is off, an MG answers a `PullSeat` or
 `TransferSeat` that would start a transfer with `UnsupportedVerb`;
@@ -286,11 +285,30 @@ configured the MG cannot enroll a Holder authorization, so the verb
 answers `UnsupportedVerb` rather than an empty document, which would let a
 verifier read "not participating" as "participating but untrusted".
 
-The protocol also declares `GetFedimintStats`; this daemon profile returns
-`UnsupportedVerb` for it. For each signed seat-scoped verb it first verifies
-the envelope and checks seat ownership; a missing or wrong-owner seat
-therefore remains `UnknownSeat`, while an owned seat reaches
-`UnsupportedVerb`. Unsupported operations do not create an authentication
+`GetFedimintStats` (added in MG API version 2) is a read-only projection of
+the authorized seat's own guardian. It reports custodied value (the walletv2
+audit), wallets that uploaded a backup in the last 30 days, and Lightning plus
+on-chain volume over the 1008 and 4320 module consensus blocks before the
+current 144-block bucket (about 7 and 30 days; flows appear once their bucket
+ends). Each windowed figure says whether this guardian observed the whole
+window: volume windows are complete once the module's counters started before
+the window's first bucket, and the backup window is
+complete when the seat was formed with the federation or has held the seat
+for 30 days, because client backups are guardian-local and do not move with a
+seat. The MG keeps the first successful backup-count observation for each UTC
+date in that seat's local database, even if the FA never queries it. No
+individual backup IDs enter the sample. Current and historical wallet counts
+come from those same daily readings. The comparison baseline is exactly 30 UTC
+dates earlier; a missed day or a move does not produce a zero or a backfill.
+Custody and payment volume are not sampled by this mechanism.
+
+The verb answers `WrongState` before the seat is formed and after
+decommission, and `SeatUnavailable` while its `fedimintd` cannot answer. An MG reports only its own view; the FA combines guardians'
+answers, so no single MG's figures are federation truth.
+
+For each signed seat-scoped verb the daemon first verifies the envelope and
+checks seat ownership; a missing or wrong-owner seat therefore remains
+`UnknownSeat`. Unsupported operations do not create an authentication
 bypass, signature oracle, or seat-existence oracle.
 
 The signed commitment response roster is `GetQuote` and `CreateSeat`.

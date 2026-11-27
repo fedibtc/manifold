@@ -4,8 +4,7 @@
 
 Advertisement availability depends only on a configured offer, physical
 capacity, and the daemon's readiness checks. Setup-payment membership is
-enforced when a priced quote is requested. The fleet still waits for a Holder
-authorization before it starts; running without one is not implemented.
+enforced when a priced quote is requested.
 
 The MG publishes the kind-37701 advertisement and the kind-37709 v2
 advertisement from each snapshot
@@ -155,7 +154,7 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
-Each run also requires this MG's release to be at least the setup-payment
+Each run also requires this MG's release to be at least the feature
 policy's `min_mg_version` by SemVer precedence (a pre-release ranks below its
 release; build metadata does not count); without one the check does not
 apply. An MG below it stops selling new seats until it is updated, but it
@@ -167,7 +166,7 @@ reopens them and publishes again. An advertisement already on relays stays
 visible until its signed expiry, as above.
 
 Each run also requires CPU, IO and memory pressure averages of at most the
-setup-payment policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
+feature policy's `max_pressure_percent` (CPU 15% over 6 hours and 10%
 over 3.5 days, IO 25% and 15%, memory 70% and 70%, when absent or before a
 policy is admitted;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
@@ -205,7 +204,37 @@ it is not a prerequisite and never marks a slot down. Local E2E, whose MGs
 all share one busy test host's cgroup, skips the pressure check as it skips
 the relay and discovery checks.
 
-Each run also requires three uptime scores of at least the setup-payment
+Each run also requires the time this MG's seats take to order their own
+consensus items to average at most 5 seconds over 6 hours, a fixed bound
+that healthy MGs, at 1-2 seconds, stay well under. Pressure counts only the
+waits of this MG's tasks, so it misses a disk made slow by other software on
+the host; ordering latency measures what a slow host costs its federations,
+whose consensus goes ahead without a guardian whose items arrive late. Each
+run reads `fedimintd`'s `fm_consensus_ordering_latency_seconds` histogram,
+its `_sum` and `_count` added over label sets, from the loopback metrics
+port of every seat whose child is running. A seat's mean is the sum added
+over the count added since its previous reading by this daemon process; a
+seat that ordered nothing, could not be read, or whose counters went
+backwards, as a restarted child's do, gives none and its reading becomes its
+new baseline. The run's value is the median of the seats' means, the lower
+middle one for an even count, so one seat in a slow federation does not
+close the MG, while a slow host is slow in all of them. The run folds that value into a bias-corrected exponential moving
+average with a 6-hour time constant exactly as it folds a pressure share,
+with the same rules for an interval that says nothing, which includes a run
+with no seat mean; the comparison is in whole milliseconds, and an average
+equal to the bound passes (`ordering_latency_high` otherwise). The average,
+its weight and the last reading time are durable, so a restart keeps the
+average while each seat's baseline, held only in memory, starts again. The
+check applies only to an average: it does not apply while no seat is
+running, before running seats have measured an interval, or when the history
+cannot be stored. A seat whose federation orders nothing never measures one,
+so failing without an average could close an MG for good; an MG that starts
+selling before its first average can sell for one interval longer than it
+should.
+Like the pressure check it is not a prerequisite and never marks a slot
+down, and local E2E skips it with the pressure check.
+
+Each run also requires three uptime scores of at least the feature
 policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
 absent or before a policy is admitted; 0 turns a window off;
 [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
@@ -221,11 +250,7 @@ up, so a low uptime alone never keeps itself low, and failed prerequisites
 are retried but the uptime check is not. With the defaults, an outage of up
 to about 8.5 hours costs nothing, 12 hours down closes the MG for about 6
 hours (1 day), one day down for about two days (7 days), and an MG down
-about 2 hours every day stays closed (30 days). The operator can reset the
-history with the `ResetUptime` admin verb ([SPEC-admin-socket](SPEC-admin-socket.md)),
-which restarts it at 95% and reruns the checks at once; it exists for an
-outage that was not the host's fault, such as an MG bug, and is the badge
-issuer's to approve.
+about 2 hours every day stays closed (30 days).
 
 The verdict is durable in `offer_state`, so a restart resumes it: a ready MG
 keeps selling and a failing one stays closed until a run passes. A fresh,
@@ -237,7 +262,8 @@ FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
 fixed code per check, the three uptime scores, the minimums they were held to,
-and the pressure averages and thresholds for telemetry, and the latest report is served to the
+the pressure averages and thresholds, and the ordering latency average and
+bound for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows. The report includes the same three scores and minimums, so the page
 names the window that fails and by how much.

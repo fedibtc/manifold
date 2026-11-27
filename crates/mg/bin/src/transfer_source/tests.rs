@@ -55,7 +55,7 @@ async fn unbound_or_unenrolled_destination_fails_locally_without_dialing() {
         identity.derive_service_nostr_keys(),
         None,
         Vec::new(),
-        None,
+        Default::default(),
         ManifoldEnvironment::Development.profile().unwrap(),
         Arc::new(mg_core::fleet::FleetHolderAuthorizationStore::new(
             db.clone(),

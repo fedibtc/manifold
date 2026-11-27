@@ -4,9 +4,9 @@
 
 Payment-federation acceptance is the authenticated common setup-payment set; the
 admin surface only observes it. Removed payment scopes stay durable and lazily
-reopen on the first wallet query or payout after restart. Skipping the
-`holder_authorization` stage and the SeatGrant verbs are not implemented yet:
-the stage still requires an authorization.
+reopen on the first wallet query or payout after restart. The SeatGrant verbs
+are not implemented yet, so an MG that skipped the `holder_authorization` stage
+cannot take seats, and production refuses the skip.
 
 ## Record justification
 
@@ -61,8 +61,13 @@ At `identity` it answers two choosing verbs:
 At `holder_authorization`, `RefreshHolderAuthorizations` performs and awaits one
 bounded Nostr fetch. The stage advances once at least one structurally
 verified, subject-bound complete event is durably retained, or when the
-operator explicitly skips it to run without a badge
-([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+operator explicitly skips it with `SkipHolderAuthorization` to run without a
+badge ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
+The skip records nothing beyond the stage: an MG is badgeless exactly while it
+retains no authorization. It is refused where the Manifold environment does
+not offer badgeless setup (`ManifoldEnvironment::badgeless_mg`), and
+`Onboarding` reports that as `badgeless_mg`, so consumers offer the skip only
+where it can succeed.
 An MG without a badge publishes no advertisement and takes seats only through
 SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)); a later enrolled
 authorization makes it discoverable. An empty or failed fetch without a skip
@@ -120,15 +125,6 @@ the fleet.
   seconds of unbroken up slots until the gate passes that window (zero when it
   passes), computed by the daemon from the same moving averages so the UI
   holds no copy of the formula.
-- `ResetUptime` forgets the uptime history and wakes the readiness checks,
-  which run at once instead of at their next slot. The history restarts at
-  95% at the next up slot, as on a new MG, so an MG an outage closed reopens
-  with its next passing run. It returns `{ uptime_reset: "rechecking" }`;
-  `ShowSeatReadiness` shows the verdict once the run finishes. Uptime is
-  self-reported, so the reset is the operator's to make. It is for an outage
-  this MG's badge issuer agrees was not the host's fault, and the issuer may
-  revoke the badge of an MG that resets it otherwise; the daemon journals
-  each reset as a shareable event, so the reset is visible in telemetry.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.
@@ -356,8 +352,8 @@ the fleet.
   Holder-authorization status (the Nostr boundary is always constructed from
   the environment profile). The operator uses the configured identity when
   arranging a Holder authorization. It also returns `fman_version`: the
-  running package version, the latest version from the authenticated
-  setup-payment publication (or null before one is admitted), and whether
+  running package version, the latest version from the effective feature policy
+  (kind 37710 when admitted, otherwise the legacy kind 37707 projection) (or null before one is admitted), and whether
   SemVer ordering requires an update. Consumers decide how to present that
   information; the daemon does not stop its guardian children.
 - `RefreshHolderAuthorizations` is available during the onboarding
@@ -376,7 +372,7 @@ the fleet.
   returns `{available, messages, unread}` from the database without a relay
   read. `SendSupportMessage` publishes before it answers `{message}` and
   returns an operation error when no relay accepts the message or the
-  admitted setup-payment policy names no Fedi support key. Each message
+  effective feature policy and environment supply no Fedi support key. Each message
   carries `unread`, true for a Fedi message not yet marked read.
   `MarkSupportRead` takes the rumor ids of the messages the operator saw as
   `ids`, marks those Fedi messages read, and returns `{unread}`.

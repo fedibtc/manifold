@@ -10,6 +10,7 @@ import { SetupAuthorization } from '../SetupAuthorization';
 const waiting = {
   service_pubkey: '02abc',
   service_nostr_pubkey: MOCK_SERVICE_NOSTR_PUBKEY,
+  badgeless_mg: true,
   nostr: { state: 'not_observed', checked_at: 1_760_000_000 }
 };
 
@@ -45,7 +46,7 @@ describe('SetupAuthorization', () => {
 
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
     expect(adminCall).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check approval' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
   });
 
@@ -55,7 +56,7 @@ describe('SetupAuthorization', () => {
 
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
     expect(adminCall).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check approval' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
     await screen.findByText(/Approved\. Continuing to the terms step/i);
   });
@@ -79,7 +80,7 @@ describe('SetupAuthorization', () => {
       </QueryClientProvider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check approval' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
     await act(async () => {
       await client.invalidateQueries({ queryKey: ONBOARDING_KEY });
@@ -120,7 +121,7 @@ describe('SetupAuthorization', () => {
     await act(async () => {
       void client.refetchQueries({ queryKey: ONBOARDING_KEY });
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check approval' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
     await act(async () => {
       finishRefresh(observed);
@@ -134,6 +135,45 @@ describe('SetupAuthorization', () => {
     expect(client.getQueryState(ONBOARDING_KEY)?.status).toBe('success');
   });
 
+  it('should move on without a badge when the operator skips', async () => {
+    const skipped = { ...waiting, stage: 'initial_offer' };
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(skipped);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(ONBOARDING_KEY, waiting);
+    const onSettled = vi.fn();
+    render(
+      <QueryClientProvider client={client}>
+        <SetupAuthorization onSettled={onSettled} />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set up without a badge' }));
+
+    await vi.waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
+    expect(adminCall.mock.calls.map(([request]) => request)).toEqual(['SkipHolderAuthorization']);
+    expect(client.getQueryData(ONBOARDING_KEY)).toEqual(skipped);
+  });
+
+  it('should offer no badgeless path where the network does not support one', async () => {
+    renderAuthorization(vi.fn(), { ...waiting, badgeless_mg: false });
+
+    await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
+    expect(screen.queryByRole('button', { name: 'Set up without a badge' })).toBeNull();
+    expect(screen.queryByText(/No Trusted badge\?/)).toBeNull();
+  });
+
+  it('should stay on the step and say why when the skip is refused', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockRejectedValue(
+      new AdminApiError('this Manifold Fedimint Guardian has not completed setup')
+    );
+    const { onSettled } = renderAuthorization();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set up without a badge' }));
+
+    await screen.findByText('this Manifold Fedimint Guardian has not completed setup');
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+
   it('should show the key an attester signs over', async () => {
     renderAuthorization();
 
@@ -144,9 +184,21 @@ describe('SetupAuthorization', () => {
     renderAuthorization();
 
     await screen.findByText(/Waiting for approval/i);
-    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(
-      true
-    );
+  });
+
+  // Design sign-off: a greyed-out Continue made "Continue without a badge" look
+  // like the fast way forward. The badge path has the one primary action, and
+  // the badgeless route comes after the badge steps, not before them.
+  it('should put the badge path first and the badgeless route after it', async () => {
+    renderAuthorization();
+
+    await screen.findByText(/Waiting for approval/i);
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+    const steps = screen.getByText('Open PeerBadge');
+    const check = screen.getByRole('button', { name: 'Check approval' });
+    const skip = screen.getByRole('button', { name: 'Set up without a badge' });
+    expect(steps.compareDocumentPosition(check) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(check.compareDocumentPosition(skip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // The paragraph used to render in both states, so an approved operator read
@@ -171,7 +223,7 @@ describe('SetupAuthorization', () => {
     expect(document.querySelector('svg')).toBeNull();
     expect(screen.queryByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeNull();
     expect(screen.queryByRole('button', { name: /copy the authorization request/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Check status' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Check approval' })).toBeNull();
     expect(screen.queryByRole('button', { name: /What is PeerBadge\?/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Need a Trusted badge\?/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Having trouble\?/ })).toBeNull();
@@ -188,7 +240,7 @@ describe('SetupAuthorization', () => {
       renderAuthorization();
 
       await vi.waitFor(() => screen.getByText('Scan this code'));
-      const button = screen.getByRole('button', { name: 'Check status' });
+      const button = screen.getByRole('button', { name: 'Check approval' });
       const callsBeforeClick = adminCall.mock.calls.length;
 
       await act(async () => {
@@ -209,7 +261,7 @@ describe('SetupAuthorization', () => {
     );
     renderAuthorization();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check approval' }));
     await vi.waitFor(() => expect(screen.getByText(/Waiting for approval/i)).toBeTruthy());
   });
 

@@ -54,12 +54,16 @@ export const SetupGate = () => {
         ? 'authorization'
         : 'doors';
 
-  if (isSettingUp) {
-    return <SetupWizard onComplete={handleComplete} initialStep={initialStep} />;
-  }
-
+  // Checked before the wizard: once the last step is stored the stage is
+  // complete, and the wizard can no longer tell which of its forms it was
+  // showing. Restore lands at the authorization stage, never here, so nothing
+  // the operator still has to read is hidden.
   if (onboarding.data?.stage === 'complete' && onboarding.data.runtime === 'starting') {
     return <FleetStarting />;
+  }
+
+  if (isSettingUp) {
+    return <SetupWizard onComplete={handleComplete} initialStep={initialStep} />;
   }
 
   return <Outlet />;

@@ -277,7 +277,7 @@ reconcile it through `fa-client::resume`, and invoke the corresponding typed
 fa-client operation in that same process. Invalid metadata values, fee timing,
 rates above the shared payer ceiling, and malformed FA account files fail before
 identity, durable FA state, consensus, or Iroh access. The fee account is the
-public serialized `spv2.our_account(AccountType::BtcDepositor)` descriptor from
+public serialized `spv2.own_account(OwnAccount::FeeRemittance)` descriptor from
 the FA consumer's client for this formed federation, not its spend key. The CLI
 cannot prove derivation or key control from that public descriptor: another
 valid account redirects the FA share, so only test accounts controlled by the
@@ -331,3 +331,8 @@ The atomic no-replace operation is platform-specific: Linux and Android use
 `renameatx_np(RENAME_EXCL)`. Other Unix targets fail closed as unsupported.
 Any platform-support change must preserve the no-clobber and retained-inode
 contract and run the funding-token journal tests on that platform.
+
+When testing independent feature snapshots, configure both public keys through
+the Development environment profile. The standalone `--setup-payment-publisher`
+flag selects the legacy payment-only constructor and cannot be combined with a
+feature pin.

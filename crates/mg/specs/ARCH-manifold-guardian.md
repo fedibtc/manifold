@@ -2,8 +2,9 @@
 
 ## Status
 
-Running without a badge and SeatGrants
-([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented.
+SeatGrants ([SPEC-seat-grant](./SPEC-seat-grant.md)) are not implemented, so
+an MG run without a badge opens its fleet unadvertised but cannot take seats.
+Badgeless setup is off in production until they ship.
 
 The MG daemon is one process that hosts up to its durable operator-configured
 guardian-seat capacity,
@@ -176,7 +177,9 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   accepted evidence against Fedimint's durable operation log with periodic
   retries, `guardian_fee` is the fee vault, and
   `setup_payment_policy` the join reconciler consuming the Nostr boundary's
-  admitted-set watch. Its clients share one RocksDB, partitioned by a
+  admitted-set watch; it retries joins that fail before a client open with a
+  bounded backoff, while the wallet's per-process open fence leaves a failed
+  open to a restart. Its clients share one RocksDB, partitioned by a
   monotonically allocated prefix per client scope, with the allocator and its
    prefix-to-scope map under prefix zero. The prefix is reserved before
   Fedimint is handed the database and never reused, so a join that fails
@@ -244,12 +247,13 @@ direction is strictly bottom-up; each layer only knows the ones below it.
 - the `nostr` runtime — implements `directory`'s traits and owns
   relay connections, periodic signed
   advertisements, Holder-authorization discovery and verification, and
-  authenticated setup-payment publication refresh. The binary supplies an
+  independently authenticated payment and feature publication refresh. The
+  binary supplies an
   advertisement-snapshot source and a policy-store callback that persists each
   admitted event atomically with the fleet's derived membership and epoch
   policy; consumers subscribe directly to the boundary's admitted-set watch
-  (the wallet's join reconciler is one such subscriber). The relay set and the
-  setup-payment publisher come from the resolved `ManifoldEnvironmentProfile`
+  (the wallet's join reconciler is one such subscriber). The relay set and both
+  publisher pins come from the resolved `ManifoldEnvironmentProfile`
   — there is no relay or publisher CLI argument, and development-only
   environment overrides are resolved inside `manifold-environment` itself.
   The daemon does not evaluate its own badge; advertisement consumers own
@@ -260,7 +264,8 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   database to that environment; every later open checks the immutable binding
   and refuses a different environment before using its identity, policy,
   wallet, seats, admin socket, or network service. Retained setup-payment policy
-  is revalidated under the selected profile's publisher before the RPC router
+  and the feature snapshot selected by the profile’s feature pin are revalidated
+  before the RPC router
   is spawned, so publisher rotation has no old-policy serving window. The
   binding was added by an intentional pre-deployment rewrite of the initial
   migration: preceding experimental databases fail checksum validation and
@@ -317,7 +322,7 @@ serialized decisions
 ([ARCH-manifold-guardian-storage](./ARCH-manifold-guardian-storage.md)); seat facts are loaded
 at startup and operator settings remain database-owned.
 
-An MG starts a new guardian transfer only while the setup-payment policy it
+An MG starts a new guardian transfer only while the effective feature policy it
 holds enables transfer, or, without a published flag, while its environment
 defaults to it (development and staging); a transfer it already stored
 always runs to completion through the machinery below

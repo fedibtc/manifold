@@ -38,7 +38,7 @@ delegate credentials does not establish any of them.
    that database, and uses its root secret to build the client.
 3. **`code` — that client derives the provider account.**
    `stability_pool::report` obtains
-   `our_account(AccountType::Provider)` from the same target client, and the
+   `own_account(OwnAccount::Provider)` from the same target client, and the
    submission path calls that client's
    `deposit_to_provide_with_operation_id`. No independently supplied
    stability-provider account or signing key is accepted.

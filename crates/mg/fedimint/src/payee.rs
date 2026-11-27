@@ -35,7 +35,7 @@ use std::future::Future;
 
 use mg_core::guardian_fee::GuardianFeeVault;
 use mg_core::wallet::{
-    ClaimOutcome, EcashClaimEvidence, EcashWallet, LockedPaymentPrepareError, Msats,
+    ClaimOutcome, EcashClaimEvidence, EcashWallet, JoinError, LockedPaymentPrepareError, Msats,
     VerifiedLockedPayment,
 };
 
@@ -1048,13 +1048,24 @@ impl EcashWallet for Wallet {
             .collect()
     }
 
-    async fn join(&self, invite_code: &str) -> anyhow::Result<WireFederationId> {
+    async fn join(&self, invite_code: &str) -> Result<WireFederationId, JoinError> {
         let invite_code: fedimint_core::invite_code::InviteCode = invite_code
             .trim()
             .parse()
-            .map_err(|err| anyhow::anyhow!("invalid invite code: {err:#}"))?;
-        let federation_id = Wallet::join(self, &invite_code).await?;
-        Ok(WireFederationId(federation_id.to_string()))
+            .map_err(|err| JoinError::Retryable(anyhow::anyhow!("invalid invite code: {err:#}")))?;
+        match Wallet::join(self, &invite_code).await {
+            Ok(federation_id) => Ok(WireFederationId(federation_id.to_string())),
+            // Classify by the wallet's open fence, not by the error: once an
+            // open of this scope has started, only a restart may try again.
+            Err(error)
+                if self
+                    .payment_open_attempted(invite_code.federation_id())
+                    .await =>
+            {
+                Err(JoinError::RestartRequired(error.into()))
+            }
+            Err(error) => Err(JoinError::Retryable(error.into())),
+        }
     }
 
     /// This wallet also holds a client in each guarded federation, so it

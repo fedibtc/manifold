@@ -840,6 +840,16 @@ impl Wallet {
             .contains_key(&ClientScope::Payment(federation_id))
     }
 
+    /// Whether this process started opening the payment client of
+    /// `federation_id`. Once it has, [`client_open_once`] refuses every
+    /// further open, so only a restart can make a failed join succeed.
+    pub(crate) async fn payment_open_attempted(&self, federation_id: FederationId) -> bool {
+        self.open_attempted
+            .lock()
+            .await
+            .contains(&ClientScope::Payment(federation_id))
+    }
+
     /// Every durable payment scope, whether or not its client is open now.
     pub(crate) async fn retained_federation_ids(&self) -> Vec<FederationId> {
         self.prefixes
@@ -1209,9 +1219,30 @@ async fn load_prefixes(database: &Database) -> anyhow::Result<BTreeMap<ClientSco
     Ok(prefixes)
 }
 
+/// The durable prefix of `scope`, allocating one if it has none.
+///
+/// A join cancelled between this commit and the in-memory record leaves a
+/// mapping the wallet does not know about yet; reusing it keeps a retried join
+/// from mapping one scope twice, which [`load_prefixes`] refuses at the next
+/// open.
 async fn reserve_prefix(database: &Database, scope: &ClientScope) -> anyhow::Result<u64> {
     let global = global_db(database);
     let mut tx = global.begin_transaction().await;
+    let encoded_scope = scope.consensus_encode_to_vec();
+    let existing = tx
+        .raw_find_by_prefix(&[PREFIX_FEDERATION_KEY])
+        .await?
+        .filter(|(_, value)| std::future::ready(*value == encoded_scope))
+        .map(|(key, _)| key)
+        .collect::<Vec<_>>()
+        .await;
+    if let Some(key) = existing.first() {
+        anyhow::ensure!(key.len() > 1, "invalid federation prefix mapping key");
+        return Ok(u64::consensus_decode_whole(
+            &key[1..],
+            &ModuleDecoderRegistry::default(),
+        )?);
+    }
     let next = match tx.raw_get_bytes(NEXT_PREFIX_KEY).await? {
         Some(value) => u64::consensus_decode_whole(&value, &ModuleDecoderRegistry::default())?,
         None => 1,
@@ -1222,7 +1253,7 @@ async fn reserve_prefix(database: &Database, scope: &ClientScope) -> anyhow::Res
         .context("federation prefix counter exhausted")?;
     tx.raw_insert_bytes(NEXT_PREFIX_KEY, &following.consensus_encode_to_vec())
         .await?;
-    tx.raw_insert_bytes(&scope_key(next), &scope.consensus_encode_to_vec())
+    tx.raw_insert_bytes(&scope_key(next), &encoded_scope)
         .await?;
     tx.commit_tx().await;
     Ok(next)

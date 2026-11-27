@@ -11,14 +11,15 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, MaxPressurePercent, MgVersion, MinUptimePercent,
+    AdmittedFeaturePolicy, MaxPressurePercent, MgVersion, MinUptimePercent,
 };
 use fedi_decentralized_nostr::mg::{AdvertisedUptime, Permille, PermilleOutOfRange};
-use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
+use fedi_decentralized_service_manifold_guardian::{SEAT_READINESS_EVENT, SeatId};
 use tokio::sync::watch;
 
 use crate::fleet::Fleet;
 use crate::host_pressure::{HostPressure, PressureSample, PressureState, PressureTotals};
+use crate::ordering_latency::{self, MAX_ORDERING_LATENCY_MS, OrderingTotals, SeatBaselines};
 
 /// One uptime slot: the daemon records one per readiness run, and runs at
 /// least once per slot while it is up.
@@ -54,6 +55,9 @@ pub enum ReadinessOutcome {
     /// No pressure interval has been measured yet: a fresh install measures
     /// one before it sells.
     HostPressureMeasuring,
+    /// The 6-hour average time this MG's seats take to order their own
+    /// consensus items is over the 5-second maximum.
+    OrderingLatencyHigh,
     /// The one-day uptime score is under the setup-payment policy minimum.
     #[serde(rename = "uptime_1d_low")]
     DayUptimeLow,
@@ -86,6 +90,7 @@ impl ReadinessOutcome {
             Self::HalfWeekPressureHigh => "host_pressure_3_5d_high",
             Self::HostPressureUnavailable => "host_pressure_unavailable",
             Self::HostPressureMeasuring => "host_pressure_measuring",
+            Self::OrderingLatencyHigh => "ordering_latency_high",
             Self::DayUptimeLow => "uptime_1d_low",
             Self::WeekUptimeLow => "uptime_7d_low",
             Self::MonthUptimeLow => "uptime_30d_low",
@@ -114,6 +119,17 @@ pub struct ReadinessReport {
     /// setup-payment policy or its defaults; `None` where the check does not
     /// apply, and in a probe's report before the run compares.
     pub max_host_pressure: Option<HostPressure>,
+    /// How fast this MG's running seats order their own consensus items,
+    /// against a fixed 5-second maximum.
+    pub ordering_latency: ReadinessOutcome,
+    /// The 6-hour average ordering latency this run compared, in
+    /// milliseconds; `None` where the check does not apply or no interval
+    /// has been measured yet.
+    pub ordering_latency_6h_ms: Option<u32>,
+    /// The maximum this run compared against, in milliseconds; `None` where
+    /// the check does not apply, and in a probe's report before the run
+    /// compares.
+    pub max_ordering_latency_6h_ms: Option<u32>,
     pub uptime: ReadinessOutcome,
     /// The uptime scores this run compared and the minimums it compared them
     /// against; `None` before the run records its slot, or when recording it
@@ -199,14 +215,15 @@ impl ReadinessReport {
         self.prerequisites_passed()
             && self.version.passed()
             && self.pressure.passed()
+            && self.ordering_latency.passed()
             && self.uptime.passed()
     }
 
     /// Whether the probed prerequisites passed. These decide whether a
     /// slot counts as up, so the uptime gate cannot keep itself closed. The
-    /// version and pressure checks are not among them: an MG below the
-    /// policy's minimum release, or too busy for more seats, still serves its
-    /// seats, so it is up.
+    /// version, pressure and ordering latency checks are not among them: an
+    /// MG below the policy's minimum release, too busy for more seats, or
+    /// slow to order its seats' items still serves its seats, so it is up.
     pub fn prerequisites_passed(&self) -> bool {
         self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
     }
@@ -375,25 +392,38 @@ pub trait ReadinessProbe: Send {
     async fn probe(&mut self) -> ReadinessReport;
 }
 
+/// The ordering latency counters of this MG's running seats, read from each
+/// seat's loopback metrics port.
+#[async_trait::async_trait]
+pub trait OrderingLatencySource: Send {
+    /// One entry per running seat: its cumulative ordering latency counters,
+    /// or `None` when its metrics cannot be read. Empty without running
+    /// seats.
+    async fn read(&mut self) -> Vec<(SeatId, Option<OrderingTotals>)>;
+}
+
 const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Run until aborted: probe, record this uptime slot, apply the verdict to
 /// `fleet`, journal it, and wait for the next slot while ready or a minute
-/// while failing, or until the setup-payment policy changes or the operator
-/// resets the uptime history. `clock` is the
+/// while failing, or until the setup-payment policy changes. `clock` is the
 /// wall clock slots are counted in, and `read_pressure` reads the cgroup's
 /// pressure counters ([`host_pressure::read_cgroup_pressure`]); a deployment
 /// without it, such as a local end-to-end test whose MGs share one busy
-/// host's cgroup, does not apply the pressure check.
+/// host's cgroup, does not apply the pressure check. `ordering_latency` reads
+/// the running seats' ordering latency; without it, as in the same local
+/// end-to-end test, the ordering latency check does not apply.
 pub async fn run(
     mut probe: impl ReadinessProbe,
     fleet: Arc<Fleet>,
-    mut setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    mut feature_policy: watch::Receiver<Option<AdmittedFeaturePolicy>>,
     clock: impl Fn() -> SystemTime + Send,
     read_pressure: Option<impl Fn() -> anyhow::Result<PressureTotals> + Send>,
+    mut ordering_latency: Option<impl OrderingLatencySource>,
 ) {
     let this_release = this_mg_version();
     let mut warned_pressure = false;
+    let mut seat_baselines = SeatBaselines::default();
     loop {
         let mut report = probe.probe().await;
         // Recording this slot also accounts for every slot since the last
@@ -431,7 +461,7 @@ pub async fn run(
             }
         });
         let (min, version, max_pressure) = {
-            let policy = setup_payment_policy.borrow_and_update();
+            let policy = feature_policy.borrow_and_update();
             let policy = policy.as_ref();
             (
                 policy.map_or_else(MinUptimePercent::default, |policy| {
@@ -439,7 +469,7 @@ pub async fn run(
                 }),
                 version_outcome(
                     &this_release,
-                    policy.and_then(AdmittedSetupPaymentFederations::min_mg_version),
+                    policy.and_then(|policy| policy.min_mg_version()),
                 ),
                 HostPressure::from(policy.map_or_else(MaxPressurePercent::default, |policy| {
                     policy.max_pressure_percent()
@@ -462,6 +492,29 @@ pub async fn run(
         } else {
             report.pressure = ReadinessOutcome::NotApplicable;
         }
+        if let Some(source) = ordering_latency.as_mut() {
+            let readings = source.read().await;
+            let median = seat_baselines.interval_median(&readings);
+            let recorded = if readings.is_empty() {
+                None
+            } else {
+                Some(
+                    fleet
+                        .record_ordering_latency(recorded_at, median)
+                        .await
+                        .inspect_err(|error| {
+                            tracing::warn!(%error, "failed to record the ordering latency");
+                        }),
+                )
+            };
+            let applies = recorded.is_some();
+            let (outcome, average) = ordering_latency::outcome(recorded);
+            report.ordering_latency = outcome;
+            report.ordering_latency_6h_ms = average;
+            report.max_ordering_latency_6h_ms = applies.then_some(MAX_ORDERING_LATENCY_MS);
+        } else {
+            report.ordering_latency = ReadinessOutcome::NotApplicable;
+        }
         report.uptime = scores.outcome(min);
         // The operator sees no figures rather than zeros it cannot trust.
         report.uptime_comparison = recorded.map(|scores| scores.comparison(min));
@@ -475,28 +528,20 @@ pub async fn run(
         } else {
             NOT_READY_INTERVAL
         };
-        wait_for_next_run(
-            wait,
-            &mut setup_payment_policy,
-            fleet.readiness_rerun_requested(),
-        )
-        .await;
+        wait_for_next_run(wait, &mut feature_policy).await;
     }
 }
 
 /// Wait `wait`, or less if the setup-payment policy changes first, since a
-/// new policy can change the verdict (its minimum release or uptime), or if
-/// `rerun` asks for a run first, as the operator does by resetting the uptime
-/// history. A policy that can no longer change only leaves the other two.
+/// new policy can change the verdict (its minimum release or uptime). A
+/// policy that can no longer change only leaves the timer.
 async fn wait_for_next_run(
     wait: Duration,
-    policy: &mut watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
-    rerun: impl Future<Output = ()>,
+    policy: &mut watch::Receiver<Option<AdmittedFeaturePolicy>>,
 ) {
     tokio::select! {
         () = tokio::time::sleep(wait) => {}
         Ok(()) = policy.changed() => {}
-        () = rerun => {}
     }
 }
 
@@ -545,6 +590,9 @@ fn journal_readiness(report: &ReadinessReport, scores: UptimeScores, min: MinUpt
             pressure.map(|pressure| pct_of(pressure.memory.three_and_a_half_days)),
         max_memory_pressure_6h_pct = max.map(|max| pct_of(max.memory.six_hours)),
         max_memory_pressure_3_5d_pct = max.map(|max| pct_of(max.memory.three_and_a_half_days)),
+        ordering_latency = report.ordering_latency.as_str(),
+        ordering_latency_6h_ms = report.ordering_latency_6h_ms,
+        max_ordering_latency_6h_ms = report.max_ordering_latency_6h_ms,
         uptime = report.uptime.as_str(),
         uptime_1d_pct = pct(scores.day),
         uptime_7d_pct = pct(scores.week),
@@ -855,6 +903,9 @@ mod tests {
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
             max_host_pressure: None,
+            ordering_latency: ReadinessOutcome::NotApplicable,
+            ordering_latency_6h_ms: None,
+            max_ordering_latency_6h_ms: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: Some(UptimeComparison {
                 scores: UptimePermille {
@@ -881,6 +932,9 @@ mod tests {
                 "pressure": "not_applicable",
                 "host_pressure": null,
                 "max_host_pressure": null,
+                "ordering_latency": "not_applicable",
+                "ordering_latency_6h_ms": null,
+                "max_ordering_latency_6h_ms": null,
                 "uptime": "uptime_7d_low",
                 "uptime_comparison": {
                     "scores": { "1d": 887, "7d": 899, "30d": 935 },
@@ -902,6 +956,9 @@ mod tests {
             pressure: ReadinessOutcome::NotApplicable,
             host_pressure: None,
             max_host_pressure: None,
+            ordering_latency: ReadinessOutcome::NotApplicable,
+            ordering_latency_6h_ms: None,
+            max_ordering_latency_6h_ms: None,
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -919,6 +976,25 @@ mod tests {
         };
         assert!(too_old.prerequisites_passed());
         assert!(!too_old.ready());
+        // Slow ordering closes the gate the same way.
+        let slow = ReadinessReport {
+            version: ReadinessOutcome::Pass,
+            ordering_latency: ReadinessOutcome::OrderingLatencyHigh,
+            ordering_latency_6h_ms: Some(20_800),
+            max_ordering_latency_6h_ms: Some(5_000),
+            ..too_old
+        };
+        assert!(slow.prerequisites_passed());
+        assert!(!slow.ready());
+        // Running seats with no average yet leave it open.
+        assert!(
+            ReadinessReport {
+                ordering_latency: ReadinessOutcome::NotApplicable,
+                ordering_latency_6h_ms: None,
+                ..slow
+            }
+            .ready()
+        );
         assert!(
             ReadinessReport {
                 version: ReadinessOutcome::Pass,
@@ -1067,6 +1143,9 @@ mod tests {
                     three_and_a_half_days: 650,
                 },
             }),
+            ordering_latency: ReadinessOutcome::OrderingLatencyHigh,
+            ordering_latency_6h_ms: Some(20_771),
+            max_ordering_latency_6h_ms: Some(5_000),
             uptime: ReadinessOutcome::WeekUptimeLow,
             uptime_comparison: None,
         };
@@ -1119,6 +1198,9 @@ mod tests {
                 memory_pressure_3_5d_pct: Some(1.8),
                 max_memory_pressure_6h_pct: Some(70.0),
                 max_memory_pressure_3_5d_pct: Some(65.0),
+                ordering_latency: Some("ordering_latency_high".into()),
+                ordering_latency_6h_ms: Some(20_771),
+                max_ordering_latency_6h_ms: Some(5_000),
                 uptime: Some("uptime_7d_low".into()),
                 uptime_1d_pct: Some(99.4),
                 uptime_7d_pct: Some(88.1),
@@ -1137,12 +1219,7 @@ mod tests {
     async fn a_policy_change_ends_the_wait_for_the_next_run() {
         let (sender, mut policy) = watch::channel(None);
         let waiting = tokio::spawn(async move {
-            wait_for_next_run(
-                Duration::from_secs(3600),
-                &mut policy,
-                std::future::pending(),
-            )
-            .await;
+            wait_for_next_run(Duration::from_secs(3600), &mut policy).await;
             policy
         });
         tokio::task::yield_now().await;
@@ -1154,12 +1231,7 @@ mod tests {
 
         drop(sender);
         let started = std::time::Instant::now();
-        wait_for_next_run(
-            Duration::from_millis(200),
-            &mut policy,
-            std::future::pending(),
-        )
-        .await;
+        wait_for_next_run(Duration::from_millis(200), &mut policy).await;
         assert!(started.elapsed() >= Duration::from_millis(200));
     }
 

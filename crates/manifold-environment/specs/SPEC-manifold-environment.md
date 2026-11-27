@@ -21,7 +21,8 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - a non-empty ordered, deduplicated set of typed canonical Nostr relay URLs;
 - one or more typed PeerBadge issuer identity public keys;
 - a PeerBadge minimum trust level;
-- at most one typed setup-payment federation-list publisher public key;
+- separate optional publisher pins for setup payments (37707) and feature policy
+  (37710);
 - at most one complete single-sig `BtcDepositor` Guardian Verification Fee
   account;
 - at most one typed Fedi support public key, the identity MG operators chat
@@ -41,17 +42,22 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   `None` for production); and
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`); and
-- whether MGs start guardian transfers when the setup-payment policy omits
+- whether MGs start guardian transfers when the effective feature policy omits
   the flag (`ManifoldEnvironment::guardian_transfer_v2`): on in development and
   staging, off in production. A published `guardian_transfer_v2` flag always
   wins ([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md#enabling-transfer)).
   Current readers ignore the retired `guardian_transfer` field. Publishers
   must never set it to `true` in production: older readers use it to enable
   the incompatible old `TransferSeat` shape; and
-- whether MGs offer the guardian link (mobile notifications) when the setup-payment policy omits the flag
+- whether MGs offer the guardian link (mobile notifications) when the effective feature policy omits the flag
   (`ManifoldEnvironment::guardian_link`): on in development and staging, off
   in production. A published `guardian_link` flag always wins
-  ([SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)).
+  ([SPEC-guardian-link](../../mg/specs/SPEC-guardian-link.md#enabling-mobile-notifications)); and
+- whether an MG may be set up without a badge
+  (`ManifoldEnvironment::badgeless_mg`): on in development and staging, off
+  in production until bring-your-own guardians can take seats there. No
+  publication changes it; a release turns it on
+  ([REQ-bring-your-own-guardians](../../../specs/REQ-bring-your-own-guardians.md)).
 
 The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);
@@ -176,3 +182,10 @@ exact environment-to-Bitcoin-network mapping, the
 Mutinynet staging Esplora default, and the production publisher, Guardian
 Verification Fee account, and intentionally absent production chain-backend
 default.
+
+The feature-config author is independent of the setup-payment author. With no
+pin, readers continue to use the legacy publication. Only Development accepts
+`MANIFOLD_DEV_FEATURE_CONFIG_PUBLISHER`; it must differ from the resolved
+payment publisher. Neither Staging nor Production accepts a runtime feature
+key. See [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)
+for activation and precedence.

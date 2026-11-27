@@ -438,6 +438,18 @@ pub struct SeatReadinessEvent {
     pub max_memory_pressure_6h_pct: Option<f64>,
     #[serde(default)]
     pub max_memory_pressure_3_5d_pct: Option<f64>,
+    /// The ordering latency outcome: how fast the MG's running seats order
+    /// their own consensus items. Releases before the check journal none.
+    #[serde(default)]
+    pub ordering_latency: Option<String>,
+    /// The 6-hour average of the per-run median seat's mean ordering
+    /// latency, in milliseconds; absent where the check does not apply or
+    /// nothing has been measured yet.
+    #[serde(default)]
+    pub ordering_latency_6h_ms: Option<u32>,
+    /// The maximum that average compared against, in milliseconds.
+    #[serde(default)]
+    pub max_ordering_latency_6h_ms: Option<u32>,
     #[serde(default)]
     pub uptime: Option<String>,
     #[serde(default)]

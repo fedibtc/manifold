@@ -8,12 +8,18 @@ interface AuthorizationPanelProps {
   data: OnboardingResponse | undefined;
   isLoading: boolean;
   error: unknown;
+  badgeless?: boolean;
 }
 
 // Renders state, never actions. The setup step and the standalone page need the
 // same key, QR and status but entirely different controls, so the buttons stay
 // with each surface.
-export const AuthorizationPanel = ({ data, isLoading, error }: AuthorizationPanelProps) => (
+export const AuthorizationPanel = ({
+  data,
+  isLoading,
+  error,
+  badgeless = false
+}: AuthorizationPanelProps) => (
   <AuthorizationStateGuard data={data} isLoading={isLoading} error={error}>
     {(state) => (
       <>
@@ -24,7 +30,7 @@ export const AuthorizationPanel = ({ data, isLoading, error }: AuthorizationPane
           request and paste it there.
         </p>
 
-        <AuthorizationStatusBanner nostr={state.nostr} />
+        <AuthorizationStatusBanner nostr={state.nostr} badgeless={badgeless} />
       </>
     )}
   </AuthorizationStateGuard>

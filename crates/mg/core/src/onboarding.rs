@@ -1,7 +1,8 @@
 //! The daemon's operator-owned setup workflow.
 //!
 //! A fleet opens only after the operator has created or restored its identity,
-//! enrolled a Holder authorization, and configured its initial offer.
+//! enrolled a Holder authorization or chosen to run without a badge, and
+//! configured its initial offer.
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use crate::restore::RestoreError;
 use crate::seat_process::SeatProcessConfig;
 use crate::wallet::Msats;
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 
 pub struct FetchedHolderAuthorization {
     pub authorization_issued_at: u64,
@@ -40,6 +42,15 @@ pub trait HolderAuthorizationFetcher: Send + Sync {
 #[error("this Manifold Fedimint Guardian has not completed setup")]
 pub struct NotOnboarded;
 
+/// This environment does not let an MG run without a badge
+/// (`ManifoldEnvironment::badgeless_mg`), so Holder authorization cannot be
+/// skipped.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "this network does not support setting up a Manifold Fedimint Guardian without a badge yet"
+)]
+pub struct BadgelessUnavailable;
+
 pub(crate) async fn onboard_as_new(db: &Db) -> anyhow::Result<RootMnemonic> {
     let identity = RootMnemonic::generate()?;
     db.install_identity(&identity).await?;
@@ -63,6 +74,7 @@ pub struct Onboarding {
     holder_authorizations: Arc<dyn HolderAuthorizationFetcher>,
     holder_status: tokio::sync::Mutex<OnboardingStatus>,
     setup_payments_configured: bool,
+    manifold_environment: ManifoldEnvironment,
 }
 
 impl Onboarding {
@@ -72,6 +84,7 @@ impl Onboarding {
         archive: Arc<dyn crate::backup::BackupArchive>,
         holder_authorizations: Arc<dyn HolderAuthorizationFetcher>,
         setup_payments_configured: bool,
+        manifold_environment: ManifoldEnvironment,
     ) -> Arc<Self> {
         Arc::new(Self {
             operation: tokio::sync::Mutex::new(()),
@@ -82,6 +95,7 @@ impl Onboarding {
             holder_authorizations,
             holder_status: tokio::sync::Mutex::new(OnboardingStatus::Checking),
             setup_payments_configured,
+            manifold_environment,
         })
     }
 
@@ -179,6 +193,17 @@ impl Onboarding {
                 }
                 self.status_json().await
             }
+            AdminRequest::SkipHolderAuthorization => {
+                if !self.manifold_environment.badgeless_mg() {
+                    return Err(BadgelessUnavailable.into());
+                }
+                self.db.skip_holder_authorization().await?;
+                tracing::info!(
+                    safe_to_share = true,
+                    "skipped Holder authorization; this Manifold Guardian will not advertise until one is enrolled"
+                );
+                self.status_json().await
+            }
             AdminRequest::ShowMnemonic => Ok(crate::admin::mnemonic_json(
                 &self.identity().await?.phrase(),
             )),
@@ -194,7 +219,11 @@ impl Onboarding {
 
     async fn answer_initial_offer(&self, request: AdminRequest) -> anyhow::Result<Value> {
         match request {
-            AdminRequest::Onboarding => self.status_json().await,
+            // A repeated skip, such as a browser retrying one whose answer it
+            // lost, finds its stage already settled.
+            AdminRequest::Onboarding | AdminRequest::SkipHolderAuthorization => {
+                self.status_json().await
+            }
             AdminRequest::ShowMnemonic => Ok(crate::admin::mnemonic_json(
                 &self.identity().await?.phrase(),
             )),
@@ -252,6 +281,7 @@ impl Onboarding {
             &identity.derive_service_pubkey().to_string(),
             &directory,
             &current_version,
+            self.manifold_environment.badgeless_mg(),
         );
         let object = value
             .as_object_mut()

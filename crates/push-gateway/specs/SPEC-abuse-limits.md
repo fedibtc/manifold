@@ -113,9 +113,15 @@ grace period.
 ## Source identity
 
 Public caller source identity is the direct socket peer IP unless that peer
-is inside configured trusted-proxy CIDRs; only then may `X-Forwarded-For` or
-RFC `Forwarded` influence it, and the gateway selects the rightmost
-untrusted forwarded entry so a client-prepended spoofed address is not
-accepted in common append-style configurations. Trusted proxies are expected
-to strip/overwrite inbound forwarding headers. Rate-limit source keys
+is inside configured trusted-proxy CIDRs; only then may a forwarding header
+influence it. The gateway reads whichever of `X-Forwarded-For` and RFC
+`Forwarded` the request carries, and selects the rightmost untrusted entry so a
+client-prepended spoofed address is not accepted in common append-style
+configurations. When a trusted-proxy request carries both and they select
+different clients, it is refused with `400 ambiguous_forwarding_headers`: a
+proxy overwrites only the header it writes and may pass the other through, so
+one of the two came from the caller (ingress-nginx, for example, overwrites
+`X-Forwarded-For` and passes `Forwarded` unchanged). Both headers selecting the
+same client, as from a proxy that writes both, is accepted. Each trusted proxy
+must therefore strip or overwrite every forwarding header it writes. Rate-limit source keys
 normalize IPv4 to the address and IPv6 to the `/64` prefix.

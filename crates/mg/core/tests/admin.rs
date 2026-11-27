@@ -415,16 +415,18 @@ async fn admin_socket_round_trips_operator_verbs() {
         ask(AdminRequest::ReenrollTelemetry).await.unwrap(),
         serde_json::json!({ "telemetry_reenrollment": "scheduled" })
     );
-    assert_eq!(
-        ask(AdminRequest::ResetUptime).await.unwrap(),
-        serde_json::json!({ "uptime_reset": "rechecking" })
-    );
 
     // Onboarding is behind this fleet, and happens once: the verbs that
     // choose an identity are refused by a daemon that already has one. The
     // refusal is asserted by its discriminant, not by its prose — that is the
     // whole point of carrying one.
     let already = ask(AdminRequest::OnboardAsNew { if_needed: false })
+        .await
+        .unwrap_err();
+    assert_eq!(already.kind, super::AdminErrorKind::AlreadyOnboarded);
+    // Skipping Holder authorization is an onboarding answer too; a fleet
+    // without a badge enrolls one by refreshing, not by reopening setup.
+    let already = ask(AdminRequest::SkipHolderAuthorization)
         .await
         .unwrap_err();
     assert_eq!(already.kind, super::AdminErrorKind::AlreadyOnboarded);

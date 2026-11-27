@@ -88,6 +88,7 @@ async fn un_onboarded(temp: &TempDir) -> (Arc<Onboarding>, crate::db::Db) {
         Arc::new(NoArchive),
         Arc::new(NoHolderAuthorizations),
         true,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
     );
     (onboarding, db)
 }

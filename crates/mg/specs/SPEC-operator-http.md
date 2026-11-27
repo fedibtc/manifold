@@ -46,7 +46,7 @@ form is a mnemonic at rest in that platform's store, which the dashboard —
 holding it only in memory — avoids.
 
 So the listener is bound for the complete durable onboarding workflow: identity
-creation or restore, manual Holder-authorization refresh, and initial
+creation or restore, manual Holder-authorization refresh or its skip, and initial
 price/capacity configuration. It serves the onboarding verbs of
 [SPEC-admin-socket](./SPEC-admin-socket.md), the embedded dashboard that calls
 them, and a refusal for every unrelated verb carrying

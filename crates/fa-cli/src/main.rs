@@ -141,6 +141,8 @@ enum Command {
     /// Development and staging MGs alone accept the request, seats are
     /// forfeited rather than refunded, and local FA state is left untouched.
     Decommission,
+    /// Report the formed federation's FA Stats, combined from its guardians.
+    Stats,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -851,6 +853,16 @@ impl CliSetupPayment {
         })
     }
 
+    // The explicit payment-only constructor intentionally has no feature pin.
+    // Never silently discard part of the profile when selecting it.
+    fn check_feature_pin(&self, feature_pin: Option<&NostrPublicKey>) -> anyhow::Result<()> {
+        ensure!(
+            self.publisher.is_none() || feature_pin.is_none(),
+            "--setup-payment-publisher cannot be combined with a feature publisher; configure both keys in the Development environment profile instead"
+        );
+        Ok(())
+    }
+
     fn registry(&self, live: Option<NostrFaClient>) -> CliRegistry {
         CliRegistry {
             live,
@@ -878,6 +890,17 @@ impl FaNostrClient for CliRegistry {
             })?
             .fetch_mg_advertisement(mg_pubkey, timeout)
             .await
+    }
+
+    async fn fetch_feature_config(
+        &self,
+        publisher: NostrPublicKey,
+        timeout: Duration,
+    ) -> NostrClientResult<Vec<NostrEvent>> {
+        match &self.live {
+            Some(live) => live.fetch_feature_config(publisher, timeout).await,
+            None => Ok(Vec::new()),
+        }
     }
 
     async fn fetch_setup_payment_federations(
@@ -1127,6 +1150,7 @@ async fn run_inner(
         .manifold_environment
         .profile()
         .context("resolve Manifold environment profile")?;
+    setup_payment.check_feature_pin(profile.feature_config_publisher())?;
     let peer_badge_verifier = command_requires_peer_badge_verifier(&args.command)
         .then(|| PeerBadgeVerifier::try_from_profile(&profile))
         .transpose()
@@ -1587,6 +1611,31 @@ async fn run_inner(
             let result = client.decommission_seats().await;
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
+        }
+        Command::Stats => {
+            let endpoint = bind_iroh_endpoint().await?;
+            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let client = open_client(
+                clients,
+                &args.state_dir,
+                identity,
+                CliPayments::unavailable(),
+                &setup_payment,
+                None,
+                CliMgConnector::new(endpoint.clone()),
+                peer_badge_verifier
+                    .clone()
+                    .expect("stats constructs a PeerBadge verifier"),
+                profile.clone(),
+            )
+            .await?;
+            let result =
+                reconcile_then_run_post_formation(client.resume(), client.federation_stats()).await;
+            endpoint.close().await;
+            output.federation_stats(
+                &result.context("reconcile and read federation stats")?,
+                format,
+            )?;
         }
         Command::PaymentWallet(payment_wallet) => {
             let PaymentWalletPreflight {
@@ -2283,7 +2332,8 @@ impl WalletRootSecret {
                 command: TransferCommand::Preview | TransferCommand::Status,
                 ..
             })
-            | Command::Decommission => {
+            | Command::Decommission
+            | Command::Stats => {
                 return Ok(None);
             }
         };
@@ -4177,6 +4227,9 @@ guardian_fee_pmm = 100
             setup.publisher,
             Some(NostrPublicKey::parse(publisher).expect("test publisher parses"))
         );
+        let feature_key = nostr_sdk::Keys::generate().public_key();
+        assert!(setup.check_feature_pin(Some(&feature_key)).is_err());
+        assert!(setup.check_feature_pin(None).is_ok());
         assert!(setup.event.is_none());
     }
 

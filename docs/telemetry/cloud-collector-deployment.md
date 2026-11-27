@@ -174,8 +174,9 @@ entry per active, unexpired MG that has a stored report:
   `max_cpu_pressure_6h_pct`, `max_cpu_pressure_3_5d_pct`,
   `max_io_pressure_6h_pct`, `max_io_pressure_3_5d_pct`,
   `memory_pressure_6h_pct`, `memory_pressure_3_5d_pct`,
-  `max_memory_pressure_6h_pct`, `max_memory_pressure_3_5d_pct`, `uptime`,
-  `uptime_1d_pct`, `uptime_7d_pct`,
+  `max_memory_pressure_6h_pct`, `max_memory_pressure_3_5d_pct`,
+  `ordering_latency`, `ordering_latency_6h_ms`, `max_ordering_latency_6h_ms`,
+  `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
   `uptime_30d_pct`, `min_uptime_1d_pct`, `min_uptime_7d_pct` and
   `min_uptime_30d_pct`.
 
@@ -186,7 +187,11 @@ releases before 0.1.9 no readiness `version`, and releases before 0.1.16 no
 `pressure` or pressure fields and no CPU fields, and releases before 0.1.17
 no `disk_max_seats`. A pressure average is also `null` where the MG
 cannot read its counters or has not yet sampled half its window, and the
-thresholds without a policy limit.
+thresholds without a policy limit. Releases without the ordering latency
+check journal none of its fields; `ordering_latency_6h_ms` (the 6-hour
+average of the median running seat's consensus ordering latency, in
+milliseconds) is also `null` until the MG has measured an interval, and both
+figures are `null` while it runs no seat.
 `max_seats` is also `null` while the operator limit is automatic, and
 `cpu_max_seats` while the setup-payment policy sets no per-seat CPU budget,
 and `disk_max_seats` while the MG does not measure its data filesystem (local

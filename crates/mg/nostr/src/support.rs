@@ -6,7 +6,7 @@
 //!
 //! The MG writes as its service key and reads the gift wraps addressed to
 //! it on the environment's canonical relays, which it also lists as its
-//! kind-10050 inbox. Fedi support is the key the admitted setup-payment
+//! kind-10050 inbox. Fedi support is the key the effective feature
 //! policy names. A message joins the thread only when its seal is signed by
 //! Fedi support or by this MG and the rumor's room is exactly the two of
 //! them.
@@ -124,6 +124,12 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     Ok(message)
 }
 
+pub(super) fn inbox_policy(
+    inner: &Inner,
+) -> tokio::sync::watch::Receiver<Option<crate::AdmittedFeaturePolicy>> {
+    inner.features.subscribe()
+}
+
 /// Keep the stored thread current with one subscription per support key. It
 /// asks for the newest wraps addressed to this MG and then stays open for new
 /// ones. The SDK sends it again when a relay reconnects, and the relay then
@@ -134,7 +140,7 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
         .kind(Kind::GiftWrap)
         .pubkey(inner.keys.public_key())
         .limit(INBOX_LIMIT);
-    let mut policy = inner.setup_payment_federations.subscribe();
+    let mut policy = inbox_policy(&inner);
     loop {
         // The policy can name Fedi support late, or a new key later. A new
         // subscription reads the history again for the new key.

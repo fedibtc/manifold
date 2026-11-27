@@ -31,6 +31,7 @@ use crate::host_pressure::{
     ResourceAverages,
 };
 use crate::identity::RootMnemonic;
+use crate::ordering_latency::{OrderingLatencyAverage, OrderingLatencyState};
 use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
@@ -437,8 +438,9 @@ impl Db {
         parse_offer_epoch(epoch)
     }
 
-    /// Store the first complete operator offer and finish setup. Holder
-    /// authorization has already been retained before this transition.
+    /// Store the first complete operator offer and finish setup. The
+    /// Holder-authorization stage has already been settled, by a retained
+    /// authorization or the operator's skip.
     /// Returns the stored (payable) price.
     pub async fn configure_initial_offer(
         &self,
@@ -635,6 +637,24 @@ impl Db {
         Ok(())
     }
 
+    /// Load the complete signed feature event for revalidation on restart.
+    pub async fn feature_config_json(&self, publisher: &str) -> Result<Option<String>, DbError> {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT event_json FROM nostr_feature_config_v1 WHERE publisher = ?",
+            )
+            .bind(publisher)
+            .fetch_optional(&self.pool)
+            .await?,
+        )
+    }
+
+    /// Replace the feature cache without touching payment state or the offer epoch.
+    pub async fn store_feature_config(&self, publisher: &str, event: &str) -> Result<(), DbError> {
+        sqlx::query("INSERT INTO nostr_feature_config_v1 (publisher, event_json) VALUES (?, ?) ON CONFLICT (publisher) DO UPDATE SET event_json = excluded.event_json").bind(publisher).bind(event).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// The retained common setup-payment publication (the complete Nostr
     /// event), or `None` before the first admission. The Nostr boundary
     /// statically revalidates it after restart and uses it as the NIP-01
@@ -717,6 +737,32 @@ impl Db {
         Ok(())
     }
 
+    /// Settle the Holder-authorization stage without an authorization: the
+    /// operator runs this MG without a badge. Nothing records the skip; an MG
+    /// is badgeless exactly while no authorization is retained, so a later
+    /// enrollment needs no second fact changed.
+    pub async fn skip_holder_authorization(&self) -> Result<(), DbError> {
+        let mut tx = self.begin_write().await?;
+        let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?;
+        let stage = OnboardingStage::parse(&stage)?;
+        if stage != OnboardingStage::HolderAuthorization {
+            return Err(DbError::WrongOnboardingStage {
+                expected: OnboardingStage::HolderAuthorization,
+                actual: stage,
+            });
+        }
+        sqlx::query(
+            "UPDATE onboarding_state SET stage = 'initial_offer', updated_at_ms = ? WHERE id = 1",
+        )
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Atomically replace the setup-payment policy: retain the admitted
     /// event, replace the derived accepted membership, and — when any
     /// previously accepted member is no longer in the set — draw a fresh
@@ -789,14 +835,6 @@ impl Db {
         }
         tx.commit().await?;
         Ok(next)
-    }
-
-    /// Forget the uptime history: it restarts at the next up slot.
-    pub(crate) async fn reset_uptime(&self) -> Result<(), DbError> {
-        let mut tx = self.begin_write().await?;
-        sqlx::query("DELETE FROM uptime").execute(&mut *tx).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// The stored CPU measurement, or `None` before the first.
@@ -887,6 +925,54 @@ impl Db {
         .await?;
         tx.commit().await?;
         Ok(Some(next))
+    }
+
+    /// Account for a run that read its running seats at `at`, with the median
+    /// of their interval means ([`OrderingLatencyState::record`]), and return
+    /// the history after it.
+    pub(crate) async fn record_ordering_latency(
+        &self,
+        at: SystemTime,
+        median_secs: Option<f64>,
+    ) -> Result<OrderingLatencyState, DbError> {
+        let mut tx = self.begin_write().await?;
+        let row: Option<(i64, Option<f64>, Option<f64>)> = sqlx::query_as(
+            "SELECT sampled_at_ms, average_6h_secs, weight_6h FROM ordering_latency WHERE id = 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let previous = row.map(|(at, average, weight)| OrderingLatencyState {
+            sampled_at: from_millis(at),
+            average: match (average, weight) {
+                (Some(six_hours_secs), Some(weight)) => Some(OrderingLatencyAverage {
+                    six_hours_secs,
+                    weight,
+                }),
+                (None, None) => None,
+                _ => unreachable!("average and weight or neither by schema CHECK"),
+            },
+        });
+        let next = OrderingLatencyState::record(previous, at, median_secs);
+        let millis = i64::try_from(
+            next.sampled_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX);
+        sqlx::query(
+            "INSERT INTO ordering_latency (id, sampled_at_ms, average_6h_secs, weight_6h) \
+             VALUES (1, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET sampled_at_ms = excluded.sampled_at_ms, \
+             average_6h_secs = excluded.average_6h_secs, weight_6h = excluded.weight_6h",
+        )
+        .bind(millis)
+        .bind(next.average.map(|average| average.six_hours_secs))
+        .bind(next.average.map(|average| average.weight))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(next)
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {

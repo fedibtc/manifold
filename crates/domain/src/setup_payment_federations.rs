@@ -38,8 +38,8 @@ pub const DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM: u64 = 1_500;
 pub const SETUP_PAYMENT_MAX_MIN_FEE_PPM: u64 = 210_000;
 
 /// Available memory, in MiB, an MG needs per seat when a publication does not
-/// say: about 1.2 GiB.
-pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_229;
+/// say: 1 GiB. Releases before 0.1.20 default to 1,229 MiB (about 1.2 GiB).
+pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_024;
 
 /// Smallest and largest per-seat memory budget a publication may set, in MiB.
 /// The bounds refuse a publisher mistake that would let MGs admit seats with
@@ -85,6 +85,16 @@ pub const SETUP_PAYMENT_SEAT_DISK_GB_RANGE: std::ops::RangeInclusive<u32> = 1..=
 
 const DEFAULT_SEAT_DISK: NonZeroU32 =
     NonZeroU32::new(DEFAULT_SEAT_DISK_GB).expect("the default is nonzero");
+
+/// Data filesystem size, in GB (10^9 bytes), an MG on btrfs needs per seat
+/// when a publication does not say. btrfs writes far more per synced write
+/// than ext4 or ZFS, so the same drive wears out several times sooner under
+/// the same seats; twice [`DEFAULT_SEAT_DISK_GB`] halves the seats it carries.
+/// The bounds are [`SETUP_PAYMENT_SEAT_DISK_GB_RANGE`].
+pub const DEFAULT_SEAT_DISK_GB_BTRFS: u32 = 160;
+
+const DEFAULT_SEAT_DISK_BTRFS: NonZeroU32 =
+    NonZeroU32::new(DEFAULT_SEAT_DISK_GB_BTRFS).expect("the default is nonzero");
 
 /// Seats one MG may host when a publication does not say.
 pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
@@ -291,9 +301,9 @@ pub struct SetupPaymentFederationsContent {
     /// Wire-format version.
     pub version: ProtocolV1,
 
-    /// Latest Manifold Guardian release published by the authority.
-    #[serde(rename = "fman_version")]
-    pub mg_version: MgVersion,
+    /// Frozen version-1 compatibility projection for readers without feature configuration.
+    #[serde(flatten)]
+    pub legacy_features: FeaturePolicy,
 
     /// Public Fedimint invites forming the unordered common set.
     pub federations: Vec<InviteCode>,
@@ -310,6 +320,24 @@ pub struct SetupPaymentFederationsContent {
     /// stay admissible.
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
+}
+
+/// A complete feature snapshot. It has no authority over payment policy.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FeatureConfigContent {
+    /// Version of the independent feature event schema.
+    pub version: ProtocolV1,
+    /// Complete replacement, not a patch to previous snapshots.
+    #[serde(flatten)]
+    pub features: FeaturePolicy,
+}
+
+/// Release, resource limits and feature switches shared with legacy readers.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FeaturePolicy {
+    /// Latest Manifold Guardian release published by the authority.
+    #[serde(rename = "fman_version")]
+    pub mg_version: MgVersion,
 
     /// Uptime scores below which an MG stops accepting new seats. Optional on
     /// the wire: absent, [`MinUptimePercent::default`] applies.
@@ -328,7 +356,7 @@ pub struct SetupPaymentFederationsContent {
     pub support_nostr_pubkey: Option<nostr::PublicKey>,
 
     /// Available memory, in MiB, an MG before 0.1.16 needs per seat. This
-    /// release ignores it and reads [`Self::seat_memory_budget_mib_v2`], so
+    /// release ignores it and reads [`Self::seat_memory_budget_mib_v3`], so
     /// Fedi can give older MGs a different budget. Admission still checks
     /// its range, which older consumers enforce. Omitted when unset so that
     /// consumers that refuse unknown fields keep admitting publications that
@@ -340,7 +368,7 @@ pub struct SetupPaymentFederationsContent {
     /// whose operator set a monthly data budget sells at most the budget
     /// divided by this. Optional on the wire: absent means
     /// [`DEFAULT_SEAT_MONTHLY_DATA_GB`]. Omitted when unset, like
-    /// [`Self::seat_memory_budget_mib_v2`].
+    /// [`Self::seat_memory_budget_mib_v3`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_monthly_data_gb: Option<u32>,
 
@@ -351,16 +379,33 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_disk_gb: Option<u32>,
 
+    /// [`Self::seat_disk_gb`] for an MG whose data filesystem is btrfs.
+    /// Optional on the wire: absent means [`DEFAULT_SEAT_DISK_GB_BTRFS`],
+    /// whatever [`Self::seat_disk_gb`] says. Omitted when unset, like
+    /// [`Self::seat_disk_gb`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_disk_gb_btrfs: Option<u32>,
+
     /// Seats one MG before 0.1.16 may host. This release ignores it and
     /// reads [`Self::max_seats_per_mg_v2`]. Admission still checks its bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seats_per_mg: Option<u32>,
 
-    /// Available memory, in MiB, an MG needs per seat. Optional on the
-    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`], whatever
-    /// [`Self::seat_memory_budget_mib`] says.
+    /// Available memory, in MiB, an MG from 0.1.16 to 0.1.19 needs per seat.
+    /// This release ignores it and reads [`Self::seat_memory_budget_mib_v3`],
+    /// so Fedi can give older MGs a different budget. Admission still checks
+    /// its range, which older consumers enforce. Omitted when unset, like
+    /// [`Self::seat_memory_budget_mib`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat_memory_budget_mib_v2: Option<u32>,
+
+    /// Available memory, in MiB, an MG needs per seat. Optional on the
+    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`], whatever
+    /// [`Self::seat_memory_budget_mib`] and
+    /// [`Self::seat_memory_budget_mib_v2`] say. Omitted when unset, like
+    /// [`Self::seat_memory_budget_mib`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_memory_budget_mib_v3: Option<u32>,
 
     /// Seats one MG may host, below its operator's own limit. Optional on the
     /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`], whatever
@@ -419,19 +464,26 @@ pub struct SetupPaymentFederationsContent {
 /// Semantically admitted common payment-federation set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdmittedSetupPaymentFederations {
-    /// Latest Manifold Guardian release published with this set.
-    mg_version: MgVersion,
-
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
+    features: AdmittedFeaturePolicy,
+}
+
+/// Semantically checked feature snapshot. Contains no payment fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedFeaturePolicy {
+    /// Latest Manifold Guardian release published with this set.
+    mg_version: MgVersion,
+
     min_uptime_percent: MinUptimePercent,
     max_guardian_offline_secs: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: u32,
     seat_monthly_data_gb: NonZeroU32,
     seat_disk_gb: NonZeroU32,
+    seat_disk_gb_btrfs: NonZeroU32,
     max_seats_per_mg: u32,
     seat_cpu_iterations_per_sec: Option<NonZeroU32>,
     max_pressure_percent: MaxPressurePercent,
@@ -466,74 +518,6 @@ impl AdmittedSetupPaymentFederations {
         if content.min_fee_ppm > SETUP_PAYMENT_MAX_MIN_FEE_PPM {
             return Err(SetupPaymentFederationsContentError::MinFeePpmTooHigh);
         }
-        if [
-            content.seat_memory_budget_mib,
-            content.seat_memory_budget_mib_v2,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|mib| !SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE.contains(&mib))
-        {
-            return Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange);
-        }
-        let seat_cpu_iterations_per_sec = content
-            .seat_cpu_iterations_per_sec
-            .map(|iterations| {
-                SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE
-                    .contains(&iterations)
-                    .then(|| NonZeroU32::new(iterations))
-                    .flatten()
-                    .ok_or(SetupPaymentFederationsContentError::SeatCpuBudgetOutOfRange)
-            })
-            .transpose()?;
-
-        // The range starts at 1, so an admitted figure is never zero.
-        let seat_monthly_data_gb = match content.seat_monthly_data_gb {
-            None => DEFAULT_SEAT_MONTHLY_DATA,
-            Some(gb) if SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE.contains(&gb) => {
-                NonZeroU32::new(gb).expect("the range starts at 1")
-            }
-            Some(_) => return Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
-        };
-        let seat_disk_gb = match content.seat_disk_gb {
-            None => DEFAULT_SEAT_DISK,
-            Some(gb) if SETUP_PAYMENT_SEAT_DISK_GB_RANGE.contains(&gb) => {
-                NonZeroU32::new(gb).expect("the range starts at 1")
-            }
-            Some(_) => return Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
-        };
-        if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
-            .into_iter()
-            .flatten()
-            .any(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
-        {
-            return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
-        }
-        let max_pressure_percent = content.max_pressure_percent.unwrap_or_default();
-        if !max_pressure_percent.cpu.admissible()
-            || !max_pressure_percent.io.admissible()
-            || !max_pressure_percent.memory.admissible()
-        {
-            return Err(SetupPaymentFederationsContentError::InvalidMaxPressure);
-        }
-        let max_guardian_offline_secs = content
-            .max_guardian_offline_secs
-            .unwrap_or(DEFAULT_MAX_GUARDIAN_OFFLINE_SECS);
-        if max_guardian_offline_secs == 0 {
-            return Err(SetupPaymentFederationsContentError::ZeroOfflineDuration);
-        }
-        let min_uptime_percent = content.min_uptime_percent.unwrap_or_default();
-        if [
-            min_uptime_percent.day,
-            min_uptime_percent.week,
-            min_uptime_percent.month,
-        ]
-        .into_iter()
-        .any(|percent| percent > 100)
-        {
-            return Err(SetupPaymentFederationsContentError::MinUptimeTooHigh);
-        }
-
         let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
             .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
         if registration_url.scheme() != "https"
@@ -546,21 +530,6 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
         }
 
-        let mg_version = content.mg_version;
-        if content
-            .min_mg_version
-            .as_ref()
-            .is_some_and(|minimum| mg_version.is_older_than(minimum))
-        {
-            return Err(SetupPaymentFederationsContentError::MinMgVersionAboveLatest);
-        }
-        if content
-            .recommended_min_mg_version
-            .as_ref()
-            .is_some_and(|recommended| mg_version.is_older_than(recommended))
-        {
-            return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
-        }
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
             if invite_code.0.is_empty() {
@@ -582,34 +551,16 @@ impl AdmittedSetupPaymentFederations {
         }
 
         Ok(Self {
-            mg_version,
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
-            min_uptime_percent,
-            max_guardian_offline_secs,
-            support_nostr_pubkey: content.support_nostr_pubkey,
-            seat_memory_budget_mib: content
-                .seat_memory_budget_mib_v2
-                .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
-            seat_monthly_data_gb,
-            seat_disk_gb,
-            max_seats_per_mg: content
-                .max_seats_per_mg_v2
-                .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
-            seat_cpu_iterations_per_sec,
-            max_pressure_percent,
-            guardian_transfer_v2: content.guardian_transfer_v2,
-            guardian_link: content.guardian_link,
-            min_mg_version: content.min_mg_version,
-            recommended_min_mg_version: content.recommended_min_mg_version,
+            features: content.legacy_features.admit()?,
         })
     }
 
-    /// Return the latest Manifold Guardian release published with this set.
-    #[must_use]
-    pub fn mg_version(&self) -> &MgVersion {
-        &self.mg_version
+    /// Read the non-payment projection of this legacy event.
+    pub fn features(&self) -> &AdmittedFeaturePolicy {
+        &self.features
     }
 
     /// Return the number of unique admitted federations.
@@ -648,6 +599,136 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn min_fee_ppm(&self) -> u64 {
         self.min_fee_ppm
+    }
+}
+
+impl FeaturePolicy {
+    /// Validate feature limits and release relationships and resolve defaults.
+    pub fn admit(self) -> Result<AdmittedFeaturePolicy, SetupPaymentFederationsContentError> {
+        let content = self;
+        if [
+            content.seat_memory_budget_mib,
+            content.seat_memory_budget_mib_v2,
+            content.seat_memory_budget_mib_v3,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|mib| !SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE.contains(&mib))
+        {
+            return Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange);
+        }
+        let seat_cpu_iterations_per_sec = content
+            .seat_cpu_iterations_per_sec
+            .map(|iterations| {
+                SETUP_PAYMENT_SEAT_CPU_ITERATIONS_PER_SEC_RANGE
+                    .contains(&iterations)
+                    .then(|| NonZeroU32::new(iterations))
+                    .flatten()
+                    .ok_or(SetupPaymentFederationsContentError::SeatCpuBudgetOutOfRange)
+            })
+            .transpose()?;
+
+        // The range starts at 1, so an admitted figure is never zero.
+        let seat_monthly_data_gb = match content.seat_monthly_data_gb {
+            None => DEFAULT_SEAT_MONTHLY_DATA,
+            Some(gb) if SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE.contains(&gb) => {
+                NonZeroU32::new(gb).expect("the range starts at 1")
+            }
+            Some(_) => return Err(SetupPaymentFederationsContentError::SeatMonthlyDataOutOfRange),
+        };
+        let seat_disk = |figure: Option<u32>, default| match figure {
+            None => Ok(default),
+            Some(gb) if SETUP_PAYMENT_SEAT_DISK_GB_RANGE.contains(&gb) => {
+                Ok(NonZeroU32::new(gb).expect("the range starts at 1"))
+            }
+            Some(_) => Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
+        };
+        let seat_disk_gb = seat_disk(content.seat_disk_gb, DEFAULT_SEAT_DISK)?;
+        let seat_disk_gb_btrfs = seat_disk(content.seat_disk_gb_btrfs, DEFAULT_SEAT_DISK_BTRFS)?;
+        if [content.max_seats_per_mg, content.max_seats_per_mg_v2]
+            .into_iter()
+            .flatten()
+            .any(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
+        {
+            return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
+        }
+        let max_pressure_percent = content.max_pressure_percent.unwrap_or_default();
+        if !max_pressure_percent.cpu.admissible()
+            || !max_pressure_percent.io.admissible()
+            || !max_pressure_percent.memory.admissible()
+        {
+            return Err(SetupPaymentFederationsContentError::InvalidMaxPressure);
+        }
+        let max_guardian_offline_secs = content
+            .max_guardian_offline_secs
+            .unwrap_or(DEFAULT_MAX_GUARDIAN_OFFLINE_SECS);
+        if max_guardian_offline_secs == 0 {
+            return Err(SetupPaymentFederationsContentError::ZeroOfflineDuration);
+        }
+        let min_uptime_percent = content.min_uptime_percent.unwrap_or_default();
+        if [
+            min_uptime_percent.day,
+            min_uptime_percent.week,
+            min_uptime_percent.month,
+        ]
+        .into_iter()
+        .any(|percent| percent > 100)
+        {
+            return Err(SetupPaymentFederationsContentError::MinUptimeTooHigh);
+        }
+
+        let mg_version = content.mg_version;
+        if content
+            .min_mg_version
+            .as_ref()
+            .is_some_and(|minimum| mg_version.is_older_than(minimum))
+        {
+            return Err(SetupPaymentFederationsContentError::MinMgVersionAboveLatest);
+        }
+        if content
+            .recommended_min_mg_version
+            .as_ref()
+            .is_some_and(|recommended| mg_version.is_older_than(recommended))
+        {
+            return Err(SetupPaymentFederationsContentError::RecommendedMinMgVersionAboveLatest);
+        }
+        Ok(AdmittedFeaturePolicy {
+            mg_version,
+            min_uptime_percent,
+            max_guardian_offline_secs,
+            support_nostr_pubkey: content.support_nostr_pubkey,
+            seat_memory_budget_mib: content
+                .seat_memory_budget_mib_v3
+                .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB),
+            seat_monthly_data_gb,
+            seat_disk_gb,
+            seat_disk_gb_btrfs,
+            max_seats_per_mg: content
+                .max_seats_per_mg_v2
+                .unwrap_or(DEFAULT_MAX_SEATS_PER_MG),
+            seat_cpu_iterations_per_sec,
+            max_pressure_percent,
+            guardian_transfer_v2: content.guardian_transfer_v2,
+            guardian_link: content.guardian_link,
+            min_mg_version: content.min_mg_version,
+            recommended_min_mg_version: content.recommended_min_mg_version,
+        })
+    }
+}
+
+impl AdmittedFeaturePolicy {
+    /// Select one complete snapshot, using the legacy projection only before feature admission.
+    pub fn resolve(
+        snapshot: Option<Self>,
+        legacy: Option<&AdmittedSetupPaymentFederations>,
+    ) -> Option<Self> {
+        snapshot.or_else(|| legacy.map(|payment| payment.features().clone()))
+    }
+
+    /// Return the latest Manifold Guardian release published with this set.
+    #[must_use]
+    pub fn mg_version(&self) -> &MgVersion {
+        &self.mg_version
     }
 
     /// Return the uptime scores an MG needs to accept new seats. An event
@@ -692,6 +773,12 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn seat_disk_gb(&self) -> NonZeroU32 {
         self.seat_disk_gb
+    }
+
+    /// Return the data filesystem size one seat needs on btrfs, in GB.
+    #[must_use]
+    pub fn seat_disk_gb_btrfs(&self) -> NonZeroU32 {
+        self.seat_disk_gb_btrfs
     }
 
     /// Return how many seats one MG may host.
@@ -740,7 +827,7 @@ impl AdmittedSetupPaymentFederations {
 
 /// Failure while parsing or semantically admitting publication content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetupPaymentFederationsContentError {
+pub enum PolicyContentError {
     /// Event content exceeds the pre-parse byte limit.
     ContentTooLarge,
 
@@ -802,7 +889,10 @@ pub enum SetupPaymentFederationsContentError {
     ZeroOfflineDuration,
 }
 
-impl core::fmt::Display for SetupPaymentFederationsContentError {
+/// Backward-compatible name for payment-content callers.
+pub use PolicyContentError as SetupPaymentFederationsContentError;
+
+impl core::fmt::Display for PolicyContentError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let message = match self {
             Self::ContentTooLarge => "setup-payment federation content is too large",
@@ -853,4 +943,4 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
     }
 }
 
-impl std::error::Error for SetupPaymentFederationsContentError {}
+impl std::error::Error for PolicyContentError {}

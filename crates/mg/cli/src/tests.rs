@@ -32,6 +32,25 @@ fn holder_authorization_refresh_is_exposed_as_an_admin_verb() {
 }
 
 #[test]
+fn skipping_holder_authorization_is_an_onboarding_answer() {
+    let args = Args::try_parse_from([
+        "fman-cli",
+        "--data-dir",
+        "/tmp/mg",
+        "onboard",
+        "skip-holder-authorization",
+    ])
+    .unwrap();
+
+    assert!(matches!(
+        args.verb,
+        AdminVerb::Onboard {
+            verb: OnboardVerb::SkipHolderAuthorization
+        }
+    ));
+}
+
+#[test]
 fn telemetry_reenrollment_is_exposed_as_a_global_admin_verb() {
     let args =
         Args::try_parse_from(["fman-cli", "--data-dir", "/tmp/mg", "reenroll-telemetry"]).unwrap();

@@ -42,27 +42,31 @@ fn content(invites: Vec<String>) -> Vec<u8> {
 fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
     serde_json::to_vec(&SetupPaymentFederationsContent {
         version: ProtocolV1,
-        mg_version: "0.1.0".parse().expect("valid MG version"),
         federations: invites.into_iter().map(InviteCode).collect(),
         telemetry_registration_url: Url(
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm,
-        min_uptime_percent: None,
-        max_guardian_offline_secs: None,
-        support_nostr_pubkey: None,
-        seat_memory_budget_mib: None,
-        seat_cpu_iterations_per_sec: None,
-        seat_monthly_data_gb: None,
-        seat_disk_gb: None,
-        max_seats_per_mg: None,
-        seat_memory_budget_mib_v2: None,
-        max_seats_per_mg_v2: None,
-        max_pressure_percent: None,
-        guardian_transfer_v2: None,
-        guardian_link: None,
-        min_mg_version: None,
-        recommended_min_mg_version: None,
+        legacy_features: crate::FeaturePolicy {
+            mg_version: "0.1.0".parse().expect("valid MG version"),
+            min_uptime_percent: None,
+            max_guardian_offline_secs: None,
+            support_nostr_pubkey: None,
+            seat_memory_budget_mib: None,
+            seat_cpu_iterations_per_sec: None,
+            seat_monthly_data_gb: None,
+            seat_disk_gb: None,
+            seat_disk_gb_btrfs: None,
+            max_seats_per_mg: None,
+            seat_memory_budget_mib_v2: None,
+            seat_memory_budget_mib_v3: None,
+            max_seats_per_mg_v2: None,
+            max_pressure_percent: None,
+            guardian_transfer_v2: None,
+            guardian_link: None,
+            min_mg_version: None,
+            recommended_min_mg_version: None,
+        },
     })
     .expect("test content serializes")
 }
@@ -136,7 +140,7 @@ fn omitted_min_uptime_defaults_to_70_90_93_percent() {
     let admitted = AdmittedSetupPaymentFederations::parse(content_with_min_uptime("").as_bytes())
         .expect("content without the field is admitted");
     assert_eq!(
-        admitted.min_uptime_percent(),
+        admitted.features().min_uptime_percent(),
         MinUptimePercent {
             day: 70,
             week: 90,
@@ -154,7 +158,7 @@ fn a_published_window_overrides_only_itself() {
     )
     .expect("a partial minimum is admitted");
     assert_eq!(
-        admitted.min_uptime_percent(),
+        admitted.features().min_uptime_percent(),
         MinUptimePercent {
             day: 70,
             week: 90,
@@ -166,7 +170,7 @@ fn a_published_window_overrides_only_itself() {
     ))
     .unwrap();
     assert_eq!(
-        content.min_uptime_percent,
+        content.legacy_features.min_uptime_percent,
         Some(MinUptimePercent {
             day: 75,
             week: 85,
@@ -201,13 +205,14 @@ fn support_nostr_pubkey_is_optional_and_admitted_when_valid() {
         .expect("a valid support key is admitted");
     assert_eq!(
         admitted
+            .features()
             .support_nostr_pubkey()
             .map(nostr::PublicKey::to_hex),
         Some(hex.to_owned())
     );
 
     let without = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
-    assert_eq!(without.support_nostr_pubkey(), None);
+    assert_eq!(without.features().support_nostr_pubkey(), None);
     // Absent stays absent on the wire, so today's publications re-serialize
     // byte for byte.
     assert!(
@@ -236,25 +241,29 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
     ] {
         let raw = serde_json::to_vec(&SetupPaymentFederationsContent {
             version: ProtocolV1,
-            mg_version: "0.1.0".parse().unwrap(),
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
-            min_uptime_percent: None,
-            max_guardian_offline_secs: None,
-            support_nostr_pubkey: None,
-            seat_memory_budget_mib: None,
-            seat_cpu_iterations_per_sec: None,
-            seat_monthly_data_gb: None,
-            seat_disk_gb: None,
-            max_seats_per_mg: None,
-            seat_memory_budget_mib_v2: None,
-            max_seats_per_mg_v2: None,
-            max_pressure_percent: None,
-            guardian_transfer_v2: None,
-            guardian_link: None,
-            min_mg_version: None,
-            recommended_min_mg_version: None,
+            legacy_features: crate::FeaturePolicy {
+                mg_version: "0.1.0".parse().unwrap(),
+                min_uptime_percent: None,
+                max_guardian_offline_secs: None,
+                support_nostr_pubkey: None,
+                seat_memory_budget_mib: None,
+                seat_cpu_iterations_per_sec: None,
+                seat_monthly_data_gb: None,
+                seat_disk_gb: None,
+                seat_disk_gb_btrfs: None,
+                max_seats_per_mg: None,
+                seat_memory_budget_mib_v2: None,
+                seat_memory_budget_mib_v3: None,
+                max_seats_per_mg_v2: None,
+                max_pressure_percent: None,
+                guardian_transfer_v2: None,
+                guardian_link: None,
+                min_mg_version: None,
+                recommended_min_mg_version: None,
+            },
         })
         .unwrap();
         assert_eq!(
@@ -289,7 +298,7 @@ fn admits_empty_set() {
     let admitted =
         AdmittedSetupPaymentFederations::parse(&content(vec![])).expect("empty set is valid");
     assert!(admitted.is_empty());
-    assert_eq!(admitted.mg_version().to_string(), "0.1.0");
+    assert_eq!(admitted.features().mg_version().to_string(), "0.1.0");
 }
 
 #[test]
@@ -437,27 +446,41 @@ fn parse_with_fields(
 }
 
 #[test]
-fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
-    let budget = |fields: &str| parse_with_fields(fields).unwrap().seat_memory_budget_mib();
-    assert_eq!(budget(""), DEFAULT_SEAT_MEMORY_BUDGET_MIB);
-    // The field for older MGs does not reach this release, not even as a
-    // fallback when v2 is absent.
+fn seat_memory_budget_comes_from_v3_only_and_every_field_is_bounded() {
+    let budget = |fields: &str| {
+        parse_with_fields(fields)
+            .unwrap()
+            .features()
+            .seat_memory_budget_mib()
+    };
+    // Written out rather than taken from the constant, so a changed default
+    // fails here.
+    assert_eq!(budget(""), 1_024);
+    // The fields for older MGs do not reach this release, not even as a
+    // fallback when v3 is absent.
+    assert_eq!(budget(r#","seat_memory_budget_mib_v2":750"#), 1_024);
     assert_eq!(
-        budget(r#","seat_memory_budget_mib":2048"#),
-        DEFAULT_SEAT_MEMORY_BUDGET_MIB
+        budget(r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":750"#),
+        1_024
     );
     assert_eq!(
-        budget(r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":512"#),
-        512
+        budget(
+            r#","seat_memory_budget_mib":2048,"seat_memory_budget_mib_v2":1229,"seat_memory_budget_mib_v3":750"#
+        ),
+        750
     );
     for mib in [256, 16_384] {
         assert_eq!(
-            budget(&format!(r#","seat_memory_budget_mib_v2":{mib}"#)),
+            budget(&format!(r#","seat_memory_budget_mib_v3":{mib}"#)),
             mib
         );
     }
 
-    for field in ["seat_memory_budget_mib", "seat_memory_budget_mib_v2"] {
+    for field in [
+        "seat_memory_budget_mib",
+        "seat_memory_budget_mib_v2",
+        "seat_memory_budget_mib_v3",
+    ] {
         for mib in ["0", "255", "16385"] {
             assert_eq!(
                 parse_with_fields(&format!(r#","{field}":{mib}"#)),
@@ -466,9 +489,15 @@ fn seat_memory_budget_comes_from_v2_only_and_both_fields_are_bounded() {
             );
         }
     }
+    // An out-of-range v3 is refused even beside in-range older fields.
+    assert_eq!(
+        parse_with_fields(
+            r#","seat_memory_budget_mib":1024,"seat_memory_budget_mib_v2":1024,"seat_memory_budget_mib_v3":255"#
+        ),
+        Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange)
+    );
 }
 
-/// Like the memory budget, an absent data figure takes the built-in default.
 #[test]
 fn seat_monthly_data_defaults_to_65_and_is_bounded() {
     let raw = |gb: &str| {
@@ -477,15 +506,15 @@ fn seat_monthly_data_defaults_to_65_and_is_bounded() {
         )
     };
     let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
-    assert_eq!(absent.seat_monthly_data_gb().get(), 65);
+    assert_eq!(absent.features().seat_monthly_data_gb().get(), 65);
     assert_eq!(DEFAULT_SEAT_MONTHLY_DATA_GB, 65);
     assert!(SETUP_PAYMENT_SEAT_MONTHLY_DATA_GB_RANGE.contains(&DEFAULT_SEAT_MONTHLY_DATA_GB));
     let published = AdmittedSetupPaymentFederations::parse(raw("60").as_bytes()).unwrap();
-    assert_eq!(published.seat_monthly_data_gb().get(), 60);
+    assert_eq!(published.features().seat_monthly_data_gb().get(), 60);
     for gb in [1, 60, 10_000] {
         let admitted = AdmittedSetupPaymentFederations::parse(raw(&gb.to_string()).as_bytes())
             .expect("an in-range figure is admitted");
-        assert_eq!(admitted.seat_monthly_data_gb().get(), gb);
+        assert_eq!(admitted.features().seat_monthly_data_gb().get(), gb);
     }
     for gb in ["0", "10001"] {
         assert_eq!(
@@ -505,16 +534,42 @@ fn seat_disk_defaults_to_80_and_is_bounded() {
         )
     };
     let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
-    assert_eq!(absent.seat_disk_gb().get(), 80);
+    assert_eq!(absent.features().seat_disk_gb().get(), 80);
     assert_eq!(DEFAULT_SEAT_DISK_GB, 80);
     for gb in [1, 75, 100_000] {
         let admitted = AdmittedSetupPaymentFederations::parse(raw(&gb.to_string()).as_bytes())
             .expect("an in-range figure is admitted");
-        assert_eq!(admitted.seat_disk_gb().get(), gb);
+        assert_eq!(admitted.features().seat_disk_gb().get(), gb);
     }
     for gb in ["0", "100001"] {
         assert_eq!(
             AdmittedSetupPaymentFederations::parse(raw(gb).as_bytes()),
+            Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
+            "{gb}"
+        );
+    }
+}
+
+/// The btrfs figure has its own default, which the general figure does not
+/// move, and the same bounds.
+#[test]
+fn seat_disk_on_btrfs_defaults_to_160_independently_and_is_bounded() {
+    let raw = |fields: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{fields}}}"#
+        )
+    };
+    let parse = |fields: &str| AdmittedSetupPaymentFederations::parse(raw(fields).as_bytes());
+    assert_eq!(DEFAULT_SEAT_DISK_GB_BTRFS, 160);
+    let general_only = parse(r#","seat_disk_gb":100"#).unwrap();
+    assert_eq!(general_only.features().seat_disk_gb().get(), 100);
+    assert_eq!(general_only.features().seat_disk_gb_btrfs().get(), 160);
+    let btrfs_only = parse(r#","seat_disk_gb_btrfs":240"#).unwrap();
+    assert_eq!(btrfs_only.features().seat_disk_gb().get(), 80);
+    assert_eq!(btrfs_only.features().seat_disk_gb_btrfs().get(), 240);
+    for gb in ["0", "100001"] {
+        assert_eq!(
+            parse(&format!(r#","seat_disk_gb_btrfs":{gb}"#)),
             Err(SetupPaymentFederationsContentError::SeatDiskOutOfRange),
             "{gb}"
         );
@@ -531,13 +586,16 @@ fn seat_cpu_budget_is_optional_with_no_default_and_bounded() {
     // Absent means no CPU limit, not a default budget.
     let absent = AdmittedSetupPaymentFederations::parse(&content(vec![]))
         .expect("content without a CPU budget is admitted");
-    assert_eq!(absent.seat_cpu_iterations_per_sec(), None);
+    assert_eq!(absent.features().seat_cpu_iterations_per_sec(), None);
 
     for budget in [1, 40, 100_000] {
         let admitted = AdmittedSetupPaymentFederations::parse(raw(&budget.to_string()).as_bytes())
             .expect("an in-range CPU budget is admitted");
         assert_eq!(
-            admitted.seat_cpu_iterations_per_sec().map(NonZeroU32::get),
+            admitted
+                .features()
+                .seat_cpu_iterations_per_sec()
+                .map(NonZeroU32::get),
             Some(budget)
         );
     }
@@ -545,7 +603,10 @@ fn seat_cpu_budget_is_optional_with_no_default_and_bounded() {
         let parsed = AdmittedSetupPaymentFederations::parse(raw(budget).as_bytes());
         match budget {
             // `null` is the same as absent.
-            "null" => assert_eq!(parsed.unwrap().seat_cpu_iterations_per_sec(), None),
+            "null" => assert_eq!(
+                parsed.unwrap().features().seat_cpu_iterations_per_sec(),
+                None
+            ),
             "-1" | "0.5" => assert_eq!(
                 parsed,
                 Err(SetupPaymentFederationsContentError::MalformedContent),
@@ -562,7 +623,12 @@ fn seat_cpu_budget_is_optional_with_no_default_and_bounded() {
 
 #[test]
 fn max_seats_per_mg_comes_from_v2_only_and_both_fields_are_bounded() {
-    let seats = |fields: &str| parse_with_fields(fields).unwrap().max_seats_per_mg();
+    let seats = |fields: &str| {
+        parse_with_fields(fields)
+            .unwrap()
+            .features()
+            .max_seats_per_mg()
+    };
     assert_eq!(seats(""), 12);
     assert_eq!(seats(r#","max_seats_per_mg":4"#), 12);
     assert_eq!(
@@ -601,7 +667,10 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
         memory: windows(70, 70),
     };
     assert_eq!(MaxPressurePercent::default(), defaults);
-    assert_eq!(parse("").unwrap().max_pressure_percent(), defaults);
+    assert_eq!(
+        parse("").unwrap().features().max_pressure_percent(),
+        defaults
+    );
     assert!(
         !String::from_utf8(content(vec![]))
             .unwrap()
@@ -612,7 +681,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
             r#","max_pressure_percent":{"cpu":{"6h":30,"3.5d":20},"io":{"6h":40,"3.5d":25},"memory":{"6h":50,"3.5d":45}}"#
         )
         .unwrap()
-        .max_pressure_percent(),
+        .features().max_pressure_percent(),
         MaxPressurePercent {
             cpu: windows(30, 20),
             io: windows(40, 25),
@@ -624,6 +693,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
     assert_eq!(
         parse(r#","max_pressure_percent":{"io":{"3.5d":8,"1h":1}}"#)
             .unwrap()
+            .features()
             .max_pressure_percent(),
         MaxPressurePercent {
             cpu: windows(15, 10),
@@ -634,6 +704,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
     assert_eq!(
         parse(r#","max_pressure_percent":{"memory":{"6h":40}}"#)
             .unwrap()
+            .features()
             .max_pressure_percent(),
         MaxPressurePercent {
             memory: windows(40, 70),
@@ -643,6 +714,7 @@ fn omitted_max_pressure_defaults_per_window_and_must_be_bounded() {
     assert_eq!(
         parse(r#","max_pressure_percent":{}"#)
             .unwrap()
+            .features()
             .max_pressure_percent(),
         defaults
     );
@@ -694,11 +766,12 @@ fn min_mg_version_is_optional_semver_and_at_most_the_latest() {
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert_eq!(admitted("").unwrap().min_mg_version(), None);
+    assert_eq!(admitted("").unwrap().features().min_mg_version(), None);
     // 0.9.0 sorts above 0.10.0 as text but below it as a version.
     assert_eq!(
         admitted(r#","min_mg_version":"0.9.0""#)
             .unwrap()
+            .features()
             .min_mg_version()
             .map(ToString::to_string),
         Some("0.9.0".to_owned())
@@ -708,15 +781,17 @@ fn min_mg_version_is_optional_semver_and_at_most_the_latest() {
     // Equality stays exact, so a re-published build still reads as a change.
     let with_build = admitted(r#","min_mg_version":"0.10.0+build.7""#).unwrap();
     assert_ne!(
-        with_build.min_mg_version(),
+        with_build.features().min_mg_version(),
         admitted(r#","min_mg_version":"0.10.0""#)
             .unwrap()
+            .features()
             .min_mg_version()
     );
     // An explicit null is the same as an absent field: no minimum.
     assert_eq!(
         admitted(r#","min_mg_version":null"#)
             .unwrap()
+            .features()
             .min_mg_version(),
         None
     );
@@ -743,15 +818,23 @@ fn recommended_min_mg_version_is_optional_and_at_most_the_latest() {
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert_eq!(admitted("").unwrap().recommended_min_mg_version(), None);
+    assert_eq!(
+        admitted("")
+            .unwrap()
+            .features()
+            .recommended_min_mg_version(),
+        None
+    );
     let both =
         admitted(r#","min_mg_version":"0.2.0","recommended_min_mg_version":"0.9.0""#).unwrap();
     assert_eq!(
-        both.recommended_min_mg_version().map(ToString::to_string),
+        both.features()
+            .recommended_min_mg_version()
+            .map(ToString::to_string),
         Some("0.9.0".to_owned())
     );
     assert_eq!(
-        both.min_mg_version().map(ToString::to_string),
+        both.features().min_mg_version().map(ToString::to_string),
         Some("0.2.0".to_owned())
     );
     assert_eq!(
@@ -772,16 +855,21 @@ fn guardian_transfer_v2_is_absent_unless_the_policy_sets_it() {
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert_eq!(admitted("").unwrap().guardian_transfer_v2(), None);
+    assert_eq!(
+        admitted("").unwrap().features().guardian_transfer_v2(),
+        None
+    );
     assert_eq!(
         admitted(r#","guardian_transfer_v2":false"#)
             .unwrap()
+            .features()
             .guardian_transfer_v2(),
         Some(false)
     );
     assert_eq!(
         admitted(r#","guardian_transfer_v2":true"#)
             .unwrap()
+            .features()
             .guardian_transfer_v2(),
         Some(true)
     );
@@ -799,16 +887,18 @@ fn guardian_link_is_absent_unless_the_policy_sets_it() {
         )
     };
     let admitted = |field: &str| AdmittedSetupPaymentFederations::parse(raw(field).as_bytes());
-    assert_eq!(admitted("").unwrap().guardian_link(), None);
+    assert_eq!(admitted("").unwrap().features().guardian_link(), None);
     assert_eq!(
         admitted(r#","guardian_link":false"#)
             .unwrap()
+            .features()
             .guardian_link(),
         Some(false)
     );
     assert_eq!(
         admitted(r#","guardian_link":true"#)
             .unwrap()
+            .features()
             .guardian_link(),
         Some(true)
     );
@@ -822,15 +912,19 @@ fn guardian_link_is_absent_unless_the_policy_sets_it() {
 fn guardian_absence_policy_defaults_and_round_trips() {
     let old = content_with_min_uptime("");
     let admitted = AdmittedSetupPaymentFederations::parse(old.as_bytes()).unwrap();
-    assert_eq!(admitted.max_guardian_offline_secs(), 86_400);
+    assert_eq!(admitted.features().max_guardian_offline_secs(), 86_400);
     for seconds in [1, 3_600, 172_800] {
         let raw = content_with_min_uptime(&format!(",\"max_guardian_offline_secs\":{seconds}"));
         let parsed: SetupPaymentFederationsContent = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed.max_guardian_offline_secs, Some(seconds));
+        assert_eq!(
+            parsed.legacy_features.max_guardian_offline_secs,
+            Some(seconds)
+        );
         let encoded = serde_json::to_vec(&parsed).unwrap();
         assert_eq!(
             AdmittedSetupPaymentFederations::parse(&encoded)
                 .unwrap()
+                .features()
                 .max_guardian_offline_secs(),
             seconds
         );

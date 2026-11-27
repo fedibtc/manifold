@@ -119,7 +119,7 @@ impl EcashWallet for GatedRefundWallet {
         NoWallet.joined_federation_ids().await
     }
 
-    async fn join(&self, invite_code: &str) -> anyhow::Result<FederationId> {
+    async fn join(&self, invite_code: &str) -> Result<FederationId, super::JoinError> {
         NoWallet.join(invite_code).await
     }
 

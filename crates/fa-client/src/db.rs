@@ -61,30 +61,8 @@ enum FaDbPrefix {
     GuardianTransfer = 0x09,
     MgTrustMaterial = 0x0a,
     MgTrustMaterialRefreshRequired = 0x0b,
-    CustomGateway = 0x0c,
+    FeatureConfig = 0x0c,
 }
-
-/// The FA-supplied gateway attached to one federation instead of FLIP
-/// liquidity.
-#[derive(Debug, Decodable, Encodable)]
-struct CustomGatewayKey {
-    /// Fedimint federation id in its lowercase-hex form.
-    federation_id: String,
-}
-
-#[derive(Debug, Decodable, Encodable)]
-struct CustomGatewayKeyPrefix;
-
-impl_db_record!(
-    key = CustomGatewayKey,
-    value = crate::custom_gateway::StoredCustomGateway,
-    db_prefix = FaDbPrefix::CustomGateway,
-);
-
-impl_db_lookup!(
-    key = CustomGatewayKey,
-    query_prefix = CustomGatewayKeyPrefix
-);
 
 /// Disposable signed evidence, outside recovery records and backup formats.
 #[derive(Clone, Debug, Decodable, Encodable)]
@@ -301,6 +279,15 @@ impl_db_record!(
     key = SetupPaymentFederationsKey,
     value = StoredSetupPaymentFederationsEvent,
     db_prefix = FaDbPrefix::SetupPaymentFederations,
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct FeatureConfigKey([u8; 32]);
+
+impl_db_record!(
+    key = FeatureConfigKey,
+    value = StoredSetupPaymentFederationsEvent,
+    db_prefix = FaDbPrefix::FeatureConfig,
 );
 
 #[derive(Debug, Decodable, Encodable)]
@@ -772,7 +759,6 @@ struct StoredSetupPaymentFederationsEvent(Event);
 
 json_database_value!(StoredSetupPaymentFederationsEvent);
 json_database_value!(crate::liquidity::StoredLiquidityOperation);
-json_database_value!(crate::custom_gateway::StoredCustomGateway);
 json_database_value!(BackupGenerationState);
 json_database_value!(BackupRelayConfirmation);
 json_database_value!(FormedFederationRecord);
@@ -1351,12 +1337,6 @@ impl FaStore {
                 .await
                 .is_some()
             || dbtx.get_value(&GuardianTransferKey).await.is_some()
-            || dbtx
-                .find_by_prefix(&CustomGatewayKeyPrefix)
-                .await
-                .next()
-                .await
-                .is_some()
         {
             return Err(FaError::Storage(
                 "FA restore requires an empty database namespace".to_owned(),
@@ -1694,74 +1674,6 @@ impl FaStore {
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("persisting gateway-view verification failed".to_owned()))
-    }
-
-    pub(crate) async fn load_custom_gateway(
-        &self,
-        federation_id: &fedi_decentralized_domain::FederationId,
-    ) -> Option<crate::custom_gateway::StoredCustomGateway> {
-        self.database
-            .begin_transaction_nc()
-            .await
-            .get_value(&CustomGatewayKey {
-                federation_id: federation_id.0.clone(),
-            })
-            .await
-    }
-
-    /// Record an unfinished attachment before its first `RegisterGateway`.
-    /// Refused while the federation already has one.
-    pub(crate) async fn begin_custom_gateway(
-        &self,
-        federation_id: &fedi_decentralized_domain::FederationId,
-        gateway_api: &fedi_decentralized_domain::GatewayApiUrl,
-    ) -> FaResult<()> {
-        let key = CustomGatewayKey {
-            federation_id: federation_id.0.clone(),
-        };
-        let mut dbtx = self.database.begin_transaction().await;
-        if dbtx.get_value(&key).await.is_some() {
-            return Err(FaError::Storage(
-                "the federation already has a custom gateway attachment".to_owned(),
-            ));
-        }
-        dbtx.insert_entry(
-            &key,
-            &crate::custom_gateway::StoredCustomGateway {
-                gateway_api: gateway_api.clone(),
-                attached: false,
-            },
-        )
-        .await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(|_| FaError::Storage("persisting custom gateway attachment failed".to_owned()))
-    }
-
-    /// Record that the fresh LNv2 view contains the attachment's gateway.
-    pub(crate) async fn mark_custom_gateway_attached(
-        &self,
-        federation_id: &fedi_decentralized_domain::FederationId,
-        gateway_api: &fedi_decentralized_domain::GatewayApiUrl,
-    ) -> FaResult<()> {
-        let key = CustomGatewayKey {
-            federation_id: federation_id.0.clone(),
-        };
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut stored = dbtx
-            .get_value(&key)
-            .await
-            .ok_or_else(|| FaError::Storage("custom gateway attachment disappeared".to_owned()))?;
-        if &stored.gateway_api != gateway_api {
-            return Err(FaError::Storage(
-                "custom gateway attachment changed while it was being attached".to_owned(),
-            ));
-        }
-        stored.attached = true;
-        dbtx.insert_entry(&key, &stored).await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(|_| FaError::Storage("persisting custom gateway attachment failed".to_owned()))
     }
 
     /// Record that the provider can never accept this exact request.
@@ -2402,6 +2314,46 @@ impl FaStore {
                 AutocommitError::ClosureError { error, .. } => error,
                 AutocommitError::CommitFailed { .. } => {
                     FaError::Storage("storing setup-payment policy transaction failed".to_owned())
+                }
+            })
+    }
+    /// Load the complete last durably admitted feature publication.
+    pub(crate) async fn load_feature_config_event(&self, publisher: PublicKey) -> Option<Event> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&FeatureConfigKey(publisher.to_bytes()))
+            .await
+            .map(|stored| stored.0)
+    }
+
+    /// Atomically retain one complete admitted feature publication if it is highest.
+    pub(crate) async fn store_feature_config_event(&self, event: Event) -> FaResult<()> {
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let event = event.clone();
+                    Box::pin(async move {
+                        let key = FeatureConfigKey(event.pubkey.to_bytes());
+                        let current = dbtx.get_value(&key).await;
+                        if current.as_ref().is_some_and(|current| {
+                            current.0.id == event.id
+                                || !setup_payment_event_is_newer(&event, &current.0)
+                        }) {
+                            return Ok(());
+                        }
+                        dbtx.insert_entry(&key, &StoredSetupPaymentFederationsEvent(event))
+                            .await;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(|error: AutocommitError<FaError>| match error {
+                AutocommitError::ClosureError { error, .. } => error,
+                AutocommitError::CommitFailed { .. } => {
+                    FaError::Storage("storing feature policy transaction failed".to_owned())
                 }
             })
     }
