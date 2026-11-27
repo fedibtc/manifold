@@ -200,6 +200,11 @@ impl JournalPoller {
         shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<bool, PollError> {
         self.prune_and_recover().await?;
+        self.catalog
+            .store()
+            .prune_source_creations(self.clock.now()?)
+            .await
+            .map_err(|_| PollError::Fatal("source creation pruning failed"))?;
         let targets = self
             .catalog
             .active_targets()

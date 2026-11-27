@@ -1668,3 +1668,62 @@ async fn one_failing_stream_does_not_stop_the_targets_other_streams() {
     assert_eq!(seat_fetches.load(Ordering::SeqCst), 2);
     assert_eq!(store.final_frame_boundaries().await.unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_poll_cycle_deletes_the_source_creations_that_left_the_window() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A one-second lease, so the cycle finds no target to poll.
+    let store = Store::open(
+        &directory.path().join("state.sqlite"),
+        "development",
+        SecretCipher::new(&[7; 32]),
+        "test".into(),
+        1,
+        32,
+    )
+    .await
+    .unwrap()
+    .limit_new_targets(
+        NonZeroU16::new(10).unwrap(),
+        NonZeroU16::new(10).unwrap(),
+        std::num::NonZeroU8::new(10).unwrap(),
+        std::time::Duration::from_secs(86_400),
+    );
+    let cycle_at = now().unwrap();
+    for (mg, source, created_at) in [
+        ("22", "192.0.2.0/24", cycle_at - 3600),
+        ("33", "198.51.100.0/24", cycle_at - 3599),
+    ] {
+        let auth = VerifiedHttpAuth {
+            signer: mg.repeat(32),
+            event_id: mg.into(),
+            created_at,
+        };
+        let target = TargetMaterial {
+            mg_pubkey: mg,
+            mg_name: "calm-tern",
+            endpoint_id: "unused-by-fake",
+            capability: &[9; 32],
+            generation: 1,
+        };
+        store
+            .admit_from(&auth, target, source, created_at)
+            .await
+            .unwrap();
+    }
+    let archive = JournalArchive::open(directory.path(), 1024 * 1024).unwrap();
+    let clock = Arc::new(TestClock(AtomicI64::new(cycle_at)));
+    let (poller, fetches) =
+        clocked_poller(store.clone(), archive, VecDeque::new(), clock, None, None);
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+
+    assert!(!poller.poll_once(receiver).await.unwrap());
+    assert_eq!(fetches.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store.source_creation_prefixes().await.unwrap(),
+        ["198.51.100.0/24"]
+    );
+}

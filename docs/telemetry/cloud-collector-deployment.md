@@ -288,13 +288,28 @@ Unbadged mode requires four limits, and badged mode refuses them:
 | --- | --- | --- |
 | `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. A target frees its slot once its lease has lapsed for more than `LOG_RETENTION_DAYS` and retention has emptied its archive. | `1024` |
 | `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
-| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in any trailing hour. The store counts the committed targets that source created, in the admission transaction, so a registration it refuses, a renewal, or a restart neither spends nor resets it. | `4` |
+| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in any trailing hour. The store counts that source's committed creations in the admission transaction, so a registration it refuses or a renewal spends nothing, and a restart does not reset the count. | `4` |
 | `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |
 
 Renewing an existing target counts against none of them. A refused creation
 answers 503, and the MG retries at its next reconcile. The existing
 per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes and
 counts renewals too.
+
+To count creations, the store writes a `(prefix, created_at)` record in
+each creation's transaction, with no target identifier, and every journal
+poll cycle deletes the records older than one hour. The live store
+therefore holds a client prefix for at most one hour plus one
+`CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS` cycle. A target outlives its record.
+A backup taken within that time holds the records it copied, which last as
+long as backup retention keeps that backup.
+
+The unbadged build adds migration `0008`, which adds the `source_creations`
+table; it runs on badged collectors too, where the table stays empty. An
+older collector image does not start on a database that holds a migration it
+does not know. To roll back, restore the coupled backup taken before the
+upgrade, or stop the collector, drop `source_creations` and delete the
+version 8 row from `_sqlx_migrations`.
 
 Both source limits key on the client network prefix, so before opening the
 instance, check through its intended ingress that registrations from distinct

@@ -221,6 +221,27 @@ impl Store {
         )
     }
 
+    /// Delete the per-source creation records that have left the creation
+    /// limit's window, so a client prefix is kept no longer than the limit
+    /// needs it.
+    pub(crate) async fn prune_source_creations(&self, now: i64) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM source_creations WHERE created_at <= ?")
+            .bind(now.saturating_sub(SOURCE_CREATION_WINDOW_SECONDS))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The prefixes of the stored creation records, oldest first.
+    #[cfg(test)]
+    pub(crate) async fn source_creation_prefixes(&self) -> Result<Vec<String>, StoreError> {
+        Ok(
+            sqlx::query_scalar("SELECT source_prefix FROM source_creations ORDER BY created_at")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
     /// Compressed archive bytes the target's streams hold within retention.
     pub(crate) async fn target_archive_bytes(&self, target_id: &str) -> Result<u64, StoreError> {
         let bytes: i64 = sqlx::query_scalar(
@@ -424,10 +445,9 @@ impl Store {
 
     /// Atomically enforce replay, time, and generation ordering before
     /// replacing a secret, for a registration from the client network prefix
-    /// `source`. A store
-    /// with new-target limits records `source` on the target it creates and
-    /// counts it in the same transaction, so the per-source limit derives
-    /// from committed targets alone.
+    /// `source`. A store with new-target limits counts and records the
+    /// creation from `source` in the same transaction as the target, so the
+    /// per-source limit derives from committed creations alone.
     pub(crate) async fn admit_from(
         &self,
         auth: &VerifiedHttpAuth,
@@ -532,18 +552,24 @@ impl Store {
             {
                 return Err(StoreError::Saturated);
             }
-            if let Some(limit) = self.new_target_limit
-                && sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM targets
-                     WHERE created_source_prefix = ? AND created_at > ?",
+            if let Some(limit) = self.new_target_limit {
+                if sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM source_creations
+                     WHERE source_prefix = ? AND created_at > ?",
                 )
                 .bind(source)
-                .bind(now.saturating_sub(3600))
+                .bind(now.saturating_sub(SOURCE_CREATION_WINDOW_SECONDS))
                 .fetch_one(&mut *transaction)
                 .await?
                     >= limit.source_per_hour
-            {
-                return Err(StoreError::Saturated);
+                {
+                    return Err(StoreError::Saturated);
+                }
+                sqlx::query("INSERT INTO source_creations(source_prefix, created_at) VALUES (?, ?)")
+                    .bind(source)
+                    .bind(now)
+                    .execute(&mut *transaction)
+                    .await?;
             }
             AdmissionOutcome::Updated
         };
@@ -566,9 +592,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO targets (
                 fman_pubkey,target_id,fman_name,key_id,secret_nonce,secret_ciphertext,
-                generation,auth_created_at,lease_until,registration_revision,status,created_at,updated_at,
-                created_source_prefix
-             ) VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?,?)
+                generation,auth_created_at,lease_until,registration_revision,status,created_at,updated_at
+             ) VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)
              ON CONFLICT(fman_pubkey) DO UPDATE SET
                 fman_name=excluded.fman_name,key_id=excluded.key_id,
                 secret_nonce=excluded.secret_nonce,secret_ciphertext=excluded.secret_ciphertext,
@@ -580,8 +605,7 @@ impl Store {
         )
         .bind(target.mg_pubkey).bind(target_id).bind(target.mg_name).bind(&self.key_id)
         .bind(nonce).bind(ciphertext).bind(generation).bind(auth.created_at).bind(lease_until)
-        .bind(now).bind(now).bind(self.new_target_limit.map(|_| source)).bind(revision_bump)
-        .execute(&mut *transaction).await?;
+        .bind(now).bind(now).bind(revision_bump).execute(&mut *transaction).await?;
         if expired {
             sqlx::query(
                 "DELETE FROM metric_snapshots WHERE target_id =
@@ -2211,6 +2235,8 @@ pub(crate) enum StoreError {
 }
 
 const MAX_TARGETS: i64 = crate::config::MAX_TARGETS as i64;
+/// Window of the per-source creation limit.
+const SOURCE_CREATION_WINDOW_SECONDS: i64 = 3600;
 const KEY_SENTINEL: &[u8] = b"cloud-fman-telemetry-key-sentinel-v1";
 const TARGET_SECRET_FORMAT: i64 = 2;
 
@@ -2493,7 +2519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_source_prefix_creation_limit_counts_committed_targets_in_a_trailing_hour() {
+    async fn a_source_prefix_creation_limit_counts_committed_creations_in_a_trailing_hour() {
         let dir = tempfile::tempdir().unwrap();
         let limited = |store: Store| {
             store.limit_new_targets(
@@ -2503,7 +2529,6 @@ mod tests {
                 std::time::Duration::from_secs(86_400),
             )
         };
-        let first = limited(store(&dir).await);
         let admit = |store: &Store,
                      mg: &'static str,
                      source: &'static str,
@@ -2521,29 +2546,47 @@ mod tests {
                     .await
             }
         };
+        let first = limited(store(&dir).await);
         admit(&first, "a1", "192.0.2.0/24", "1", 10_000)
             .await
             .unwrap();
-        // The limit is read from the committed target, not from process
-        // memory, so a reopened store still counts it.
+        // The limit reads committed rows, not process memory, so a reopened
+        // store still counts the creation.
         drop(first);
-        let reopened = limited(store(&dir).await);
+        let store = limited(store(&dir).await);
         assert!(matches!(
-            admit(&reopened, "b2", "192.0.2.0/24", "2", 13_599).await,
+            admit(&store, "b2", "192.0.2.0/24", "2", 13_599).await,
             Err(StoreError::Saturated)
         ));
-        // Renewing the source's target costs nothing; another prefix has its own limit.
-        admit(&reopened, "a1", "192.0.2.0/24", "3", 13_599)
+        // Renewing costs nothing; another prefix has its own limit.
+        admit(&store, "a1", "192.0.2.0/24", "3", 13_599)
             .await
             .unwrap();
-        admit(&reopened, "c3", "198.51.100.0/24", "4", 13_599)
+        admit(&store, "c3", "198.51.100.0/24", "4", 13_599)
             .await
             .unwrap();
-        // The creation leaves the trailing hour at exactly 3,600 s.
-        admit(&reopened, "b2", "192.0.2.0/24", "5", 13_600)
+        // Pruning keeps exactly the records still inside the window.
+        store.prune_source_creations(13_599).await.unwrap();
+        assert_eq!(
+            store.source_creation_prefixes().await.unwrap(),
+            ["192.0.2.0/24", "198.51.100.0/24"]
+        );
+        store.prune_source_creations(13_600).await.unwrap();
+        assert_eq!(
+            store.source_creation_prefixes().await.unwrap(),
+            ["198.51.100.0/24"]
+        );
+        // The target outlives its creation record and keeps renewing.
+        assert_eq!(
+            admit(&store, "a1", "192.0.2.0/24", "5", 13_600)
+                .await
+                .unwrap(),
+            AdmissionOutcome::Idempotent
+        );
+        // The first creation left the window at exactly 3,600 s.
+        admit(&store, "b2", "192.0.2.0/24", "6", 13_600)
             .await
             .unwrap();
-        assert!(!reopened.target_exists("d4").await.unwrap());
     }
 
     #[tokio::test]
