@@ -314,6 +314,12 @@ pub struct SetupPaymentFederationsContent {
     /// appear on Nostr.
     pub telemetry_registration_url: Url,
 
+    /// Fedi-operated endpoint where MGs without a Holder authorization
+    /// register instead, with a collector apart from the badged one.
+    /// Optional on the wire: absent means those MGs do not register.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unbadged_telemetry_registration_url: Option<Url>,
+
     /// Smallest guardian fee rate, in parts per million, that a guardian will
     /// accept in a fee proposal. Optional on the wire: an event omitting it
     /// carries [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`], so older publications
@@ -467,6 +473,7 @@ pub struct AdmittedSetupPaymentFederations {
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
+    unbadged_telemetry_registration_url: Option<Url>,
     min_fee_ppm: u64,
     features: AdmittedFeaturePolicy,
 }
@@ -518,16 +525,10 @@ impl AdmittedSetupPaymentFederations {
         if content.min_fee_ppm > SETUP_PAYMENT_MAX_MIN_FEE_PPM {
             return Err(SetupPaymentFederationsContentError::MinFeePpmTooHigh);
         }
-        let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
-            .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
-        if registration_url.scheme() != "https"
-            || !registration_url.has_host()
-            || !registration_url.username().is_empty()
-            || registration_url.password().is_some()
-            || registration_url.query().is_some()
-            || registration_url.fragment().is_some()
+        for url in std::iter::once(&content.telemetry_registration_url)
+            .chain(&content.unbadged_telemetry_registration_url)
         {
-            return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
+            check_telemetry_registration_url(url)?;
         }
 
         let mut federations = BTreeMap::new();
@@ -553,6 +554,7 @@ impl AdmittedSetupPaymentFederations {
         Ok(Self {
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
+            unbadged_telemetry_registration_url: content.unbadged_telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
             features: content.legacy_features.admit()?,
         })
@@ -592,6 +594,13 @@ impl AdmittedSetupPaymentFederations {
         &self.telemetry_registration_url
     }
 
+    /// Return the Fedi endpoint where MGs without a Holder authorization
+    /// register, if the policy names one.
+    #[must_use]
+    pub fn unbadged_telemetry_registration_url(&self) -> Option<&Url> {
+        self.unbadged_telemetry_registration_url.as_ref()
+    }
+
     /// Return the smallest guardian fee rate a proposal may carry, in ppm.
     ///
     /// Never zero unless Fedi published zero: an event that omits the field
@@ -600,6 +609,22 @@ impl AdmittedSetupPaymentFederations {
     pub fn min_fee_ppm(&self) -> u64 {
         self.min_fee_ppm
     }
+}
+
+/// Require a credential-free HTTPS URL with a host and no query or fragment.
+fn check_telemetry_registration_url(url: &Url) -> Result<(), SetupPaymentFederationsContentError> {
+    let registration_url = url::Url::parse(&url.0)
+        .map_err(|_| SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl)?;
+    if registration_url.scheme() != "https"
+        || !registration_url.has_host()
+        || !registration_url.username().is_empty()
+        || registration_url.password().is_some()
+        || registration_url.query().is_some()
+        || registration_url.fragment().is_some()
+    {
+        return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
+    }
+    Ok(())
 }
 
 impl FeaturePolicy {

@@ -29,14 +29,14 @@ use crate::{
     archive::JournalArchive,
     auth,
     cipher::SecretCipher,
-    config::{Args, MetricsRuntimeConfig},
+    config::{Admission, Args, MetricsRuntimeConfig},
     data_root_lock::DataRootLock,
     journal_poller::JournalPoller,
     journal_types::{ReceptionDay, unix_seconds},
     metrics_observability::MetricsObservability,
     metrics_policy::MetricsPolicy,
     metrics_poller::MetricsPoller,
-    metrics_snapshot::render_metrics,
+    metrics_snapshot::{MgVerification, render_metrics},
     mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
     store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
     store_binding::store_binding_label,
@@ -66,7 +66,7 @@ pub async fn registration_router_for_test(
     let state = AppState {
         _data_lock: data_lock,
         store,
-        verifier,
+        registrants: Registrants::Badged(verifier),
         expected_url: format!("{expected_origin}{REGISTRATION_PATH}"),
         admission: Arc::new(tokio::sync::Semaphore::new(16)),
         source_budget: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -92,7 +92,7 @@ struct AppState {
     /// Every accepted connection clones state, retaining exclusivity until that connection ends.
     _data_lock: Arc<DataRootLock>,
     store: Store,
-    verifier: PeerBadgeVerifier,
+    registrants: Registrants,
     expected_url: String,
     admission: Arc<tokio::sync::Semaphore>,
     source_budget: Arc<tokio::sync::Mutex<HashMap<String, (i64, u8)>>>,
@@ -104,6 +104,21 @@ struct AppState {
     metrics_generation: Arc<tokio::sync::Semaphore>,
     metrics_cache: Arc<tokio::sync::Mutex<Option<MetricsCacheEntry>>>,
     metrics_observability: MetricsObservability,
+}
+
+/// Whom the collector admits as a target.
+#[derive(Clone)]
+enum Registrants {
+    /// MGs whose Holder authorization verifies for the NIP-98 signer.
+    Badged(PeerBadgeVerifier),
+    /// Any NIP-98 signer; the store bounds the targets they create.
+    Unbadged,
+}
+
+impl Registrants {
+    fn badged(&self) -> bool {
+        matches!(self, Self::Badged(_))
+    }
 }
 
 struct MetricsCacheEntry {
@@ -128,6 +143,7 @@ impl AsRef<[u8]> for MetricsBodyBacking {
 pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let crate::config::RuntimeConfig {
         environment,
+        admission,
         metrics: metrics_runtime,
         max_journals_per_target,
         log_cadence,
@@ -155,13 +171,26 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let key = read_key(&args.key_file)?;
     let store = Store::open(
         &args.data_dir.join("state.sqlite"),
-        &store_binding_label(environment),
+        &store_binding_label(environment, admission),
         SecretCipher::new(&key),
         args.key_id.clone(),
         args.lease_seconds,
         max_journals_per_target,
     )
     .await?;
+    let store = match admission {
+        Admission::Badged => store,
+        Admission::Unbadged(limits) => store.limit_new_targets(
+            limits.max_targets,
+            limits.new_targets_per_hour,
+            limits.source_new_targets_per_hour,
+            std::time::Duration::from_secs(u64::from(log_retention_days.get()) * 86_400),
+        ),
+    };
+    let target_quota_bytes = match admission {
+        Admission::Badged => None,
+        Admission::Unbadged(limits) => Some(limits.log_target_quota_bytes),
+    };
     let policy = MetricsPolicy;
     store
         .configure_metrics_policy(&policy.fingerprint())
@@ -177,10 +206,10 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     )?;
     store.prune_archive_ledger(&cutoff).await?;
     archive.recover(store.final_frame_boundaries().await?)?;
-    let collector_endpoint = if e2e_iroh_endpoint_addr.is_some() {
-        Endpoint::builder(presets::N0DisableRelay).bind().await?
-    } else {
-        Endpoint::builder(presets::N0).bind().await?
+    let collector_endpoint = match (&e2e_iroh_endpoint_addr, admission) {
+        (Some(_), _) => Endpoint::builder(presets::N0DisableRelay).bind().await?,
+        (None, Admission::Badged) => Endpoint::builder(presets::N0).bind().await?,
+        (None, Admission::Unbadged(_)) => crate::dial_policy::bind_relay_only().await?,
     };
     let journal_poller = JournalPoller::new(
         store.clone(),
@@ -188,6 +217,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
         collector_endpoint.clone(),
         log_concurrency,
         log_retention_days,
+        target_quota_bytes,
         cutoff,
         e2e_iroh_endpoint_addr.clone(),
     );
@@ -199,14 +229,17 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     )
     .with_address_override(e2e_iroh_endpoint_addr);
     let metrics_observability = metrics_poller.observability();
-    let verifier = match e2e_badge_verifier {
-        Some(verifier) => verifier,
-        None => PeerBadgeVerifier::try_from_profile(&environment.profile()?)?,
+    let registrants = match admission {
+        Admission::Badged => Registrants::Badged(match e2e_badge_verifier {
+            Some(verifier) => verifier,
+            None => PeerBadgeVerifier::try_from_profile(&environment.profile()?)?,
+        }),
+        Admission::Unbadged(_) => Registrants::Unbadged,
     };
     let state = AppState {
         _data_lock: data_lock,
         store,
-        verifier,
+        registrants,
         expected_url: format!("{}{REGISTRATION_PATH}", args.public_base_url),
         admission: Arc::new(tokio::sync::Semaphore::new(16)),
         source_budget: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -331,14 +364,20 @@ fn public_router(state: AppState) -> Router {
 }
 
 fn private_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
-        .route(FEDERATIONS_EXPORT_PATH, get(federations))
         .route(SEAT_CAPACITY_EXPORT_PATH, get(seat_capacity))
-        .route(SEAT_READINESS_EXPORT_PATH, get(seat_readiness))
-        .with_state(state)
+        .route(SEAT_READINESS_EXPORT_PATH, get(seat_readiness));
+    // Any key can register with an unbadged collector, so its invites are
+    // attacker-chosen and never reach a downstream consumer.
+    let router = if state.registrants.badged() {
+        router.route(FEDERATIONS_EXPORT_PATH, get(federations))
+    } else {
+        router
+    };
+    router.with_state(state)
 }
 
 /// Private route listing the current seats' federations and their invites.
@@ -529,19 +568,24 @@ async fn register_inner(
         .reserve_auth(&auth, now)
         .await
         .map_err(map_store_error)?;
-    let badge = state
-        .verifier
-        .verify(&registration.holder_authorization)
-        .await
-        .map_err(|_| RegisterError::Refused)?;
-    let subject = badge.subject().0.to_string();
-    if subject != auth.signer {
-        return Err(RegisterError::Refused);
+    if let Registrants::Badged(verifier) = &state.registrants {
+        let badge = verifier
+            .verify(
+                registration
+                    .holder_authorization
+                    .as_ref()
+                    .ok_or(RegisterError::Refused)?,
+            )
+            .await
+            .map_err(|_| RegisterError::Refused)?;
+        if badge.subject().0.to_string() != auth.signer {
+            return Err(RegisterError::Refused);
+        }
     }
     let mg_name = display_name(&auth.signer).map_err(|_| RegisterError::Refused)?;
     state
         .store
-        .admit(
+        .admit_from(
             &auth,
             TargetMaterial {
                 mg_pubkey: &auth.signer,
@@ -550,6 +594,7 @@ async fn register_inner(
                 capability: registration.capability.as_bytes(),
                 generation: registration.generation,
             },
+            &source_prefix(source),
             now,
         )
         .await
@@ -740,6 +785,11 @@ async fn metrics_at(state: AppState, now_ms: i64) -> Response {
         stale_after_ms,
         policy.method_source_ready(),
         &state.metrics_observability,
+        if state.registrants.badged() {
+            MgVerification::Badged
+        } else {
+            MgVerification::Unbadged
+        },
     ) {
         Ok(body) => {
             let body = axum::body::Bytes::from_owner(MetricsBodyBacking {
@@ -875,6 +925,8 @@ mod tests {
             .tag(Tag::parse(["u", url]).unwrap())
             .tag(Tag::parse(["method", "POST"]).unwrap())
             .tag(Tag::parse(["payload", &payload]).unwrap())
+            // Like an MG, so two requests in one second are distinct events.
+            .tag(Tag::parse(["nonce", &hex::encode(rand::random::<[u8; 16]>())]).unwrap())
             .sign_with_keys(keys)
             .unwrap();
         format!(
@@ -903,10 +955,12 @@ mod tests {
         AppState {
             _data_lock: data_lock,
             store,
-            verifier: PeerBadgeVerifier::try_from_profile(
-                &ManifoldEnvironment::Development.profile().unwrap(),
-            )
-            .unwrap(),
+            registrants: Registrants::Badged(
+                PeerBadgeVerifier::try_from_profile(
+                    &ManifoldEnvironment::Development.profile().unwrap(),
+                )
+                .unwrap(),
+            ),
             expected_url: "https://collector.test/v1/telemetry/registrations".into(),
             admission: Arc::new(tokio::sync::Semaphore::new(1)),
             source_budget: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -946,7 +1000,7 @@ mod tests {
                 .public()
                 .to_string(),
             capability: TelemetryCapability::from_bytes([9; 32]),
-            holder_authorization: holder_authorization(keys),
+            holder_authorization: Some(holder_authorization(keys)),
         })
         .unwrap()
     }
@@ -977,6 +1031,224 @@ mod tests {
                 .await
                 .unwrap(),
             None
+        );
+    }
+
+    fn unbadged(state: AppState, source_per_hour: u8) -> AppState {
+        unbadged_with_cap(state, source_per_hour, 4096)
+    }
+
+    fn unbadged_with_cap(mut state: AppState, source_per_hour: u8, max_targets: u16) -> AppState {
+        state.registrants = Registrants::Unbadged;
+        state.store = state.store.limit_new_targets(
+            std::num::NonZeroU16::new(max_targets).unwrap(),
+            std::num::NonZeroU16::new(60).unwrap(),
+            std::num::NonZeroU8::new(source_per_hour).unwrap(),
+            std::time::Duration::from_secs(86_400),
+        );
+        state
+    }
+
+    fn unbadged_body(keys: &Keys) -> Vec<u8> {
+        let mut registration: GuardianTelemetryRegistrationRequest =
+            serde_json::from_slice(&body(keys)).unwrap();
+        registration.holder_authorization = None;
+        serde_json::to_vec(&registration).unwrap()
+    }
+
+    async fn register_from(state: &AppState, peer: &str, keys: &Keys) -> StatusCode {
+        Router::new()
+            .route(REGISTRATION_PATH, post(register))
+            .layer(axum::Extension(ConnectInfo(
+                peer.parse::<SocketAddr>().unwrap(),
+            )))
+            .with_state(state.clone())
+            .oneshot(request(keys, unbadged_body(keys)))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn only_an_unbadged_collector_admits_a_registration_without_a_badge() {
+        let keys = Keys::generate();
+        let directory = tempfile::tempdir().unwrap();
+        let badged = state(&directory).await;
+        assert_eq!(
+            register_from(&badged, "192.0.2.1:1", &keys).await,
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            !badged
+                .store
+                .target_exists(&keys.public_key().to_string())
+                .await
+                .unwrap()
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let unbadged = unbadged(state(&directory).await, 1);
+        assert_eq!(
+            register_from(&unbadged, "192.0.2.1:1", &keys).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            unbadged
+                .store
+                .target_status(&keys.public_key().to_string(), now())
+                .await
+                .unwrap(),
+            Some(crate::store::TargetStatus::Active)
+        );
+        // NIP-98 still binds the body: a changed body under the old signature fails.
+        let mut tampered = request(&keys, unbadged_body(&keys));
+        *tampered.body_mut() = axum::body::Body::from(b"{}".to_vec());
+        assert_eq!(
+            test_router(unbadged.clone())
+                .oneshot(tampered)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        // The same signed request is admitted once.
+        let body = unbadged_body(&keys);
+        let signed = authorization(
+            &keys,
+            "https://collector.test/v1/telemetry/registrations",
+            &body,
+        );
+        let send = || {
+            test_router(unbadged.clone()).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(REGISTRATION_PATH)
+                    .header(header::AUTHORIZATION, signed.clone())
+                    .body(axum::body::Body::from(body.clone()))
+                    .unwrap(),
+            )
+        };
+        assert_eq!(send().await.unwrap().status(), StatusCode::OK);
+        assert_eq!(send().await.unwrap().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_source_prefix_creates_a_bounded_number_of_unbadged_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = unbadged(state(&directory).await, 1);
+        let (first, second, third) = (Keys::generate(), Keys::generate(), Keys::generate());
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::OK
+        );
+        // Another key from the same /24 would be a second new target this hour.
+        assert_eq!(
+            register_from(&state, "192.0.2.200:1", &second).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Renewing the existing target spends nothing.
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::OK
+        );
+        // Another prefix has its own budget.
+        assert_eq!(
+            register_from(&state, "198.51.100.1:1", &third).await,
+            StatusCode::OK
+        );
+        assert!(
+            !state
+                .store
+                .target_exists(&second.public_key().to_string())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_creation_the_store_refuses_does_not_spend_the_source_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = unbadged_with_cap(state(&directory).await, 1, 1);
+        let (other, first, second) = (Keys::generate(), Keys::generate(), Keys::generate());
+        assert_eq!(
+            register_from(&state, "198.51.100.1:1", &other).await,
+            StatusCode::OK
+        );
+        // The store is full, so this source's first creation is refused.
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Capacity returns within the hour: the refused attempt cost nothing.
+        state = unbadged_with_cap(state, 1, 3);
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &first).await,
+            StatusCode::OK
+        );
+        // That committed creation used the source's one creation this hour.
+        assert_eq!(
+            register_from(&state, "192.0.2.2:1", &second).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            !state
+                .store
+                .target_exists(&second.public_key().to_string())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unbadged_collector_serves_no_invites_and_labels_its_mgs_unverified() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = unbadged(state(&directory).await, 1);
+        let keys = Keys::generate();
+        assert_eq!(
+            register_from(&state, "192.0.2.1:1", &keys).await,
+            StatusCode::OK
+        );
+        let get = |path: &str| {
+            Request::builder()
+                .uri(path)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let app = private_router(state);
+        assert_eq!(
+            app.clone()
+                .oneshot(get(FEDERATIONS_EXPORT_PATH))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(get(SEAT_CAPACITY_EXPORT_PATH))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let metrics = app.oneshot(get("/metrics")).await.unwrap();
+        let metrics = String::from_utf8(
+            to_bytes(metrics.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let target = metrics
+            .lines()
+            .find(|line| line.starts_with("cloud_fman_telemetry_target_fresh{"))
+            .unwrap();
+        assert!(
+            target.starts_with(&format!(
+                "cloud_fman_telemetry_target_fresh{{fman_verified=\"false\",fman_id=\"{}\"",
+                keys.public_key()
+            )),
+            "{target}"
         );
     }
 

@@ -123,8 +123,9 @@ successful metrics observation per seat and exposes that state on its private
 `/metrics` listener with the original observation timestamp:
 
 1. **Trusted-federation note** — the signed kind-37707 setup-payment schema
-   carries one deployment-owned HTTPS `telemetry_registration_url`; it never
-   publishes MG locators or capabilities.
+   carries one deployment-owned HTTPS `telemetry_registration_url` and an
+   optional `unbadged_telemetry_registration_url` for MGs without a badge; it
+   never publishes MG locators or capabilities.
 2. **MG registration + sanitizing proxy** — each MG periodically sends one
    idempotent MG-level registration and serves capability-authenticated,
    default-deny projected metrics and safe-journal pull APIs over a dedicated Iroh

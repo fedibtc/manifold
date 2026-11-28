@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    num::{NonZeroU16, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -82,6 +82,8 @@ pub(crate) struct JournalPoller {
     source: Arc<dyn JournalSource>,
     concurrency: NonZeroUsize,
     retention_days: NonZeroU16,
+    /// Compressed archive bytes one target may hold, where targets are free.
+    target_quota_bytes: Option<NonZeroU64>,
     clock: Arc<dyn Clock>,
     last_pruned_day: Arc<std::sync::Mutex<Option<ReceptionDay>>>,
     stream_offsets: Arc<tokio::sync::Mutex<HashMap<String, usize>>>,
@@ -91,12 +93,14 @@ pub(crate) struct JournalPoller {
 
 impl JournalPoller {
     /// Build the production direct-Iroh journal poller from validated settings.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,
         archive: JournalArchive,
         endpoint: Endpoint,
         concurrency: NonZeroUsize,
         retention_days: NonZeroU16,
+        target_quota_bytes: Option<NonZeroU64>,
         initial_pruned_day: ReceptionDay,
         address_override: Option<EndpointAddr>,
     ) -> Self {
@@ -109,6 +113,7 @@ impl JournalPoller {
             )),
             concurrency,
             retention_days,
+            target_quota_bytes,
             clock,
             last_pruned_day: Arc::new(std::sync::Mutex::new(Some(initial_pruned_day))),
             stream_offsets: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -149,11 +154,18 @@ impl JournalPoller {
             source,
             concurrency,
             retention_days,
+            target_quota_bytes: None,
             clock,
             last_pruned_day: Arc::new(std::sync::Mutex::new(None)),
             stream_offsets: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             fatal_admission_hook: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_target_quota(mut self, quota: NonZeroU64) -> Self {
+        self.target_quota_bytes = Some(quota);
+        self
     }
 
     /// Poll forever at a journal-specific cadence until shutdown or a fatal sink error.
@@ -188,6 +200,11 @@ impl JournalPoller {
         shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<bool, PollError> {
         self.prune_and_recover().await?;
+        self.catalog
+            .store()
+            .prune_source_creations(self.clock.now()?)
+            .await
+            .map_err(|_| PollError::Fatal("source creation pruning failed"))?;
         let targets = self
             .catalog
             .active_targets()
@@ -429,10 +446,23 @@ impl JournalPoller {
                     }
                     Err(_) => return Err(PollError::Fatal("journal stream state failed")),
                 };
+                let target_room = match self.target_quota_bytes {
+                    Some(quota) => Some(
+                        quota.get().saturating_sub(
+                            self.catalog
+                                .store()
+                                .target_archive_bytes(target.target_id())
+                                .await
+                                .map_err(|_| PollError::Fatal("journal archive budget failed"))?,
+                        ),
+                    ),
+                    None => None,
+                };
                 let collector = SingleBatchCollector::new(
                     self.catalog.archive().clone(),
                     session.clone(),
                     state,
+                    target_room,
                     self.clock.clone(),
                     deadline,
                 );

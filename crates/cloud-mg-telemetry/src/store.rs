@@ -127,6 +127,18 @@ pub(crate) struct TargetMaterial<'a> {
     pub(crate) generation: u64,
 }
 
+/// Bounds on creating targets, for a collector where an identity costs nothing.
+#[derive(Clone, Copy)]
+struct NewTargetLimit {
+    max_targets: i64,
+    per_hour: i64,
+    /// Targets one client network prefix may create in any trailing hour.
+    source_per_hour: i64,
+    /// A target whose lease lapsed longer ago than this, and whose archive
+    /// retention has emptied, gives its slot back.
+    free_after_seconds: i64,
+}
+
 /// Durable collector state backed by one WAL-mode SQLite database.
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -136,6 +148,8 @@ pub(crate) struct Store {
     trust_profile: String,
     lease_seconds: i64,
     max_journals_per_target: u16,
+    /// Bounds on creating targets; `None` keeps only the global target bound.
+    new_target_limit: Option<NewTargetLimit>,
     data_dir: PathBuf,
     #[cfg(test)]
     commit_hook: Option<std::sync::Arc<TestCommitHook>>,
@@ -171,6 +185,74 @@ fn wait_test_hook(hook: &Option<std::sync::Arc<TestCommitHook>>) {
 impl Store {
     pub(crate) fn max_journals_per_target(&self) -> u16 {
         self.max_journals_per_target
+    }
+
+    /// Refuse a new target once `max_targets` are stored, `per_hour` were
+    /// created in the trailing hour, or its source prefix created
+    /// `source_per_hour` in the trailing hour. Existing targets keep renewing. Before a
+    /// creation counts the stored targets, it deletes every target whose
+    /// lease lapsed more than `free_after` ago and whose archive frames
+    /// retention has already pruned, so abandoned keys do not fill the store.
+    pub(crate) fn limit_new_targets(
+        mut self,
+        max_targets: std::num::NonZeroU16,
+        per_hour: std::num::NonZeroU16,
+        source_per_hour: std::num::NonZeroU8,
+        free_after: std::time::Duration,
+    ) -> Self {
+        self.new_target_limit = Some(NewTargetLimit {
+            max_targets: i64::from(max_targets.get()).min(MAX_TARGETS),
+            per_hour: i64::from(per_hour.get()),
+            source_per_hour: i64::from(source_per_hour.get()),
+            free_after_seconds: i64::try_from(free_after.as_secs()).unwrap_or(i64::MAX),
+        });
+        self
+    }
+
+    /// Whether a target, in any state, is stored for this MG.
+    #[cfg(test)]
+    pub(crate) async fn target_exists(&self, mg_pubkey: &str) -> Result<bool, StoreError> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM targets WHERE fman_pubkey = ?")
+                .bind(mg_pubkey)
+                .fetch_one(&self.pool)
+                .await?
+                > 0,
+        )
+    }
+
+    /// Delete the per-source creation records that have left the creation
+    /// limit's window, so a client prefix is kept no longer than the limit
+    /// needs it.
+    pub(crate) async fn prune_source_creations(&self, now: i64) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM source_creations WHERE created_at <= ?")
+            .bind(now.saturating_sub(SOURCE_CREATION_WINDOW_SECONDS))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The prefixes of the stored creation records, oldest first.
+    #[cfg(test)]
+    pub(crate) async fn source_creation_prefixes(&self) -> Result<Vec<String>, StoreError> {
+        Ok(
+            sqlx::query_scalar("SELECT source_prefix FROM source_creations ORDER BY created_at")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Compressed archive bytes the target's streams hold within retention.
+    pub(crate) async fn target_archive_bytes(&self, target_id: &str) -> Result<u64, StoreError> {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(f.end_offset - f.start_offset), 0)
+             FROM archive_frames f JOIN journal_streams s ON s.stream_id = f.stream_id
+             WHERE s.target_id = ?",
+        )
+        .bind(target_id)
+        .fetch_one(&self.pool)
+        .await?;
+        u64::try_from(bytes).map_err(|_| StoreError::Corrupt)
     }
 
     #[cfg(test)]
@@ -299,6 +381,7 @@ impl Store {
             trust_profile: trust_profile.to_owned(),
             lease_seconds,
             max_journals_per_target,
+            new_target_limit: None,
             data_dir,
             #[cfg(test)]
             commit_hook: None,
@@ -349,11 +432,27 @@ impl Store {
         finish_immediate(transaction, result).await
     }
 
-    /// Atomically enforce replay, time, and generation ordering before replacing a secret.
+    /// [`Self::admit_from`] one fixed documentation prefix.
+    #[cfg(test)]
     pub(crate) async fn admit(
         &self,
         auth: &VerifiedHttpAuth,
         target: TargetMaterial<'_>,
+        now: i64,
+    ) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_from(auth, target, "192.0.2.0/24", now).await
+    }
+
+    /// Atomically enforce replay, time, and generation ordering before
+    /// replacing a secret, for a registration from the client network prefix
+    /// `source`. A store with new-target limits counts and records the
+    /// creation from `source` in the same transaction as the target, so the
+    /// per-source limit derives from committed creations alone.
+    pub(crate) async fn admit_from(
+        &self,
+        auth: &VerifiedHttpAuth,
+        target: TargetMaterial<'_>,
+        source: &str,
         now: i64,
     ) -> Result<AdmissionOutcome, StoreError> {
         let generation = i64::try_from(target.generation).map_err(|_| StoreError::Refused)?;
@@ -425,12 +524,52 @@ impl Store {
                 AdmissionOutcome::Updated
             }
         } else {
+            if let Some(limit) = self.new_target_limit {
+                free_lapsed_targets(
+                    &mut transaction,
+                    now.saturating_sub(limit.free_after_seconds),
+                )
+                .await?;
+            }
+            let max_targets = self
+                .new_target_limit
+                .map_or(MAX_TARGETS, |limit| limit.max_targets);
             if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM targets")
                 .fetch_one(&mut *transaction)
                 .await?
-                >= MAX_TARGETS
+                >= max_targets
             {
                 return Err(StoreError::Saturated);
+            }
+            if let Some(limit) = self.new_target_limit
+                && sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM targets WHERE created_at > ?",
+                )
+                .bind(now.saturating_sub(3600))
+                .fetch_one(&mut *transaction)
+                .await?
+                    >= limit.per_hour
+            {
+                return Err(StoreError::Saturated);
+            }
+            if let Some(limit) = self.new_target_limit {
+                if sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM source_creations
+                     WHERE source_prefix = ? AND created_at > ?",
+                )
+                .bind(source)
+                .bind(now.saturating_sub(SOURCE_CREATION_WINDOW_SECONDS))
+                .fetch_one(&mut *transaction)
+                .await?
+                    >= limit.source_per_hour
+                {
+                    return Err(StoreError::Saturated);
+                }
+                sqlx::query("INSERT INTO source_creations(source_prefix, created_at) VALUES (?, ?)")
+                    .bind(source)
+                    .bind(now)
+                    .execute(&mut *transaction)
+                    .await?;
             }
             AdmissionOutcome::Updated
         };
@@ -1928,6 +2067,35 @@ impl Store {
     }
 }
 
+/// Delete every target whose lease ended before `lapsed_before` and that has
+/// no archive frame left, with the rows that belong to it.
+async fn free_lapsed_targets(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    lapsed_before: i64,
+) -> Result<(), StoreError> {
+    const FREED: &str = "SELECT t.target_id FROM targets t
+         WHERE t.lease_until < ?1 AND NOT EXISTS (
+             SELECT 1 FROM archive_frames f JOIN journal_streams s ON s.stream_id = f.stream_id
+             WHERE s.target_id = t.target_id)";
+    for table in [
+        "metric_poll_state",
+        "metric_snapshots",
+        "metric_listed_seats",
+        "mg_reports",
+        "journal_streams",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE target_id IN ({FREED})"))
+            .bind(lapsed_before)
+            .execute(&mut **transaction)
+            .await?;
+    }
+    sqlx::query(&format!("DELETE FROM targets WHERE target_id IN ({FREED})"))
+        .bind(lapsed_before)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 /// Replace the target's report of kind `T` with `stated`, unless the stored
 /// one was observed later.
 async fn store_mg_report<T: MgReport>(
@@ -2066,7 +2234,9 @@ pub(crate) enum StoreError {
     Filesystem(#[from] std::io::Error),
 }
 
-const MAX_TARGETS: i64 = 4096;
+const MAX_TARGETS: i64 = crate::config::MAX_TARGETS as i64;
+/// Window of the per-source creation limit.
+const SOURCE_CREATION_WINDOW_SECONDS: i64 = 3600;
 const KEY_SENTINEL: &[u8] = b"cloud-fman-telemetry-key-sentinel-v1";
 const TARGET_SECRET_FORMAT: i64 = 2;
 
@@ -2304,6 +2474,279 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_target_limits_refuse_only_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir).await.limit_new_targets(
+            std::num::NonZeroU16::new(3).unwrap(),
+            std::num::NonZeroU16::new(2).unwrap(),
+            std::num::NonZeroU8::MAX,
+            std::time::Duration::from_secs(86_400),
+        );
+        let admit = |mg: &'static str, event: &'static str, now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit(&auth(event, now), target_for(mg, "endpoint", 1), now)
+                    .await
+            }
+        };
+        admit("a1", "1", 10_000).await.unwrap();
+        admit("b2", "2", 10_001).await.unwrap();
+        // The hour's creations are spent, so a third key waits...
+        assert!(matches!(
+            admit("c3", "3", 13_599).await,
+            Err(StoreError::Saturated)
+        ));
+        // ...while targets that exist keep renewing.
+        assert_eq!(
+            admit("a1", "4", 13_599).await.unwrap(),
+            AdmissionOutcome::Idempotent
+        );
+        // The first creation leaves the trailing hour at exactly 3,600 s.
+        admit("c3", "5", 13_600).await.unwrap();
+        // The store is now full, though the hour allows another creation.
+        assert!(matches!(
+            admit("d4", "6", 20_000).await,
+            Err(StoreError::Saturated)
+        ));
+        // An expired target still holds its slot and renews.
+        admit("b2", "7", 20_000).await.unwrap();
+        assert!(store.target_exists("a1").await.unwrap());
+        assert!(!store.target_exists("d4").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_source_prefix_creation_limit_counts_committed_creations_in_a_trailing_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let limited = |store: Store| {
+            store.limit_new_targets(
+                std::num::NonZeroU16::new(10).unwrap(),
+                std::num::NonZeroU16::new(10).unwrap(),
+                std::num::NonZeroU8::new(1).unwrap(),
+                std::time::Duration::from_secs(86_400),
+            )
+        };
+        let admit = |store: &Store,
+                     mg: &'static str,
+                     source: &'static str,
+                     event: &'static str,
+                     now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit_from(
+                        &auth(event, now),
+                        target_for(mg, "endpoint", 1),
+                        source,
+                        now,
+                    )
+                    .await
+            }
+        };
+        let first = limited(store(&dir).await);
+        admit(&first, "a1", "192.0.2.0/24", "1", 10_000)
+            .await
+            .unwrap();
+        // The limit reads committed rows, not process memory, so a reopened
+        // store still counts the creation.
+        drop(first);
+        let store = limited(store(&dir).await);
+        assert!(matches!(
+            admit(&store, "b2", "192.0.2.0/24", "2", 13_599).await,
+            Err(StoreError::Saturated)
+        ));
+        // Renewing costs nothing; another prefix has its own limit.
+        admit(&store, "a1", "192.0.2.0/24", "3", 13_599)
+            .await
+            .unwrap();
+        admit(&store, "c3", "198.51.100.0/24", "4", 13_599)
+            .await
+            .unwrap();
+        // Pruning keeps exactly the records still inside the window.
+        store.prune_source_creations(13_599).await.unwrap();
+        assert_eq!(
+            store.source_creation_prefixes().await.unwrap(),
+            ["192.0.2.0/24", "198.51.100.0/24"]
+        );
+        store.prune_source_creations(13_600).await.unwrap();
+        assert_eq!(
+            store.source_creation_prefixes().await.unwrap(),
+            ["198.51.100.0/24"]
+        );
+        // The target outlives its creation record and keeps renewing.
+        assert_eq!(
+            admit(&store, "a1", "192.0.2.0/24", "5", 13_600)
+                .await
+                .unwrap(),
+            AdmissionOutcome::Idempotent
+        );
+        // The first creation left the window at exactly 3,600 s.
+        admit(&store, "b2", "192.0.2.0/24", "6", 13_600)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_long_lapsed_target_with_an_empty_archive_frees_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        // Lease 120 s; a slot frees 1,000 s after its lease ends.
+        let store = store(&dir).await.limit_new_targets(
+            std::num::NonZeroU16::new(2).unwrap(),
+            std::num::NonZeroU16::new(100).unwrap(),
+            std::num::NonZeroU8::MAX,
+            std::time::Duration::from_secs(1_000),
+        );
+        let admit = |mg: &'static str, event: &'static str, now: i64| {
+            let store = store.clone();
+            async move {
+                store
+                    .admit(&auth(event, now), target_for(mg, "endpoint", 1), now)
+                    .await
+            }
+        };
+        admit("a1", "1", 10_000).await.unwrap();
+        admit("b2", "2", 10_000).await.unwrap();
+        let target_id = |mg: &'static str| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT target_id FROM targets WHERE fman_pubkey=?")
+                    .bind(mg)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        // b2 still has an archived frame, and a1 has rows in every child table.
+        let (first, second) = (target_id("a1").await, target_id("b2").await);
+        for (stream, target) in [("s1", &first), ("s2", &second)] {
+            sqlx::query(
+                "INSERT INTO journal_streams(stream_id,target_id,journal_selector) VALUES(?,?,?)",
+            )
+            .bind(stream)
+            .bind(target)
+            .bind(b"mg".as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO archive_frames(
+                stream_id,reception_day,start_offset,end_offset,frame_hash,
+                observed_generation,continuity_gap
+             ) VALUES('s2','2024-01-02',0,10,?,0,0)",
+        )
+        .bind([0_u8; 32].as_slice())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metric_snapshots(
+                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
+             ) VALUES (?,'seat',?,1,'[]',0)",
+        )
+        .bind(&first)
+        .bind("0".repeat(64))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        // Leases end at 10,120. One second before the slot frees, the store is full.
+        assert!(matches!(
+            admit("c3", "3", 11_120).await,
+            Err(StoreError::Saturated)
+        ));
+        assert!(store.target_exists("a1").await.unwrap());
+        // Then a1's slot goes to the new key; b2 keeps its slot while its
+        // archive still holds a frame.
+        admit("c3", "4", 11_121).await.unwrap();
+        assert!(!store.target_exists("a1").await.unwrap());
+        assert!(store.target_exists("b2").await.unwrap());
+        assert!(matches!(
+            admit("d4", "5", 11_200).await,
+            Err(StoreError::Saturated)
+        ));
+        for table in ["journal_streams", "metric_snapshots"] {
+            let left: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE target_id = ?"))
+                    .bind(&first)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(left, 0, "{table}");
+        }
+    }
+
+    #[tokio::test]
+    async fn target_archive_bytes_count_only_the_targets_retained_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir).await;
+        store
+            .admit(&auth("a", 100), target_for("a1", "endpoint", 1), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("b", 100), target_for("b2", "endpoint", 1), 100)
+            .await
+            .unwrap();
+        let target_id = |mg: &'static str| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT target_id FROM targets WHERE fman_pubkey=?")
+                    .bind(mg)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first, second) = (target_id("a1").await, target_id("b2").await);
+        for (stream, target, selector) in [
+            ("s1", &first, "mg"),
+            ("s2", &first, "seat"),
+            ("s3", &second, "mg"),
+        ] {
+            sqlx::query(
+                "INSERT INTO journal_streams(stream_id,target_id,journal_selector) VALUES(?,?,?)",
+            )
+            .bind(stream)
+            .bind(target)
+            .bind(selector.as_bytes())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        for (stream, day, start, end) in [
+            ("s1", "2024-01-01", 0, 100),
+            ("s1", "2024-01-02", 0, 30),
+            ("s1", "2024-01-02", 30, 37),
+            ("s2", "2024-01-02", 0, 5),
+            ("s3", "2024-01-02", 0, 1_000),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_frames(
+                    stream_id,reception_day,start_offset,end_offset,frame_hash,
+                    observed_generation,continuity_gap
+                 ) VALUES(?,?,?,?,?,0,0)",
+            )
+            .bind(stream)
+            .bind(day)
+            .bind(start)
+            .bind(end)
+            .bind([0_u8; 32].as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(store.target_archive_bytes(&first).await.unwrap(), 142);
+        assert_eq!(store.target_archive_bytes(&second).await.unwrap(), 1_000);
+        // Retention frees what it prunes.
+        store
+            .prune_archive_ledger(&ReceptionDay::parse("2024-01-02".into()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(store.target_archive_bytes(&first).await.unwrap(), 42);
+        assert_eq!(store.target_archive_bytes("unknown").await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -3229,6 +3672,7 @@ mod tests {
             stale_after * 1000,
             false,
             &crate::metrics_observability::MetricsObservability::default(),
+            crate::metrics_snapshot::MgVerification::Badged,
         )
         .unwrap()
     }

@@ -23,6 +23,7 @@ fn content(invites: &[&str]) -> String {
         telemetry_registration_url: Url(
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
+        unbadged_telemetry_registration_url: None,
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
         legacy_features: fedi_decentralized_domain::FeaturePolicy {
             mg_version: "0.1.0".parse().expect("valid MG version"),

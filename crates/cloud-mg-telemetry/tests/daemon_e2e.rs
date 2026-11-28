@@ -204,7 +204,7 @@ async fn real_daemon_registers_pulls_persists_and_restarts() {
         iroh_endpoint_id: router.endpoint().id().to_string(),
         generation: 1,
         capability: TelemetryCapability::from_bytes(CAPABILITY),
-        holder_authorization: authorization,
+        holder_authorization: Some(authorization),
     })
     .unwrap();
     let auth = nip98(
@@ -287,6 +287,100 @@ async fn real_daemon_registers_pulls_persists_and_restarts() {
 
     router.shutdown().await.unwrap();
     defe.release(lease.handle_id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn real_unbadged_daemon_admits_without_a_badge_and_labels_its_series() {
+    let endpoint = Endpoint::builder(presets::N0)
+        .relay_mode(RelayMode::Disabled)
+        .bind()
+        .await
+        .expect("bind local telemetry endpoint");
+    let router = Router::builder(endpoint)
+        .accept(
+            GUARDIAN_TELEMETRY_ALPN,
+            IrohProtocol::new(GuardianTelemetryApiServer::new(TelemetryFixture {
+                incarnation: "018f22d0-4e5f-7abc-8def-0123456789ab".parse().unwrap(),
+                seat: SeatId::new("22".repeat(32)).unwrap(),
+            })),
+        )
+        .spawn();
+    let data = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(data.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let key_file = data.path().join("key");
+    std::fs::write(&key_file, [9_u8; 32]).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let public_port = defe_portalloc::port_alloc(2).expect("reserve collector port pair");
+    let private_port = public_port.checked_add(1).unwrap();
+    let mut command = daemon_command(
+        data.path(),
+        &key_file,
+        public_port,
+        private_port,
+        &serde_json::to_string(&router.endpoint().addr()).unwrap(),
+    );
+    command
+        .env("CLOUD_FMAN_TELEMETRY_ADMISSION", "unbadged")
+        .env("CLOUD_FMAN_TELEMETRY_MAX_TARGETS", "16")
+        .env("CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR", "4")
+        .env("CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR", "1")
+        .env("CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES", "1048576");
+    let mut daemon = command.spawn().expect("spawn real collector binary");
+    wait_for_status(private_port, "/ready", 204).await;
+
+    let mg_keys = Keys::generate();
+    let body = serde_json::to_vec(&GuardianTelemetryRegistrationRequest {
+        version: ProtocolV1,
+        iroh_endpoint_id: router.endpoint().id().to_string(),
+        generation: 1,
+        capability: TelemetryCapability::from_bytes(CAPABILITY),
+        holder_authorization: None,
+    })
+    .unwrap();
+    let auth = nip98(
+        &mg_keys,
+        "https://collector.test/v1/telemetry/registrations",
+        &body,
+    );
+    let response = http(
+        public_port,
+        "POST",
+        "/v1/telemetry/registrations",
+        &[
+            ("Authorization", &auth),
+            ("Content-Type", "application/json"),
+        ],
+        &body,
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    let metrics = wait_for_metrics(private_port).await;
+    let collected = metrics
+        .lines()
+        .find(|line| line.starts_with("fm_consensus_session_count{"))
+        .unwrap();
+    assert!(
+        collected.starts_with("fm_consensus_session_count{fman_verified=\"false\","),
+        "{collected}"
+    );
+    let archive = wait_for_archive(data.path()).await;
+    assert!(archive.exists());
+    assert!(
+        http(private_port, "GET", "/v1/federations", &[], &[])
+            .await
+            .starts_with("HTTP/1.1 404")
+    );
+    terminate(&mut daemon).await;
+    router.shutdown().await.unwrap();
 }
 
 async fn publish_test_authority(relay: &str) -> (IssuerContext, String) {
@@ -373,6 +467,20 @@ async fn start_daemon(
     relay: &str,
     endpoint: &str,
 ) -> Child {
+    daemon_command(data, key, public_port, private_port, endpoint)
+        .env("CLOUD_FMAN_TELEMETRY_E2E_ISSUER", issuer)
+        .env("CLOUD_FMAN_TELEMETRY_E2E_NOSTR_RELAY", relay)
+        .spawn()
+        .expect("spawn real collector binary")
+}
+
+fn daemon_command(
+    data: &Path,
+    key: &Path,
+    public_port: u16,
+    private_port: u16,
+    endpoint: &str,
+) -> Command {
     let mut command = Command::new(env!(
         "CARGO_BIN_EXE_fedi-decentralized-cloud-fman-telemetry"
     ));
@@ -395,12 +503,9 @@ async fn start_daemon(
         .env("CLOUD_FMAN_TELEMETRY_ENVIRONMENT", "development")
         .env("CLOUD_FMAN_TELEMETRY_E2E_IROH_ENDPOINT_ADDR", endpoint)
         .env("CLOUD_FMAN_TELEMETRY_E2E_POLL_MILLIS", "100")
-        .env("CLOUD_FMAN_TELEMETRY_E2E_ISSUER", issuer)
-        .env("CLOUD_FMAN_TELEMETRY_E2E_NOSTR_RELAY", relay)
         .env("RUST_LOG", "info")
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn real collector binary")
+        .kill_on_drop(true);
+    command
 }
 
 fn nip98(keys: &Keys, url: &str, body: &[u8]) -> String {

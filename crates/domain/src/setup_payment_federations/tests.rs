@@ -46,6 +46,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         telemetry_registration_url: Url(
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
+        unbadged_telemetry_registration_url: None,
         min_fee_ppm,
         legacy_features: crate::FeaturePolicy {
             mg_version: "0.1.0".parse().expect("valid MG version"),
@@ -243,6 +244,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             version: ProtocolV1,
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
+            unbadged_telemetry_registration_url: None,
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
             legacy_features: crate::FeaturePolicy {
                 mg_version: "0.1.0".parse().unwrap(),
@@ -271,6 +273,61 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl
         );
     }
+}
+
+#[test]
+fn unbadged_telemetry_registration_url_is_optional_and_checked_like_the_badged_one() {
+    let absent = AdmittedSetupPaymentFederations::parse(content_with_min_uptime("").as_bytes())
+        .expect("a publication without the field is admitted");
+    assert_eq!(absent.unbadged_telemetry_registration_url(), None);
+
+    let present = AdmittedSetupPaymentFederations::parse(
+        content_with_min_uptime(
+            r#","unbadged_telemetry_registration_url":"https://unbadged.fedi.example/v1/telemetry/registrations""#,
+        )
+        .as_bytes(),
+    )
+    .expect("a credential-free HTTPS URL is admitted");
+    assert_eq!(
+        present.unbadged_telemetry_registration_url(),
+        Some(&Url(
+            "https://unbadged.fedi.example/v1/telemetry/registrations".to_owned()
+        ))
+    );
+    // The badged URL stays where it was.
+    assert_eq!(
+        present.telemetry_registration_url().0,
+        "https://push.fedi.example/v1/telemetry/registrations"
+    );
+
+    for invalid in [
+        "http://unbadged.fedi.example/v1/telemetry/registrations",
+        "https://user:pass@unbadged.fedi.example/v1/telemetry/registrations",
+        "https://unbadged.fedi.example/v1/telemetry/registrations?secret=value",
+        "not-a-url",
+    ] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(
+                content_with_min_uptime(&format!(
+                    r#","unbadged_telemetry_registration_url":"{invalid}""#
+                ))
+                .as_bytes(),
+            )
+            .unwrap_err(),
+            SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl,
+            "{invalid}"
+        );
+    }
+    // A known field appears once, like every other one.
+    assert!(
+        AdmittedSetupPaymentFederations::parse(
+            content_with_min_uptime(
+                r#","unbadged_telemetry_registration_url":"https://a.example/r","unbadged_telemetry_registration_url":"https://b.example/r""#,
+            )
+            .as_bytes(),
+        )
+        .is_err()
+    );
 }
 
 #[test]

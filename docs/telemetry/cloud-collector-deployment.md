@@ -272,6 +272,75 @@ counted here; they
 have their own admission events. When target snapshots stop advancing, the
 stage that increased shows where polls fail.
 
+## Unbadged instance
+
+MGs without a badge register with a second, separate collector deployment
+([ARCH-cloud-mg-telemetry](../../specs/ARCH-cloud-mg-telemetry.md#unbadged-instance)).
+It runs the same image with `CLOUD_FMAN_TELEMETRY_ADMISSION=unbadged` and
+follows every control in this guide, with its own volume, its own 32-byte key
+and key ID, and its own public HTTPS origin. Never point it at the badged
+collector's volume or key: the store is bound to its admission mode and
+refuses to open the other mode's database.
+
+Unbadged mode requires four limits, and badged mode refuses them:
+
+| Variable | Meaning | Starting value |
+| --- | --- | --- |
+| `CLOUD_FMAN_TELEMETRY_MAX_TARGETS` | Targets the store holds, 1 to 4,096. A target frees its slot once its lease has lapsed for more than `LOG_RETENTION_DAYS` and retention has emptied its archive. | `1024` |
+| `CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR` | Targets created in any trailing hour, across all sources. | `60` |
+| `CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR` | Targets one source `/24` or `/64` creates in any trailing hour. The store counts that source's committed creations in the admission transaction, so a registration it refuses or a renewal spends nothing, and a restart does not reset the count. | `4` |
+| `CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES` | Compressed archive bytes one target holds within retention, at most `LOG_QUOTA_BYTES`. A full target's journal collection waits for retention; nothing is evicted. | `8388608` |
+
+Renewing an existing target counts against none of them. A refused creation
+answers 503, and the MG retries at its next reconcile. The existing
+per-minute `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` applies in both modes and
+counts renewals too.
+
+To count creations, the store writes a `(prefix, created_at)` record in
+each creation's transaction, with no target identifier, and every journal
+poll cycle deletes the records older than one hour. The live store
+therefore holds a client prefix for at most one hour plus one
+`CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS` cycle. A target outlives its record.
+A backup taken within that time holds the records it copied, which last as
+long as backup retention keeps that backup.
+
+The unbadged build adds migration `0008`, which adds the `source_creations`
+table; it runs on badged collectors too, where the table stays empty. An
+older collector image does not start on a database that holds a migration it
+does not know. To roll back, restore the coupled backup taken before the
+upgrade, or stop the collector, drop `source_creations` and delete the
+version 8 row from `_sqlx_migrations`.
+
+Both source limits key on the client network prefix, so before opening the
+instance, check through its intended ingress that registrations from distinct
+client networks reach it as distinct prefixes. List every immediate proxy in
+`CLOUD_FMAN_TELEMETRY_TRUSTED_PROXY`. Without that, every MG shares the
+proxy's prefix and its budgets.
+
+The unbadged collector has no direct UDP transport. It reaches MGs only
+through the default n0 relays and resolves endpoints through n0 DNS and
+pkarr, so allow egress to those. For now it does not serve
+`GET /v1/federations`, so connect no invite consumer to it. It still stores
+each seat's invite as the badged collector does, so an export can be added
+later. Its metrics still cover federation-level guardian monitoring. Its MG
+series carry `fman_verified="false"`. Scrape it as its own Prometheus job.
+
+Its `GET /v1/seat-capacity` and `GET /v1/seat-readiness` keep the badged
+response shape, but every entry comes from an unverified MG. Keep them away
+from consumers that expect badged data.
+
+Roll it out in this order:
+
+1. Deploy the unbadged collector.
+2. Upgrade the setup-payment publisher to a build that knows
+   `unbadged_telemetry_registration_url`. The publisher refuses content
+   fields it does not recognize, so an older one rejects the policy, even
+   though older policy readers ignore the field.
+3. Wait for an MG release that reads the field, planned as 0.1.21.
+4. Publish its registration URL, `<origin>/v1/telemetry/registrations`, as
+   `unbadged_telemetry_registration_url` in the setup-payment publication
+   ([SPEC-setup-payment-federations](../../specs/SPEC-setup-payment-federations.md)).
+
 ## Read-only staging comparison
 
 This comparison audits the `k8s-devops` staging manifests at Git revision

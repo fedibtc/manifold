@@ -44,8 +44,8 @@ fn concatenated_frames_decode_to_exact_source_jsonl() {
     let day = day("2024-01-01");
     let first = batch(b"{\"fields\":{\"safe_to_share\":true},\"n\":1}\n", 1);
     let second = batch(b"{\"fields\":{\"safe_to_share\":true},\"n\":2}\n", 2);
-    archive.append(&stream, &day, &first).unwrap();
-    archive.append(&stream, &day, &second).unwrap();
+    archive.append(&stream, &day, &first, None).unwrap();
+    archive.append(&stream, &day, &second, None).unwrap();
 
     let mut decoded = Vec::new();
     zstd::stream::read::Decoder::new(std::fs::File::open(archive.path(&stream, &day)).unwrap())
@@ -70,6 +70,7 @@ fn recovery_truncates_orphan_tail_to_committed_hash_boundary() {
             &stream,
             &day,
             &batch(b"{\"fields\":{\"safe_to_share\":true},\"n\":1}\n", 1),
+            None,
         )
         .unwrap();
     archive
@@ -77,6 +78,7 @@ fn recovery_truncates_orphan_tail_to_committed_hash_boundary() {
             &stream,
             &day,
             &batch(b"{\"fields\":{\"safe_to_share\":true},\"n\":2}\n", 2),
+            None,
         )
         .unwrap();
 
@@ -110,7 +112,7 @@ fn serialized_quota_allows_only_one_concurrent_append() {
         1,
     );
     let frame_len = probe
-        .append(&stream("c"), &day("2024-01-01"), &payload)
+        .append(&stream("c"), &day("2024-01-01"), &payload, None)
         .unwrap()
         .end;
 
@@ -118,7 +120,7 @@ fn serialized_quota_allows_only_one_concurrent_append() {
     let archive = Arc::new(archive(&directory, frame_len));
     let first = {
         let archive = archive.clone();
-        std::thread::spawn(move || archive.append(&stream("d"), &day("2024-01-01"), &payload))
+        std::thread::spawn(move || archive.append(&stream("d"), &day("2024-01-01"), &payload, None))
     };
     let second_payload = batch(
         format!(
@@ -131,7 +133,7 @@ fn serialized_quota_allows_only_one_concurrent_append() {
     let second = {
         let archive = archive.clone();
         std::thread::spawn(move || {
-            archive.append(&stream("e"), &day("2024-01-01"), &second_payload)
+            archive.append(&stream("e"), &day("2024-01-01"), &second_payload, None)
         })
     };
     let results = [first.join().unwrap(), second.join().unwrap()];
@@ -155,6 +157,7 @@ fn recovery_removes_uncommitted_day_and_empty_stream_directory() {
             &stream,
             &day,
             &batch(b"{\"fields\":{\"safe_to_share\":true}}\n", 1),
+            None,
         )
         .unwrap();
     archive.recover(Vec::new()).unwrap();
@@ -187,6 +190,7 @@ fn periodic_prune_removes_only_days_before_cutoff_and_releases_quota() {
             &stream,
             &old,
             &batch(b"{\"fields\":{\"safe_to_share\":true},\"old\":1}\n", 1),
+            None,
         )
         .unwrap();
     let current_frame = archive
@@ -194,6 +198,7 @@ fn periodic_prune_removes_only_days_before_cutoff_and_releases_quota() {
             &stream,
             &current,
             &batch(b"{\"fields\":{\"safe_to_share\":true},\"new\":1}\n", 2),
+            None,
         )
         .unwrap();
     archive.prune_before(&current).unwrap();
@@ -216,15 +221,48 @@ fn indeterminate_sync_failure_poison_blocks_sibling_admission_until_recovery() {
     let archive = archive(&directory, 1024 * 1024).with_append_hook(hook);
     let payload = batch(b"{\"fields\":{\"safe_to_share\":true}}\n", 1);
     assert!(matches!(
-        archive.append(&stream("h"), &day("2024-01-01"), &payload),
+        archive.append(&stream("h"), &day("2024-01-01"), &payload, None),
         Err(ArchiveError::Injected)
     ));
     assert!(matches!(
-        archive.append(&stream("i"), &day("2024-01-01"), &payload),
+        archive.append(&stream("i"), &day("2024-01-01"), &payload, None),
         Err(ArchiveError::Poisoned)
     ));
     archive.recover(Vec::new()).unwrap();
     archive
-        .append(&stream("i"), &day("2024-01-01"), &payload)
+        .append(&stream("i"), &day("2024-01-01"), &payload, None)
+        .unwrap();
+}
+
+#[test]
+fn a_full_target_budget_refuses_the_frame_without_writing_or_evicting() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = archive(&directory, 1024 * 1024);
+    let stream = stream("j");
+    let day = day("2024-01-01");
+    let payload = batch(b"{\"fields\":{\"safe_to_share\":true}}\n", 1);
+    let first = archive.append(&stream, &day, &payload, None).unwrap();
+    let frame_bytes = first.end - first.start;
+    let used = archive.used_bytes().unwrap();
+    // One byte short of the frame: refused before anything is written.
+    assert!(matches!(
+        archive.append(&stream, &day, &payload, Some(frame_bytes - 1)),
+        Err(ArchiveError::Capacity)
+    ));
+    assert_eq!(archive.used_bytes().unwrap(), used);
+    assert_eq!(
+        std::fs::metadata(archive.path(&stream, &day))
+            .unwrap()
+            .len(),
+        first.end
+    );
+    // Exactly the frame's size fits, and the earlier frame stays.
+    let second = archive
+        .append(&stream, &day, &payload, Some(frame_bytes))
+        .unwrap();
+    assert_eq!(second.start, first.end);
+    // The refusal does not poison the archive for other targets.
+    archive
+        .append(&stream, &day, &payload, Some(u64::MAX))
         .unwrap();
 }

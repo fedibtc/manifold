@@ -6,6 +6,7 @@ mod auth;
 mod cipher;
 mod config;
 mod data_root_lock;
+mod dial_policy;
 mod iroh_journal_source;
 mod journal_catalog;
 mod journal_collector;

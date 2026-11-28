@@ -17,6 +17,8 @@ pub(crate) struct SingleBatchCollector {
     archive: JournalArchive,
     session: Arc<tokio::sync::Mutex<Box<dyn JournalSession>>>,
     state: JournalStreamState,
+    /// Bytes the target may still archive, where targets have a budget.
+    target_room: Option<u64>,
     clock: Arc<dyn Clock>,
     deadline: tokio::time::Instant,
 }
@@ -26,6 +28,7 @@ impl SingleBatchCollector {
         archive: JournalArchive,
         session: Arc<tokio::sync::Mutex<Box<dyn JournalSession>>>,
         state: JournalStreamState,
+        target_room: Option<u64>,
         clock: Arc<dyn Clock>,
         deadline: tokio::time::Instant,
     ) -> Self {
@@ -33,6 +36,7 @@ impl SingleBatchCollector {
             archive,
             session,
             state,
+            target_room,
             clock,
             deadline,
         }
@@ -77,7 +81,12 @@ impl SingleBatchCollector {
                         .map_err(|_| PollError::Fatal("journal reception date is out of range"))?;
                     Some(
                         tokio::task::block_in_place(|| {
-                            self.archive.append(&self.state.stream_id, &day, &batch)
+                            self.archive.append(
+                                &self.state.stream_id,
+                                &day,
+                                &batch,
+                                self.target_room,
+                            )
                         })
                         .map_err(|error| match error {
                             ArchiveError::Capacity => PollError::Capacity,

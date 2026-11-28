@@ -290,10 +290,15 @@ KDF and stores only its global monotone generation in SQLite. There is no
 per-seat secret, generation, rotation, or re-enrollment state; rotation is one
 MG-wide operation.
 
-Registration sends the capability only with current Holder authorization and an
-exact-body NIP-98 proof. The receiver must completely verify the Holder
-credential and require the NIP-98 signer to equal its subject before encrypted
-persistence. Receiver databases and backups contain the capability and require
+Registration sends the capability with an exact-body NIP-98 proof. In badged
+admission mode it also carries current Holder authorization, and the receiver
+must completely verify the Holder credential and require the NIP-98 signer to
+equal its subject before encrypted persistence. An MG without a badge registers
+only with the separate unbadged deployment described in the
+[unbadged instance section of `ARCH-cloud-mg-telemetry`](specs/ARCH-cloud-mg-telemetry.md#unbadged-instance).
+That deployment keeps the NIP-98 signature, freshness and replay checks but
+skips Holder verification, so it relies on its own database, its resource
+limits and relay-only connections instead. Receiver databases and backups contain the capability and require
 credential-grade encryption and access control. Periodic idempotent
 registration is the recovery mechanism after receiver state loss.
 
@@ -365,7 +370,7 @@ restored telemetry journals; do not start the restored daemon before the reset.
 
 Secure MG exposure is not cloud collection. The standalone collector described
 by [`ARCH-cloud-mg-telemetry`](specs/ARCH-cloud-mg-telemetry.md) now owns
-exact-body NIP-98 and live Holder verification, encrypted target admission,
+exact-body NIP-98, live Holder verification in badged mode, encrypted target admission,
 leases, and revision fences. It directly polls the typed safe-journal list/fetch
 API and the authenticated guardian metrics proxy, archives validated exact
 JSONL, retains bounded latest metric snapshots, and exposes them only on its
@@ -376,7 +381,7 @@ Operators must configure every immediate proxy CIDR the collector may trust and
 must make those proxies overwrite `Forwarded`/`X-Forwarded-For`; untrusted peers'
 forwarding headers are ignored. Admission applies a hard connection lifetime and
 connection cap before body or cryptographic work, then bounded source-prefix,
-request, replay, and PeerBadge-verification admission. Every accepted connection
+request, replay, and, in badged mode, PeerBadge-verification admission. Every accepted connection
 retains the exclusive data-root lock, and shutdown aborts and joins tracked
 connections before the lock can be released.
 

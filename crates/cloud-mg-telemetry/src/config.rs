@@ -5,11 +5,45 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 
 pub(crate) const MAX_LOG_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub(crate) const MAX_LOG_RETENTION_DAYS: u16 = 30;
+/// Most targets one collector stores; archive recovery bounds assume it.
+pub(crate) const MAX_TARGETS: u16 = 4096;
+
+/// Which registrations a collector admits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum AdmissionMode {
+    /// Only MGs whose Holder authorization verifies.
+    Badged,
+    /// Any NIP-98 signer, for MGs without a badge, under creation and
+    /// archive limits. Run as a separate deployment.
+    Unbadged,
+}
+
+/// Validated admission policy.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Admission {
+    Badged,
+    Unbadged(UnbadgedLimits),
+}
+
+/// Limits that bound what free identities can take from an unbadged collector.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnbadgedLimits {
+    /// Targets the store may hold.
+    pub(crate) max_targets: std::num::NonZeroU16,
+    /// Targets created in any trailing hour.
+    pub(crate) new_targets_per_hour: std::num::NonZeroU16,
+    /// Targets created from one source network prefix in any trailing hour.
+    pub(crate) source_new_targets_per_hour: std::num::NonZeroU8,
+    /// Compressed archive bytes one target may hold within retention.
+    pub(crate) log_target_quota_bytes: std::num::NonZeroU64,
+}
 
 /// Configuration whose numeric bounds and units have been validated once.
 pub(crate) struct RuntimeConfig {
     /// Parsed trust environment.
     pub(crate) environment: ManifoldEnvironment,
+    /// Admission mode and its limits.
+    pub(crate) admission: Admission,
     /// Validated sparse-metrics settings.
     pub(crate) metrics: MetricsRuntimeConfig,
     /// Includes the MG journal and retained/decommissioned seat journals.
@@ -142,6 +176,28 @@ pub struct Args {
     /// egress address, because the receiver cannot tell them apart.
     #[arg(long, env = "CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET", default_value_t = 4)]
     pub source_budget: u8,
+    /// Admission mode. An unbadged collector admits any NIP-98 signer and
+    /// must be a separate deployment with its own data directory and key.
+    #[arg(
+        long,
+        env = "CLOUD_FMAN_TELEMETRY_ADMISSION",
+        value_enum,
+        default_value_t = AdmissionMode::Badged
+    )]
+    pub admission: AdmissionMode,
+    /// Unbadged only: most targets the collector stores, in 1..=4096.
+    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_MAX_TARGETS")]
+    pub max_targets: Option<u16>,
+    /// Unbadged only: most targets created in any trailing hour.
+    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_NEW_TARGETS_PER_HOUR")]
+    pub new_targets_per_hour: Option<u16>,
+    /// Unbadged only: most targets created from one source network prefix in
+    /// any trailing hour.
+    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_SOURCE_NEW_TARGETS_PER_HOUR")]
+    pub source_new_targets_per_hour: Option<u8>,
+    /// Unbadged only: compressed archive bytes one target may hold.
+    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_LOG_TARGET_QUOTA_BYTES")]
+    pub log_target_quota_bytes: Option<u64>,
     /// Proxy networks trusted to supply Forwarded or X-Forwarded-For client addresses.
     #[arg(
         long,
@@ -213,8 +269,10 @@ impl Args {
         }
         let environment =
             ManifoldEnvironment::from_str(&self.environment).map_err(|_| "invalid environment")?;
+        let admission = self.admission()?;
         Ok(RuntimeConfig {
             environment,
+            admission,
             // Repeated staging ceremonies retain many decommissioned seats.
             max_journals_per_target: if environment == ManifoldEnvironment::Staging {
                 1_000
@@ -243,6 +301,46 @@ impl Args {
             #[cfg(feature = "defe-test-support")]
             e2e_badge_verifier: self.e2e_badge_verifier()?,
         })
+    }
+
+    fn admission(&self) -> Result<Admission, String> {
+        let limits = (
+            self.max_targets,
+            self.new_targets_per_hour,
+            self.source_new_targets_per_hour,
+            self.log_target_quota_bytes,
+        );
+        match (self.admission, limits) {
+            (AdmissionMode::Badged, (None, None, None, None)) => Ok(Admission::Badged),
+            (AdmissionMode::Badged, _) => {
+                Err("target creation and per-target archive limits apply only to unbadged admission".into())
+            }
+            (
+                AdmissionMode::Unbadged,
+                (
+                    Some(max_targets),
+                    Some(new_targets_per_hour),
+                    Some(source_new_targets_per_hour),
+                    Some(log_target_quota_bytes),
+                ),
+            ) => Ok(Admission::Unbadged(UnbadgedLimits {
+                max_targets: std::num::NonZeroU16::new(max_targets)
+                    .filter(|value| value.get() <= MAX_TARGETS)
+                    .ok_or("max targets must be in 1..=4096")?,
+                new_targets_per_hour: std::num::NonZeroU16::new(new_targets_per_hour)
+                    .ok_or("new targets per hour must be positive")?,
+                source_new_targets_per_hour: std::num::NonZeroU8::new(
+                    source_new_targets_per_hour,
+                )
+                .ok_or("source new targets per hour must be positive")?,
+                log_target_quota_bytes: std::num::NonZeroU64::new(log_target_quota_bytes)
+                    .filter(|value| value.get() <= self.log_quota_bytes)
+                    .ok_or("per-target archive quota must be in 1..=log quota")?,
+            })),
+            (AdmissionMode::Unbadged, _) => Err(
+                "unbadged admission requires max targets, new targets per hour, source new targets per hour and a per-target archive quota".into(),
+            ),
+        }
     }
 
     #[cfg(feature = "defe-test-support")]

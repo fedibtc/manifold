@@ -2,7 +2,7 @@
 
 use std::{
     collections::VecDeque,
-    num::{NonZeroU16, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     sync::{
         Arc,
         atomic::{AtomicI64, AtomicUsize, Ordering},
@@ -685,6 +685,57 @@ async fn same_day_archive_saturation_preserves_cursor_and_other_target_work() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_target_at_its_archive_budget_keeps_its_cursor_and_its_archive() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let frame = zstd::stream::encode_all(
+        &b"{\"fields\":{\"safe_to_share\":true},\"offset\":1}\n"[..],
+        3,
+    )
+    .unwrap()
+    .len() as u64;
+    // Room for two of the three batches; the whole archive has plenty.
+    let archive = JournalArchive::open(directory.path(), 1024 * 1024).unwrap();
+    let (poller, _, fetches) = poller(store.clone(), archive, responses(3), None);
+    let poller = poller.with_target_quota(NonZeroU64::new(2 * frame + frame / 2).unwrap());
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+
+    // The refusal defers the target; it is not a collector failure.
+    assert!(!poller.poll_once(receiver).await.unwrap());
+    assert_eq!(fetches.load(Ordering::SeqCst), 3);
+    let timestamp = now().unwrap();
+    let target = store
+        .active_collection_targets(timestamp)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        store.target_archive_bytes(&target.target_id).await.unwrap(),
+        2 * frame
+    );
+    let work = store
+        .begin_collection_work(&target, timestamp)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = store
+        .open_journal_stream(&work, &SafeEventJournal::Mg, &incarnation(), timestamp)
+        .await
+        .unwrap()
+        .unwrap();
+    // The refused third batch is fetched again once retention frees room.
+    assert_eq!(state.cursor.map(|cursor| cursor.offset), Some(2));
+    let mut archived = 0;
+    for stream in std::fs::read_dir(directory.path().join("logs")).unwrap() {
+        for file in std::fs::read_dir(stream.unwrap().path()).unwrap() {
+            archived += file.unwrap().metadata().unwrap().len();
+        }
+    }
+    assert_eq!(archived, 2 * frame);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stale_registration_after_fetch_rolls_back_frame_and_cursor() {
     let directory = tempfile::tempdir().unwrap();
     let store = store(&directory).await;
@@ -1158,7 +1209,9 @@ async fn retention_prunes_once_per_cutoff_day_and_retries_on_day_advance() {
         false,
     )
     .unwrap();
-    archive.append(&stream_id, &old_day, &old_batch).unwrap();
+    archive
+        .append(&stream_id, &old_day, &old_batch, None)
+        .unwrap();
     let old = directory
         .path()
         .join("logs")
@@ -1171,7 +1224,9 @@ async fn retention_prunes_once_per_cutoff_day_and_retries_on_day_advance() {
     poller.poll_once(receiver.clone()).await.unwrap();
     assert!(!old.exists(), "next UTC cutoff pruned the old orphan");
 
-    archive.append(&stream_id, &old_day, &old_batch).unwrap();
+    archive
+        .append(&stream_id, &old_day, &old_batch, None)
+        .unwrap();
     clock.0.fetch_sub(86_400, Ordering::SeqCst);
     poller.poll_once(receiver.clone()).await.unwrap();
     assert!(
@@ -1612,4 +1667,63 @@ async fn one_failing_stream_does_not_stop_the_targets_other_streams() {
     assert!(!poller.poll_once(receiver).await.unwrap());
     assert_eq!(seat_fetches.load(Ordering::SeqCst), 2);
     assert_eq!(store.final_frame_boundaries().await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_poll_cycle_deletes_the_source_creations_that_left_the_window() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A one-second lease, so the cycle finds no target to poll.
+    let store = Store::open(
+        &directory.path().join("state.sqlite"),
+        "development",
+        SecretCipher::new(&[7; 32]),
+        "test".into(),
+        1,
+        32,
+    )
+    .await
+    .unwrap()
+    .limit_new_targets(
+        NonZeroU16::new(10).unwrap(),
+        NonZeroU16::new(10).unwrap(),
+        std::num::NonZeroU8::new(10).unwrap(),
+        std::time::Duration::from_secs(86_400),
+    );
+    let cycle_at = now().unwrap();
+    for (mg, source, created_at) in [
+        ("22", "192.0.2.0/24", cycle_at - 3600),
+        ("33", "198.51.100.0/24", cycle_at - 3599),
+    ] {
+        let auth = VerifiedHttpAuth {
+            signer: mg.repeat(32),
+            event_id: mg.into(),
+            created_at,
+        };
+        let target = TargetMaterial {
+            mg_pubkey: mg,
+            mg_name: "calm-tern",
+            endpoint_id: "unused-by-fake",
+            capability: &[9; 32],
+            generation: 1,
+        };
+        store
+            .admit_from(&auth, target, source, created_at)
+            .await
+            .unwrap();
+    }
+    let archive = JournalArchive::open(directory.path(), 1024 * 1024).unwrap();
+    let clock = Arc::new(TestClock(AtomicI64::new(cycle_at)));
+    let (poller, fetches) =
+        clocked_poller(store.clone(), archive, VecDeque::new(), clock, None, None);
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+
+    assert!(!poller.poll_once(receiver).await.unwrap());
+    assert_eq!(fetches.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store.source_creation_prefixes().await.unwrap(),
+        ["198.51.100.0/24"]
+    );
 }
